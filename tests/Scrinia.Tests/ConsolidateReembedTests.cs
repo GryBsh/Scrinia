@@ -39,11 +39,11 @@ public sealed class ConsolidateReembedTests : IDisposable
 
     public void Dispose()
     {
-        // MemoryEventSinkContext.Default is a plain process-wide static, not AsyncLocal, and
-        // StoreScope does not reset it. Leaving the handler installed points every later test
-        // in this process at this test's VectorStore, which is disposed when the test method
-        // exits.
-        MemoryEventSinkContext.Default = null;
+        // Leaving the handler installed would point later work at this test's VectorStore, which
+        // is disposed when the test method exits. Released through Current, not Default: the sink
+        // is installed into this test's own async flow (see the test body), so this is a per-flow
+        // release that cannot disturb a test running in parallel.
+        MemoryEventSinkContext.Current = null;
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
@@ -86,7 +86,10 @@ public sealed class ConsolidateReembedTests : IDisposable
         // backed by a fake always-available provider so the test doesn't depend on real model
         // files being present.
         var provider = new FakeProvider();
-        MemoryEventSinkContext.Default = new CoreEmbeddingEventHandler(provider, vectorStore, NullLogger.Instance);
+        // Current, not Default: this installs a REAL handler, and doing that process-wide points
+        // every parallel test at this test's VectorStore. Current is AsyncLocal, and this write is
+        // in the test body, so the handler is visible to the call under test and to nothing else.
+        MemoryEventSinkContext.Current = new CoreEmbeddingEventHandler(provider, vectorStore, NullLogger.Instance);
 
         var item = new ScopedArtifact(scope, entry);
 

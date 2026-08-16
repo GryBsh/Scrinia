@@ -108,14 +108,29 @@ internal static class TestHelpers
                 new System.Collections.Concurrent.ConcurrentDictionary<string, long>(
                     StringComparer.OrdinalIgnoreCase));
 
-            // Clean room. MemoryEventSinkContext.Default is a plain process-wide static (correct
-            // for the CLI's single session, wrong for a shared test host): any test that reaches a
-            // ScriniaCommands entry point runs WorkspaceSetup.LoadPluginsAsync, which installs the
-            // real embed/entity-typing/maintenance pipeline there and never removes it. Left
-            // installed, it fires on every later test's writes and rewrites their entries
-            // mid-assertion — this is what made MentionSpanWiringTests flaky. Tests that want a
-            // sink set MemoryEventSinkContext.Current, which takes precedence over Default.
-            MemoryEventSinkContext.Default = null;
+            // Clean room, via the AsyncLocal cell rather than the process-wide one.
+            //
+            // The need is unchanged: a real embed/entity-typing/maintenance pipeline left installed
+            // fires on every later test's writes and rewrites their entries mid-assertion — this is
+            // what made MentionSpanWiringTests flaky.
+            //
+            // This USED to be `Default = null`, and that was itself a race. Default is a
+            // process-wide static that production depends on; xUnit runs test classes in parallel;
+            // so this line — and the matching one in Dispose — could null the value another test
+            // was mid-way through asserting on. That is the intermittent failure in
+            // MemoryEventSinkContextInstallDefaultTests.InstallDefault_ComposesSinksInOrder
+            // (~1 full run in 5).
+            //
+            // Current is AsyncLocal and its getter is `_current.Value ?? _default`, so assigning a
+            // non-null sentinel SHADOWS Default for this test's own async flow and touches nothing
+            // process-wide. Null would not shadow — it falls straight back to Default — which is
+            // why SilentEventSink exists. Tests that want a real sink keep overwriting Current, as
+            // they always did.
+            //
+            // Safe because this constructor is SYNCHRONOUS and called from the test body: the write
+            // lands in the test's own ExecutionContext and survives its awaits (measured). It would
+            // NOT survive if this were an `async` method — see SilentEventSink's doc.
+            MemoryEventSinkContext.Current = TestDoubles.SilentEventSink.Instance;
             MemoryStoreContext.Current = new FileMemoryStore(WorkspaceDir);
         }
 
@@ -129,7 +144,10 @@ internal static class TestHelpers
             // constructor is what actually prevents the leak; TestHostLifetime drains once at
             // the end of the run.
             SessionBudget.OverrideStore(null);
-            MemoryEventSinkContext.Default = null;
+            // Releases this flow's shadow so a later scope in the same flow starts from Default
+            // again. Per-flow, so it cannot disturb a test running in parallel — which the old
+            // `Default = null` here could, and did.
+            MemoryEventSinkContext.Current = null;
             MemoryStoreContext.Current = null;
             try { Directory.Delete(WorkspaceDir, recursive: true); } catch { }
         }

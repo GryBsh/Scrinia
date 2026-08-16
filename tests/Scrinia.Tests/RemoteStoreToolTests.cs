@@ -328,7 +328,10 @@ public sealed class RemoteStoreToolTests
             HttpStatusCode? entryFailureStatus = null, HttpStatusCode? showFailureStatus = null)
         {
             _previous = MemoryStoreContext.Current;
-            MemoryEventSinkContext.Default = null;
+            // Current (AsyncLocal), not Default (process-wide): shadows the default sink for this
+            // test's own flow. See Scrinia.TestDoubles.SilentEventSink for why the old
+            // `Default = null` was itself a cross-test race.
+            MemoryEventSinkContext.Current = Scrinia.TestDoubles.SilentEventSink.Instance;
             Handler = new StubBackendHandler(listJson, patchStatus, copyFromClientStatus, showJson,
                 copyStatus, entryFailureStatus, showFailureStatus);
             var http = new HttpClient(Handler)
@@ -343,7 +346,7 @@ public sealed class RemoteStoreToolTests
 
         public void Dispose()
         {
-            MemoryEventSinkContext.Default = null;
+            MemoryEventSinkContext.Current = null;
             MemoryStoreContext.Current = _previous;
             Store.Dispose();
         }
@@ -404,14 +407,17 @@ public sealed class RemoteStoreToolTests
         public DoubleStoreScope(IMemoryStore store)
         {
             _previous = MemoryStoreContext.Current;
-            MemoryEventSinkContext.Default = null;
+            // Current (AsyncLocal), not Default (process-wide): shadows the default sink for this
+            // test's own flow. See Scrinia.TestDoubles.SilentEventSink for why the old
+            // `Default = null` was itself a cross-test race.
+            MemoryEventSinkContext.Current = Scrinia.TestDoubles.SilentEventSink.Instance;
             Store = store;
             MemoryStoreContext.Current = store;
         }
 
         public void Dispose()
         {
-            MemoryEventSinkContext.Default = null;
+            MemoryEventSinkContext.Current = null;
             MemoryStoreContext.Current = _previous;
         }
     }

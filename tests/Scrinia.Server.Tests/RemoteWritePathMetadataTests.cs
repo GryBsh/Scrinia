@@ -38,7 +38,15 @@ public sealed class RemoteWritePathMetadataTests : IAsyncLifetime
         _remote = new HttpMemoryStore(_factory.CreateAuthenticatedClient(), _factory.PrimaryStore);
 
         _previousStore = MemoryStoreContext.Current;
-        MemoryEventSinkContext.Default = null;
+        // Current (AsyncLocal), not Default (process-wide) — see Scrinia.TestDoubles.SilentEventSink
+        // for why the old `Default = null` was a cross-test race.
+        //
+        // LOAD-BEARING: this method is deliberately NOT `async`. It returns Task.CompletedTask, so
+        // it behaves as a synchronous method and the AsyncLocal write propagates to the test body.
+        // Adding an `await` anywhere in here silently loses the write — measured: an AsyncLocal set
+        // inside a genuinely async InitializeAsync reads back null in the test method. If this ever
+        // needs to await, move the assignment into a sync helper the test body calls instead.
+        MemoryEventSinkContext.Current = Scrinia.TestDoubles.SilentEventSink.Instance;
         MemoryStoreContext.Current = _remote;
         return Task.CompletedTask;
     }
@@ -46,7 +54,7 @@ public sealed class RemoteWritePathMetadataTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         MemoryStoreContext.Current = _previousStore;
-        MemoryEventSinkContext.Default = null;
+        MemoryEventSinkContext.Current = null;
         _remote.Dispose();
         _factory.Dispose();
         return Task.CompletedTask;
