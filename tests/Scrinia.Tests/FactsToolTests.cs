@@ -6,6 +6,14 @@ using Xunit;
 
 namespace Scrinia.Tests;
 
+// GlobalWorkspaceConfigCollection: Cli_Facts_Entities_PrintsYaml and
+// Cli_Facts_Intersect_SplitsCommaSeparatedTarget drive ScriniaCommands.Facts, which calls
+// WorkspaceSetup.Configure (a plain static field guarded only by a lock for writes) — the same
+// hazard the collection exists to serialize. They also redirect the process-wide Console.Out
+// around that call; without this collection, a class outside it (e.g. CliEphemeralRefusalTests)
+// can run its own Console.SetOut/restore concurrently and either class ends up reading the
+// other's captured output.
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public class FactsToolTests
 {
     private static ArtifactEntry Note(string name, params (string Key, string[] Vals)[] attrs)

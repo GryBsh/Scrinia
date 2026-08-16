@@ -9,6 +9,13 @@ namespace Scrinia.Tests;
 /// immediately. Every ephemeral CLI operation is meaningless for the same reason, so all six
 /// commands refuse, not only the writes.
 /// </summary>
+// GlobalWorkspaceConfigCollection: every test here drives a ScriniaCommands entry point
+// (Store/Append/Show/Forget/Compact/Link), each of which calls WorkspaceSetup.Configure — the
+// process-wide static root this collection serializes. Tests also redirect the process-wide
+// Console.Out around each call (see RunAsync); without this collection, a class outside it
+// (e.g. FactsToolTests) can run its own Console.SetOut/restore concurrently and either class
+// ends up reading the other's captured output.
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public class CliEphemeralRefusalTests
 {
     private static async Task<(int Exit, string Output)> RunAsync(Func<Task<int>> command)
