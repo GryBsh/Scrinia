@@ -223,9 +223,11 @@ written.
 Ephemeral `~name` memories cannot be linked from the CLI. An ephemeral memory
 lives only in the memory of the process that created it, and every `scri`
 invocation is a fresh process, so a `~name` is never present when the command
-starts — `scri link ~scratch /patterns/x` can only answer "not found". The MCP
-`link` tool does support ephemerals, because the server (`scri serve`) is a
-long-lived process that still holds the one that created them.
+starts — `scri link ~scratch /patterns/x` is refused outright with an
+ephemeral-address error (exit 1), before either side's existence is even
+checked. The MCP `link` tool does support ephemerals, because the server
+(`scri serve`) is a long-lived process that still holds the one that created
+them.
 
 ```bash
 scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]
