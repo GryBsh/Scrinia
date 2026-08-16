@@ -200,6 +200,12 @@ public static class AgentLoop
         if (string.IsNullOrWhiteSpace(name))
             return "Error: name is required.";
 
+        // Surface-level canonicalization — the LLM is the caller here, the same class of
+        // agent-facing surface MemoryTools' facade methods canonicalize for. Without this,
+        // `/temp/x` would resolve to the persistent scope `local:temp` instead of the in-memory
+        // ephemeral `~x` that a human's `recall`/`remember` calls resolve to for that same address.
+        name = MemoryNaming.CanonicalizeEphemeralAlias(name);
+
         var result = await MemoryOrchestrator.ShowAsync(store, name, ct);
         if (result is null)
             return $"Memory '{name}' not found.";

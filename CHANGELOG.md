@@ -22,8 +22,8 @@ and all assembly attributes.
 ### Changed — the reserved-prefix hint for a case-mismatched `/TEMP/...` path no longer fires
 
 - The reserved-prefix hint for a case-mismatched `/TEMP/...` path no longer fires, because the
-  alias is canonicalized before `ReservedPrefixGuard.HintFor` (`MemoryTools.cs:187`) sees it.
-  The path now simply works, which is what the hint was pointing at.
+  alias is canonicalized before `ReservedPrefixGuard.HintFor` (`MemoryTools.cs:188` for `store`,
+  `:328` for `append`) sees it. The path now simply works, which is what the hint was pointing at.
 
 ### Changed (breaking) — ephemeral addresses are refused outside the MCP facade
 
@@ -32,12 +32,21 @@ and all assembly attributes.
   `scri store /temp/x` reported success and exit 0 while discarding the content: the ephemeral
   map is in-memory and the CLI process exits immediately. Both spellings are marked
   CLI-unavailable in the reserved-path tables.
-- **The REST write routes return 400 for a `/temp/...` name** — `POST /memories`, append, forget
-  and copy. The alias is resolved at the agent-facing surfaces and never crosses the wire. Read
-  routes are unchanged and answer 404 for a name they cannot find. Existing bytes under
-  `.scrinia/memories/temp/` are left in place and remain readable as the topic scope
-  `local:temp`; they are not moved or deleted, and are no longer reachable by the path
-  `/temp/x` from an MCP client.
+- **The REST write routes return 400 for a `/temp/...` name** — `POST /memories`, patch, append,
+  forget, copy and copy-from-client. The alias is resolved at the agent-facing surfaces (the MCP
+  facade, the MCP `scrinia://memory/{name}` resource, the chat agent's `recall_memory` tool, and
+  the CLI) and never crosses the wire. Read routes are unchanged and answer 404 for a name they
+  cannot find.
+- **No migration for existing `.scrinia/memories/temp/` bytes (D-5) — read this before relying on
+  a memory stored there.** They are left exactly in place, under the persistent topic scope
+  `local:temp`, and are never moved, renamed or deleted by this change. But the address that used
+  to reach them, `/temp/x`, no longer resolves there from an MCP client or the CLI: both now
+  canonicalize `/temp/x` to the in-memory ephemeral `~x` before resolving, so such a memory can no
+  longer be **read or deleted by path** from either surface. `list` and `search` still *display*
+  it as `/temp/x` — `FileMemoryStore.FormatQualifiedName` (`:272-275`) formats `local:temp` that
+  way regardless of this change — so the address shown in those results is not one that resolves.
+  The supported recovery is to export the `temp` topic (`POST /export`) and re-import its contents
+  under a different topic name.
 
 ### Fixed — a long destination name turned a link into keywords
 

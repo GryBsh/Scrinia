@@ -481,6 +481,14 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse(boundsError));
 
         string decoded = Uri.UnescapeDataString(name);
+
+        // Same probe every other write path makes — see NameRefusal's doc comment. PatchEntry
+        // resolves `decoded` itself just below, so left unguarded a `/temp/...` name would resolve
+        // straight to the persistent scope `local:temp` and patch it in place, the same defect the
+        // other write routes were fixed against.
+        if (NameRefusal(ctx.Store!, decoded) is { } nameRefusal)
+            return nameRefusal;
+
         if (!TryResolveName(ctx.Store!, decoded, out string scope, out string subject, out IResult? refusal))
             return refusal!;
 
@@ -706,6 +714,14 @@ public static class MemoryEndpoints
 
         if (decoded.Length > MaxNameLength)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse($"Name must not exceed {MaxNameLength} characters.")));
+
+        // Same probe every other write path makes — see NameRefusal's doc comment. `decoded` is the
+        // DESTINATION on this route (see the class doc comment above), and ParseQualifiedName is
+        // invoked on it further down inside WriteCarriedCopy's setup, so left unguarded a
+        // `/temp/...` destination would resolve straight to the persistent scope `local:temp` and
+        // write permanent bytes there, the same defect the other write routes were fixed against.
+        if (NameRefusal(ctx.Store!, decoded) is { } nameRefusal)
+            return Task.FromResult(nameRefusal);
 
         if (req.Content is null || req.Content.Length == 0)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("content is required.")));
