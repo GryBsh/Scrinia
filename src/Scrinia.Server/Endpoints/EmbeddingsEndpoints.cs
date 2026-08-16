@@ -1,4 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Server.Auth;
