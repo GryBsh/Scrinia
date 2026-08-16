@@ -22,6 +22,10 @@
 - CHANGELOG sections use `### <Type> — <descriptive title>`, never a bare `### Fixed`. Match the existing 40+ sections.
 - Do **not** consolidate the ~30 hand-written `ctx.HasPermission(...)` gates in `MemoryEndpoints.cs`. That is finding M5, branch 6. This branch adds one gate in the existing style.
 - Do **not** collapse the five `50.0` defaults into one constant. They are distinct knobs that share a value.
+- `IEmbeddingProvider` extends `IDisposable` (`IEmbeddingProvider.cs:4`). **Every test-double provider in this plan must implement `Dispose()`** or you get CS0535. The stubs below are written with it; if you copy one, copy the `Dispose`.
+- `VectorIndex.Search` returns `IReadOnlyList<(VectorEntry Entry, float Similarity)>` — **`float`, not `double`** (`VectorIndex.cs:47-50`). `VectorScoreProjection.Project` takes `double`, so every call site needs `topK.Select(t => (t.Entry, (double)t.Similarity))`. This affects Tasks 4, 5 and 6.
+- Reconstruct a memory's content array with the **existing** `Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks` (`:327`, `internal`, visible to every project here via `Scrinia.Core/Properties/AssemblyInfo.cs:3-10`). Do not write a new decoder.
+- **The whole-document vector is retired.** `EmbeddingsPlugin` used to write a `chunkIndex: null` vector over the joined content; `MemoryVectorIndexer` writes none. The memory-level score key is now the maximum across the memory's window vectors, which is strictly better signal than one mean-pooled embedding — that mean-pooled vector is H3's own complaint. Tests asserting a null-chunk vector must be **updated to the new contract**, not deleted.
 
 ---
 
@@ -57,28 +61,60 @@ Finding H6. The routes move first because the migration path for Task 7's signat
 - Create: `src/Scrinia.Server/Endpoints/EmbeddingsEndpoints.cs`
 - Modify: `src/Scrinia.Server/Program.cs:529-581` (delete the inline block, add the map call)
 - Modify: `src/Scrinia.Server/Services/BuiltInEmbeddingsService.cs:13-14` (implement the interface)
+- Modify: `tests/Scrinia.Server.Tests/ScriniaServerFactory.cs:42-43` (grant `reindex`), `:59` (add a client helper)
 - Test: `tests/Scrinia.Server.Tests/EmbeddingsEndpointsTests.cs`
 
 **Interfaces:**
 - Produces: `IEmbeddingsAdmin` with `ProviderName`, `IsAvailable`, `Dimensions`, `SemanticWeight`, `TotalVectorCount`, `Hardware`, `ReindexStoreAsync(IMemoryStore, CancellationToken) → Task<int>`. Tasks 2 and 5 depend on this exact shape.
 - Produces: `EmbeddingsEndpoints.MapEmbeddingsEndpoints(this WebApplication app)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1a: Extend the test factory**
 
-Create `tests/Scrinia.Server.Tests/EmbeddingsEndpointsTests.cs`. No `using Xunit;` — the project has a global using.
+`ScriniaServerFactory` provisions stores **`test-store`** and **`store-2`** (`:31-32`) — there is
+no `default` store, so a request to `/api/v1/stores/default/...` 404s in the auth middleware
+before any handler runs. Its one client helper is `CreateAuthenticatedClient()` with **no
+parameters** (`:53`), and its key carries 12 permissions (`:42-43`), none of them `reindex`.
+
+Two small additions in `tests/Scrinia.Server.Tests/ScriniaServerFactory.cs`. First, add
+`"reindex"` to the permission list at `:42-43`, so the default test key can exercise the route:
+
+```csharp
+["read", "search", "store", "append", "forget", "copy",
+ "export", "import", "manage_keys", "manage_roles", "health", "chat", "reindex"],
+```
+
+Second, add a helper for driving a request as a specific key, beside `CreateAuthenticatedClient`:
+
+```csharp
+/// <summary>Creates an HttpClient authenticated as an arbitrary previously-created key.</summary>
+public HttpClient CreateClientWithKey(string rawKey)
+{
+    var client = CreateClient();
+    client.DefaultRequestHeaders.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rawKey);
+    return client;
+}
+```
+
+The existing `CreateRestrictedStoreKey(storeName, userId?)` (`:64`) already mints a key with an
+empty permission array — that is what the 403 case needs.
+
+- [ ] **Step 1b: Write the failing tests**
+
+Create `tests/Scrinia.Server.Tests/EmbeddingsEndpointsTests.cs`. No `using Xunit;` — the project has a global using, and adding one is CS8933.
 
 ```csharp
 using System.Net;
 using FluentAssertions;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Scrinia.Server.Tests;
 
 /// <summary>
 /// Finding H6. The embeddings routes lived at /api/v1/plugins/embeddings, a group with no
 /// {store} route value — so neither MemoryStoreContext.Current (set only in the MCP session
-/// flow) nor RequestContext.Store (set only inside the {store} branch) could ever be non-null,
-/// and reindex returned 400 unconditionally. These tests pin the store-scoped replacement.
+/// flow, Program.cs:309) nor RequestContext.Store (set only inside the {store} branch,
+/// Program.cs:502, its sole assignment in src/) could ever be non-null, and reindex returned
+/// 400 unconditionally. These tests pin the store-scoped replacement.
 /// </summary>
 public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactory>
 {
@@ -89,9 +125,9 @@ public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactor
     [Fact]
     public async Task Status_UnderStoreScopedPath_Answers200()
     {
-        var client = _factory.CreateAuthenticatedClient(permissions: ["read"]);
+        var client = _factory.CreateAuthenticatedClient();
 
-        var resp = await client.GetAsync("/api/v1/stores/default/embeddings/status");
+        var resp = await client.GetAsync($"/api/v1/stores/{_factory.PrimaryStore}/embeddings/status");
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
     }
@@ -99,12 +135,13 @@ public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactor
     [Fact]
     public async Task Reindex_WithPermission_ResolvesTheStore()
     {
-        var client = _factory.CreateAuthenticatedClient(permissions: ["reindex"]);
+        var client = _factory.CreateAuthenticatedClient();
 
-        var resp = await client.PostAsync("/api/v1/stores/default/embeddings/reindex", null);
+        var resp = await client.PostAsync($"/api/v1/stores/{_factory.PrimaryStore}/embeddings/reindex", null);
 
-        // The precise success shape depends on whether a provider is available in the test
-        // environment; what must never happen again is the unconditional "no store context".
+        // Whether this succeeds or reports "provider not available" depends on whether a model
+        // is installed in the test environment. What must never happen again is the
+        // unconditional "no store context", which was the response on every request.
         string body = await resp.Content.ReadAsStringAsync();
         body.Should().NotContain("No store context available",
             because: "the {store} route value is what resolves the store — finding H6");
@@ -113,17 +150,19 @@ public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactor
     [Fact]
     public async Task Reindex_WithoutPermission_Is403()
     {
-        var client = _factory.CreateAuthenticatedClient(permissions: ["read"]);
+        var (rawKey, storeName) = _factory.CreateRestrictedStoreKey(_factory.PrimaryStore);
+        var client = _factory.CreateClientWithKey(rawKey);
 
-        var resp = await client.PostAsync("/api/v1/stores/default/embeddings/reindex", null);
+        var resp = await client.PostAsync($"/api/v1/stores/{storeName}/embeddings/reindex", null);
 
-        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden,
+            because: "a full-store re-embed is unbounded work and the old group gated nothing");
     }
 
     [Fact]
     public async Task RetiredPluginPath_NoLongerResolves()
     {
-        var client = _factory.CreateAuthenticatedClient(permissions: ["reindex"]);
+        var client = _factory.CreateAuthenticatedClient();
 
         var resp = await client.PostAsync("/api/v1/plugins/embeddings/reindex", null);
 
@@ -131,8 +170,6 @@ public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactor
     }
 }
 ```
-
-Read `tests/Scrinia.Server.Tests/ScriniaServerFactory.cs` before writing these — use whatever authenticated-client helper it already exposes and match its parameter names. If it has no per-permission helper, add one there rather than hand-building headers in this file.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -201,6 +238,7 @@ public string Hardware => "CPU";
 Create `src/Scrinia.Server/Endpoints/EmbeddingsEndpoints.cs`:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Server.Auth;
@@ -226,11 +264,17 @@ public static class EmbeddingsEndpoints
         group.MapPost("/reindex", Reindex);
     }
 
-    private static IResult GetStatus(RequestContext ctx, IEmbeddingsAdmin? admin)
+    // The admin service is resolved from HttpContext.RequestServices rather than taken as a
+    // handler parameter. It is optional — absent when no model is installed and no plugin is
+    // loaded — and minimal-API parameter inference treats an unregistered complex type as a
+    // body parameter, which MapGet rejects at endpoint-construction time. This is also what
+    // the routes being replaced already did (Program.cs:548, :556, :564).
+    private static IResult GetStatus(HttpContext http, RequestContext ctx)
     {
         if (!ctx.HasPermission("read"))
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
+        var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
         if (admin is null)
             return Results.Ok(new EmbeddingsStatusResponse("none", "", false, 0, 0.0, 0));
 
@@ -239,11 +283,12 @@ public static class EmbeddingsEndpoints
             admin.Dimensions, admin.SemanticWeight, admin.TotalVectorCount));
     }
 
-    private static IResult GetSettings(RequestContext ctx, IEmbeddingsAdmin? admin)
+    private static IResult GetSettings(HttpContext http, RequestContext ctx)
     {
         if (!ctx.HasPermission("read"))
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
+        var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
         if (admin is null)
             return Results.Ok(new EmbeddingsSettingsResponse("none", "", 0.0));
 
@@ -252,7 +297,7 @@ public static class EmbeddingsEndpoints
     }
 
     private static async Task<IResult> Reindex(
-        string store, RequestContext ctx, IEmbeddingsAdmin? admin, CancellationToken ct)
+        string store, HttpContext http, RequestContext ctx, CancellationToken ct)
     {
         // A full re-embed of every memory in the store is unbounded work, so it gets its own
         // permission rather than riding on 'store'. The hand-written gate matches the ~30 in
@@ -263,6 +308,7 @@ public static class EmbeddingsEndpoints
         if (!MemoryEndpoints.IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
+        var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
         if (admin is null || !admin.IsAvailable)
             return Results.BadRequest(new ErrorResponse("Embedding provider is not available."));
 
@@ -331,7 +377,8 @@ git add src/Scrinia.Core/Embeddings/IEmbeddingsAdmin.cs \
         src/Scrinia.Server/Program.cs \
         src/Scrinia.Server/Services/BuiltInEmbeddingsService.cs \
         src/Scrinia.Server/Models/ \
-        tests/Scrinia.Server.Tests/EmbeddingsEndpointsTests.cs
+        tests/Scrinia.Server.Tests/EmbeddingsEndpointsTests.cs \
+        tests/Scrinia.Server.Tests/ScriniaServerFactory.cs
 git commit -m "fix(server): give the embeddings routes a store to resolve"
 ```
 
@@ -342,8 +389,9 @@ git commit -m "fix(server): give the embeddings routes a store to resolve"
 Finding H6's client half, plus the defect found during design: `SettingsPage`'s Save control PUTs a route no server maps.
 
 **Files:**
-- Modify: `web/src/api/client.ts:274-293`
-- Modify: `web/src/api/types.ts:155-180`
+- Modify: `web/src/api/client.ts:244-293`
+- Modify: `web/src/api/types.ts:157-180`
+- Modify: `web/src/api/client.test.ts` — references `validateEmbeddingsSettings` at `:2, 49, 51, 57, 63, 69, 70, 74, 75, 79, 85, 86`
 - Modify: `web/src/pages/SettingsPage.tsx`
 
 **Interfaces:**
@@ -369,7 +417,9 @@ export function reindexEmbeddings(store: string) {
 }
 ```
 
-`updateEmbeddingsSettings` is deleted. So is `validateEmbeddingsSettings` and its `SettingsValidation` type (`client.ts:255-272` and the interface above it) — it exists only to validate the payload of the deleted call.
+`updateEmbeddingsSettings` is deleted. So is `validateEmbeddingsSettings` and its `SettingsValidation` type (`client.ts:244-272`) — it exists only to validate the payload of the deleted call.
+
+**`web/src/api/client.test.ts` covers `validateEmbeddingsSettings` in 12 places** (`:2` import, then `:49, 51, 57, 63, 69, 70, 74, 75, 79, 85, 86`). Delete that `describe` block and its import along with the function. Read the block first: if any case asserts something about the client *other* than the deleted validator's bounds — an `apiFetch` behaviour, an error shape — move that assertion to a surviving block rather than losing it. Bounds checks for a form that no longer exists have no home and go with it.
 
 - [ ] **Step 2: Update the types**
 
@@ -447,16 +497,16 @@ Delete `saveMutation` (`:21-27`), the `Save` import from `lucide-react` (`:5`), 
 
 The Save button is removed rather than fixed because the server has no configuration-write mechanism — `Scrinia:Embeddings` is bound from configuration and read-only at runtime, so honouring the button would mean building one. Today the PUT falls through to `app.MapFallbackToFile("index.html")` and returns HTML.
 
-- [ ] **Step 4: Typecheck and build the web client**
+- [ ] **Step 4: Typecheck, test and build the web client**
 
-Run: `cd web && npm run build`
+Run: `cd web && npm run build` then `npm test`
 
-Expected: PASS with no TypeScript errors. A `TS6133`/`TS2304` here means a deleted symbol is still referenced — find it and remove the reference rather than re-adding the symbol.
+Expected: PASS with no TypeScript errors and a green test run. A `TS6133`/`TS2304` here means a deleted symbol is still referenced — find it and remove the reference rather than re-adding the symbol.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add web/src/api/client.ts web/src/api/types.ts web/src/pages/SettingsPage.tsx
+git add web/src/api/client.ts web/src/api/types.ts web/src/api/client.test.ts web/src/pages/SettingsPage.tsx
 git commit -m "fix(web): follow the embeddings routes, and drop a Save button with no server route"
 ```
 
@@ -477,7 +527,7 @@ Finding H3's core. This task creates the shared policy and proves the contract; 
 - Consumes: `TextChunker.SliceWindows(string, int, int) → IReadOnlyList<(int Index, string Text)>`; `VectorStore.UpsertAsync(string scope, string name, int? chunkIndex, float[] vector, CancellationToken)`; `VectorStore.RemoveAsync(string scope, string name, CancellationToken)`; `VectorWriteRetry.RunAsync(Func<Task>, ILogger?, string, CancellationToken) → Task<bool>`; `IEmbeddingProvider.EmbedBatchAsync(IReadOnlyList<string>, CancellationToken) → Task<float[][]?>`; `VectorEntry(string Name, int? ChunkIndex, float[] Vector)`.
 - Produces: `MemoryVectorIndexer` with `ChunkIndexStride`, `ElementIndexOf(int)`, `IndexAsync`, `RemoveAsync`. Tasks 4, 5, 6 and 7 all depend on these exact names.
 - Produces: `VectorScoreProjection.Project(string scope, IEnumerable<(VectorEntry Entry, double Similarity)> hits, double weight, IDictionary<string, double> into)`.
-- Produces: `Nmp2ChunkedEncoder.DecodeChunks(string artifact) → string[]`, 1-based order preserved. Every reindex path in Tasks 4 and 5 depends on it.
+- Consumes: `Nmp2ChunkedEncoder.DecodeAllChunksVerified(string artifact) → (string[] Chunks, long TotalBytes)` (`:327`, existing, `internal`). Every reindex path in Tasks 4 and 5 uses `.Chunks`.
 
 - [ ] **Step 1: Write the failing indexer tests**
 
@@ -516,6 +566,9 @@ public sealed class MemoryVectorIndexerTests
             LastTexts = [.. texts];
             return Task.FromResult<float[][]?>([.. texts.Select((_, i) => new[] { 1f, (float)i })]);
         }
+
+        // IEmbeddingProvider extends IDisposable — omitting this is CS0535.
+        public void Dispose() { }
     }
 
     /// <summary>Returns one fewer vector than asked for — the count-guard case.</summary>
@@ -528,6 +581,7 @@ public sealed class MemoryVectorIndexerTests
             => Task.FromResult<float[]?>([1f, 0f]);
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
             => Task.FromResult<float[][]?>([.. texts.Skip(1).Select(_ => new[] { 1f, 0f })]);
+        public void Dispose() { }
     }
 
     private static (MemoryVectorIndexer Indexer, VectorStore Store, string Dir) NewIndexer(
@@ -765,6 +819,14 @@ public sealed class IndexerScorerContractTests
             => Task.FromResult<float[]?>([1f, 0f]);
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
             => Task.FromResult<float[][]?>([.. texts.Select((_, i) => new[] { 1f, (float)i })]);
+        public void Dispose() { }
+    }
+
+    private static VectorStore NewStore()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "scrinia-contract-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return new VectorStore(dir);
     }
 
     [Fact]
@@ -1005,71 +1067,44 @@ public static class VectorScoreProjection
 }
 ```
 
-- [ ] **Step 7: Add `Nmp2ChunkedEncoder.DecodeChunks`**
+- [ ] **Step 7: Note the existing element decoder — do NOT write a new one**
 
 Every reindex path (Tasks 4, 5 and `ReindexViaSinkAsync`) reads a stored artifact rather than an
 in-flight content array. If those paths pass one decoded blob, every reindexed memory lands under
 element index 1 and the element contract holds only for freshly-written memories — which would
-make the whole branch's guarantee conditional on write order. The elements are recoverable:
-`GetChunkCount` plus `DecodeChunk` already do it 1-based for `GET /memories/{name}/chunks/{i}`.
+make the branch's guarantee conditional on write order.
 
-Add to `src/Scrinia.Core/Encoding/Nmp2ChunkedEncoder.cs`, beside `DecodeChunk` at `:290`:
+**The decoder already exists.** `Nmp2ChunkedEncoder.DecodeAllChunksVerified(string artifact)` at
+`:327` returns `(string[] Chunks, long TotalBytes)`, handles the single-chunk case, decompresses
+each section exactly once, and runs the header's length + CRC32 integrity check against the
+assembled buffer. `MemoryOrchestrator.cs:114` and `MemoryTools.Lifecycle.cs:1055` already use it.
 
-```csharp
-/// <summary>
-/// Decodes every chunk of <paramref name="artifact"/> in order, reconstructing the content
-/// array the memory was written with. Single-chunk artifacts yield a one-element array.
-///
-/// <para>Used by the reindex paths, which read a stored artifact rather than an in-flight
-/// content array: without this they would collapse a multi-element memory to element 1 and
-/// the chunk-level supplemental keys would exist only for memories written since.</para>
-/// </summary>
-public static string[] DecodeChunks(string artifact)
-{
-    int count = GetChunkCount(artifact);
-    if (count <= 0) return [];
-
-    var chunks = new string[count];
-    for (int i = 1; i <= count; i++)
-        chunks[i - 1] = DecodeChunk(artifact, i);
-    return chunks;
-}
-```
-
-Add a test to whichever file already covers `Nmp2ChunkedEncoder` (grep the test tree for
-`DecodeChunk` before creating a new file):
+It is `internal static`, and `src/Scrinia.Core/Properties/AssemblyInfo.cs:3-10` grants
+`InternalsVisibleTo` to `scri`, `Scrinia.Server`, `Scrinia.Plugin.Embeddings` and the test
+assemblies — every caller Tasks 4 and 5 name. Use it:
 
 ```csharp
-[Fact]
-public void DecodeChunks_RoundTripsTheContentArray()
-{
-    string[] original = ["first element", "second element", "third element"];
-
-    Nmp2ChunkedEncoder.DecodeChunks(Nmp2ChunkedEncoder.EncodeChunks(original))
-        .Should().Equal(original);
-}
-
-[Fact]
-public void DecodeChunks_SingleChunkArtifact_YieldsOneElement()
-{
-    Nmp2ChunkedEncoder.DecodeChunks(Nmp2ChunkedEncoder.Encode("just one"))
-        .Should().Equal(["just one"]);
-}
+var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
 ```
+
+Write no new decoder. An earlier draft of this plan invented a `DecodeChunks` helper that would
+have decompressed multi-chunk artifacts twice and skipped the integrity check.
+
+`Scrinia.Plugin.Embeddings.Cli` is **not** on the `InternalsVisibleTo` list, which is fine —
+Task 6's `index` tool receives the content array over the wire and never decodes an artifact.
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
-Run: `dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~MemoryVectorIndexerTests|FullyQualifiedName~VectorScoreProjectionTests|FullyQualifiedName~IndexerScorerContractTests|FullyQualifiedName~Nmp2Chunked"`
+Run: `dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~MemoryVectorIndexerTests|FullyQualifiedName~VectorScoreProjectionTests|FullyQualifiedName~IndexerScorerContractTests"`
 
-Expected: PASS, 15 of 15.
+Expected: PASS, 13 of 13.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add src/Scrinia.Core/Embeddings/MemoryVectorIndexer.cs \
         src/Scrinia.Core/Embeddings/VectorScoreProjection.cs \
-        src/Scrinia.Core/Encoding/Nmp2ChunkedEncoder.cs \
-        tests/Scrinia.Tests/
+        tests/Scrinia.Tests/Embeddings/
 git commit -m "feat(embeddings): one indexer and one projection, with elements as the chunk unit"
 ```
 
@@ -1097,7 +1132,7 @@ var indexer = new MemoryVectorIndexer(provider, vectorStore, logger, options);
 Then replace the window/cap/embed/guard/remove/upsert block at `:84-115` with a single call, reconstructing the memory's content array from the artifact rather than passing one decoded blob:
 
 ```csharp
-var elements = Nmp2ChunkedEncoder.DecodeChunks(artifact);
+var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
 if (elements.Length == 0)
 {
     skipped++;
@@ -1123,7 +1158,7 @@ Delete the now-unused `windowSize`, `overlap` and `maxChunks` locals at `:45-47`
 `EmbeddingReindexer.ReindexViaSinkAsync:225` hands the sink `[decoded]` — a one-element array — with a comment saying "the sink does its own chunking (matches how a regular write flows through)". After this branch that comment is false: a regular write carries the real content array, so replaying with one element produces a different layout than the write it claims to match.
 
 ```csharp
-var elements = Nmp2ChunkedEncoder.DecodeChunks(artifact);
+var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
 if (elements.Length == 0)
 {
     skipped++;
@@ -1143,10 +1178,11 @@ Replace `:62-81` with:
 
 ```csharp
 var topK = VectorIndex.Search(queryVec, candidateVectors, candidateVectors.Count);
-VectorScoreProjection.Project(group.Key, topK.Select(t => (t.Item1, t.Item2)), _weight, scores);
+VectorScoreProjection.Project(
+    group.Key, topK.Select(t => (t.Entry, (double)t.Similarity)), _weight, scores);
 ```
 
-Check `VectorIndex.Search`'s actual return element type before writing this — if it already yields a named tuple of `(VectorEntry, double)`, pass `topK` straight through with no `Select`.
+`VectorIndex.Search` returns `IReadOnlyList<(VectorEntry Entry, float Similarity)>` (`VectorIndex.cs:47-50`) — **`float`**, while `Project` takes `double`. The cast is required; without it this is a compile error, and the same line appears in Tasks 5 and 6.
 
 While here, fix the header comment at `:7-16`, which claims the class "embeds only the BM25 top-K candidates" while `:62` passes `candidateVectors.Count`. The behaviour is right — the candidate set is already filtered to BM25 survivors at `:56-58` — so correct the comment, not the code:
 
@@ -1198,19 +1234,81 @@ Update the class doc comment at `:11-15`: it currently says content is joined an
 
 Same three edits: hold a `MemoryVectorIndexer` field; `EmbedAndIndexAsync` (`:178-212`) delegates to it; `ComputeScoresAsync`'s loop (`:62-74`) delegates to `VectorScoreProjection.Project`.
 
-`ReindexStoreAsync` (`:126-174`) keeps its resolve preamble — including the ephemeral `"~name"` branch at `:143-145`, which is real and must not be dropped — and replaces `:146-159` with:
+`ReindexStoreAsync` (`:126-174`) keeps its resolve preamble — including the ephemeral `"~name"` branch at `:143-145`, which is real and must not be dropped — and replaces `:146-160` **inclusive** with:
 
 ```csharp
-var elements = Nmp2ChunkedEncoder.DecodeChunks(artifact);
+var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
 if (elements.Length == 0) continue;
 
 if (await _indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct))
     count++;
 ```
 
+Note the range ends at `:160`, not `:159` — `count++;` sits at `:160`, and the replacement carries its own. Stopping at `:159` leaves the original in place and double-counts every memory.
+
 Same reasoning as Task 4 Step 1: reindex must reproduce the write's layout, or the element keys exist only for memories written after this branch.
 
 `OnForgottenAsync` (`:88-100`) and `OnAfterForgetAsync` (`:110-122`) both route to `_indexer.RemoveAsync`.
+
+- [ ] **Step 4b: Fix append, which today destroys a memory's vectors**
+
+Found while verifying this plan, and in scope because it is the same divergence H3 describes.
+
+`CoreEmbeddingEventHandler.OnAppendedAsync:37-40` and `BuiltInEmbeddingsService`'s `OnAppendedAsync:85-86` / `OnAfterAppendAsync:107-108` all pass **only the appended fragment** into the embed path. That path removes every vector the memory has before writing. So on the built-in path, appending one line to a memory deletes its embeddings and replaces them with vectors covering just that line.
+
+The plugin already gets this right and says why (`EmbeddingsPlugin.cs:232-236`): *"An append mutates the memory: re-embed the FULL current content, not just the appended fragment (which would overwrite the document vector with just the fragment)."*
+
+Give the Core and Server paths the plugin's behaviour. In both classes, `OnAppendedAsync` / `OnAfterAppendAsync` re-read the memory's current artifact and index the reconstructed element array:
+
+```csharp
+public async Task OnAppendedAsync(
+    string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+{
+    // An append mutates the memory. Indexing only the appended fragment would be wrong twice
+    // over: the indexer replaces a memory's vectors atomically, so the rest of the memory would
+    // lose its vectors entirely, and the surviving element indices would not match the memory's
+    // real content array. Re-read and index the whole thing, as the plugin already does.
+    try
+    {
+        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+        string artifact = await store.ReadArtifactAsync(subject, scope, ct);
+        if (string.IsNullOrWhiteSpace(artifact)) return;
+
+        var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+        if (elements.Length == 0) return;
+
+        await _indexer.IndexAsync(scope, subject, elements, ct);
+    }
+    catch (Exception ex)
+    {
+        _logger.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
+    }
+}
+```
+
+Without this, the element-layout invariant holds for writes and reindexes but not appends — and the pre-existing vector-loss bug survives a branch whose whole subject is that these paths had drifted apart.
+
+Add a test to `tests/Scrinia.Tests/Embeddings/IndexerScorerContractTests.cs`:
+
+```csharp
+[Fact]
+public async Task AppendingToAMemory_KeepsVectorsForTheElementsItAlreadyHad()
+{
+    var options = new EmbeddingOptions { ChunkSize = 100, ChunkOverlap = 20 };
+    var store = NewStore();
+    var indexer = new MemoryVectorIndexer(new OrdinalProvider(), store, NullLogger.Instance, options);
+
+    await indexer.IndexAsync("local", "note", ["first", "second"], default);
+    // What an append must do: index the FULL post-append content, not the fragment alone.
+    await indexer.IndexAsync("local", "note", ["first", "second", "third"], default);
+
+    store.GetVectors("local")
+        .Select(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value))
+        .Distinct().Should().BeEquivalentTo([1, 2, 3],
+            because: "indexing only the appended fragment would leave the memory with vectors "
+                   + "for that fragment and nothing else — the indexer replaces atomically");
+}
+```
 
 - [ ] **Step 5: Add the reindex-layout guard**
 
@@ -1234,7 +1332,7 @@ public async Task ReindexProducesTheSameLayoutAsTheWriteItRebuilds()
     var rebuilt = NewStore();
     string artifact = Nmp2ChunkedEncoder.EncodeChunks(content);
     await new MemoryVectorIndexer(new OrdinalProvider(), rebuilt, NullLogger.Instance, options)
-        .IndexAsync("local", "note", Nmp2ChunkedEncoder.DecodeChunks(artifact), default);
+        .IndexAsync("local", "note", Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks, default);
 
     rebuilt.GetVectors("local").Select(v => v.ChunkIndex)
         .Should().BeEquivalentTo(written.GetVectors("local").Select(v => v.ChunkIndex),
@@ -1309,6 +1407,7 @@ public sealed class IndexerParityTests
             => Task.FromResult<float[]?>([1f, 0f]);
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
             => Task.FromResult<float[][]?>([.. texts.Select((_, i) => new[] { 1f, (float)i })]);
+        public void Dispose() { }
     }
 
     [Fact]
@@ -1386,14 +1485,20 @@ private async Task EmbedAndIndexAsync(
 }
 ```
 
-`RemoveVectorsAsync` (`:318-334`) routes to `_indexer.RemoveAsync`. `OnAppendedAsync` (`:227-250`) keeps its read-the-full-artifact preamble — that behaviour is correct and deliberate — and passes the decoded text through as a one-element array.
+`RemoveVectorsAsync` (`:318-334`) routes to `_indexer.RemoveAsync`. `OnAppendedAsync` (`:227-250`) keeps its read-the-full-artifact preamble — that behaviour is correct and deliberate, and Task 4 Step 4b gives the Core and Server paths the same thing — but replaces its single decoded string with the reconstructed element array:
+
+```csharp
+var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+if (elements.Length == 0) return;
+await _indexer.IndexAsync(scope, subject, elements, ct);
+```
 
 - [ ] **Step 5: Replace the plugin's reindex path**
 
 `ReindexStoreAsync` (`:336-378`) keeps its resolve preamble including the ephemeral branch, and replaces `:356-364` with:
 
 ```csharp
-var elements = Nmp2ChunkedEncoder.DecodeChunks(artifact);
+var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
 if (elements.Length == 0) continue;
 
 if (await _indexer!.IndexAsync(item.Scope, item.Entry.Name, elements, ct))
@@ -1406,7 +1511,14 @@ Change the method from `internal` to `public` so it satisfies `IEmbeddingsAdmin`
 
 - [ ] **Step 6: Replace the plugin's projection**
 
-Replace `ComputeScoresAsync`'s loop (`:190-198`) with `VectorScoreProjection.Project(group.Key, topK, _semanticWeight, scores)`, matching whatever tuple shape `VectorIndex.Search` returns.
+Replace `ComputeScoresAsync`'s loop (`:190-198`) with:
+
+```csharp
+VectorScoreProjection.Project(
+    group.Key, topK.Select(t => (t.Entry, (double)t.Similarity)), _semanticWeight, scores);
+```
+
+The `(double)` cast is required — `VectorIndex.Search` yields `float` similarities.
 
 - [ ] **Step 7: Implement `IEmbeddingsAdmin` and stop mapping the routes**
 
@@ -1436,11 +1548,21 @@ services.AddSingleton<IEmbeddingsAdmin>(this);
 
 Delete `MapEndpoints` (`:125-165`) entirely. Its three routes are now served by `EmbeddingsEndpoints` for both implementations. `ScriniaPluginBase.MapEndpoints` remains available to plugins generally — confirm the base declares it virtual with a no-op default before deleting the override, and if it is abstract, leave an empty override with a comment naming this change.
 
-- [ ] **Step 8: Build and test**
+- [ ] **Step 8: Update the tests that pin the retired document vector**
+
+**This step is not optional and it is the largest behaviour change in the branch.** The plugin used to write a `chunkIndex: null` vector over the joined content — a whole-document embedding — in addition to its per-element vectors. `MemoryVectorIndexer` writes none: the memory-level score key is now the maximum across the memory's window vectors, computed by `VectorScoreProjection` at read time.
+
+That is the right outcome. A single mean-pooled vector over a whole memory is precisely what H3 identifies as making semantic recall on long memories "worse or absent", and max-over-windows is strictly better signal. But it retires an artifact that tests assert exists.
+
+`EmbeddingsPluginIncrementalEmbedTests.cs:147` asserts `.Single(v => … v.ChunkIndex is null)`. It will throw, and it cannot be repaired by renumbering a chunk index — the vector it looks for is gone by design. Rewrite it to assert the property it was really protecting: that a memory ends up with vectors covering every one of its content elements, and that re-indexing replaces rather than accumulates.
+
+Before editing, enumerate every test in `tests/Scrinia.Plugin.Embeddings.Tests` that mentions `ChunkIndex`, `null`, or a vector count, and classify each as (a) pinning the document vector — rewrite, (b) pinning something still true — leave, (c) pinning the old unwindowed layout — update to the element contract. Report the table in your task report. Do not delete a test to make the suite green; if a case protects an invariant with no expression under the new contract, stop and say so.
+
+- [ ] **Step 8b: Build and test**
 
 Run: `dotnet build Scrinia.sln` then `dotnet test tests/Scrinia.Plugin.Embeddings.Tests` then `dotnet test tests/Scrinia.Server.Tests`
 
-Expected: PASS. `EmbeddingsPluginIncrementalEmbedTests.cs:147` pins the plugin's writer/reader key coherence — it must still pass, now under the element contract. If it asserts a specific chunk index, update it to the two-level value and say so in the commit message.
+Expected: PASS.
 
 - [ ] **Step 9: Commit**
 
@@ -1456,7 +1578,7 @@ git commit -m "fix(plugin): window like everything else, remove before upsert, d
 **Files:**
 - Modify: `src/Scrinia.Plugin.Embeddings.Cli/EmbeddingsTools.cs`
 - Modify: `src/Scrinia.Plugin.Embeddings.Cli/Program.cs:63-77`
-- Modify: `src/Scrinia/Services/McpPluginHost.cs:121-125, 153-186`
+- Modify: `src/Scrinia/Services/McpPluginHost.cs:20-36` (seam + flag), `:118-127` (discovery), `:153-184` (`OnStoredAsync`), `:186-…` (`OnAppendedAsync`), `:217` (`CallToolWithRetryAsync`)
 - Test: `tests/Scrinia.Tests/` — add `McpPluginHostNegotiationTests.cs`
 
 **Interfaces:**
@@ -1498,7 +1620,14 @@ public sealed class EmbeddingsTools(
 
 `upsert` stays. It is a published tool on the plugin MCP surface, and a third-party plugin implementing only `upsert` must keep working.
 
-Replace `Search`'s projection loop (`:44-51`) with `VectorScoreProjection.Project(scope, topK, options.SemanticWeight, scores)` — this is the fourth copy, and the one that never max-aggregated.
+Replace `Search`'s projection loop (`:44-51`) with:
+
+```csharp
+VectorScoreProjection.Project(
+    scope, topK.Select(t => (t.Entry, (double)t.Similarity)), options.SemanticWeight, scores);
+```
+
+This is the fourth projection copy and the most broken of them: its ternary at `:46-48` emits *either* the chunk key *or* the memory key, never both — so a chunked vector produced **no memory-level key at all**, and the scorer's whole-memory pass saw nothing from this plugin. Not a max-aggregation bug, an absent-key bug.
 
 - [ ] **Step 2: Register the indexer in the plugin CLI host**
 
@@ -1511,9 +1640,48 @@ builder.Services.AddSingleton(new MemoryVectorIndexer(
 
 `NullLogger.Instance` matches the `logger` already used at `:42` — this process deliberately logs to stderr via `Console.Error`, not `ILogger`.
 
-- [ ] **Step 3: Write the failing negotiation test**
+- [ ] **Step 3a: Add the test seam — `McpPluginHost` has none today**
 
-Create `tests/Scrinia.Tests/McpPluginHostNegotiationTests.cs`. Read `McpPluginHost.cs` first to see how `_client` is injected; if it is not test-visible, add the smallest seam that lets a fake MCP client be supplied, and say so in the report.
+`_client` (`:22`) is a concrete `McpClient` assigned only in `ConnectAsync:118`, reachable only from `StartAsync:41`, and `CallToolWithRetryAsync:217` is hard-wired to that concrete type. Visibility is not the obstacle — `Scrinia.csproj:30` already grants `InternalsVisibleTo("Scrinia.Tests")` and the class is `internal` — the obstacle is that there is nothing to substitute.
+
+Add the smallest seam that makes tool dispatch substitutable. In `McpPluginHost.cs`:
+
+```csharp
+/// <summary>
+/// The one operation this host performs against the plugin process. Extracted so tests can
+/// observe which tool a write dispatches to without starting a child process; production
+/// still goes through McpClient.CallToolAsync.
+/// </summary>
+internal interface IPluginToolCaller
+{
+    Task<string?> CallToolAsync(string tool, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct);
+}
+```
+
+Give `McpPluginHost` an `IPluginToolCaller? _toolCaller` field. `ConnectAsync` sets it to an adapter wrapping `_client` after `:118`. `CallToolWithRetryAsync` calls `_toolCaller` instead of `_client` directly, keeping its existing retry, restart and degrade behaviour unchanged. Add an internal constructor for tests:
+
+```csharp
+/// <summary>Test-only: supply a tool caller and capability set directly, skipping StartAsync.</summary>
+internal McpPluginHost(IPluginToolCaller toolCaller, IEnumerable<string> toolNames)
+{
+    _toolCaller = toolCaller;
+    var names = new HashSet<string>(toolNames, StringComparer.OrdinalIgnoreCase);
+    _hasSearch = names.Contains("search");
+    _hasUpsert = names.Contains("upsert");
+    _hasRemove = names.Contains("remove");
+    _hasStatus = names.Contains("status");
+    _hasIndex  = names.Contains("index");
+    _isAvailable = true;
+}
+```
+
+Keep the existing parameterless construction path working — add an explicit `public McpPluginHost() { }` if the class currently relies on the implicit default constructor, or the new one will remove it and break `WorkspaceSetup`.
+
+This seam is the minimum required; do not refactor the transport, the restart loop, or `ComputeScoresAsync` while adding it.
+
+- [ ] **Step 3b: Write the failing negotiation test**
+
+Create `tests/Scrinia.Tests/McpPluginHostNegotiationTests.cs`.
 
 ```csharp
 using FluentAssertions;
@@ -1528,34 +1696,46 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class McpPluginHostNegotiationTests
 {
+    private sealed class RecordingCaller : McpPluginHost.IPluginToolCaller
+    {
+        public List<(string Tool, IReadOnlyDictionary<string, object?> Arguments)> Calls { get; } = [];
+
+        public Task<string?> CallToolAsync(
+            string tool, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct)
+        {
+            Calls.Add((tool, arguments));
+            return Task.FromResult<string?>("{\"ok\":true}");
+        }
+    }
+
     [Fact]
     public async Task PluginOfferingIndex_ReceivesOneCallWithTheWholeContentArray()
     {
-        var fake = new FakeMcpClient(tools: ["index", "search", "remove"]);
-        var host = await FakeMcpClient.NewHostAsync(fake);
+        var caller = new RecordingCaller();
+        var host = new McpPluginHost(caller, ["index", "search", "remove"]);
 
-        await host.OnStoredAsync("local:note", ["one", "two", "three"], FakeStore.Instance, default);
+        await host.OnStoredAsync("local:note", ["one", "two", "three"], NewStore(), default);
 
-        fake.Calls.Should().ContainSingle();
-        fake.Calls[0].Tool.Should().Be("index");
-        fake.Calls[0].Arguments["content"].Should().BeEquivalentTo(new[] { "one", "two", "three" });
+        caller.Calls.Should().ContainSingle();
+        caller.Calls[0].Tool.Should().Be("index");
+        caller.Calls[0].Arguments["content"].Should().BeEquivalentTo(new[] { "one", "two", "three" });
     }
 
     [Fact]
     public async Task PluginOfferingOnlyUpsert_StillReceivesTheLegacySequence()
     {
-        var fake = new FakeMcpClient(tools: ["upsert", "search", "remove"]);
-        var host = await FakeMcpClient.NewHostAsync(fake);
+        var caller = new RecordingCaller();
+        var host = new McpPluginHost(caller, ["upsert", "search", "remove"]);
 
-        await host.OnStoredAsync("local:note", ["one", "two"], FakeStore.Instance, default);
+        await host.OnStoredAsync("local:note", ["one", "two"], NewStore(), default);
 
-        fake.Calls.Should().OnlyContain(c => c.Tool == "upsert");
-        fake.Calls.Should().HaveCount(3, because: "one joined document vector plus one per element");
+        caller.Calls.Should().OnlyContain(c => c.Tool == "upsert");
+        caller.Calls.Should().HaveCount(3, because: "one joined document vector plus one per element");
     }
 }
 ```
 
-Build `FakeMcpClient` and `FakeStore` as private test doubles in this file, shaped to whatever seam `McpPluginHost` exposes.
+`OnStoredAsync` needs an `IMemoryStore` only for `ParseQualifiedName`. Build `NewStore()` by copying whatever real or fake store the neighbouring tests in `tests/Scrinia.Tests` already use for that purpose — grep for `ParseQualifiedName` in the test tree and reuse the established double rather than inventing one.
 
 - [ ] **Step 4: Run it to verify it fails**
 
@@ -1565,7 +1745,7 @@ Expected: FAIL — the host has no `index` path.
 
 - [ ] **Step 5: Negotiate in the host**
 
-In `McpPluginHost.cs`, add the flag beside its siblings at `:31` and `:123-125`:
+In `McpPluginHost.cs`, add the flag beside its siblings at `:31` and in the discovery block at `:123-126`:
 
 ```csharp
 private bool _hasSearch, _hasUpsert, _hasRemove, _hasStatus, _hasIndex;
@@ -1575,7 +1755,7 @@ _hasIndex = names.Contains("index");
 
 Update `HasEventSinkCapability` (`:36`) to `(_hasIndex || _hasUpsert || _hasRemove) && _isAvailable && !_degraded`.
 
-Rewrite `OnStoredAsync` (`:153-186`):
+Rewrite `OnStoredAsync`'s body (`:153-184`; `:185` is blank and `:186` begins `OnAppendedAsync`):
 
 ```csharp
 public async Task OnStoredAsync(string qualifiedName, string[] content,
@@ -1604,8 +1784,8 @@ public async Task OnStoredAsync(string qualifiedName, string[] content,
     // Legacy fallback for plugins that predate the `index` tool. This path does not window, so
     // a long memory becomes one mean-pooled vector — the exact H3 regression. Kept so a
     // third-party plugin keeps being indexed rather than silently stopping.
-    _logger?.LogWarning(
-        "Plugin offers 'upsert' but not 'index'; indexing without windowing. "
+    Console.Error.WriteLine(
+        "[scrinia:warn] Plugin offers 'upsert' but not 'index'; indexing without windowing. "
         + "Long memories will be less reachable by semantic search.");
 
     string joined = string.Concat(content);
@@ -1630,7 +1810,9 @@ public async Task OnStoredAsync(string qualifiedName, string[] content,
 }
 ```
 
-`OnAppendedAsync` (`:188-...`) takes the same two-branch shape, with a one-element array on the `index` branch. Check whether `McpPluginHost` has a `_logger` field; if not, use the same reporting channel its other warnings use.
+`OnAppendedAsync` (starts at `:186`) takes the same two-branch shape. On the `index` branch it must send the memory's **full post-append content**, not the fragment — same reasoning as Task 4 Step 4b, because the plugin-side indexer replaces a memory's vectors atomically. Read the current artifact through the `IMemoryStore` it is handed and pass `Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks`. The legacy `upsert` branch keeps today's fragment-only behaviour, since the old protocol has no way to express a replace.
+
+`McpPluginHost` has **no `ILogger`** — every diagnostic it emits is `Console.Error.WriteLine` with a `[scrinia:warn]` or `[scrinia:info]` prefix (`:61, 70, 114, 234, 263, 269, 281, 323`). Match that; `_logger?.LogWarning(...)` will not compile here, even though it does inside `EmbeddingsPlugin`, which has one.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1650,7 +1832,7 @@ git commit -m "feat(plugin-host): prefer an index call, keep upsert as a named f
 ## Task 7: Signature bump retires vectors written under the old layout
 
 **Files:**
-- Modify: `src/Scrinia.Core/Embeddings/ChunkedSignature.cs:17-18`
+- Modify: `src/Scrinia.Core/Embeddings/ChunkedSignature.cs:16-17` (`Compose`)
 - Modify: `src/Scrinia.Plugin.Embeddings/EmbeddingsPlugin.cs:118`
 - Test: `tests/Scrinia.Tests/Embeddings/` — add `ChunkedSignatureLayoutTests.cs`
 
@@ -1712,6 +1894,7 @@ public sealed class ChunkedSignatureLayoutTests
             => Task.FromResult<float[]?>([1f, 0f]);
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> t, CancellationToken ct = default)
             => Task.FromResult<float[][]?>([[1f, 0f]]);
+        public void Dispose() { }
     }
 }
 ```
@@ -1724,7 +1907,7 @@ Expected: FAIL on the first two — the signature has no layout marker yet. The 
 
 - [ ] **Step 3: Add the layout marker**
 
-In `ChunkedSignature.cs`, replace `Compose` (`:17-18`):
+In `ChunkedSignature.cs`, replace `Compose` (`:16-17`):
 
 ```csharp
 /// <summary>Chunk-vector layout revision. Bumped when the meaning of a stored chunk index
@@ -1885,6 +2068,15 @@ public sealed record ScoringWeights(
     double ChunkKeywordContains = 12.0,
     double ChunkContentPreviewContains = 5.0,
 
+    // Chunk scoring also consults the PARENT entry, at reduced weight — a chunk of a
+    // well-named memory is more relevant than the same text in an unrelated one.
+    double ChunkParentNameExact = 50.0,          // WeightedAttributeScorer.cs:510
+    double ChunkParentNameContains = 10.0,       // :512
+    double ChunkParentKeywordExact = 20.0,       // :521
+    double ChunkParentKeywordContains = 6.0,     // :526
+    double ChunkParentTagExact = 20.0,           // :537
+    double ChunkParentTagContains = 6.0,         // :542
+
     // ── Composition ──
     /// <summary>Bonus per additional matched query term, applied as (matched - 1) x this.</summary>
     double IntersectionBonus = 15.0,
@@ -1897,7 +2089,7 @@ public sealed record ScoringWeights(
 
 Cross-check every value against the current source before committing: entry ladder at `:326-390`, topic ladder at `:414-453`, chunk ladder at `:480-547`, `Bm25Weight` at `:51`, intersection bonus at `:321`/`:409`/`:475`. Note the entry ladder multiplies three attribute rows by `KnownAttributes.AttributeWeight(attr.Key)` — that multiplication stays where it is; only the base constants move.
 
-Also check the chunk ladder past `:509` for a parent-name contribution and any other rows not listed above, and add fields for them. Do not leave a literal behind.
+The six `ChunkParent*` fields above were missing from an earlier draft of this record and are the reason "replace every literal" was unsatisfiable. **Before writing the record, grep the three ladder methods for every numeric literal and check each one has a field.** If you find one this record still lacks, add it and report it — do not leave a literal behind, and do not silently rename a row.
 
 - [ ] **Step 5: Thread it through the scorer**
 
@@ -1950,8 +2142,10 @@ Finding L1b, with the correction that RRF is **not** dead — it is bench-reacha
 
 **Files:**
 - Delete: `src/Scrinia.Core/Embeddings/HnswIndex.cs`, `tests/Scrinia.Tests/Embeddings/HnswIndexTests.cs`, `tests/Scrinia.Benchmarks/HnswIndexBenchmarks.cs`, `tests/Scrinia.Tests/EntityGraphEquivalenceTests.cs`
-- Modify: `src/Scrinia.Core/Search/EntityGraph.cs:148-197`, `src/Scrinia.Core/Search/RankerOptions.cs:71-79`, `src/Scrinia.Merge/MergeConfig.cs:8-9`, `src/Scrinia/Commands/ScriniaCommands.Setup.cs:369`, `src/Scrinia/Commands/CliJsonContext.cs:30`, `src/Scrinia.Core/Search/EntityTypeClassifier.cs:87`
-- Modify: `tests/Scrinia.Merge.Tests/MergeConfigTests.cs:43-44`, `tests/Scrinia.Tests/MergeConfigRoundTripTests.cs`
+- Modify: `src/Scrinia.Core/Search/EntityGraph.cs:148-221` (`Build` ×2, `Score`, and `SeedEntities:221`, which only `Score` calls — the file is 224 lines), `src/Scrinia.Core/Search/RankerOptions.cs:71-79`, `src/Scrinia.Merge/MergeConfig.cs:8-9`, `src/Scrinia/Commands/ScriniaCommands.Setup.cs:369`, `src/Scrinia/Commands/CliJsonContext.cs:30`, `src/Scrinia.Core/Search/EntityTypeClassifier.cs:87`
+- Modify (EntityGraph dependents the first draft missed): `tests/Scrinia.Tests/EntityGraphTests.cs` (~28 sites), `tests/Scrinia.Tests/KnownAttributesTests.cs:79-102`, `tests/Scrinia.Tests/StateMarkerNotAnEntityTests.cs:43-113`
+- Modify: `tests/Scrinia.Merge.Tests/MergeConfigTests.cs:43-44`, `tests/Scrinia.Tests/MergeConfigRoundTripTests.cs:15-18, 33, 39, 50, 60, 63`
+- Modify: `docs/cli-reference.md:328, 336` (documents the `--resolver` flag)
 
 - [ ] **Step 1: Write the failing config test**
 
@@ -2031,21 +2225,40 @@ Then run `git status` and confirm SynologyDrive has not resurrected any of the d
 
 - [ ] **Step 5: Delete `EntityGraph`'s instance side**
 
-Delete `EntityGraph.Build` (both overloads, `:148` and `:162`) and `EntityGraph.Score` (`:197`), plus any private instance state and helpers they alone use. **Keep** the static `ParseEntityKeywords` (`:88`) and `ParseEntityAttributes` (`:126`) — they are production code, called from `EntityFactDerivation.cs:14-15`.
+Delete `EntityGraph.Build` (both overloads, `:148` and `:162`), `EntityGraph.Score` (`:197-209`), and `SeedEntities` (`:221`), which only `Score` calls — plus any private instance state they alone use. **Keep** the static `ParseEntityKeywords` (`:88`) and `ParseEntityAttributes` (`:126`) — they are production code, called from `EntityFactDerivation.cs:14-15`.
+
+**Four test files depend on the instance side, not one.** An earlier draft of this plan named only the first:
+
+| File | What it uses | Disposition |
+|---|---|---|
+| `EntityGraphEquivalenceTests.cs` | `Build(...).Score(...)` vs `EntityFactStore.ScoringAdjacency` | Delete — its whole subject is the equivalence between a live implementation and a dead one |
+| `EntityGraphTests.cs` | `Build`/`Score`, ~28 sites | **Triage before touching.** Cases that only exercise `ParseEntityKeywords`/`ParseEntityAttributes` through `Build` must be rewritten against the static parsers directly, not deleted |
+| `KnownAttributesTests.cs:79-102` | `Build`/`Score` | Rewrite against `EntityFactStore.ScoringAdjacency` — it is asserting which attribute keys become graph nodes, which is still true and still production behaviour |
+| `StateMarkerNotAnEntityTests.cs:43-113` | `Build`/`Score` | Rewrite against `ScoringAdjacency`. "A state marker is not an entity" is a live invariant with nothing to do with which implementation scores it |
 
 ```bash
 git rm tests/Scrinia.Tests/EntityGraphEquivalenceTests.cs
 ```
 
-That test asserted `EntityGraph.Build(...).Score(...)` matched `EntityFactStore.ScoringAdjacency`. `ScoringAdjacency` keeps its own coverage in `EntityFactStoreScoringAdjacencyTests.cs`, which stays. If deleting the equivalence test leaves any `ScoringAdjacency` behaviour uncovered, add the case to that file rather than keeping a dead-code test alive to hold it.
+The other three are **rewrites, not deletions**. Two of them assert invariants that survive the deletion and have no other home; losing them to make the build green would trade a dead-code cleanup for real lost coverage. If any case genuinely cannot be expressed against `ScoringAdjacency`, stop and report it rather than deleting it.
 
 If `EntityGraph` ends up containing only the two static parsers, leave it where it is — moving it is not this branch's business. Update its class doc comment to stop describing a graph it no longer builds.
 
 - [ ] **Step 6: Delete `MergeConfig.Resolver`**
 
-Remove `Resolver` and `ResolverCommand` from the record (`MergeConfig.cs:8-9`), the `Resolver` member from `CliJsonContext.cs:30`, and the write at `ScriniaCommands.Setup.cs:369`, along with the `resolver` local it reads and any CLI option that populates it. Update `MergeConfigTests.cs:43-44` and the `MergeConfigRoundTripTests.cs` assertions and doc comment (`:15-18`, `:39`, `:50`), which name both fields explicitly.
+Remove `Resolver` and `ResolverCommand` from the record (`MergeConfig.cs:8-9`), the `Resolver` member from `CliJsonContext.cs:30`, and the write at `ScriniaCommands.Setup.cs:369`, along with the `resolver` local it reads and any CLI option that populates it.
 
-Check whether any on-disk `.scrinia` merge config in the repo or its fixtures carries a `resolver` key — a removed record field must still deserialize without throwing on files that contain it. If `MergeConfig` is deserialized with a strict/unmapped-member policy, that is a migration concern; verify and report it before proceeding.
+Test sites — the first draft listed two of five:
+
+- `tests/Scrinia.Merge.Tests/MergeConfigTests.cs:43-44` — asserts both defaults.
+- `tests/Scrinia.Tests/MergeConfigRoundTripTests.cs:15-18` — doc comment naming both fields.
+- `:33` and `:60` — call a **3-argument `SerializeMergeConfig`**; dropping a field breaks the call. Compile error, not a test failure.
+- `:39` — `loaded.Resolver.Should().Be("ollama")`.
+- `:63` — `json.Should().Contain("resolver")`, which fails at runtime once nothing writes it.
+
+Docs: `docs/cli-reference.md:328` and `:336` document the `--resolver` flag. Remove both.
+
+**Deserialization is safe** — verified: no `UnmappedMemberHandling` is configured anywhere in `.cs`, so the default `Skip` applies, and `MergeConfig.Load:21-30` additionally has a bare `catch`. An existing on-disk config carrying a `resolver` key loads without throwing and simply ignores it. No migration needed.
 
 - [ ] **Step 7: Build and run everything**
 
@@ -2102,6 +2315,17 @@ Add to `## [Unreleased]`, matching the existing `### <Type> — <descriptive tit
   quarantined on first load and rebuilt** — the embedding signature carries a layout marker, so
   this happens automatically through the same path that already handles a model switch.
 
+- **Appending to a memory destroyed its embeddings.** On the built-in path an append embedded
+  only the appended fragment, and indexing replaces a memory's vectors atomically — so the rest
+  of the memory lost its vectors entirely. Every path now re-reads the memory's full current
+  content on append, which is what the Vulkan plugin already did.
+
+- **The whole-document vector has been retired.** Embedding a memory used to also produce one
+  mean-pooled vector over its entire joined content. A memory's semantic score is now the best
+  of its windows rather than the average of everything it contains — the same reason a long
+  memory needed windowing in the first place. Nothing needs to be done about this: the rebuild
+  described above produces the new layout.
+
 - **The plugin's configured chunk settings never reached its embedding signature.** It composed
   the signature from a default-constructed options object, so a store with custom `ChunkSize`
   or `ChunkOverlap` was stamped as though it used the defaults.
@@ -2135,7 +2359,13 @@ Add to `## [Unreleased]`, matching the existing `### <Type> — <descriptive tit
   array, so the shared indexer runs inside the plugin process instead of the chunking policy
   being restated by every caller that speaks the protocol. `upsert` is unchanged and still
   supported: a plugin that offers only `upsert` keeps receiving the previous call sequence, and
-  the host logs a warning naming what that costs.
+  the host warns on stderr naming what that costs.
+
+### Changed — `reindex` is a distinct API-key permission
+
+- Keys that should be able to trigger a full-store re-embed need `reindex` in their permission
+  list. Existing keys do not have it, and will get a 403 from the reindex route until it is
+  granted — the previous route was ungated, but it also never worked.
 
 ### Removed — three unreachable features, and a config key that now works
 
@@ -2170,12 +2400,16 @@ git commit -m "docs: the element chunk unit, the moved routes, and what was dele
 
 **Spec coverage.** Every spec section maps to a task: §1 `MemoryVectorIndexer` → Tasks 3–5; §2 signature bump → Task 7; §3 endpoints → Tasks 1–2; §4 out-of-process host → Task 6; §5 `ScoringWeights` → Task 8; §6 dead code → Task 9; docs → Task 10. The spec's Testing section is distributed across the tasks that create the behaviour, with the load-bearing conformance test in Task 3 Step 3.
 
-**Two decisions this plan makes that the spec left open**, both flagged for the reviewer:
+**Three decisions this plan makes that the spec left open**, all flagged for the reviewer:
 
-1. **The two-level chunk index.** `VectorStore.UpsertAsync` deduplicates on `(name, chunkIndex)` (`VectorStore.cs:141`), so windows within one element cannot share the element's index. The alternative — a second field on `VectorEntry` — changes the SVF3 binary format, its op-log replay and its compaction, which is more than this branch should carry beside a REST-surface break and a layout migration.
+1. **The two-level chunk index.** `VectorStore.UpsertAsync` deduplicates on `(name, chunkIndex)` (`VectorStore.cs:141`), so windows within one element cannot share the element's index. Verified further: the SVF3 op-log replay path keys identically (`ReadEntryOps:521` builds `$"{name}|{chunkIdx}"`, delete ops carry the chunk index, compaction preserves it), so a reload cannot collapse two vectors differing only in chunk index. The alternative — a second field on `VectorEntry` — changes the binary format, its replay and its compaction, which is more than this branch should carry beside a REST-surface break and a layout migration.
 
-2. **Reindex reconstructs the content array rather than passing one decoded blob.** The first draft of this plan had every reindex path pass `[decoded]`, which would have put every reindexed memory under element index 1. Since Task 7's signature bump rebuilds the entire existing corpus through exactly those paths, the element contract would then have held for almost nothing — the branch's central guarantee, true only for memories written after it. `Nmp2ChunkedEncoder.GetChunkCount` + `DecodeChunk` already recover the elements 1-based (this is how `GET /memories/{name}/chunks/{i}` works), so Task 3 Step 7 adds `DecodeChunks` and all four reindex/replay paths use it. Task 4 Step 5 pins write/reindex layout equality.
+2. **Reindex reconstructs the content array rather than passing one decoded blob.** An earlier draft had every reindex path pass `[decoded]`, which would have put every reindexed memory under element index 1. Since Task 7's signature bump rebuilds the entire existing corpus through exactly those paths, the element contract would have held for almost nothing — the branch's central guarantee, true only for memories written after it. `Nmp2ChunkedEncoder.DecodeAllChunksVerified` already recovers the elements with an integrity check; Task 4 Step 5 pins write/reindex layout equality.
 
-**Placeholder scan.** No "TBD", no "handle edge cases", no "similar to Task N". Four steps deliberately instruct the implementer to *read before writing* (Task 1 Step 1's factory helper, Task 4 Step 2's tuple shape, Task 6 Step 3's client seam, Task 7 Step 5's existing quarantine test) — these are verification instructions with a named target, not deferred decisions.
+3. **The whole-document vector is retired, and append is fixed.** Both surfaced from the verification pass. Retiring the mean-pooled document vector follows directly from making elements the unit and is an improvement — that vector is H3's own complaint — but it is a real behaviour change, so it is stated in Global Constraints, given its own CHANGELOG bullet, and Task 5 Step 8 handles the tests that assert it. The append fix is scope this plan adds beyond the review: `CoreEmbeddingEventHandler` and `BuiltInEmbeddingsService` index only the appended fragment, and the indexer replaces atomically, so an append currently destroys the rest of a memory's vectors. Leaving it would mean the element-layout invariant held for writes and reindexes but not appends, in a branch whose subject is that these paths drifted apart.
 
-**Type consistency.** `MemoryVectorIndexer.IndexAsync` returns `Task<bool>` at every call site (Tasks 4, 5, 6). `ElementIndexOf` is `static int` and used in Tasks 3 and 4 tests. `IEmbeddingsAdmin`'s seven members are declared once in Task 1 and implemented in Tasks 1 and 5 with matching names, including `Hardware`, which the built-in service does not currently have. `VectorScoreProjection.Project`'s four parameters are identical in Tasks 3, 4, 5 and 6.
+**Verification pass.** A subagent enumerated every file:line citation in this plan against the source before any implementer ran, per this project's standing practice. Result: 150 confirmed, 17 wrong, 6 stale — all now corrected in place. The four load-bearing premises came back clean: the `UpsertAsync` dedup key, the nmp2 round-trip fidelity, the scorer's chunk-index provenance (`TextAnalysis.cs:248` → `MemoryDerivation.cs:148-150` → `WeightedAttributeScorer.cs:164` → `:208/:211/:620/:623` → `:714`), and `RequestContext.Store` having exactly one assignment in `src/`.
+
+**Placeholder scan.** No "TBD", no "handle edge cases", no "similar to Task N". Several steps deliberately instruct the implementer to *read and triage before writing* (Task 2's `client.test.ts` block, Task 5 Step 8's test inventory, Task 6 Step 3b's store double, Task 7 Step 5's existing quarantine test, Task 8 Step 4's literal grep, Task 9 Step 5's four-file triage). These are verification instructions with a named target and a stated disposition rule, not deferred decisions.
+
+**Type consistency.** `MemoryVectorIndexer.IndexAsync` returns `Task<bool>` at every call site (Tasks 4, 5, 6). `ElementIndexOf` is `static int`, used in Tasks 3 and 4. `IEmbeddingsAdmin`'s seven members are declared once in Task 1 and implemented in Tasks 1 and 5 with matching names, including `Hardware`, which neither implementation currently has. `VectorScoreProjection.Project`'s four parameters are identical in Tasks 3, 4, 5 and 6, and every call site casts `VectorIndex.Search`'s `float` similarity to `double`. Every test-double `IEmbeddingProvider` implements `Dispose()`.
