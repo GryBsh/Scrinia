@@ -147,6 +147,22 @@ legitimately conditional: its constructor takes an `IEmbeddingProvider`, so it r
 the embeddings-available branch, and its absence when embeddings are unavailable is a real
 dependency rather than an accident.
 
+**The class has to move first, and it moves for free.** `EntityTypingEventHandler` currently
+lives at `src/Scrinia/Services/EntityTypingEventHandler.cs` — the CLI project, assembly `scri`.
+`Scrinia.Server` references only `Scrinia.Core`, `Scrinia.Mcp` and
+`Scrinia.Plugin.Abstractions`, so as things stand the server **cannot** reference the type at
+all, and D-3 is not implementable without either moving it or making the server depend on the
+whole CLI. It moves: every one of its four usings is a `Scrinia.Core.*` namespace,
+`EntityTypeClassifier` is already `Scrinia.Core.Search`, and it has no CLI dependency whatever.
+
+It goes to `src/Scrinia.Core/EntityTypingEventHandler.cs`, namespace `Scrinia.Core`, beside its
+sibling `MaintenanceEventSink.cs` at Core's root. **No call site changes.** All three
+construction sites — `WorkspaceSetup.cs:402`, `:448`, and the tests in
+`EntityTypingEventHandlerTests.cs` / `EntityTypingWiringTests.cs` — already carry
+`using Scrinia.Core;`, so the type resolves at its new home without an edit. `WorkspaceSetup`
+still needs its `using Scrinia.Services;` for `CoreEmbeddingEventHandler`, which stays in the
+CLI project (that one is branch 4's business).
+
 **This is safe only because branch 2 landed first, which is why the review sequenced it that
 way.** `EntityTypingEventHandler.PromoteAsync` reads the existing typed vocabulary via
 `GetEntityFactStore()` and **persists** its promotions. Before branch 2, a remote store's
