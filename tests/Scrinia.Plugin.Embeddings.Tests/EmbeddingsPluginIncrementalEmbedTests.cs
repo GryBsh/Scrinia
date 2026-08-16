@@ -4,23 +4,33 @@ using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Plugin.Abstractions;
 using Xunit;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
 
 /// <summary>
 /// Regression coverage for the incremental embed path (docs task B2): re-storing a memory with
-/// fewer chunks must not leave stale higher-index chunk vectors behind, and appending to a memory
-/// must re-embed the FULL current content (not just the appended fragment) into the null-chunk
-/// document vector. Both bugs share the same root cause: <c>EmbedAndIndexAsync</c> previously
-/// upserted without first removing prior vectors for the name, and <c>OnAppendedAsync</c> embedded
-/// only the fragment.
+/// fewer content elements must not leave stale higher-index chunk vectors behind, and appending
+/// to a memory must re-embed the FULL current content (not just the appended fragment). Both
+/// bugs share the same root cause: the plugin's write path previously upserted without first
+/// removing prior vectors for the name, and its append handlers embedded only the fragment.
+///
+/// <para>Task 5 routed the plugin's write/reindex/remove paths through the shared
+/// <see cref="MemoryVectorIndexer"/> (Task 3), which retired the whole-memory
+/// <c>chunkIndex: null</c> "document vector" this plugin used to write in addition to its
+/// per-element vectors: the memory-level score key is now computed at read time as the maximum
+/// across a memory's window vectors (<see cref="VectorScoreProjection"/>). These tests were
+/// rewritten to assert the invariant that vector: a memory ends up with one vector per content
+/// element (short elements produce exactly one window each, per <c>TextChunker.SliceWindows</c>),
+/// and re-indexing replaces rather than accumulates.</para>
 ///
 /// This plugin has no Vulkan model available in the test environment (no GGUF at the expected
-/// path), so the private <c>_vectorStore</c>/<c>_provider</c>/<c>_logger</c> fields are injected
-/// via reflection (mirrors <see cref="EmbeddingsPluginReindexTests"/>) — setting <c>_vectorStore</c>
-/// makes <c>EnsureInitialized</c> short-circuit at its <c>if (_vectorStore is not null) return;</c>
-/// guard, so the injected deterministic provider survives.
+/// path), so the private <c>_vectorStore</c>/<c>_provider</c>/<c>_logger</c>/<c>_indexer</c>
+/// fields are injected via reflection (mirrors <see cref="EmbeddingsPluginReindexTests"/>) —
+/// setting <c>_vectorStore</c> makes <c>EnsureInitialized</c> short-circuit at its
+/// <c>if (_vectorStore is not null) return;</c> guard, so the injected deterministic provider and
+/// hand-built indexer survive.
 /// </summary>
 public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
 {
@@ -80,16 +90,32 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
-    private EmbeddingsPlugin BuildPlugin()
+    private EmbeddingsPlugin BuildPlugin(IEmbeddingProvider? provider = null)
     {
         var plugin = new EmbeddingsPlugin();
+        var activeProvider = provider ?? new LengthProvider();
         typeof(EmbeddingsPlugin).GetField("_vectorStore", BindingFlags.NonPublic | BindingFlags.Instance)!
             .SetValue(plugin, _vectors);
         typeof(EmbeddingsPlugin).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, new LengthProvider());
+            .SetValue(plugin, activeProvider);
         typeof(EmbeddingsPlugin).GetField("_logger", BindingFlags.NonPublic | BindingFlags.Instance)!
             .SetValue(plugin, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        // EnsureInitialized short-circuits once _vectorStore is set, so the indexer it would
+        // otherwise build must be constructed by hand here, over the same injected provider/store.
+        typeof(EmbeddingsPlugin).GetField("_indexer", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(plugin, new MemoryVectorIndexer(
+                activeProvider, _vectors, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
         return plugin;
+    }
+
+    /// <summary>Swaps the plugin's provider in place, used mid-test to trigger a mismatch guard.</summary>
+    private static void SwapProvider(EmbeddingsPlugin plugin, IEmbeddingProvider provider, VectorStore store)
+    {
+        typeof(EmbeddingsPlugin).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(plugin, provider);
+        typeof(EmbeddingsPlugin).GetField("_indexer", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(plugin, new MemoryVectorIndexer(
+                provider, store, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
     }
 
     private void SeedArtifact(string scope, string name, string content)
@@ -112,14 +138,20 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         // nothing). "/memory/notes" parses to scope "local:memory", subject "notes".
         const string qn = "/memory/notes";
 
-        // First store: 3 chunks -> null-chunk doc vector + chunks 1,2,3 = 4 vectors.
+        // First store: 3 short content elements -> one window each -> 3 vectors, one per element
+        // (chunk indices 1000, 2000, 3000 — elementIndex * ChunkIndexStride + windowOrdinal 0).
         await plugin.OnStoredAsync(qn, new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
-        _vectors.GetVectors(scope).Count(v => v.Name == "notes").Should().Be(4);
+        _vectors.GetVectors(scope).Where(v => v.Name == "notes").Select(v => v.ChunkIndex)
+            .Should().BeEquivalentTo([1000, 2000, 3000],
+                because: "a memory must end up with one vector per content element");
 
-        // Re-store: 1 chunk -> only the null-chunk doc vector. Without Remove-first, the 3 old
-        // chunk vectors would remain (count 4). With the fix: exactly 1.
+        // Re-store: 1 element -> exactly one vector. Without Remove-first, the 3 old chunk
+        // vectors would remain (count 4: the new one plus the 3 stale). With the fix: exactly 1 —
+        // re-indexing replaces rather than accumulates.
         await plugin.OnStoredAsync(qn, new[] { "single" }, _store, CancellationToken.None);
-        _vectors.GetVectors(scope).Count(v => v.Name == "notes").Should().Be(1);
+        var after = _vectors.GetVectors(scope).Where(v => v.Name == "notes").ToList();
+        after.Should().HaveCount(1);
+        after[0].ChunkIndex.Should().Be(1000);
     }
 
     [Fact]
@@ -134,18 +166,58 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         await plugin.OnStoredAsync(qn, new[] { "0123456789" }, _store, CancellationToken.None);
 
         // Append 5 chars on disk (simulating the store's append behavior), then fire the append
-        // event with only the fragment — mirrors how OnAppendedAsync is invoked by the real
-        // append path (content = just what was appended, not the full memory).
+        // event with only the fragment — mirrors how OnAppendedAsync (MCP path) is invoked by the
+        // real append path (content = just what was appended, not the full memory).
         string artifact = await _store.ReadArtifactAsync(subject, scope, CancellationToken.None);
-        string decoded = System.Text.Encoding.UTF8.GetString(new Nmp2Strategy().Decode(artifact));
+        string decoded = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks[0];
         string appendedFull = decoded + "ABCDE";
         SeedArtifact(scope, subject, appendedFull); // full content now length 15
         await plugin.OnAppendedAsync(qn, "ABCDE", _store, CancellationToken.None);
 
-        // The doc (null-chunk) vector must encode the DECODED full current content length (15),
-        // not the 5-char fragment. LengthProvider makes this observable.
-        var doc = _vectors.GetVectors(scope).Single(v => v.Name == subject && v.ChunkIndex is null);
-        doc.Vector[0].Should().Be(appendedFull.Length);
+        // The memory has one content element, so exactly one window vector must survive — its
+        // value must encode the DECODED full current content length (15), not the 5-char
+        // fragment. LengthProvider makes this observable. There is no more null-chunk "document
+        // vector": the memory-level score is now the max over window vectors, computed at read
+        // time by VectorScoreProjection.
+        var vectors = _vectors.GetVectors(scope).Where(v => v.Name == subject).ToList();
+        vectors.Should().HaveCount(1);
+        vectors[0].ChunkIndex.Should().Be(1000);
+        vectors[0].Vector[0].Should().Be(appendedFull.Length);
+    }
+
+    [Fact]
+    public async Task OnAfterAppend_ReEmbedsFullMemory_NotJustTheFragment()
+    {
+        // Drives the REST entry point (OnAfterAppendAsync) directly rather than the MCP one
+        // (OnAppendedAsync tested above) — the two share ReembedFullMemoryAsync, but a test that
+        // only exercises the shared helper does not prove this entry point is wired to it.
+        using var plugin = BuildPlugin();
+        const string scope = "local:memory";
+        const string subject = "log2";
+        const string qn = "/memory/log2";
+
+        SeedArtifact(scope, subject, "0123456789"); // length 10
+        await plugin.OnStoredAsync(qn, new[] { "0123456789" }, _store, CancellationToken.None);
+
+        string artifact = await _store.ReadArtifactAsync(subject, scope, CancellationToken.None);
+        string decoded = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks[0];
+        string appendedFull = decoded + "ABCDE";
+        SeedArtifact(scope, subject, appendedFull); // full content now length 15
+
+        var ctx = new AfterAppendContext
+        {
+            Store = _store,
+            Name = qn,
+            ChunkCount = 1,
+            OriginalBytes = 5,
+            Content = "ABCDE",
+        };
+        await plugin.OnAfterAppendAsync(ctx, CancellationToken.None);
+
+        var vectors = _vectors.GetVectors(scope).Where(v => v.Name == subject).ToList();
+        vectors.Should().HaveCount(1,
+            because: "OnAfterAppendAsync must re-read and re-embed the full memory, not just the appended fragment");
+        vectors[0].Vector[0].Should().Be(appendedFull.Length);
     }
 
     [Fact]
@@ -155,18 +227,18 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         const string scope = "local:memory";
         const string qn = "/memory/notes";
 
-        // Store with the good deterministic provider first: 3 chunks -> doc + 3 chunk vectors = 4.
+        // Store with the good deterministic provider first: 3 short elements -> 3 vectors, one
+        // per element.
         await plugin.OnStoredAsync(qn, new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
         int before = _vectors.GetVectors(scope).Count(v => v.Name == "notes");
-        before.Should().Be(4);
+        before.Should().Be(3);
 
         // Swap in a provider that always returns a mismatched (empty) vector batch. Without the
-        // guard, EmbedAndIndexAsync would RemoveAsync the existing 4 vectors FIRST and then the
+        // guard, EmbedAndIndexAsync would RemoveAsync the existing 3 vectors FIRST and then the
         // upsert loop would never execute (0 vectors to iterate), leaving the memory with ZERO
         // vectors. With the guard, the mismatch is detected before RemoveAsync runs, so the
-        // original 4 vectors are untouched.
-        typeof(EmbeddingsPlugin).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, new EmptyBatchProvider());
+        // original 3 vectors are untouched.
+        SwapProvider(plugin, new EmptyBatchProvider(), _vectors);
 
         Func<Task> act = () => plugin.OnStoredAsync(qn, new[] { "ddd" }, _store, CancellationToken.None);
         await act.Should().NotThrowAsync();

@@ -1,11 +1,9 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Plugin.Abstractions;
@@ -24,17 +22,28 @@ namespace Scrinia.Plugin.Embeddings;
 /// provides optional Vulkan GPU acceleration when installed.
 /// </summary>
 public sealed class EmbeddingsPlugin : ScriniaPluginBase,
-    IMemoryOperationHook, ISearchScoreContributor, IMemoryEventSink, IDisposable
+    IMemoryOperationHook, ISearchScoreContributor, IMemoryEventSink, IEmbeddingsAdmin, IDisposable
 {
     public override string Name => "Embeddings";
     public override string Version => "2.0.0";
 
     private IEmbeddingProvider _provider = new NullEmbeddingProvider();
+    private EmbeddingOptions _options = new();
+    private volatile MemoryVectorIndexer? _indexer;
     private volatile VectorStore? _vectorStore;
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
     private bool _disposed;
     private readonly object _initLock = new();
+
+    // -- IEmbeddingsAdmin --
+
+    public string ProviderName { get { EnsureInitialized(); return _provider.GetType().Name; } }
+    public bool IsAvailable { get { EnsureInitialized(); return _provider.IsAvailable; } }
+    public int Dimensions { get { EnsureInitialized(); return _provider.Dimensions; } }
+    public double SemanticWeight => _semanticWeight;
+    public int TotalVectorCount { get { EnsureInitialized(); return _vectorStore?.Count() ?? 0; } }
+    public string Hardware => "Vulkan GPU";
 
     public void Dispose()
     {
@@ -54,6 +63,12 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     {
         var section = configuration.GetSection("Scrinia:Embeddings");
 
+        _options = section.Get<EmbeddingOptions>() ?? new EmbeddingOptions();
+        _semanticWeight = _options.SemanticWeight;
+
+        // Explicit string parse stays as a fallback only — Get<EmbeddingOptions>() already binds
+        // SemanticWeight from the same section, so this only matters if the section exists but
+        // binding somehow left the default in place.
         string? weightStr = section["SemanticWeight"];
         if (weightStr is not null && double.TryParse(weightStr, out double w))
             _semanticWeight = w;
@@ -66,6 +81,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             new CompositeSearchScoreContributor(this, new PathSegmentScoreContributor()));
         services.AddSingleton<IMemoryEventSink>(this);
         services.AddSingleton<IMemoryOperationHook>(this);
+        services.AddSingleton<IEmbeddingsAdmin>(this);
     }
 
     /// <summary>
@@ -115,54 +131,19 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             // Sign the store with the active provider's signature (null when unavailable — a transient
             // provider-load failure must not quarantine good vectors). On a real provider change, mismatched
             // files self-quarantine on first load and rebuild via reindex.
-            string? expectedSignature = ChunkedSignature.ForProvider(_provider, new EmbeddingOptions());
+            string? expectedSignature = ChunkedSignature.ForProvider(_provider, _options);
             var vectorStore = new VectorStore(dataDir, expectedSignature);
 
+            _indexer = new MemoryVectorIndexer(_provider, vectorStore, _logger, _options);
             _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
         }
     }
 
-    public override void MapEndpoints(IEndpointRouteBuilder endpoints)
-    {
-        var group = endpoints.MapGroup("/embeddings");
-
-        group.MapGet("/status", (HttpContext ctx) =>
-        {
-            EnsureInitialized(ctx.RequestServices);
-            return Results.Ok(new
-            {
-                provider = _provider.GetType().Name,
-                available = _provider.IsAvailable,
-                dimensions = _provider.Dimensions,
-                semanticWeight = _semanticWeight,
-                vectorCount = _vectorStore?.Count() ?? 0,
-            });
-        });
-
-        group.MapPost("/reindex", async (HttpContext ctx, CancellationToken ct) =>
-        {
-            EnsureInitialized(ctx.RequestServices);
-            if (!_provider.IsAvailable)
-                return Results.BadRequest(new { error = "Embedding provider is not available." });
-
-            var store = MemoryStoreContext.Current;
-            if (store is null)
-                return Results.BadRequest(new { error = "No store context available." });
-
-            int count = await ReindexStoreAsync(store, ct);
-            return Results.Ok(new { message = $"Reindexed {count} memories." });
-        });
-
-        group.MapGet("/settings", (HttpContext ctx) =>
-        {
-            EnsureInitialized(ctx.RequestServices);
-            return Results.Ok(new
-            {
-                provider = _provider.GetType().Name,
-                semanticWeight = _semanticWeight,
-            });
-        });
-    }
+    // MapEndpoints override removed: the /status, /reindex and /settings routes it used to map
+    // under an inline /embeddings group (with no {store} route value — finding H6) are now served
+    // for both this plugin and the built-in service by Scrinia.Server.Endpoints.EmbeddingsEndpoints,
+    // resolving IEmbeddingsAdmin from DI. ScriniaPluginBase.MapEndpoints is virtual with a no-op
+    // default body, so no override is needed here at all.
 
     // -- ISearchScoreContributor (both REST + MCP) --
 
@@ -187,14 +168,8 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             if (vectors.Count == 0) continue;
 
             var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
-            foreach (var (entry, similarity) in topK)
-            {
-                string key = entry.ChunkIndex is not null
-                    ? $"{group.Key}|{entry.Name}|{entry.ChunkIndex}"
-                    : $"{group.Key}|{entry.Name}";
-
-                scores[key] = similarity * _semanticWeight;
-            }
+            VectorScoreProjection.Project(
+                group.Key, topK.Select(t => (t.Entry, (double)t.Similarity)), _semanticWeight, scores);
         }
 
         return scores.Count > 0 ? scores : null;
@@ -209,7 +184,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     public async Task OnAfterAppendAsync(AfterAppendContext ctx, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(ctx.Name, [ctx.Content], ctx.Store, ct);
+        await ReembedFullMemoryAsync(ctx.Name, ctx.Store, ct);
     }
 
     public async Task OnAfterForgetAsync(AfterForgetContext ctx, CancellationToken ct)
@@ -226,27 +201,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
     {
-        EnsureInitialized();
-        if (_vectorStore is null) return;
-
-        // An append mutates the memory: re-embed the FULL current content, not just the appended
-        // fragment (which would overwrite the document vector with just the fragment). Read the
-        // current artifact and route it through the shared embed path (which now Removes stale
-        // vectors first). ReadArtifactAsync returns the ENCODED nmp2 artifact — decode it the same
-        // way EmbeddingReindexer does before embedding.
-        try
-        {
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            string artifact = await store.ReadArtifactAsync(subject, scope, ct);
-            if (string.IsNullOrWhiteSpace(artifact)) return;
-            string fullText = System.Text.Encoding.UTF8.GetString(
-                new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
-            await EmbedAndIndexAsync(qualifiedName, [fullText], store, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
-        }
+        await ReembedFullMemoryAsync(qualifiedName, store, ct);
     }
 
     public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
@@ -256,62 +211,50 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     // -- Shared internal --
 
-    private async Task EmbedAndIndexAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    private async Task EmbedAndIndexAsync(
+        string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
     {
         EnsureInitialized();
-        if (_vectorStore is null)
-            return;
+        if (_indexer is null) return;
 
         try
         {
             var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-
-            string joined = string.Concat(content);
-            if (string.IsNullOrWhiteSpace(joined))
-                return;
-
-            var items = new List<(string text, int? chunkIndex)> { (joined, null) };
-
-            if (content.Length > 1)
-            {
-                for (int i = 0; i < content.Length; i++)
-                    if (!string.IsNullOrWhiteSpace(content[i]))
-                        items.Add((content[i], i + 1));
-            }
-
-            var vectors = await _provider.EmbedBatchAsync(
-                items.Select(x => x.text).ToList(), ct);
-            if (vectors is null || vectors.Length != items.Count)
-            {
-                // A bad/mismatched embed result must return BEFORE RemoveAsync — otherwise a
-                // provider that returns the wrong count would wipe the existing vectors for this
-                // memory and then throw (or silently under/over-write), leaving it with zero
-                // vectors. Mirrors EmbeddingReindexer's `vectors.Length != chunks.Count` guard.
-                if (vectors is not null)
-                    _logger?.LogWarning(
-                        "Embed returned {Got} vectors for {Want} inputs for '{Name}'; skipping to preserve existing vectors.",
-                        vectors.Length, items.Count, qualifiedName);
-                return;
-            }
-
-            // Atomic per-memory replace: clear prior vectors (including stale higher-index chunks
-            // from a previous, larger chunk count) before upserting the new set — mirrors
-            // EmbeddingReindexer. No-op when the name has no prior vectors, so first-time stores
-            // are unaffected.
-            // Already detached from the write response, so a declined write can wait for the
-            // file to free up instead of deferring to the next write.
-            await VectorWriteRetry.RunAsync(
-                async () =>
-                {
-                    await _vectorStore.RemoveAsync(scope, subject, ct);
-                    for (int i = 0; i < vectors.Length; i++)
-                        await _vectorStore.UpsertAsync(scope, subject, items[i].chunkIndex, vectors[i], ct);
-                },
-                _logger, qualifiedName, ct);
+            await _indexer.IndexAsync(scope, subject, content, ct);
         }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Failed to embed memory '{Name}'", qualifiedName);
+        }
+    }
+
+    /// <summary>
+    /// An append mutates the memory. Indexing only the appended fragment would be wrong twice
+    /// over: the indexer replaces a memory's vectors atomically, so the rest of the memory would
+    /// lose its vectors entirely, and the surviving element indices would not match the memory's
+    /// real content array. Re-read and index the whole thing — shared by both the REST
+    /// (<see cref="OnAfterAppendAsync"/>) and MCP (<see cref="OnAppendedAsync"/>) append paths, and
+    /// mirrored by <c>BuiltInEmbeddingsService.ReembedFullMemoryAsync</c>.
+    /// </summary>
+    private async Task ReembedFullMemoryAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    {
+        EnsureInitialized();
+        if (_indexer is null) return;
+
+        try
+        {
+            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+            string artifact = await store.ReadArtifactAsync(subject, scope, ct);
+            if (string.IsNullOrWhiteSpace(artifact)) return;
+
+            var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+            if (elements.Length == 0) return;
+
+            await _indexer.IndexAsync(scope, subject, elements, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
         }
     }
 
@@ -320,21 +263,17 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         if (!wasDeleted) return;
 
         EnsureInitialized();
-        if (_vectorStore is null) return;
+        if (_indexer is null) return;
 
-        try
-        {
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            await _vectorStore.RemoveAsync(scope, subject, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "Failed to remove vectors for '{Name}'", qualifiedName);
-        }
+        // (qualifiedName, store) overload owns the parse inside its own try — PluginPipeline
+        // awaits OnAfterForgetAsync with no surrounding try/catch on the REST path, so a throw
+        // here would otherwise propagate into the forget request itself.
+        await _indexer.RemoveAsync(qualifiedName, store, ct);
     }
 
-    internal async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
+    public async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
     {
+        EnsureInitialized();
         var allItems = store.ListScoped();
         int count = 0;
 
@@ -353,15 +292,17 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                 string artifact = item.Scope == "ephemeral"
                     ? await store.ResolveArtifactAsync($"~{item.Entry.Name}", ct)
                     : await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-                string decoded = System.Text.Encoding.UTF8.GetString(
-                    new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
 
-                var vec = await _provider.EmbedAsync(decoded, ct);
-                if (vec is not null)
-                {
-                    await _vectorStore!.UpsertAsync(item.Scope, item.Entry.Name, null, vec, ct);
+                // Reconstruct the memory's content array from the artifact rather than passing one
+                // decoded blob, so reindex reproduces the same per-element layout a write produces.
+                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                if (elements.Length == 0) continue;
+
+                // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException reach
+                // the catch ladder below instead of being retried for up to 42s per memory and
+                // then swallowed to false.
+                if (await _indexer!.IndexAsync(item.Scope, item.Entry.Name, elements, ct, retryOnUnavailable: false))
                     count++;
-                }
             }
             catch (VectorStoreUnavailableException ex)
             {
