@@ -137,16 +137,33 @@ The CLI publishes as a trimmed single-file executable. This requires:
 - ConsoleAppFramework v5 (source-gen CLI, zero reflection)
 - No dynamic assembly loading (plugins run as child processes)
 
-### Two Plugin Code Paths
+### Three Write Paths
 
-The CLI and server use different hook mechanisms to avoid double-firing:
+There are three doors a write can arrive through, not two — the server hosts an MCP endpoint
+(`Program.cs:~290`) alongside its REST API, so the CLI-versus-server framing this section used to
+use couldn't express the real fault line, which was REST-versus-MCP *inside the single server
+process*:
 
 | Path | Event Hooks | Search Scoring |
 |------|-------------|----------------|
-| CLI (MCP stdio) | `IMemoryEventSink` via `MemoryEventSinkContext` | `ISearchScoreContributor` via `SearchContributorContext` |
-| Server (REST API) | `IMemoryOperationHook` via `PluginPipeline` | `ISearchScoreContributor` via `SearchContributorContext` |
+| CLI (MCP stdio) | `IMemoryEventSink` via `MemoryEventSinkContext.Default` | `ISearchScoreContributor` via `SearchContributorContext.Default` |
+| Server — MCP endpoint | `IMemoryEventSink` via `MemoryEventSinkContext.Current` (set per-session, `Program.cs:316`) | `ISearchScoreContributor` via `SearchContributorContext.Current` |
+| Server — REST API | `IMemoryOperationHook` via `PluginPipeline`, including `EventSinkOperationHook` (`Program.cs:106`) | `ISearchScoreContributor` via `SearchContributorContext` |
 
-A plugin implementing both interfaces fires only once per operation.
+The server's two doors share one DI-registered sink set (`IMemoryEventSink` registrations in
+`Program.cs`, including `MaintenanceEventSink` at `:101`, registered unconditionally rather than
+nested inside the embeddings block). Its MCP endpoint reads that set directly into
+`MemoryEventSinkContext.Current` per session. Its REST door reads the same set through
+`EventSinkOperationHook`, an `IMemoryOperationHook` adapter that runs each sink from inside
+`PluginPipeline` instead. Different mechanism, same membership: **every write fires the same sink
+set whichever door it arrived at.**
+
+The split into two mechanisms is deliberate and still necessary — it is what stops a component
+that implements both `IMemoryEventSink` and `IMemoryOperationHook` from firing twice for the same
+REST write. `EventSinkOperationHook` enforces this by excluding any sink that is also an
+`IMemoryOperationHook` (such a sink already runs on the REST path in its own right). So the
+guarantee that holds across all three paths is: **a component registered as both a hook and a sink
+still fires exactly once.**
 
 ## Further Reading
 

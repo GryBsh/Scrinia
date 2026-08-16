@@ -10,6 +10,29 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — REST writes now fire the same event sinks as MCP writes
+
+- **A REST write gets the same ref-linking, orphan-marking and entity-typing treatment as the
+  identical write through MCP.** The server's REST API and its hosted MCP endpoint are two
+  separate write doors in the same process; REST went through `PluginPipeline`'s
+  `IMemoryOperationHook`s while MCP went through `IMemoryEventSink`s via
+  `MemoryEventSinkContext`, and nothing carried the sink set onto the REST door. A new
+  `EventSinkOperationHook` adapter runs the registered `IMemoryEventSink`s from inside
+  `PluginPipeline`, excluding any sink that is also an `IMemoryOperationHook` so a component
+  implementing both still fires exactly once. `EntityTypingEventHandler` also now runs
+  server-side (it moved into `Scrinia.Core` so the server can reference it), where previously it
+  ran only for the CLI.
+
+### Fixed — maintenance no longer disappears when embeddings are unavailable or a plugin supplies them
+
+- **Ref-linking and orphan marking no longer depend on the embeddings model.** The server had
+  exactly one `IMemoryEventSink` registration, `MaintenanceEventSink`, nested three conditionals
+  deep inside the embeddings setup block even though it takes no constructor arguments and has
+  nothing to do with embeddings. Ref-linking and orphan marking silently vanished whenever the
+  model was absent, initialisation threw, or a plugin supplied embeddings — the last being a
+  supported configuration, so installing the Vulkan plugin turned off orphan marking. Sinks are
+  now registered individually, and maintenance registers unconditionally.
+
 ### Fixed — a remote store answered every listing from the first 200 entries
 
 - Remote stores now return complete listings. `HttpMemoryStore.ListScoped` sent no `limit`
