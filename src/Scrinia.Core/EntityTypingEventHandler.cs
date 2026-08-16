@@ -1,9 +1,8 @@
-using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
-namespace Scrinia.Services;
+namespace Scrinia.Core;
 
 /// <summary>
 /// Best-effort <see cref="IMemoryEventSink"/> that upgrades untyped <c>mention:</c> prose spans to
