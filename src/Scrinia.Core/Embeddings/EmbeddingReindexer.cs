@@ -155,8 +155,10 @@ public static class EmbeddingReindexer
     /// <see cref="IEmbeddingProvider"/> to batch-embed against — but it does have an
     /// <see cref="IMemoryEventSink"/> that the plugin subscribed to via MCP. Replaying every
     /// persistent memory through <see cref="IMemoryEventSink.OnStoredAsync"/> drives the
-    /// plugin's <c>upsert</c> tool the same way a fresh write would, producing a clean
-    /// rebuild without needing to expose the plugin's internal embed/store internals.
+    /// plugin's <c>index</c> tool when the plugin offers it (or its legacy <c>upsert</c> tool
+    /// otherwise — see <c>McpPluginHost.OnStoredAsync</c>'s negotiation) the same way a fresh
+    /// write would, producing a clean rebuild without needing to expose the plugin's internal
+    /// embed/store internals.
     ///
     /// <para>Pass the active <see cref="MemoryEventSinkContext.Default"/> (or a specific sink
     /// for tests). Each memory's content array is reconstructed from its artifact via

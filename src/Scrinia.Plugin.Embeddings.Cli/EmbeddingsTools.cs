@@ -20,7 +20,14 @@ public sealed class EmbeddingsTools(
     {
         try
         {
-            bool wrote = await indexer.IndexAsync(scope, name, content, ct);
+            // retryOnUnavailable: false — this tool is the wire surface for BOTH a single write
+            // AND a bulk `scri reindex` replay (McpPluginHost.OnStoredAsync, awaited once per
+            // memory). The default `true` would route through VectorWriteRetry's up-to-42s
+            // backoff PER MEMORY here, on top of the retry McpPluginHost.CallToolWithRetryAsync
+            // already owns at the wire level — double retry, and a 1000-memory reindex against a
+            // locked vector file would stall for hours instead of failing fast. Retry belongs at
+            // exactly one layer; CallToolWithRetryAsync is that layer for this process boundary.
+            bool wrote = await indexer.IndexAsync(scope, name, content, ct, retryOnUnavailable: false);
             return JsonSerializer.Serialize(new { ok = wrote });
         }
         catch (VectorStoreUnavailableException ex)

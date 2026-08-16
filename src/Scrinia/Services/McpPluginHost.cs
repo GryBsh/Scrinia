@@ -164,6 +164,16 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         _hasRemove = names.Contains("remove");
         _hasStatus = names.Contains("status");
         _hasIndex = names.Contains("index");
+
+        // Capability fact, logged once per connection rather than once per memory — see
+        // OnStoredAsync/OnAppendedAsync, which used to log this on every legacy-fallback call and
+        // would spam one identical line per memory during a bulk reindex.
+        if (!_hasIndex && _hasUpsert)
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Plugin offers 'upsert' but not 'index'; indexing without windowing. "
+                + "Long memories will be less reachable by semantic search.");
+        }
     }
 
     // ── ISearchScoreContributor ──────────────────────────────────────────
@@ -193,7 +203,10 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnStoredAsync(string qualifiedName, string[] content,
         IMemoryStore store, CancellationToken ct)
     {
-        if (_degraded) return;
+        // Restored the early return in front of ParseQualifiedName: a plugin advertising only
+        // `remove` has neither flag set, and must not pay for a parse (which throws on a
+        // malformed name) on every store/append when it was never going to call out anyway.
+        if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
         var (scope, name) = store.ParseQualifiedName(qualifiedName);
 
@@ -211,15 +224,11 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             return;
         }
 
-        if (!_hasUpsert) return;
-
         // Legacy fallback for plugins that predate the `index` tool. This path does not window, so
         // a long memory becomes one mean-pooled vector — the exact H3 regression. Kept so a
-        // third-party plugin keeps being indexed rather than silently stopping.
-        Console.Error.WriteLine(
-            "[scrinia:warn] Plugin offers 'upsert' but not 'index'; indexing without windowing. "
-            + "Long memories will be less reachable by semantic search.");
-
+        // third-party plugin keeps being indexed rather than silently stopping. The capability
+        // warning for this fallback is logged once per connection, in ConnectAsync — not here,
+        // where it would repeat once per memory during a bulk reindex.
         string joined = string.Concat(content);
         if (string.IsNullOrWhiteSpace(joined)) return;
 
@@ -244,7 +253,8 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnAppendedAsync(string qualifiedName, string content,
         IMemoryStore store, CancellationToken ct)
     {
-        if (_degraded) return;
+        // See OnStoredAsync — same early-return-before-parse fix, same reason.
+        if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
         var (scope, name) = store.ParseQualifiedName(qualifiedName);
 
@@ -269,10 +279,9 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             return;
         }
 
-        if (!_hasUpsert) return;
-
         // Legacy fallback: the old protocol has no way to express a replace, so this keeps
-        // today's fragment-only behaviour.
+        // today's fragment-only behaviour. The top guard already guarantees _hasUpsert here,
+        // since _hasIndex is false and at least one of the two must be true to reach this line.
         if (string.IsNullOrWhiteSpace(content)) return;
 
         await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
