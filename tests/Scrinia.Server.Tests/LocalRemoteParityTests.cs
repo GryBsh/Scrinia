@@ -43,17 +43,29 @@ namespace Scrinia.Server.Tests;
 /// <c>TestHost.ClientHandler.Send</c> throws unconditionally. Same pattern as
 /// <c>RemoteWritePathMetadataTests</c> and <c>Conformance/StoreConformanceFixture</c>.</para>
 ///
-/// <para><b>The local side fires the same maintenance sink the server now dispatches on REST.</b>
-/// A direct <see cref="FileMemoryStore"/> <c>StoreAsync</c>/<c>AppendAsync</c> call fires no
+/// <para><b>The local side fires the same sinks the server now dispatches on REST.</b> A direct
+/// <see cref="FileMemoryStore"/> <c>StoreAsync</c>/<c>AppendAsync</c> call fires no
 /// <see cref="IMemoryEventSink"/> at all — sinks are dispatched by the CALLER, not the store, and
 /// this fixture used to call the store directly. The real local write path (<c>MemoryTools</c>,
-/// which the CLI drives) always fires <see cref="MaintenanceEventSink"/> after a write. Before the
+/// which the CLI drives) always fires the full registered sink set after a write. Before the
 /// event-pipeline-unification branch, both sides happened to agree by NOT running it — the remote
 /// side by the defect that branch fixes, the local side by this harness's own gap, never by design.
 /// Now that REST fires it correctly (<see cref="Scrinia.Server.Services.EventSinkOperationHook"/>),
 /// the local side has to as well, or this class would compare a partial local write against a
-/// complete remote one and call the difference drift. <c>_maintenance</c> below is invoked by hand
-/// after each local <c>StoreAsync</c>/<c>AppendAsync</c>, against the same qualified name and
+/// complete remote one and call the difference drift.</para>
+///
+/// <para><b>The sink set is resolved from the server's own container, not hardcoded.</b>
+/// <c>_localSinks</c> wraps <c>_factory.Services.GetServices&lt;IMemoryEventSink&gt;()</c> — whatever
+/// the server actually registered — rather than naming <see cref="MaintenanceEventSink"/> directly.
+/// On a machine with no embedding model that is just maintenance; on a machine that has one it also
+/// includes <c>EntityTypingEventHandler</c> and <c>BuiltInEmbeddingsService</c>, exactly matching
+/// what a real local write would fire through <c>MemoryTools</c> in that environment. A hardcoded
+/// sink list would go stale (and go red) the moment the environment's registrations changed — this
+/// can't drift, because it reads the same registrations the server itself resolved. Firing
+/// <c>BuiltInEmbeddingsService</c> against <c>_local</c> only writes vectors into the server's
+/// <c>VectorStore</c> (verified: <c>EmbedAndIndexAsync</c> never touches <c>ArtifactEntry</c>
+/// fields), so it is inert for every field this class compares. <c>_localSinks</c> is invoked by
+/// hand after each local <c>StoreAsync</c>/<c>AppendAsync</c>, against the same qualified name and
 /// content the store just wrote — modelling exactly what <c>MemoryTools</c> does on every real local
 /// write.</para>
 /// </summary>
@@ -67,11 +79,13 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
     private HttpMemoryStore _remote = null!;
     private IMemoryStore? _previousStore;
 
-    /// <summary>The maintenance sink a real local write always fires (through <c>MemoryTools</c>)
-    /// and this fixture's direct <see cref="FileMemoryStore"/> calls do not — see the class doc.
-    /// One instance, called by hand after each local write, mirroring what the REST adapter
+    /// <summary>The sink set a real local write always fires (through <c>MemoryTools</c>) and this
+    /// fixture's direct <see cref="FileMemoryStore"/> calls do not — see the class doc. Resolved
+    /// from the server's own container in <see cref="InitializeAsync"/> (not hardcoded), so it
+    /// matches whatever the server actually registered in this environment. Called by hand after
+    /// each local write, mirroring what the REST adapter
     /// (<see cref="Scrinia.Server.Services.EventSinkOperationHook"/>) now does on the server.</summary>
-    private readonly MaintenanceEventSink _maintenance = new();
+    private CompositeEventSink _localSinks = null!;
 
     /// <summary>The dependency both memories cite. It exists byte-for-byte under BOTH workspace
     /// roots, which is what makes the <c>FileHashes</c> comparison mean something: D-04 gives a
@@ -89,6 +103,12 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
 
         Directory.CreateDirectory(_localRoot);
         _local = new FileMemoryStore(_localRoot);
+
+        // Resolved from the server's own container, not hardcoded — see the class doc. Whatever the
+        // server registered (maintenance always; entity typing and embeddings only where a model is
+        // available) is exactly what a real local write would fire through MemoryTools, so this is
+        // the set that keeps parity honest in every environment rather than just this one.
+        _localSinks = new CompositeEventSink([.. _factory.Services.GetServices<IMemoryEventSink>()]);
 
         // The server's own store is a FileMemoryStore with a workspace root of its own; the hasher
         // resolves a `file` value against whichever root the deriving store holds, so the file has
@@ -152,16 +172,16 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         _remote.LoadIndex("local").FirstOrDefault(e => e.Name == name)
             ?? throw new InvalidOperationException($"'{name}' is not in the remote listing.");
 
-    /// <summary>Fires <see cref="_maintenance"/>'s store-side dispatch against <c>_local</c>, the
+    /// <summary>Fires <see cref="_localSinks"/>'s store-side dispatch against <c>_local</c>, the
     /// same call <c>MemoryTools</c> makes after a real local store. See the class doc.</summary>
     private Task FireLocalStoreMaintenanceAsync(string name, string[] content) =>
-        _maintenance.OnStoredAsync(
+        _localSinks.OnStoredAsync(
             _local.FormatQualifiedName("local", name), content, _local, CancellationToken.None);
 
-    /// <summary>Fires <see cref="_maintenance"/>'s append-side dispatch against <c>_local</c>, the
+    /// <summary>Fires <see cref="_localSinks"/>'s append-side dispatch against <c>_local</c>, the
     /// same call <c>MemoryTools</c> makes after a real local append. See the class doc.</summary>
     private Task FireLocalAppendMaintenanceAsync(string name, string content) =>
-        _maintenance.OnAppendedAsync(
+        _localSinks.OnAppendedAsync(
             _local.FormatQualifiedName("local", name), content, _local, CancellationToken.None);
 
     // ── The cases ────────────────────────────────────────────────────────────

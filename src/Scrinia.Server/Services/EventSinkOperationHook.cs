@@ -26,35 +26,37 @@ namespace Scrinia.Server.Services;
 /// </summary>
 public sealed class EventSinkOperationHook : IMemoryOperationHook
 {
-    private readonly IMemoryEventSink[] _sinks;
+    /// <summary>Wraps the filtered sink set so a throwing sink cannot fail an already-succeeded
+    /// write on REST. <see cref="CompositeEventSink"/> catches and logs per-sink, exactly what the
+    /// hosted MCP endpoint already gets via <c>MemoryEventSinkContext</c> — one place defines the
+    /// exception semantics and both doors inherit it, rather than this adapter looping the sinks
+    /// itself and needing its own try/catch that could drift from the MCP door's.</summary>
+    private readonly CompositeEventSink _sinks;
 
     public EventSinkOperationHook(IEnumerable<IMemoryEventSink> sinks)
     {
         ArgumentNullException.ThrowIfNull(sinks);
-        _sinks = sinks.Where(s => s is not IMemoryOperationHook).ToArray();
+        _sinks = new CompositeEventSink([.. sinks.Where(s => s is not IMemoryOperationHook)]);
     }
 
     /// <summary>Runs after the hooks that do the primary work.</summary>
     public int Order => 100;
 
-    public async Task OnAfterStoreAsync(AfterStoreContext context, CancellationToken ct = default)
+    public Task OnAfterStoreAsync(AfterStoreContext context, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
-        foreach (var sink in _sinks)
-            await sink.OnStoredAsync(context.QualifiedName, context.Content, context.Store, ct);
+        return _sinks.OnStoredAsync(context.QualifiedName, context.Content, context.Store, ct);
     }
 
-    public async Task OnAfterAppendAsync(AfterAppendContext context, CancellationToken ct = default)
+    public Task OnAfterAppendAsync(AfterAppendContext context, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
-        foreach (var sink in _sinks)
-            await sink.OnAppendedAsync(context.Name, context.Content, context.Store, ct);
+        return _sinks.OnAppendedAsync(context.Name, context.Content, context.Store, ct);
     }
 
-    public async Task OnAfterForgetAsync(AfterForgetContext context, CancellationToken ct = default)
+    public Task OnAfterForgetAsync(AfterForgetContext context, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
-        foreach (var sink in _sinks)
-            await sink.OnForgottenAsync(context.Name, context.WasDeleted, context.Store, ct);
+        return _sinks.OnForgottenAsync(context.Name, context.WasDeleted, context.Store, ct);
     }
 }
