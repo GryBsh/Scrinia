@@ -4,18 +4,17 @@ using Scrinia.Core.Encoding;
 namespace Scrinia.Core.Embeddings;
 
 /// <summary>
-/// Walks every persistent memory in a <see cref="IMemoryStore"/>, slices each one's decoded
-/// content into overlapping windows via <see cref="TextChunker.SliceWindows"/>, embeds the
-/// windows in a single batch call, and upserts one vector per chunk into the target
-/// <see cref="VectorStore"/>. Called after a vector-file quarantine (provider or chunk-config
-/// changed), after a <c>scri config Scrinia:Embeddings:*</c> write, or explicitly via
-/// <c>scri reindex</c>.
+/// Walks every persistent memory in a <see cref="IMemoryStore"/>, reconstructs each one's
+/// content array from its stored artifact, and routes it through <see cref="MemoryVectorIndexer"/>
+/// — the same embed-and-index policy a regular write uses. Called after a vector-file quarantine
+/// (provider or chunk-config changed), after a <c>scri config Scrinia:Embeddings:*</c> write, or
+/// explicitly via <c>scri reindex</c>.
 ///
 /// <para>Ephemeral scope is skipped — those vectors are by definition session-bound and
 /// can't be reproduced from sidecars. Per-memory failures are logged and the batch continues
-/// so a single bad artifact doesn't abort the whole pass. Each memory is treated atomically:
-/// existing vectors for the memory are removed before the new chunks are upserted, so a
-/// shrink-replace (memory edited from 8 chunks down to 5) leaves no orphans.</para>
+/// so a single bad artifact doesn't abort the whole pass. Each memory is treated atomically —
+/// see <see cref="MemoryVectorIndexer.IndexAsync"/> — so a shrink-replace (memory edited from
+/// 8 chunks down to 5) leaves no orphans.</para>
 /// </summary>
 public static class EmbeddingReindexer
 {
@@ -42,9 +41,6 @@ public static class EmbeddingReindexer
         }
 
         options ??= new EmbeddingOptions();
-        int windowSize = options.ChunkSize;
-        int overlap = options.ChunkOverlap;
-        int maxChunks = options.MaxChunksPerMemory;
 
         var items = store.ListScoped()
             .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
@@ -52,7 +48,7 @@ public static class EmbeddingReindexer
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
 
-        var decoder = new Nmp2Strategy();
+        var indexer = new MemoryVectorIndexer(provider, vectorStore, logger, options);
 
         for (int i = 0; i < total; i++)
         {
@@ -74,47 +70,29 @@ public static class EmbeddingReindexer
                     continue;
                 }
 
-                string decoded = System.Text.Encoding.UTF8.GetString(decoder.Decode(artifact));
-                if (string.IsNullOrWhiteSpace(decoded))
+                // Reconstruct the memory's content array from the artifact rather than passing
+                // one decoded blob. Reindex must reproduce the layout a write produces — Task 7's
+                // signature bump rebuilds every existing vector through this exact path, so a
+                // reindex that collapsed a memory to element 1 would mean the element contract
+                // held only for memories written after this branch.
+                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                if (elements.Length == 0)
                 {
                     skipped++;
                     continue;
                 }
 
-                var chunks = TextChunker.SliceWindows(decoded, windowSize, overlap);
-                if (chunks.Count == 0)
+                string joined = string.Concat(elements);
+                if (string.IsNullOrWhiteSpace(joined))
                 {
                     skipped++;
                     continue;
                 }
 
-                if (chunks.Count > maxChunks)
-                {
-                    logger.LogWarning(
-                        "Reindex: {Name} would produce {Count} chunks; capping at {Cap}. " +
-                        "Tail content embed-skipped (BM25 still indexes it).",
-                        item.Entry.Name, chunks.Count, maxChunks);
-                    chunks = [.. chunks.Take(maxChunks)];
-                }
-
-                var texts = chunks.Select(c => c.Text).ToList();
-                var vectors = await provider.EmbedBatchAsync(texts, ct);
-                if (vectors is null || vectors.Length != chunks.Count)
-                {
-                    failed++;
-                    logger.LogDebug("Reindex: batch embed failed or returned mismatched count for {Name}", item.Entry.Name);
-                    continue;
-                }
-
-                // Atomic per-memory replace: clear any prior vectors for this name (including
-                // stale chunk indices from a previous, larger chunk count) before upserting
-                // the new set. Order matters — if the upsert loop is interrupted mid-flight,
-                // the next reindex will pick this memory back up cleanly.
-                await vectorStore.RemoveAsync(item.Scope, item.Entry.Name, ct);
-                for (int c = 0; c < chunks.Count; c++)
-                    await vectorStore.UpsertAsync(item.Scope, item.Entry.Name, chunks[c].Index, vectors[c], ct);
-
-                embedded++;
+                if (await indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct))
+                    embedded++;
+                else
+                    skipped++;
             }
             catch (OperationCanceledException) { throw; }
             catch (VectorStoreUnavailableException ex)
@@ -177,8 +155,9 @@ public static class EmbeddingReindexer
     /// rebuild without needing to expose the plugin's internal embed/store internals.
     ///
     /// <para>Pass the active <see cref="MemoryEventSinkContext.Default"/> (or a specific sink
-    /// for tests). Each memory's decoded content is handed to the sink as a single-element
-    /// array; the sink does its own chunking (matches how a regular write flows through).</para>
+    /// for tests). Each memory's content array is reconstructed from its artifact via
+    /// <see cref="Nmp2ChunkedEncoder.DecodeAllChunksVerified"/> and handed to the sink whole —
+    /// the same content array a regular write carries, not a single decoded blob.</para>
     /// </summary>
     public static async Task<Result> ReindexViaSinkAsync(
         IMemoryStore store,
@@ -192,8 +171,6 @@ public static class EmbeddingReindexer
             .ToList();
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
-
-        var decoder = new Nmp2Strategy();
 
         for (int i = 0; i < total; i++)
         {
@@ -211,8 +188,11 @@ public static class EmbeddingReindexer
                     continue;
                 }
 
-                string decoded = System.Text.Encoding.UTF8.GetString(decoder.Decode(artifact));
-                if (string.IsNullOrWhiteSpace(decoded))
+                // Reconstruct the memory's content array — a regular write carries the real
+                // content array, so replaying with a single decoded element would produce a
+                // different layout than the write this is supposed to reproduce.
+                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                if (elements.Length == 0)
                 {
                     skipped++;
                     continue;
@@ -222,7 +202,7 @@ public static class EmbeddingReindexer
                 // plugins) to decide which scope to store vectors under. Under v3
                 // FormatQualifiedName is round-trip-safe for every scope, so this is safe.
                 string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                await sink.OnStoredAsync(qualifiedName, [decoded], store, ct);
+                await sink.OnStoredAsync(qualifiedName, elements, store, ct);
                 embedded++;
             }
             catch (OperationCanceledException) { throw; }

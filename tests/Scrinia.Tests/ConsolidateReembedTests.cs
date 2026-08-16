@@ -100,7 +100,10 @@ public sealed class ConsolidateReembedTests : IDisposable
         var vectors = vectorStore.GetVectors(scope);
         vectors.Should().HaveCount(1, because: "compaction merges to a single chunk; the old chunk-indexed vectors must not survive as orphans");
         vectors[0].Name.Should().Be(name);
-        vectors[0].ChunkIndex.Should().Be(0);
+        // The compacted content lands as a single content element (element index 1); the
+        // indexer's stored chunk index is element*stride + window ordinal, so a single short
+        // window is ChunkIndexStride, not the old flat 0-based window ordinal.
+        vectors[0].ChunkIndex.Should().Be(MemoryVectorIndexer.ChunkIndexStride);
     }
 
     private sealed class FakeProvider : IEmbeddingProvider

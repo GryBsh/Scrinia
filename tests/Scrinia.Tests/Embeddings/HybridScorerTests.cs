@@ -182,11 +182,15 @@ public class HybridRerankerTests : IDisposable
     [Fact]
     public async Task ComputeScores_ChunkedVectors_DedupesByMaxPerMemory()
     {
-        // Two chunks of the same memory: chunk 0 is far, chunk 1 is identical to query.
-        // After max-aggregation, the memory should have a single {scope}|{name} key with
-        // the better (chunk 1) score, plus per-chunk keys for diagnostic lookups.
-        await _vectorStore.UpsertAsync("local", "memo", 0, [0.1f, 0.99f, 0f]);
-        await _vectorStore.UpsertAsync("local", "memo", 1, [1f, 0f, 0f]);
+        // Two elements of the same memory: element 1 is far, element 2 is identical to the
+        // query. Stored chunk index is elementIndex * ChunkIndexStride + windowOrdinal, so a
+        // single-window element lands exactly on the stride multiple. After max-aggregation,
+        // the memory should have a single {scope}|{name} key with the better (element 2)
+        // score, plus per-element keys for diagnostic lookups.
+        await _vectorStore.UpsertAsync(
+            "local", "memo", 1 * MemoryVectorIndexer.ChunkIndexStride, [0.1f, 0.99f, 0f]);
+        await _vectorStore.UpsertAsync(
+            "local", "memo", 2 * MemoryVectorIndexer.ChunkIndexStride, [1f, 0f, 0f]);
 
         var provider = new FakeEmbeddingProvider([1f, 0f, 0f]);
         var reranker = new HybridReranker(provider, _vectorStore, weight: 50.0);
@@ -201,12 +205,12 @@ public class HybridRerankerTests : IDisposable
 
         scores.Should().NotBeNull();
         scores!.Should().ContainKey("local|memo");
-        scores.Should().ContainKey("local|memo|0");
         scores.Should().ContainKey("local|memo|1");
-        // Chunk 1 is identical to the query → similarity ~1.0 * weight 50 = ~50.
+        scores.Should().ContainKey("local|memo|2");
+        // Element 2 is identical to the query → similarity ~1.0 * weight 50 = ~50.
         scores["local|memo"].Should().BeApproximately(50.0, 0.5);
-        scores["local|memo"].Should().Be(scores["local|memo|1"]);
-        scores["local|memo|1"].Should().BeGreaterThan(scores["local|memo|0"]);
+        scores["local|memo"].Should().Be(scores["local|memo|2"]);
+        scores["local|memo|2"].Should().BeGreaterThan(scores["local|memo|1"]);
     }
 
     [Fact]

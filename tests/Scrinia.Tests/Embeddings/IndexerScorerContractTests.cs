@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Tests.Embeddings;
@@ -67,5 +68,47 @@ public sealed class IndexerScorerContractTests
         store.GetVectors("local")
             .Count(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value) == 2)
             .Should().BeGreaterThan(1);
+    }
+
+    [Fact]
+    public async Task AppendingToAMemory_KeepsVectorsForTheElementsItAlreadyHad()
+    {
+        var options = new EmbeddingOptions { ChunkSize = 100, ChunkOverlap = 20 };
+        var store = NewStore();
+        var indexer = new MemoryVectorIndexer(new OrdinalProvider(), store, NullLogger.Instance, options);
+
+        await indexer.IndexAsync("local", "note", ["first", "second"], default);
+        // What an append must do: index the FULL post-append content, not the fragment alone.
+        await indexer.IndexAsync("local", "note", ["first", "second", "third"], default);
+
+        store.GetVectors("local")
+            .Select(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value))
+            .Distinct().Should().BeEquivalentTo([1, 2, 3],
+                because: "indexing only the appended fragment would leave the memory with vectors "
+                       + "for that fragment and nothing else — the indexer replaces atomically");
+    }
+
+    [Fact]
+    public async Task ReindexProducesTheSameLayoutAsTheWriteItRebuilds()
+    {
+        string[] content = ["short one", new string('b', 400), "short three"];
+        var options = new EmbeddingOptions { ChunkSize = 100, ChunkOverlap = 20 };
+
+        // The write path: the content array arrives in flight.
+        var written = NewStore();
+        await new MemoryVectorIndexer(new OrdinalProvider(), written, NullLogger.Instance, options)
+            .IndexAsync("local", "note", content, default);
+
+        // The reindex path: the array is reconstructed from the stored artifact.
+        var rebuilt = NewStore();
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(content);
+        await new MemoryVectorIndexer(new OrdinalProvider(), rebuilt, NullLogger.Instance, options)
+            .IndexAsync("local", "note", Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks, default);
+
+        rebuilt.GetVectors("local").Select(v => v.ChunkIndex)
+            .Should().BeEquivalentTo(written.GetVectors("local").Select(v => v.ChunkIndex),
+                because: "Task 7's signature bump rebuilds every existing vector through reindex — if "
+                       + "reindex collapsed a memory to element 1, the element contract would hold "
+                       + "only for memories written after this branch");
     }
 }

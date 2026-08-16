@@ -63,8 +63,13 @@ public class EmbeddingReindexerTests : IDisposable
         // [900..1900], [1800..2800], [2700..3000] → expect 4 chunks.
         vectors.Should().HaveCountGreaterThanOrEqualTo(3);
         vectors.All(v => v.Name == "long").Should().BeTrue();
-        vectors.Select(v => v.ChunkIndex).Should().BeEquivalentTo(
-            Enumerable.Range(0, vectors.Count).Select(i => (int?)i));
+        // AddMemory writes a single-chunk artifact, so DecodeAllChunksVerified reconstructs it
+        // as one content element; every window therefore nests under element index 1, with
+        // window ordinals sequential within that element (stored index = 1*stride + ordinal).
+        vectors.Select(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value))
+            .Distinct().Should().Equal(1);
+        vectors.Select(v => v.ChunkIndex!.Value - MemoryVectorIndexer.ChunkIndexStride)
+            .OrderBy(x => x).Should().BeEquivalentTo(Enumerable.Range(0, vectors.Count));
     }
 
     [Fact]
@@ -82,7 +87,8 @@ public class EmbeddingReindexerTests : IDisposable
         result.Embedded.Should().Be(1);
         var vectors = vectorStore.GetVectors("local");
         vectors.Should().HaveCount(1);
-        vectors[0].ChunkIndex.Should().Be(0);
+        // Single element, single window: element index 1, window ordinal 0.
+        vectors[0].ChunkIndex.Should().Be(MemoryVectorIndexer.ChunkIndexStride);
     }
 
     [Fact]
@@ -109,7 +115,8 @@ public class EmbeddingReindexerTests : IDisposable
 
         var vectors = vectorStore.GetVectors("local");
         vectors.Should().HaveCount(1);
-        vectors[0].ChunkIndex.Should().Be(0);
+        // Single element, single window: element index 1, window ordinal 0.
+        vectors[0].ChunkIndex.Should().Be(MemoryVectorIndexer.ChunkIndexStride);
     }
 
     [Fact]

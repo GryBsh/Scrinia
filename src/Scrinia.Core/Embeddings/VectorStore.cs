@@ -193,8 +193,21 @@ public sealed class VectorStore : IDisposable, IVectorStore
         await lk.WaitAsync(ct);
         try
         {
+            // Load explicitly rather than treating an unloaded cache as empty — same rationale
+            // as UpsertAsync. Without this, calling RemoveAsync as the first operation this
+            // VectorStore instance performs against a scope (e.g. the very first Remove-then-
+            // Upsert of a fresh reindex run) silently no-ops: nothing looks stale in memory, the
+            // on-disk vectors for the name are never removed, and the following Upsert(s) merge
+            // in beside them rather than replacing them — breaking the atomic-replace guarantee
+            // MemoryVectorIndexer.IndexAsync depends on.
             if (!_scopeVectors.TryGetValue(scope, out var current))
-                return;
+            {
+                var loaded = TryLoadFromDisk(scope);
+                if (!loaded.IsAuthoritative)
+                    throw new VectorStoreUnavailableException(scope, GetFilePath(scope));
+                current = loaded.Vectors;
+                _scopeVectors[scope] = current;
+            }
 
             // Copy-on-write: same rationale as UpsertAsync — never mutate `current` in place.
             var removed = current.Where(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
