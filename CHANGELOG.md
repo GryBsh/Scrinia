@@ -10,6 +10,35 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — a memory remembered at `/temp/x` is now reachable at `/temp/x`
+
+- **`recall`, `forget`, `compact` and `link` now resolve the same `/temp/x` address that `remember`
+  just accepted.** The alias rule was two string literals in `MemoryTools.Core.cs` (Remember and
+  Append) and existed nowhere else, so those four answered NOT_FOUND for a path `remember` had
+  just accepted — including the literal example in `forget`'s own tool description. The rule is
+  now `MemoryNaming.CanonicalizeEphemeralAlias`, applied at the two surfaces (the MCP facade and
+  the CLI commands).
+
+### Changed — the reserved-prefix hint for a case-mismatched `/TEMP/...` path no longer fires
+
+- The reserved-prefix hint for a case-mismatched `/TEMP/...` path no longer fires, because the
+  alias is canonicalized before `ReservedPrefixGuard.HintFor` (`MemoryTools.cs:187`) sees it.
+  The path now simply works, which is what the hint was pointing at.
+
+### Changed (breaking) — ephemeral addresses are refused outside the MCP facade
+
+- **Ephemeral addresses are refused by the CLI.** `scri store`, `show`, `forget`, `append`,
+  `compact` and `link` exit 1 for a `~name` or `/temp/...` address. Previously
+  `scri store /temp/x` reported success and exit 0 while discarding the content: the ephemeral
+  map is in-memory and the CLI process exits immediately. Both spellings are marked
+  CLI-unavailable in the reserved-path tables.
+- **The REST write routes return 400 for a `/temp/...` name** — `POST /memories`, append, forget
+  and copy. The alias is resolved at the agent-facing surfaces and never crosses the wire. Read
+  routes are unchanged and answer 404 for a name they cannot find. Existing bytes under
+  `.scrinia/memories/temp/` are left in place and remain readable as the topic scope
+  `local:temp`; they are not moved or deleted, and are no longer reachable by the path
+  `/temp/x` from an MCP client.
+
 ### Fixed — a long destination name turned a link into keywords
 
 - **`link()` no longer degrades a long destination name into a plain keyword.** It recorded each
