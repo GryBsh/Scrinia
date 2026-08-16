@@ -15,7 +15,13 @@ public sealed class PluginPipeline
 
     public PluginPipeline(IEnumerable<IMemoryOperationHook> hooks)
     {
-        _hooks = hooks.OrderBy(h => h.Order).ToArray();
+        // Dedupe by instance (reference equality — the default for these classes) before ordering.
+        // A plugin may register itself as a hook in its own ConfigureServices AND get registered
+        // again by the loader that discovers it (e.g. EmbeddingsPlugin.cs + Program.cs both add the
+        // same instance to the DI container). AddSingleton appends rather than replaces, so
+        // GetServices<IMemoryOperationHook>() can hand back the same instance twice. Firing one
+        // instance twice per operation breaks the documented once-per-operation guarantee.
+        _hooks = hooks.Distinct().OrderBy(h => h.Order).ToArray();
     }
 
     public async Task<StoreResponse> StoreAsync(

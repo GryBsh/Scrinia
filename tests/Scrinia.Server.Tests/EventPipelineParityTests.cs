@@ -59,6 +59,9 @@ public sealed class EventPipelineParityTests : IClassFixture<ScriniaServerFactor
             "a target memory, reached only by an inbound reference");
         await StoreViaRestAsync(client, _factory.PrimaryStore, "parity-rest-ref-b",
             "points at [[parity-rest-ref-a]]");
+        // EventSinkOperationHook now dispatches sinks fire-and-forget too (I-3), matching the MCP
+        // door's BackgroundWork detach — the REST response can return before ref-linking has run.
+        await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(10));
         var restTarget = await GetEntryAsync(client, _factory.PrimaryStore, "parity-rest-ref-a");
 
         // ── MCP half ───────────────────────────────────────────────────────────
@@ -112,6 +115,8 @@ public sealed class EventPipelineParityTests : IClassFixture<ScriniaServerFactor
 
         await StoreViaRestAsync(client, _factory.PrimaryStore, "parity-rest-orphan",
             "isolated content nothing else refers to");
+        // REST sink dispatch is detached (I-3) — drain before asserting, same as the MCP half below.
+        await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(10));
         var restEntry = await GetEntryAsync(client, _factory.PrimaryStore, "parity-rest-orphan");
 
         string mcpSession = await InitializeMcpSessionAsync(client, _factory.SecondaryStore);
