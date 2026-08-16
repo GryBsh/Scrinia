@@ -155,8 +155,18 @@ The server's two doors share one DI-registered sink set (`IMemoryEventSink` regi
 nested inside the embeddings block). Its MCP endpoint reads that set directly into
 `MemoryEventSinkContext.Current` per session. Its REST door reads the same set through
 `EventSinkOperationHook`, an `IMemoryOperationHook` adapter that runs each sink from inside
-`PluginPipeline` instead. Different mechanism, same membership: **every write fires the same sink
-set whichever door it arrived at.**
+`PluginPipeline` instead. Different mechanism, same membership: **every store, append, and forget
+fires the same sink set whichever door it arrived at.** `PluginPipeline` only wraps those three
+operations (`StoreAsync`, `AppendAsync`, `ForgetAsync`); `SearchAsync` fires none by design, and it
+is the only mutation-adjacent method it exposes.
+
+Four REST routes bypass `PluginPipeline` entirely and fire no sinks on the REST side:
+`PATCH /memories/{name}`, `POST /memories/{name}/copy`, `POST /memories/{name}/copy-from-client`,
+and `POST /import`. Each has an MCP counterpart that also fires nothing (`link`'s `UpdateMeta` for
+PATCH, the local-only `Copy` for copy, no MCP tool at all for copy-from-client and import), so the
+two doors still agree — they just agree on firing nothing, not on firing the shared set. Treat the
+"same sink set" guarantee above as scoped to store/append/forget; do not extend it to every write
+by enumeration from this paragraph alone.
 
 The split into two mechanisms is deliberate and still necessary — it is what stops a component
 that implements both `IMemoryEventSink` and `IMemoryOperationHook` from firing twice for the same

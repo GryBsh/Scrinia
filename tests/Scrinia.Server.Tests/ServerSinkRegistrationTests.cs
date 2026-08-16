@@ -37,6 +37,10 @@ public sealed class ServerSinkRegistrationTests
             because: "the embeddings-available branch must actually have been taken, not just "
                    + "leave maintenance behind — proves this test exercises IsAvailable == true "
                    + "and not the same else branch as the unavailable-model test");
+        sinks.Should().ContainSingle(s => s is EntityTypingEventHandler,
+            because: "spec success criterion #4 — EntityTypingEventHandler must be registered "
+                   + "server-side when an embedding provider is available — had zero test "
+                   + "coverage before this assertion");
     }
 
     [Fact]

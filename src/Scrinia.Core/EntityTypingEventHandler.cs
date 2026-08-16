@@ -1,5 +1,4 @@
 using Scrinia.Core.Embeddings;
-using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Core;
