@@ -116,6 +116,32 @@ public sealed class MemoryVectorIndexerTests
     }
 
     [Fact]
+    public async Task ChunkCountAboveCap_AcrossMultipleElements_KeepsEarlierElementsAndDropsLaterOnes()
+    {
+        // ChunkSize=100/ChunkOverlap=20 gives a step of 80; a 200-char element windows into
+        // exactly 3 windows (starts at 0, 80, 160). Three such elements plan 9 windows total;
+        // MaxChunksPerMemory=4 cuts partway through the second element's windows, not at an
+        // element boundary — this pins exactly what the cap does across elements, not just
+        // within one.
+        var options = new EmbeddingOptions { ChunkSize = 100, ChunkOverlap = 20, MaxChunksPerMemory = 4 };
+        var (indexer, store, _) = NewIndexer(new CountingProvider(), options);
+        string[] content = [new string('a', 200), new string('b', 200), new string('c', 200)];
+
+        await indexer.IndexAsync("local", "note", content, default);
+
+        var vectors = store.GetVectors("local");
+        vectors.Should().HaveCount(4,
+            because: "MaxChunksPerMemory caps the TOTAL window count across the whole memory, not per element");
+
+        vectors.Count(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value) == 1).Should().Be(3,
+            because: "the cap falls after the first element's windows are fully embedded");
+        vectors.Count(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value) == 2).Should().Be(1,
+            because: "the cap cuts partway through the second element's windows");
+        vectors.Count(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value) == 3).Should().Be(0,
+            because: "the third element's windows never make it into the plan once the cap is reached");
+    }
+
+    [Fact]
     public async Task MismatchedVectorCount_LeavesExistingVectorsIntact()
     {
         var (good, store, dir) = NewIndexer(new CountingProvider());

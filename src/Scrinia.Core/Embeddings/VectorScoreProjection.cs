@@ -16,6 +16,20 @@ namespace Scrinia.Core.Embeddings;
 /// <para>Replaces four hand-copied loops (finding H3), one of which — the plugin's MCP search
 /// tool — did not aggregate at all, so a low-scoring chunk hit could overwrite a high-scoring
 /// memory-level score rather than lose to it.</para>
+///
+/// <para><b>The <c>elementIndex == 0</c> guard, and why it is safe.</b> A stored chunk index
+/// below <see cref="MemoryVectorIndexer.ChunkIndexStride"/> decodes to element 0, which does not
+/// exist — 1-based elements start at 1. That shape only arises from a vector written by
+/// pre-branch code, which stamped a raw window ordinal (0-based, never multiplied by the
+/// stride) or a 1-based content-element index too small to reach the stride on its own. Once
+/// this branch's signature bump lands (<c>ChunkedSignature.LayoutRevision</c>), every such
+/// vector's file fails <see cref="VectorStore"/>'s signature check on load and is quarantined
+/// wholesale — not partially read — so in the shipped state no legacy-shaped chunk index ever
+/// reaches this method; it is rebuilt through <see cref="MemoryVectorIndexer"/> first. The guard
+/// therefore only matters for the window between this task landing and the signature bump
+/// landing, where a store built with the old signature could still hold vectors in the old
+/// shape. Below one stride, such a vector's similarity still counts toward the memory key — it
+/// is real data — it just cannot be legitimately relabeled with the wrong element.</para>
 /// </summary>
 public static class VectorScoreProjection
 {
