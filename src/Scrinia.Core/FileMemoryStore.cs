@@ -17,7 +17,11 @@ namespace Scrinia.Core;
 /// Naming convention (v3 — see <see cref="PathRouter.ToStoreDir"/>):
 ///   "subject"              → local scope:   {workspace}/.scrinia/memories/subject.nmp2
 ///   "/topic/subject"       → local topic:   {workspace}/.scrinia/memories/topic/subject.nmp2
-///   "/temp/subject"         → ephemeral:     in-memory only (dies with instance)
+///   "~subject"             → ephemeral:     in-memory only (dies with instance)
+///
+/// The ephemeral alias (an incoming path starting with the reserved /temp/ prefix) is resolved
+/// to this ~subject form at the surfaces — MemoryTools.cs and ScriniaCommands.Memory.cs — before
+/// the store is ever reached; this store only ever sees the ~subject spelling.
 /// </summary>
 public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 {

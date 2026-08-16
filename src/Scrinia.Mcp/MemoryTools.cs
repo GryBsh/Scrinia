@@ -178,6 +178,7 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
+        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
         McpResponse response = await Remember(content, path,
             keywords: keywords, attributes: attributes,
             actionLabel: "remembered", cancellationToken: cancellationToken);
@@ -212,6 +213,7 @@ public sealed partial class ScriniaMcpTools
                 "recall({ path: '...' })",
                 "list() to discover available paths").ToYaml();
 
+        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
         return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
     }
 
@@ -318,6 +320,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "Split the append into multiple smaller append calls.").ToYaml();
 
+        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
         McpResponse response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
 
         // Same hint application as MemoryRemember: applied to the typed response before
@@ -342,6 +345,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "forget({ path: '...' })").ToYaml();
 
+        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
         return (await Forget(path, cancellationToken)).ToYaml();
     }
 
@@ -362,6 +366,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "compact({ path: '...', keepRecent: 3 })").ToYaml();
 
+        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
         return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
     }
 
@@ -388,6 +393,8 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "link({ path: '...', destination: '...' })").ToYaml();
 
+        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        destination = MemoryNaming.CanonicalizeEphemeralAlias(destination);
         return (await Link(path, destination, reason, cancellationToken)).ToYaml();
     }
 

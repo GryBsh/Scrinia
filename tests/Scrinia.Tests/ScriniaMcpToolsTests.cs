@@ -1678,19 +1678,23 @@ public sealed class ScriniaMcpToolsTests
     /// which DID normalize, and produced an ephemeral one. The same path meant two different
     /// memories depending on whether it already existed. The create branch is gone (the store
     /// performs the create), so the normalization is done here, once, for both cases.</para>
+    /// <para>The rule now lives in <c>MemoryNaming.CanonicalizeEphemeralAlias</c>, applied at the
+    /// MCP facade rather than the internal <c>Append</c>/<c>Recall</c> methods this test used to
+    /// call directly — so this test drives the facade (<c>MemoryAppend</c>/<c>MemoryRecall</c>)
+    /// instead, since that is where the alias is now resolved.</para>
     /// </summary>
     [Fact]
     public async Task Append_TempPath_IsEphemeral_WhetherOrNotTheMemoryExists()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Append("the first line", "/temp/appendtemp");
+        await Tools().MemoryAppend("/temp/appendtemp", "the first line");
         MemoryStoreContext.Current!.GetEphemeral("appendtemp").Should().NotBeNull(
             because: "a /temp/ path names an ephemeral memory even when the append creates it");
 
-        await Tools().Append("the second line", "/temp/appendtemp");
+        await Tools().MemoryAppend("/temp/appendtemp", "the second line");
 
-        var content = ResponseParser.Parse((await Tools().Recall("~appendtemp")).ToYaml()).Content!;
+        var content = ResponseParser.Parse(await Tools().MemoryRecall("~appendtemp")).Content!;
         content.Should().Contain("the first line").And.Contain("the second line",
             because: "the second call must find the memory the first one made, not a persistent " +
                      "twin under local:temp");

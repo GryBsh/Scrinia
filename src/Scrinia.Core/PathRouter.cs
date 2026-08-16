@@ -90,10 +90,9 @@ public static class PathRouter
     // cited. The live rules they duplicated:
     //   * the file-entity kind test is FileEntityDirs.TryGetValue, inside ToFileEntityDir, where a
     //     caller cannot ask the question and then forget to act on the answer;
-    //   * the "/temp/ means ephemeral" rule is the string-prefix rewrite in MemoryTools.Core
-    //     (`name.StartsWith("/temp/")` → `"~" + …`, at the remember and forget entry points), which
-    //     runs before any path parsing — so a ParsedPath-shaped copy could never have been the one
-    //     that decided.
+    //   * the ephemeral-alias rule is MemoryNaming.CanonicalizeEphemeralAlias, applied at the
+    //     two surfaces: the MCP facade (MemoryTools.cs) and the CLI commands
+    //     (ScriniaCommands.Memory.cs). Nothing below those surfaces sees the alias form.
 
     /// <summary>
     /// Maps an internal scope string ("local", "local:findings", "local:goal/G-5") to its

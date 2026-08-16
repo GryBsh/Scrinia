@@ -136,11 +136,6 @@ public sealed partial class ScriniaMcpTools
         // storage included — so narrowing here would break remember() in remote mode.
         var store = CurrentStore;
 
-        // ── Ephemeral naming (/temp/... is spelled ~... below this line) ────
-        if (name.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase))
-            name = "~" + name["/temp/".Length..];
-
-
         // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
         if (name.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
@@ -1036,9 +1031,6 @@ public sealed partial class ScriniaMcpTools
         // Appending to a memory that does not exist yet is a store, and AppendAsync performs it
         // itself rather than handing the decision back — which is why there is no create branch
         // here and no second call into Remember.
-        if (name.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase))
-            name = "~" + name["/temp/".Length..];
-
         var (ephemeral, scope, subject) = Resolve(store, name);
 
         var entry = await store.AppendAsync(

@@ -132,7 +132,7 @@ Any path works; a few prefixes carry first-class behavior:
 | `/learn/...` | Retrospectives and durable lessons |
 | `/sessions/...` | Session logs by date (`YYYY-MM-DD`) |
 | `/checkpoint/...` | State snapshots |
-| `/temp/...` | Ephemeral — dies on process exit |
+| `/temp/...` | Ephemeral — dies on process exit. An alias for `~name`; both spell the same memory. |
 
 Any other path is plain memory, grouped by its first segment.
 
