@@ -54,9 +54,12 @@ public interface IMemoryStore
 
     // Neither StoreAsync nor AppendAsync has a default implementation, deliberately: every store
     // implements both, so a store added later cannot silently inherit a derivation that is wrong
-    // for it. This is a rule about DERIVATION, not a policy for the whole interface — several
-    // members below do carry defaults, and carry them correctly; see ListScoped's contract for
-    // the invariant that makes them safe.
+    // for it. This is a rule about DERIVATION, not a policy for the whole interface — five members
+    // below do carry defaults, and carry them correctly. Three of the five read through ListScoped
+    // and are safe because of its completeness contract: GetEntityFactStore, ListScoped(scopes,
+    // excludeTopics), and ResolveReadScopes(scopes, excludeTopics). The other two, TryUpdateEntry
+    // and TryUpdateEphemeral, do not read through it at all — they go via LoadIndex and
+    // GetEphemeral respectively — and are safe for their own reasons, documented on each.
 
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);

@@ -205,10 +205,32 @@ applied, the interface default rebuilds facts from a complete listing, so the an
 
 That cost is bounded, and verifying where it lands is what makes deferring it safe:
 
-- `HttpMemoryStore.SearchAll` posts to the server, so `SearchPipeline` — including its
-  `GetEntityFactStore()` call at `SearchPipeline.cs:62`, whose `// cached, no rebuild`
-  comment is true only of `FileMemoryStore` — always runs **server-side** against a
-  `FileMemoryStore`. A remote client never reaches it.
+- **CORRECTED 2026-08-16, after the whole-branch review falsified the original claim.**
+  This section first asserted that `SearchPipeline` "always runs server-side against a
+  `FileMemoryStore`. A remote client never reaches it." **That is false**, and the
+  correction matters because the claim is load-bearing for this deferral and for branch 3.
+  `MemoryTools.Core.cs:882` passes a hardcoded `surfaceEntityFacts: true` into
+  `SearchPipeline.ExecuteAsync` over `CurrentStore` — which in remote mode IS the
+  `HttpMemoryStore` — and `SearchPipeline.cs:50` fires
+  `store.ListScoped(query.Scopes, query.ExcludeTopics)` on that disjunct **alone**,
+  independently of either contributor. So the MCP `search()` tool reaches
+  `HttpMemoryStore.ListScoped` on **every remote invocation**.
+
+  What that means for this branch, stated plainly rather than minimised: before the fix,
+  that call returned the server's first 200 rows in one request. After it, it returns the
+  whole corpus, in `ceil(N/1000)` requests of full `MemoryEntry` records (`TermFrequencies`,
+  `ChunkEntries`, `FileHashes`). The answer is strictly **more correct** than before — it
+  was previously computing entity facts over a truncated corpus, which is the defect this
+  branch exists to close — but the cost now scales with corpus size where it used to be
+  constant. `SearchAll` ignores `query.Candidates`, so the sole consumer of that listing is
+  `BuildEntityFacts`, which yields at most three summaries.
+
+  This is not treated as a blocker here: it is a cost regression on a correctness fix, not a
+  new defect, and this workspace holds tens of memories rather than tens of thousands. It IS
+  the strongest argument yet for the `/facts` wire route, and it must be re-examined — not
+  re-assumed — when that route or branch 3 is planned. The narrow code fix, deliberately not
+  taken in this branch because it changes remote search behaviour rather than cleaning it up,
+  is `surfaceEntityFacts: store is ILocalMemoryStore`.
 - `EntityTypingEventHandler.PromoteAsync` (`:52`) calls `GetEntityFactStore()` per write
   event, but is installed only through CLI `WorkspaceSetup` plugin loading, and
   `new HttpMemoryStore` appears exactly once in `src/`
@@ -222,11 +244,23 @@ wire route is a widening of the published REST surface and should earn its own s
 If measurement later says otherwise, the reversal is local — override
 `GetEntityFactStore` in `HttpMemoryStore`.
 
-**Known limitation, named rather than papered over.** The client pages at 1000. The
-250-entry fixture proves the loop is entered and runs to exhaustion past the server's
-200-row default — the defect as reported — but does not exercise iteration across more
-than one client-side page. Closing that needs either the injectable seam or the
-1001-entry corpus, both rejected above.
+**~~Known limitation~~ — WITHDRAWN 2026-08-16, it was never true.** This section claimed
+the 250-entry fixture proves the loop runs past the server's 200-row default but does not
+exercise iteration across more than one client-side page, and that closing the gap required
+either a test seam or a 1001-entry corpus.
+
+Multi-page iteration is in fact already covered, and now covers the shared helper.
+`tests/Scrinia.Tests/HttpMemoryStoreLoadIndexPagingTests.cs` stubs an `HttpMessageHandler`
+serving 5 entries 2 at a time and asserts `RequestedOffsets` equals `[0, 2, 4]`, plus the
+single-page case asserting `[0]`. Because D-1 routes `LoadIndex` and `ListScoped` through
+one `FetchAllPages`, those pre-existing tests now exercise the shared loop directly.
+
+The rejected alternatives above were answering the wrong question: the choice was never
+between a production test seam and ~1000 REST writes, because a stubbed handler was
+available the whole time and costs nothing. The 250-entry fixture and the stub tests cover
+different things and both belong — the fixture proves the *defect* (a real server's 200-row
+default truncating a real client), the stubs prove the *loop* (offsets advance and
+terminate).
 
 **Not touched:** `MaintenanceEventSink`, the REST event-sink gap (H4), and the
 `docs/architecture/overview.md:140` reconciliation. Those are branch 3, which must
