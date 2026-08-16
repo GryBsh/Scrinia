@@ -100,6 +100,12 @@ builder.Services.AddScoped<RequestContext>();
 // marking. Registered here so none of those can reach it.
 builder.Services.AddSingleton<IMemoryEventSink>(_ => new MaintenanceEventSink());
 
+// Carries the registered IMemoryEventSink set onto the REST path, so a REST write gets the same
+// ref-linking / orphan-marking / entity-typing treatment as the identical write through MCP. See
+// EventSinkOperationHook's doc comment for why the exclusion filter inside it is load-bearing.
+builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
+    new EventSinkOperationHook(sp.GetServices<IMemoryEventSink>()));
+
 // Plugin DI — runs before StoreManager is constructed so plugins can replace IStorageBackend
 foreach (var plugin in loadedPlugins)
 {
@@ -159,6 +165,13 @@ if (!pluginProvidesEmbeddings)
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
             builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
+
+            // Parity with the CLI, which has run this since WorkspaceSetup. Safe only because the
+            // store-contract branch fixed remote listing truncation first: PromoteAsync reads the
+            // existing typed vocabulary through GetEntityFactStore and PERSISTS its promotions, so
+            // against a store that returned only the first 200 entries it wrote durable corruption.
+            builder.Services.AddSingleton<IMemoryEventSink>(sp =>
+                new EntityTypingEventHandler(sp.GetRequiredService<IEmbeddingProvider>()));
 
             bootLogger.LogInformation("Built-in embeddings ready (provider={Provider}, dims={Dims})",
                 embeddingProvider.GetType().Name, embeddingProvider.Dimensions);
