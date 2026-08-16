@@ -10,6 +10,23 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — a remote store answered every listing from the first 200 entries
+
+- Remote stores now return complete listings. `HttpMemoryStore.ListScoped` sent no `limit`
+  against a server defaulting to 200 rows, so past 200 entries a remote store answered listing
+  questions confidently and wrongly — with no error and no truncation marker. Entity facts,
+  per-topic counts and `list` beyond the first page were all derived from the truncated set, and
+  topic discovery was worse than incomplete: a topic whose entries all fell past the cut stopped
+  existing, so code that listed it reported it empty. `ListScoped` and `LoadIndex` now share one
+  paging loop that runs to the server's reported total.
+
+### Added — local/remote parity across the read surface, above the page boundary
+
+- `PagedListingConformanceTests` — local/remote parity across the read surface (`ListScoped`,
+  `DiscoverTopics`, `ResolveReadScopes`, `GatherTopicInfos`, `GetEntityFactStore`) over a corpus
+  that crosses the server's default page size. The existing conformance harness covers search
+  over 27 entries, structurally below the boundary where the defect began.
+
 ### Fixed — a memory remembered at `/temp/x` is now reachable at `/temp/x`
 
 - **`recall`, `forget`, `compact` and `link` now resolve the same `/temp/x` address that `remember`
