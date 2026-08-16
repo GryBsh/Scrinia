@@ -24,9 +24,11 @@ compact  /temp/probe   error     NOT_FOUND
 
 The tests do not disconfirm this — they encode it. Every test writes at `/temp/x` and reads back at `~x` (`RemoteStoreToolTests.cs:496-497`, `:512-517`, `:612`; `ScriniaMcpToolsTests.cs:1687-1693`). A comment at `ScriniaMcpToolsTests.cs:1673` documents this exact bug class being diagnosed and fixed *once, locally* — which is how the second literal came to exist.
 
-**C1 — the CLI reports success while discarding the content.** `scri store --name /temp/x` builds `new ScriniaMcpTools()`, calls `Remember`, which routes to `RememberEphemeral` (`FileMemoryStore.cs:303`) and lands in `_ephemeralStore` — a plain in-memory `ConcurrentDictionary` (`FileMemoryStore.cs:26`). The CLI prints `Remembered: ~x [ephemeral]` and exits. The map dies with the process. Exit code 0.
+**C1 — the CLI reports success while discarding the content.** `scri store /temp/x` builds `new ScriniaMcpTools()`, calls `Remember`, which routes to `RememberEphemeral` (`FileMemoryStore.cs:303`) and lands in `_ephemeralStore` — a plain in-memory `ConcurrentDictionary` (`FileMemoryStore.cs:26`). The CLI prints `Remembered: ~x [ephemeral]` and exits. The map dies with the process. Exit code 0.
 
-**These are independent.** Fixing the aliasing does not fix C1: `scri store --name ~x` still writes to an in-memory map in a process that is about to exit, whatever the spelling. C1 is caused by an ephemeral write occurring in a short-lived process, not by how the address was written.
+(The address is a positional `[Argument]` — `scri store <name> [file]`, per `docs/cli-reference.md:73`. Earlier drafts of this finding wrote it as `--name`, which would fail CLI parsing rather than reproduce the defect.)
+
+**These are independent.** Fixing the aliasing does not fix C1: `scri store "~x"` still writes to an in-memory map in a process that is about to exit, whatever the spelling. C1 is caused by an ephemeral write occurring in a short-lived process, not by how the address was written.
 
 ### Prior constraint
 
@@ -234,7 +236,7 @@ This workspace has no `memories/temp/` directory, so there is nothing to migrate
 ## Success criteria
 
 1. `remember` then `recall`/`append`/`compact`/`link`/`forget`, all at `/temp/x`, all succeed.
-2. `scri store --name /temp/x` exits 1 with a message, and stores nothing — no success report over a discarded write.
+2. `scri store /temp/x` exits 1 with a message, and stores nothing — no success report over a discarded write.
 3. `POST /memories {"name":"/temp/x"}` returns 400 on every route.
 4. The `/temp/` string literal appears in `src/` only inside `MemoryNaming`.
 5. Existing ephemeral test suites pass unmodified.
