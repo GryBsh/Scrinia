@@ -443,59 +443,72 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// <see cref="TryUpdateEntry"/> no longer reads through here at all: it fetches the single
     /// entry it is about to write, which is one small response instead of a whole scope.
     /// <c>MemoryOrchestrator</c>'s two call sites are server-side and always hold a
-    /// <c>FileMemoryStore</c>. (This method's own internal paging loop is a different thing — one
-    /// logical call, several pages.)</para>
+    /// <c>FileMemoryStore</c>. (The paging loop now lives in FetchAllPages, shared with
+    /// ListScoped — one logical call, several pages.)</para>
     /// </summary>
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
         var result = new List<ArtifactEntry>();
+        foreach (var item in FetchAllPages(scope))
+            result.Add(ToArtifactEntry(item));
+        return result;
+    }
+
+    /// <summary>
+    /// Every entry the server holds for <paramref name="scopes"/> — or across every scope when it
+    /// is null — collected page by page until the server's own reported <c>Total</c> is reached.
+    ///
+    /// <para>ONE paging loop for this type. <see cref="LoadIndex"/> and
+    /// <see cref="ListScoped(string?)"/> read the same listing endpoint, and while each owned its
+    /// own request-building the two drifted: LoadIndex paged to exhaustion, ListScoped sent no
+    /// limit at all and took the server's 200-row default as though it were the whole store. The
+    /// comment on LoadIndex's loop described, precisely, the defect its sibling still had.</para>
+    /// </summary>
+    private List<MemoryEntry> FetchAllPages(string? scopes)
+    {
+        var collected = new List<MemoryEntry>();
         int offset = 0;
-        // 1000 is MaxListLimit server-side (MemoryEndpoints.cs) — the largest page the server
-        // will honour, so paging at this size minimizes round trips for a large scope. The
-        // server's default page size (200) is what silently truncated LoadIndex before this loop
-        // existed: a caller who asked for "the scope" got the first page and no signal that more
-        // existed. The loop below keeps requesting pages until it has collected every entry the
-        // server reports via ListApiResponse.Total, so a scope of any size comes back whole.
+        // 1000 is MaxListLimit server-side (MemoryEndpoints.cs) — the largest page the server will
+        // honour, so paging at this size minimizes round trips. The server's default page size
+        // (200) is what silently truncated a caller who sent no limit: they got the first page and
+        // no signal that more existed.
         const int pageSize = 1000;
 
         while (true)
         {
-            string url = $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scope)}&offset={offset}&limit={pageSize}";
+            string url = scopes is not null
+                ? $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scopes)}&offset={offset}&limit={pageSize}"
+                : $"{BaseUrl}/memories?offset={offset}&limit={pageSize}";
+
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             using var resp = SendSync(req);
 
+            // Returning [] here would look exactly like "this store has nothing in it" — the same
+            // lie ListScoped told past 200 entries, just gated behind a failed request instead of a
+            // silent truncation. A caller must not conclude "empty" from a server that is
+            // unreachable or erroring. The status code is included specifically so a 403 reads as a
+            // permission problem (this endpoint requires "search", distinct from "store") rather
+            // than an opaque server fault.
             if (!resp.IsSuccessStatusCode)
-            {
-                // Returning [] here would look exactly like "this scope has no entries" — the
-                // same lie LoadIndex told unconditionally before this fix, just gated behind a
-                // failed request instead of always. A caller (TryUpdateEntry's default
-                // implementation among them) must not conclude "not found" from a server that is
-                // unreachable or erroring; that is a materially different condition and losing
-                // the distinction is how the original defect happened. Throwing matches
-                // WriteArtifactAsync's existing throw-on-failure contract elsewhere in this type.
-                // The status code is included in the message specifically so a 403 here reads as
-                // a permission problem (this endpoint requires the "search" permission, distinct
-                // from "store") rather than an opaque server fault.
                 throw new HttpRequestException(
-                    $"Remote store listing failed for scope '{scope}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                    $"Remote store listing failed{(scopes is null ? "" : $" for scopes '{scopes}'")}: " +
+                    $"{(int)resp.StatusCode} {resp.StatusCode}.",
                     inner: null,
                     statusCode: resp.StatusCode);
-            }
 
             using var stream = resp.Content.ReadAsStream();
             var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
             if (list?.Memories is null || list.Memories.Length == 0)
                 break;
 
-            foreach (var item in list.Memories)
-                result.Add(ToArtifactEntry(item));
+            collected.AddRange(list.Memories);
 
             offset += list.Memories.Length;
             if (offset >= list.Total)
                 break;
         }
 
-        return result;
+        return collected;
     }
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
@@ -628,7 +641,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         if (includeEphemeral)
             result.AddRange(ListEphemeral());
 
-        // Fetch from server
         // The `scopes is not null` test here selects WHICH URL is built — filtered or unfiltered —
         // rather than whether an empty filter parameter gets appended to one. That makes it a
         // different question from the sibling check that was changed to a whitespace test, and the
@@ -637,38 +649,14 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // parameter (its `IsNullOrWhiteSpace` gate is false for both) — both fall through to the
         // same default branch and return every discovered scope. Empty and null converge on the
         // same server behaviour, so the client's distinction between them is harmless.
-        string url = scopes is not null
-            ? $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scopes)}"
-            : $"{BaseUrl}/memories";
-
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        using var resp = SendSync(req);
-
-        // Same endpoint, same permission, so the same honesty as LoadIndex above: a non-2xx here
-        // used to fall through to `return result`, which for the common case (no ephemeral entries)
-        // is an empty list — indistinguishable from "this store has nothing in it". A 403 from the
-        // "search" permission gate made list() answer "No memories stored." for a store full of
-        // them. Throwing keeps "cannot read the listing" apart from "the listing is empty".
-        if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException(
-                $"Remote store listing failed{(scopes is null ? "" : $" for scopes '{scopes}'")}: " +
-                $"{(int)resp.StatusCode} {resp.StatusCode}.",
-                inner: null,
-                statusCode: resp.StatusCode);
-
-        using var stream = resp.Content.ReadAsStream();
-        var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
-        if (list?.Memories is not null)
+        foreach (var item in FetchAllPages(scopes))
         {
-            foreach (var item in list.Memories)
-            {
-                // Recover the scope from the label the server reported. Task 13: this was a
-                // character-for-character re-implementation of MemoryNaming.ParseScopeLabel —
-                // the same three cases in the same order — so it now calls it. Recovery, not
-                // construction: see ParseScopeLabel's remarks for why it is not validated here.
-                result.Add(new ScopedArtifact(
-                    MemoryNaming.ParseScopeLabel(item.Scope), ToArtifactEntry(item)));
-            }
+            // Recover the scope from the label the server reported. Task 13: this was a
+            // character-for-character re-implementation of MemoryNaming.ParseScopeLabel — the same
+            // three cases in the same order — so it now calls it. Recovery, not construction: see
+            // ParseScopeLabel's remarks for why it is not validated here.
+            result.Add(new ScopedArtifact(
+                MemoryNaming.ParseScopeLabel(item.Scope), ToArtifactEntry(item)));
         }
 
         return result;
