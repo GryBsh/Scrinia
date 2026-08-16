@@ -36,6 +36,40 @@ public static class MemoryNaming
     public static string StripEphemeralPrefix(string name) =>
         name.Length > 0 && name[0] == '~' ? name[1..] : name;
 
+    /// <summary>
+    /// True for an ephemeral name in its canonical form (<c>~subject</c>).
+    /// <para>THE static authority for the predicate. <see cref="FileMemoryStore.IsEphemeral"/>
+    /// delegates here, the same way <see cref="StripEphemeralPrefix"/> already owns the strip.
+    /// Null-safe, because the body it replaced was.</para>
+    /// </summary>
+    public static bool IsEphemeralName(string name) =>
+        !string.IsNullOrEmpty(name) && name[0] == '~';
+
+    /// <summary>
+    /// True for the ephemeral SURFACE alias — a path under the reserved temp prefix.
+    /// <para>The alias is a surface concern, canonicalized at the MCP facade and at the CLI
+    /// commands, and it never reaches the store or the wire. Note this is false for
+    /// <c>~x</c>: an alias is not yet an ephemeral name.</para>
+    /// </summary>
+    public static bool IsEphemeralAlias(string name) =>
+        name is not null && name.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// THE ONE PLACE the ephemeral alias becomes <c>~subject</c>; returns anything else unchanged.
+    ///
+    /// <para>This rule used to be two verbatim string literals in <c>MemoryTools.Core.cs</c>
+    /// (Remember and Append) and existed nowhere else, so <c>recall</c>, <c>forget</c>,
+    /// <c>compact</c> and <c>link</c> answered NOT_FOUND for a path <c>remember</c> had just
+    /// accepted — including the literal example in <c>forget</c>'s own tool description. It
+    /// lives here because the aliasing rule only holds if it is intrinsic rather than layered
+    /// over each site, which is the reasoning that already put scope construction in this file.</para>
+    ///
+    /// <para>Case folding applies to the PREFIX only; the subject keeps its casing, matching
+    /// the literals this replaces.</para>
+    /// </summary>
+    public static string CanonicalizeEphemeralAlias(string name) =>
+        IsEphemeralAlias(name) ? "~" + name["/temp/".Length..] : name;
+
     // ── Scope construction ───────────────────────────────────────────────────
     //
     // THE ONE WAY a "local:{topic}" scope string is constructed from caller input. Task 13

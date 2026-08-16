@@ -271,7 +271,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             : subject;
 
     public bool IsEphemeral(string name) =>
-        !string.IsNullOrEmpty(name) && name[0] == '~';
+        MemoryNaming.IsEphemeralName(name);
 
     public string SanitizeName(string name) => SanitizeNameCore(name);
 
