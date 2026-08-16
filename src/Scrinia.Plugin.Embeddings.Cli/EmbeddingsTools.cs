@@ -7,8 +7,28 @@ namespace Scrinia.Plugin.Embeddings.Cli;
 
 [McpServerToolType]
 public sealed class EmbeddingsTools(
-    VectorStore vectorStore, IEmbeddingProvider provider, EmbeddingOptions options)
+    VectorStore vectorStore, IEmbeddingProvider provider, EmbeddingOptions options,
+    MemoryVectorIndexer indexer)
 {
+    [McpServerTool(Name = "index")]
+    [Description("Embed a memory's full content array and replace its vectors. Preferred over upsert.")]
+    public async Task<string> Index(
+        [Description("Scope")] string scope,
+        [Description("Memory name")] string name,
+        [Description("The memory's content elements, in order")] string[] content,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            bool wrote = await indexer.IndexAsync(scope, name, content, ct);
+            return JsonSerializer.Serialize(new { ok = wrote });
+        }
+        catch (VectorStoreUnavailableException ex)
+        {
+            return JsonSerializer.Serialize(new { error = ex.Message });
+        }
+    }
+
     [McpServerTool(Name = "status")]
     [Description("Returns plugin status as JSON.")]
     public string Status()
@@ -41,14 +61,8 @@ public sealed class EmbeddingsTools(
             if (vectors.Count == 0) continue;
 
             var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
-            foreach (var (entry, similarity) in topK)
-            {
-                string key = entry.ChunkIndex is not null
-                    ? $"{scope}|{entry.Name}|{entry.ChunkIndex}"
-                    : $"{scope}|{entry.Name}";
-
-                scores[key] = similarity * options.SemanticWeight;
-            }
+            VectorScoreProjection.Project(
+                scope, topK.Select(t => (t.Entry, (double)t.Similarity)), options.SemanticWeight, scores);
         }
 
         return JsonSerializer.Serialize(scores);

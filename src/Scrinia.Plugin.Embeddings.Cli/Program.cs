@@ -75,6 +75,8 @@ builder.Logging.SetMinimumLevel(LogLevel.Warning);
 builder.Services.AddSingleton(vectorStore);
 builder.Services.AddSingleton(provider);
 builder.Services.AddSingleton(options);
+builder.Services.AddSingleton(new MemoryVectorIndexer(
+    provider, vectorStore, NullLogger.Instance, options));
 
 string pluginVersion = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
