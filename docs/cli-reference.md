@@ -69,6 +69,11 @@ scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
 
 Compress and persist text as a named memory. Reads from a file path or stdin (`-`).
 
+> **Ephemeral memories are not available from the CLI.** `~name` and its `/temp/...` alias live
+> only in the process that creates them, and the CLI exits immediately — so a CLI ephemeral write
+> would be discarded. All memory commands refuse an ephemeral address with exit 1. Use an MCP
+> client for ephemerals, or a persistent path.
+
 ```bash
 scri store <name> [file] [--workspace-root <path>]
     [-d description] [-t tag1,tag2] [-k keyword1,keyword2]
@@ -717,7 +722,7 @@ The configuration pattern is the same -- point your MCP client at `scri serve` o
 |---------|-------|--------------|
 | `subject` | Local | `.scrinia/store/subject.nmp2` |
 | `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` |
-| `~subject` | Ephemeral | In-memory only (dies with process) |
+| `~subject` | Ephemeral | In-memory only (dies with process). **Not available from the CLI.** |
 
 Names are sanitized for filesystem safety: `..` is stripped, `/` and `\` are replaced with `_`, and invalid filename characters are removed.
 
@@ -732,7 +737,7 @@ Memory paths are free-form, but a small set of namespaces have first-class behav
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date. |
 | `/checkpoint/...` | State snapshots. |
-| `/temp/...` | Ephemeral (dies on process exit). |
+| `/temp/...` | Ephemeral — an alias for `~subject`; both spell the same memory. **Not available from the CLI.** |
 
 The `list` and `search` actions support an `excludeTopics` parameter to filter specific topics from the result set.
 

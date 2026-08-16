@@ -186,7 +186,7 @@ A small set of paths have first-class behavior; everything else is plain memory 
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
 | `/checkpoint/...` | State snapshots. |
-| `/temp/...` | Ephemeral (dies on process exit). |
+| `/temp/...` | Ephemeral — an alias for `~subject`; both spell the same memory. |
 
 ### Built-in Skills
 

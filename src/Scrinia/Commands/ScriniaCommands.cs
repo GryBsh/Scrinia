@@ -32,6 +32,34 @@ public partial class ScriniaCommands
     }
 
     /// <summary>
+    /// Canonicalizes the ephemeral surface alias, then refuses any ephemeral address.
+    ///
+    /// <para>Every ephemeral operation from the CLI is meaningless, not just the writes: a
+    /// fresh CLI process starts with an empty in-memory ephemeral map and exits before
+    /// anything can read it back. `scri store ~x` therefore reported success and exit 0 over
+    /// content it discarded (review finding C1), and `scri show ~x` could only ever answer
+    /// NOT_FOUND. Refusing loudly is the honest outcome; the alternative — inventing a
+    /// session-scoped store — is a lifecycle nothing has asked for.</para>
+    ///
+    /// <para>The message names the CANONICAL form, so a caller who used the alias learns the
+    /// real address rather than having their own spelling read back to them.</para>
+    /// </summary>
+    /// <returns>True when the command must stop and return 1.</returns>
+    private static bool RefuseEphemeral(string name, bool json, out string canonical)
+    {
+        canonical = MemoryNaming.CanonicalizeEphemeralAlias(name);
+        if (!MemoryNaming.IsEphemeralName(canonical)) return false;
+
+        string message =
+            $"'{canonical}' names an ephemeral memory. Ephemeral memories live only in the "
+            + "process that creates them, and the CLI exits immediately. Use a persistent path.";
+
+        if (json) WriteJsonError(message);
+        else AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(message)}");
+        return true;
+    }
+
+    /// <summary>
     /// Human-facing rendering of an error envelope: the message, then one indented bullet per
     /// <see cref="McpResponse.ActionNeeded"/> entry.
     /// </summary>

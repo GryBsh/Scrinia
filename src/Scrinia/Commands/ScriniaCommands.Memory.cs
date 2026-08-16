@@ -347,6 +347,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
+        name = canonicalName;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -418,6 +420,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
+        name = canonicalName;
 
         var tools = new ScriniaMcpTools();
         McpResponse response = await tools.Recall(name, cancellationToken: cancellationToken);
@@ -464,6 +468,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
+        name = canonicalName;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -501,6 +507,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
+        name = canonicalName;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -546,6 +554,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
+        name = canonicalName;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -569,6 +579,10 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (RefuseEphemeral(from, json, out string canonicalFrom)) return 1;
+        if (RefuseEphemeral(to, json, out string canonicalTo)) return 1;
+        from = canonicalFrom;
+        to = canonicalTo;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
