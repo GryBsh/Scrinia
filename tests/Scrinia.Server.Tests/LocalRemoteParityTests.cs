@@ -42,6 +42,20 @@ namespace Scrinia.Server.Tests;
 /// <para>Kestrel, not <c>TestServer</c>: <c>HttpMemoryStore</c> sends synchronously and
 /// <c>TestHost.ClientHandler.Send</c> throws unconditionally. Same pattern as
 /// <c>RemoteWritePathMetadataTests</c> and <c>Conformance/StoreConformanceFixture</c>.</para>
+///
+/// <para><b>The local side fires the same maintenance sink the server now dispatches on REST.</b>
+/// A direct <see cref="FileMemoryStore"/> <c>StoreAsync</c>/<c>AppendAsync</c> call fires no
+/// <see cref="IMemoryEventSink"/> at all — sinks are dispatched by the CALLER, not the store, and
+/// this fixture used to call the store directly. The real local write path (<c>MemoryTools</c>,
+/// which the CLI drives) always fires <see cref="MaintenanceEventSink"/> after a write. Before the
+/// event-pipeline-unification branch, both sides happened to agree by NOT running it — the remote
+/// side by the defect that branch fixes, the local side by this harness's own gap, never by design.
+/// Now that REST fires it correctly (<see cref="Scrinia.Server.Services.EventSinkOperationHook"/>),
+/// the local side has to as well, or this class would compare a partial local write against a
+/// complete remote one and call the difference drift. <c>_maintenance</c> below is invoked by hand
+/// after each local <c>StoreAsync</c>/<c>AppendAsync</c>, against the same qualified name and
+/// content the store just wrote — modelling exactly what <c>MemoryTools</c> does on every real local
+/// write.</para>
 /// </summary>
 public sealed class LocalRemoteParityTests : IAsyncLifetime
 {
@@ -52,6 +66,12 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
     private FileMemoryStore _local = null!;
     private HttpMemoryStore _remote = null!;
     private IMemoryStore? _previousStore;
+
+    /// <summary>The maintenance sink a real local write always fires (through <c>MemoryTools</c>)
+    /// and this fixture's direct <see cref="FileMemoryStore"/> calls do not — see the class doc.
+    /// One instance, called by hand after each local write, mirroring what the REST adapter
+    /// (<see cref="Scrinia.Server.Services.EventSinkOperationHook"/>) now does on the server.</summary>
+    private readonly MaintenanceEventSink _maintenance = new();
 
     /// <summary>The dependency both memories cite. It exists byte-for-byte under BOTH workspace
     /// roots, which is what makes the <c>FileHashes</c> comparison mean something: D-04 gives a
@@ -132,6 +152,18 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         _remote.LoadIndex("local").FirstOrDefault(e => e.Name == name)
             ?? throw new InvalidOperationException($"'{name}' is not in the remote listing.");
 
+    /// <summary>Fires <see cref="_maintenance"/>'s store-side dispatch against <c>_local</c>, the
+    /// same call <c>MemoryTools</c> makes after a real local store. See the class doc.</summary>
+    private Task FireLocalStoreMaintenanceAsync(string name, string[] content) =>
+        _maintenance.OnStoredAsync(
+            _local.FormatQualifiedName("local", name), content, _local, CancellationToken.None);
+
+    /// <summary>Fires <see cref="_maintenance"/>'s append-side dispatch against <c>_local</c>, the
+    /// same call <c>MemoryTools</c> makes after a real local append. See the class doc.</summary>
+    private Task FireLocalAppendMaintenanceAsync(string name, string content) =>
+        _maintenance.OnAppendedAsync(
+            _local.FormatQualifiedName("local", name), content, _local, CancellationToken.None);
+
     // ── The cases ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -143,6 +175,7 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         const string name = "parity-store";
 
         var local = await _local.StoreAsync(StoreWrite(name));
+        await FireLocalStoreMaintenanceAsync(name, StoreWrite(name).Content);
         var remote = await _remote.StoreAsync(StoreWrite(name));
 
         AssertStorePathIsSubstantial(local);
@@ -163,6 +196,7 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         const string name = "parity-restore";
 
         var localFirst = await _local.StoreAsync(StoreWrite(name));
+        await FireLocalStoreMaintenanceAsync(name, StoreWrite(name).Content);
         var remoteFirst = await _remote.StoreAsync(StoreWrite(name));
 
         localFirst.UpdatedAt.Should().BeNull(
@@ -172,6 +206,7 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
             because: "and the remote path must call a first write a first write for the same reason");
 
         var localSecond = await _local.StoreAsync(StoreWrite(name));
+        await FireLocalStoreMaintenanceAsync(name, StoreWrite(name).Content);
         var remoteSecond = await _remote.StoreAsync(StoreWrite(name));
 
         localSecond.CreatedAt.Should().Be(localFirst.CreatedAt,
@@ -211,9 +246,11 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         const string name = "parity-append";
 
         await _local.StoreAsync(StoreWrite(name));
+        await FireLocalStoreMaintenanceAsync(name, StoreWrite(name).Content);
         await _remote.StoreAsync(StoreWrite(name));
 
         var local = await _local.AppendAsync(AppendWrite(name));
+        await FireLocalAppendMaintenanceAsync(name, AppendWrite(name).Content[0]);
         var remote = await _remote.AppendAsync(AppendWrite(name));
 
         AssertAppendPathIsSubstantial(local);
@@ -260,6 +297,7 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         var beforeLocal = await _local.StoreAsync(new MemoryWrite(
             name, "local", content, Description: "curated preview", Attributes: attributes,
             Keywords: keywords));
+        await FireLocalStoreMaintenanceAsync(name, content);
         var beforeRemote = await _remote.StoreAsync(new MemoryWrite(
             name, "local", content, Description: "curated preview", Attributes: attributes,
             Keywords: keywords));
@@ -324,8 +362,12 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         ];
 
         foreach (var store in new IMemoryStore[] { _local, _remote })
+        {
             await store.StoreAsync(new MemoryWrite(
                 name, "local", content, Description: "curated preview", Keywords: ["harbour"]));
+            if (ReferenceEquals(store, _local))
+                await FireLocalStoreMaintenanceAsync(name, content);
+        }
 
         MemoryStoreContext.Current = _local;
         (await new ScriniaMcpTools().MemoryCompact(path: name, keepRecent: 2))
@@ -372,6 +414,7 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         const string name = "parity-update";
 
         await _local.StoreAsync(StoreWrite(name));
+        await FireLocalStoreMaintenanceAsync(name, StoreWrite(name).Content);
         await _remote.StoreAsync(StoreWrite(name));
 
         // Attributes only: PATCH refuses a keyword change, deliberately, so a keyword mutation is
