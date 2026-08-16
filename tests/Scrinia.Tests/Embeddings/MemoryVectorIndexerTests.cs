@@ -195,4 +195,36 @@ public sealed class MemoryVectorIndexerTests
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [Fact]
+    public async Task RetryOnUnavailableFalse_PropagatesTheExceptionRatherThanRetryingAndSwallowingToFalse()
+    {
+        // Bulk reindex loops (EmbeddingReindexer.ReindexAsync, BuiltInEmbeddingsService.
+        // ReindexStoreAsync) pass retryOnUnavailable:false so an unreadable vector file surfaces
+        // as VectorStoreUnavailableException to their own catch ladder (counted as "failed"),
+        // rather than being retried by VectorWriteRetry for up to 42s and then swallowed to
+        // false (which their code would otherwise mis-count as "skipped").
+        string dir = Path.Combine(Path.GetTempPath(), "scrinia-mvi-" + Guid.NewGuid().ToString("N"));
+        string scopeDir = Path.Combine(dir, "local");
+        Directory.CreateDirectory(scopeDir);
+        string vectorsPath = Path.Combine(scopeDir, "vectors.bin");
+
+        // Write a real vectors.bin so there is something for a fresh VectorStore instance to
+        // try (and fail) to load.
+        var seedStore = new VectorStore(dir);
+        await seedStore.UpsertAsync("local", "note", null, [1f, 0f]);
+
+        // A fresh instance with a COLD scope cache: its first operation against "local" must go
+        // to disk. Locking the file exclusively for the duration of the call makes that disk
+        // read fail the way a held handle or a slow network filesystem would.
+        var freshStore = new VectorStore(dir);
+        var indexer = new MemoryVectorIndexer(new CountingProvider(), freshStore, NullLogger.Instance);
+
+        using var lockHandle = new FileStream(vectorsPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        Func<Task> act = async () =>
+            await indexer.IndexAsync("local", "note", ["alpha"], default, retryOnUnavailable: false);
+
+        await act.Should().ThrowAsync<VectorStoreUnavailableException>();
+    }
 }

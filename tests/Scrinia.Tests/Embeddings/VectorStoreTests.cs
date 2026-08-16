@@ -78,6 +78,23 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Remove_OnColdCache_RemovesVectorsWrittenByAnotherInstance()
+    {
+        // Both existing Remove tests upsert first on the SAME instance, so the scope's cache is
+        // already warm by the time RemoveAsync runs. RemoveAsync must load from disk on a cache
+        // miss the same way UpsertAsync does — otherwise calling it as the first operation this
+        // instance performs against a scope silently no-ops (nothing looks stale in memory) and
+        // leaves the on-disk vectors behind.
+        await _store.UpsertAsync("local", "gone", null, [0.1f, 0.2f]);
+
+        using (var cold = new VectorStore(_tempDir))
+            await cold.RemoveAsync("local", "gone");          // first op on this instance
+
+        using var verify = new VectorStore(_tempDir);
+        verify.GetVectors("local").Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Persistence_SurvivesNewInstance()
     {
         float[] vec = [0.1f, 0.2f, 0.3f, 0.4f];

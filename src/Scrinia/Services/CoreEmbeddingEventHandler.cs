@@ -60,8 +60,10 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
     {
         if (!wasDeleted) return;
 
-        var (scope, subject) = memoryStore.ParseQualifiedName(qualifiedName);
-        await _indexer.RemoveAsync(scope, subject, ct);
+        // Uses the (qualifiedName, store) overload, which owns the ParseQualifiedName call
+        // inside its own try — a malformed qualifiedName must not throw out of an event-sink
+        // handler with no guard of its own.
+        await _indexer.RemoveAsync(qualifiedName, memoryStore, ct);
     }
 
     private async Task EmbedAndIndexAsync(

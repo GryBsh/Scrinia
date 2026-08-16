@@ -4,7 +4,21 @@ namespace Scrinia.Core.Embeddings;
 
 /// <summary>
 /// The single embed-and-index policy. Owns availability check, windowing, the per-memory chunk
-/// cap, batching, the vector-count guard, remove-then-upsert ordering, and write retry.
+/// cap, batching, the vector-count guard, remove-then-upsert ordering, and (for detached
+/// callers) write retry.
+///
+/// <para><b>Retry is opt-in per call, not unconditional.</b> <see cref="IndexAsync"/> defaults
+/// <c>retryOnUnavailable</c> to <c>true</c> for event-sink/write paths, which run detached and
+/// can afford <see cref="VectorWriteRetry"/>'s up-to-42s backoff. Bulk callers — reindex loops —
+/// pass <c>false</c>: <see cref="VectorWriteRetry"/>'s own doc comment says it is "not for bulk
+/// reindex loops, where a long wait per item would stall the whole run," and its
+/// <c>RunAsync</c> also catches <see cref="VectorStoreUnavailableException"/> and returns
+/// <c>false</c> — which would make an unreadable vector file indistinguishable from "nothing to
+/// embed" to a caller like <see cref="EmbeddingReindexer.ReindexAsync"/> whose
+/// <c>catch (VectorStoreUnavailableException)</c> ladder depends on seeing the exception to
+/// count the memory as failed rather than skipped. With <c>retryOnUnavailable: false</c> the
+/// remove-then-upsert runs once, unwrapped, and lets that exception propagate to the caller's
+/// own catch ladder.</para>
 ///
 /// <para><b>The chunk model.</b> A memory's content array is its addressable unit: element
 /// index, 1-based, the same unit <c>ChunkEntry.ChunkIndex</c> and the REST contract use. Each
@@ -59,9 +73,15 @@ public sealed class MemoryVectorIndexer
     /// Embeds <paramref name="content"/> and replaces every vector held for
     /// <paramref name="subject"/> in <paramref name="scope"/>. Returns false when nothing was
     /// written — provider unavailable, no embeddable text, or the count guard tripped.
+    ///
+    /// <para><paramref name="retryOnUnavailable"/> defaults to <c>true</c> (detached event-sink
+    /// callers). Bulk reindex loops must pass <c>false</c> so a <see cref="VectorStoreUnavailableException"/>
+    /// propagates to their own catch ladder instead of being retried for up to 42s and then
+    /// swallowed to <c>false</c> — see the class doc comment.</para>
     /// </summary>
     public async Task<bool> IndexAsync(
-        string scope, string subject, string[] content, CancellationToken ct)
+        string scope, string subject, string[] content, CancellationToken ct,
+        bool retryOnUnavailable = true)
     {
         if (!_provider.IsAvailable) return false;
         if (content.Length == 0) return false;
@@ -110,14 +130,20 @@ public sealed class MemoryVectorIndexer
         // Atomic per-memory replace: clearing first is what stops a shrunk memory keeping stale
         // higher chunk indices. If the upsert loop is interrupted the next index pass rebuilds
         // this memory cleanly.
-        return await VectorWriteRetry.RunAsync(
-            async () =>
-            {
-                await _store.RemoveAsync(scope, subject, ct);
-                for (int i = 0; i < plan.Count; i++)
-                    await _store.UpsertAsync(scope, subject, plan[i].ChunkIndex, vectors[i], ct);
-            },
-            _logger, $"{scope}/{subject}", ct);
+        Func<Task> write = async () =>
+        {
+            await _store.RemoveAsync(scope, subject, ct);
+            for (int i = 0; i < plan.Count; i++)
+                await _store.UpsertAsync(scope, subject, plan[i].ChunkIndex, vectors[i], ct);
+        };
+
+        if (retryOnUnavailable)
+            return await VectorWriteRetry.RunAsync(write, _logger, $"{scope}/{subject}", ct);
+
+        // Bulk callers get the exception, not a retried-then-swallowed false — see the class and
+        // parameter doc comments.
+        await write();
+        return true;
     }
 
     /// <summary>Drops every vector held for <paramref name="subject"/> in <paramref name="scope"/>.</summary>
@@ -130,6 +156,27 @@ public sealed class MemoryVectorIndexer
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to remove vectors for '{Scope}/{Name}'", scope, subject);
+        }
+    }
+
+    /// <summary>
+    /// Parses <paramref name="qualifiedName"/> and drops every vector held for the resulting
+    /// (scope, subject). Owns the parse inside its own try so a throw from
+    /// <see cref="IMemoryStore.ParseQualifiedName"/> cannot escape into a caller with no guard
+    /// of its own — e.g. <c>PluginPipeline.ForgetAsync</c> awaits
+    /// <c>IMemoryOperationHook.OnAfterForgetAsync</c> on the REST path with no surrounding
+    /// try/catch, so a throw there would propagate into the forget request itself.
+    /// </summary>
+    public async Task RemoveAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    {
+        try
+        {
+            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+            await _store.RemoveAsync(scope, subject, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to remove vectors for '{Name}'", qualifiedName);
         }
     }
 }

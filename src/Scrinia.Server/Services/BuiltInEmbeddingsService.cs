@@ -83,8 +83,8 @@ public sealed class BuiltInEmbeddingsService :
     public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
     {
         if (!wasDeleted) return;
-        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-        await _indexer.RemoveAsync(scope, subject, ct);
+        // (qualifiedName, store) overload owns the parse inside its own try.
+        await _indexer.RemoveAsync(qualifiedName, store, ct);
     }
 
     // ── IMemoryOperationHook (REST path) ────────────────────────────────────
@@ -98,8 +98,10 @@ public sealed class BuiltInEmbeddingsService :
     public async Task OnAfterForgetAsync(AfterForgetContext ctx, CancellationToken ct)
     {
         if (!ctx.WasDeleted) return;
-        var (scope, subject) = ctx.Store.ParseQualifiedName(ctx.Name);
-        await _indexer.RemoveAsync(scope, subject, ct);
+        // (qualifiedName, store) overload owns the parse inside its own try — PluginPipeline
+        // awaits this hook with no surrounding try/catch on the REST path, so a throw here
+        // would otherwise propagate into the forget request itself.
+        await _indexer.RemoveAsync(ctx.Name, ctx.Store, ct);
     }
 
     // ── Reindex ─────────────────────────────────────────────────────────────
@@ -133,7 +135,10 @@ public sealed class BuiltInEmbeddingsService :
                 var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
                 if (elements.Length == 0) continue;
 
-                if (await _indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct))
+                // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException reach
+                // the catch ladder below instead of being retried for up to 42s per memory and
+                // then swallowed to false.
+                if (await _indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct, retryOnUnavailable: false))
                     count++;
             }
             catch (VectorStoreUnavailableException ex)
