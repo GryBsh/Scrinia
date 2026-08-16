@@ -11,7 +11,7 @@ namespace Scrinia.Server.Services;
 /// as the Vulkan plugin so it can be cleanly overridden when the plugin is installed.
 /// </summary>
 public sealed class BuiltInEmbeddingsService :
-    ISearchScoreContributor, IMemoryEventSink, IMemoryOperationHook
+    ISearchScoreContributor, IMemoryEventSink, IMemoryOperationHook, IEmbeddingsAdmin
 {
     private readonly IEmbeddingProvider _provider;
     private readonly VectorStore _vectorStore;
@@ -38,6 +38,7 @@ public sealed class BuiltInEmbeddingsService :
     public int Dimensions => _provider.Dimensions;
     public double SemanticWeight => _semanticWeight;
     public int TotalVectorCount => _vectorStore.Count();
+    public string Hardware => "CPU";
 
     // ── ISearchScoreContributor ──────────────────────────────────────────────
 

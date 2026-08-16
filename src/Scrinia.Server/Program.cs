@@ -165,6 +165,8 @@ if (!pluginProvidesEmbeddings)
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
             builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
+            builder.Services.AddSingleton<IEmbeddingsAdmin>(sp =>
+                sp.GetRequiredService<BuiltInEmbeddingsService>());
 
             // Parity with the CLI, which has run this since WorkspaceSetup. Safe only because the
             // store-contract branch fixed remote listing truncation first: PromoteAsync reads the
@@ -529,6 +531,7 @@ foreach (var plugin in loadedPlugins)
 app.MapMemoryEndpoints();
 app.MapKeyEndpoints();
 app.MapHealthEndpoints();
+app.MapEmbeddingsEndpoints();
 app.MapChatEndpoints(app.Services.GetRequiredService<Scrinia.Server.Chat.ChatOptions>());
 
 // Plugin endpoints
@@ -537,48 +540,6 @@ var pluginGroup = app.MapGroup("/api/v1/plugins")
     .RequireRateLimiting("api");
 foreach (var plugin in loadedPlugins)
     plugin.MapEndpoints(pluginGroup);
-
-// Built-in embeddings endpoints (if no plugin provides them)
-if (!pluginProvidesEmbeddings)
-{
-    var embGroup = pluginGroup.MapGroup("/embeddings");
-
-    embGroup.MapGet("/status", (HttpContext ctx) =>
-    {
-        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
-        if (svc is null)
-            return Results.Ok(new { provider = "none", available = false, dimensions = 0, semanticWeight = 0.0, vectorCount = 0, hardware = "" });
-        return Results.Ok(new { provider = svc.ProviderName, available = svc.IsAvailable, dimensions = svc.Dimensions, semanticWeight = svc.SemanticWeight, vectorCount = svc.TotalVectorCount, hardware = "CPU" });
-    });
-
-    embGroup.MapGet("/settings", (HttpContext ctx) =>
-    {
-        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
-        if (svc is null)
-            return Results.Ok(new { provider = "none", semanticWeight = 0.0, maxBatchSize = 1 });
-        return Results.Ok(new { provider = svc.ProviderName, semanticWeight = svc.SemanticWeight, maxBatchSize = 1 });
-    });
-
-    embGroup.MapPost("/reindex", async (HttpContext ctx, CancellationToken ct) =>
-    {
-        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
-        if (svc is null || !svc.IsAvailable)
-            return Results.BadRequest(new { error = "Embedding provider is not available." });
-
-        var store = MemoryStoreContext.Current;
-        if (store is null)
-        {
-            // Resolve from request context
-            var reqCtx = ctx.RequestServices.GetRequiredService<RequestContext>();
-            store = reqCtx.Store;
-        }
-        if (store is null)
-            return Results.BadRequest(new { error = "No store context available." });
-
-        int count = await svc.ReindexStoreAsync(store, ct);
-        return Results.Ok(new { message = $"Reindexed {count} memories." });
-    });
-}
 
 if (app.Environment.IsDevelopment() || app.Configuration.GetValue("Scrinia:ExposeOpenApi", false))
 {
