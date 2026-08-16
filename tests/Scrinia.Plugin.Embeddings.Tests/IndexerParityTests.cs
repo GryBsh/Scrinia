@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
@@ -8,6 +9,14 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// Finding H3. Installing the Vulkan plugin — the component marketed as better embeddings —
 /// made semantic recall on long memories worse or absent, because the plugin's private copy of
 /// embed-and-index never windowed. One input through both paths must now produce one layout.
+///
+/// <para>Side A drives the actual <see cref="EmbeddingsPlugin"/> entry point
+/// (<see cref="EmbeddingsPlugin.OnStoredAsync"/>) via the <see cref="EmbeddingsPlugin.InitializeForTests"/>
+/// seam; side B drives <see cref="MemoryVectorIndexer"/> directly. An earlier version of this
+/// test drove BOTH sides through <see cref="MemoryVectorIndexer"/> directly, which cannot fail
+/// regardless of what the plugin does — it was proving the indexer is deterministic against
+/// itself, not that the plugin still delegates to it. See task-5-report.md, Finding 3, for the
+/// before/after validation run.</para>
 /// </summary>
 public sealed class IndexerParityTests
 {
@@ -29,17 +38,34 @@ public sealed class IndexerParityTests
         var options = new EmbeddingOptions { ChunkSize = 100, ChunkOverlap = 20 };
         string[] content = ["short", new string('x', 400)];
 
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-parity-store-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        using var store = new FileMemoryStore(root);
+
         var a = NewStore();
         var b = NewStore();
-        await new MemoryVectorIndexer(new StubProvider(), a, NullLogger.Instance, options)
-            .IndexAsync("local", "note", content, default);
+
+        // Side A: the plugin's real entry point. "/note" parses (FileMemoryStore.ParseQualifiedName)
+        // to scope "local", subject "note" — matching side B's direct (scope, subject) call below.
+        using var plugin = new EmbeddingsPlugin();
+        plugin.InitializeForTests(new StubProvider(), a, NullLogger.Instance, options);
+        await plugin.OnStoredAsync("/note", content, store, default);
+
+        // Side B: the shared indexer directly, over an independent store.
         await new MemoryVectorIndexer(new StubProvider(), b, NullLogger.Instance, options)
             .IndexAsync("local", "note", content, default);
 
-        a.GetVectors("local").Select(v => v.ChunkIndex)
-            .Should().BeEquivalentTo(b.GetVectors("local").Select(v => v.ChunkIndex));
-        a.GetVectors("local").Should().HaveCountGreaterThan(content.Length,
-            because: "the long element must window rather than mean-pool");
+        try
+        {
+            a.GetVectors("local").Select(v => v.ChunkIndex)
+                .Should().BeEquivalentTo(b.GetVectors("local").Select(v => v.ChunkIndex));
+            a.GetVectors("local").Should().HaveCountGreaterThan(content.Length,
+                because: "the long element must window rather than mean-pool");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
     }
 
     private static VectorStore NewStore()

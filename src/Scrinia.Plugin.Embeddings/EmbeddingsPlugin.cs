@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -33,6 +34,11 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     private volatile VectorStore? _vectorStore;
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
+    // Set only when EnsureInitialized had to self-create a fallback console logger (no real
+    // ILoggerFactory was ever captured via ConfigureMiddleware — true for every test in this
+    // project, which constructs the plugin directly instead of going through the server's DI
+    // wiring). Owning it here means Dispose can shut it down instead of leaking it per instance.
+    private ILoggerFactory? _ownedLoggerFactory;
     private bool _disposed;
     private readonly object _initLock = new();
 
@@ -54,6 +60,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             (_provider as IDisposable)?.Dispose();
             (_vectorStore as IDisposable)?.Dispose();
             _vectorStore = null;
+            _indexer = null; // matched pair with _vectorStore everywhere else; don't leave it
+                              // holding a reference to the disposed store.
+            _ownedLoggerFactory?.Dispose();
+            _ownedLoggerFactory = null;
         }
     }
 
@@ -63,15 +73,25 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     {
         var section = configuration.GetSection("Scrinia:Embeddings");
 
-        _options = section.Get<EmbeddingOptions>() ?? new EmbeddingOptions();
+        try
+        {
+            _options = section.Get<EmbeddingOptions>() ?? new EmbeddingOptions();
+        }
+        catch (InvalidOperationException)
+        {
+            // The binder throws InvalidOperationException (verified: Get<T>() on a section with
+            // e.g. SemanticWeight: "not-a-number" throws "Failed to convert configuration value
+            // ... to type 'System.Double'") for a single malformed value in the section. The old
+            // code's manual double.TryParse silently kept the default in this situation instead
+            // of crashing server startup; this preserves that resilience. Trade-off: because
+            // Get<T>() validates the WHOLE section atomically, one bad property discards every
+            // other property that would have bound fine too (e.g. a valid ChunkSize alongside a
+            // malformed SemanticWeight) — falling back to full defaults rather than a
+            // property-by-property merge. Acceptable: malformed embeddings config is rare and
+            // "revert to defaults" is a safe, previously-established failure mode here.
+            _options = new EmbeddingOptions();
+        }
         _semanticWeight = _options.SemanticWeight;
-
-        // Explicit string parse stays as a fallback only — Get<EmbeddingOptions>() already binds
-        // SemanticWeight from the same section, so this only matters if the section exists but
-        // binding somehow left the default in place.
-        string? weightStr = section["SemanticWeight"];
-        if (weightStr is not null && double.TryParse(weightStr, out double w))
-            _semanticWeight = w;
 
         // Compose with PathSegmentScoreContributor so a memory's qualified path also
         // contributes to relevance — embeddings carry semantic similarity, the path
@@ -85,10 +105,26 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     }
 
     /// <summary>
+    /// Captures the real, host-built <see cref="ILoggerFactory"/> — its actual configured sinks,
+    /// levels and formatters — once one exists. <see cref="ConfigureServices"/> runs before
+    /// <c>WebApplicationBuilder.Build()</c>, so it only has the DI graph's *description*
+    /// (<see cref="IServiceCollection"/>), not a working container; building a throwaway provider
+    /// there just to read a logger would mean owning and disposing an entire separate container
+    /// for one service. <see cref="ConfigureMiddleware"/> runs once at startup, after
+    /// <c>Build()</c>, with the actual root <see cref="IServiceProvider"/> the rest of the app
+    /// uses — this is the first point a real one is available.
+    /// </summary>
+    public override void ConfigureMiddleware(IApplicationBuilder app)
+    {
+        _logger = app.ApplicationServices.GetService<ILoggerFactory>()?.CreateLogger<EmbeddingsPlugin>()
+            ?? _logger;
+    }
+
+    /// <summary>
     /// Lazy initialization — called once when we first need the provider.
     /// This allows the plugin to be registered even if the provider fails to initialize.
     /// </summary>
-    private void EnsureInitialized(IServiceProvider? sp = null)
+    private void EnsureInitialized()
     {
         if (_vectorStore is not null) return;
 
@@ -97,8 +133,14 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_vectorStore is not null) return;
 
-            _logger ??= sp?.GetService<ILoggerFactory>()?.CreateLogger<EmbeddingsPlugin>()
-                ?? LoggerFactory.Create(b => b.AddConsole()).CreateLogger<EmbeddingsPlugin>();
+            if (_logger is null)
+            {
+                // ConfigureMiddleware never ran (e.g. this plugin was constructed directly,
+                // outside the server's DI wiring — every test in this project does this): fall
+                // back to a private console logger and own its disposal (see Dispose).
+                _ownedLoggerFactory = LoggerFactory.Create(b => b.AddConsole());
+                _logger = _ownedLoggerFactory.CreateLogger<EmbeddingsPlugin>();
+            }
 
             string pluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
             string dataDir = Path.Combine(pluginsDir, "embeddings");
@@ -136,6 +178,31 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             _indexer = new MemoryVectorIndexer(_provider, vectorStore, _logger, _options);
             _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
+        }
+    }
+
+    /// <summary>
+    /// Test-only seam: performs the SAME assignments <see cref="EnsureInitialized"/> does, in the
+    /// SAME order (indexer built before the <c>_vectorStore</c> sentinel is assigned), so an
+    /// injected provider/store can never drift from how production wires <see cref="_indexer"/>.
+    /// Exists so tests stop hand-reimplementing this construction via reflection — a change to
+    /// EnsureInitialized's shape now breaks this method (or callers) at compile time instead of
+    /// leaving tests silently building a stale shape. Marking this <c>internal</c> rather than
+    /// <c>public</c> keeps it out of the plugin's real surface;
+    /// <c>InternalsVisibleTo("Scrinia.Plugin.Embeddings.Tests")</c> is already declared in
+    /// AssemblyInfo.cs.
+    /// </summary>
+    internal void InitializeForTests(
+        IEmbeddingProvider provider, VectorStore store, ILogger logger, EmbeddingOptions? options = null)
+    {
+        lock (_initLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _provider = provider;
+            _logger = logger;
+            _options = options ?? _options;
+            _indexer = new MemoryVectorIndexer(_provider, store, _logger, _options);
+            _vectorStore = store; // assign LAST: it's the initialized sentinel
         }
     }
 

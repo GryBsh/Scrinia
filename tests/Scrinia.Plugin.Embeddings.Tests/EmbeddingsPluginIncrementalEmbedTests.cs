@@ -1,4 +1,3 @@
-using System.Reflection;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
@@ -26,11 +25,11 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// and re-indexing replaces rather than accumulates.</para>
 ///
 /// This plugin has no Vulkan model available in the test environment (no GGUF at the expected
-/// path), so the private <c>_vectorStore</c>/<c>_provider</c>/<c>_logger</c>/<c>_indexer</c>
-/// fields are injected via reflection (mirrors <see cref="EmbeddingsPluginReindexTests"/>) —
-/// setting <c>_vectorStore</c> makes <c>EnsureInitialized</c> short-circuit at its
-/// <c>if (_vectorStore is not null) return;</c> guard, so the injected deterministic provider and
-/// hand-built indexer survive.
+/// path), so tests use <see cref="EmbeddingsPlugin.InitializeForTests"/> — the internal seam that
+/// performs the exact same field assignments <c>EnsureInitialized</c> does, in the same order —
+/// to inject a deterministic provider and store instead of the real Vulkan one. This replaced
+/// hand-rolled reflection that reimplemented (and could silently drift from) that construction
+/// sequence.
 /// </summary>
 public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
 {
@@ -94,28 +93,16 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
     {
         var plugin = new EmbeddingsPlugin();
         var activeProvider = provider ?? new LengthProvider();
-        typeof(EmbeddingsPlugin).GetField("_vectorStore", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, _vectors);
-        typeof(EmbeddingsPlugin).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, activeProvider);
-        typeof(EmbeddingsPlugin).GetField("_logger", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-        // EnsureInitialized short-circuits once _vectorStore is set, so the indexer it would
-        // otherwise build must be constructed by hand here, over the same injected provider/store.
-        typeof(EmbeddingsPlugin).GetField("_indexer", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, new MemoryVectorIndexer(
-                activeProvider, _vectors, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
+        plugin.InitializeForTests(
+            activeProvider, _vectors, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
         return plugin;
     }
 
     /// <summary>Swaps the plugin's provider in place, used mid-test to trigger a mismatch guard.</summary>
     private static void SwapProvider(EmbeddingsPlugin plugin, IEmbeddingProvider provider, VectorStore store)
     {
-        typeof(EmbeddingsPlugin).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, provider);
-        typeof(EmbeddingsPlugin).GetField("_indexer", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .SetValue(plugin, new MemoryVectorIndexer(
-                provider, store, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
+        plugin.InitializeForTests(
+            provider, store, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
     }
 
     private void SeedArtifact(string scope, string name, string content)
