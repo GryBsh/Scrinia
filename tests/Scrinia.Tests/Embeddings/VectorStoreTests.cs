@@ -263,6 +263,28 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Svf3_PreBranchSignature_QuarantinesUnderTheLayoutMarkedSignature()
+    {
+        // Pre-branch files were signed with the un-marked "{provider}|c{size}o{overlap}" form —
+        // no "|e1" suffix — because their chunk index was a raw window ordinal. Reopening under
+        // today's ChunkedSignature.Compose (which appends the layout marker) must quarantine
+        // them rather than let the new element/window reader misinterpret old indices.
+        const string preBranchSignature = "ollama:nomic-embed-text|c1200o200";
+        string layoutMarkedSignature = ChunkedSignature.Compose("ollama:nomic-embed-text", 1200, 200);
+        layoutMarkedSignature.Should().NotBe(preBranchSignature);
+
+        using (var old = new VectorStore(_tempDir, expectedSignature: preBranchSignature))
+        {
+            await old.UpsertAsync("local", "memo", 0, [0.1f, 0.2f, 0.3f]);
+        }
+
+        using var fresh = new VectorStore(_tempDir, expectedSignature: layoutMarkedSignature);
+        fresh.GetVectors("local").Should().BeEmpty();
+        fresh.HasStaleQuarantines.Should().BeTrue();
+        fresh.StaleQuarantineScopes.Should().Contain("local");
+    }
+
+    [Fact]
     public async Task Svf3_NullExpectedSignature_DisablesMismatchCheck()
     {
         // Write with one signature

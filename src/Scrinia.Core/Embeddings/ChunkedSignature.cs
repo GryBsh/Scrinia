@@ -9,12 +9,18 @@ namespace Scrinia.Core.Embeddings;
 /// </summary>
 public static class ChunkedSignature
 {
+    /// <summary>Chunk-vector layout revision. Bumped when the meaning of a stored chunk index
+    /// changes, so files written under the old meaning quarantine rather than being misread.
+    /// <c>e1</c> is elements-with-nested-windows (see <see cref="MemoryVectorIndexer"/>); files
+    /// with no marker predate it and carry raw window ordinals.</summary>
+    public const string LayoutRevision = "e1";
+
     /// <summary>
-    /// Compose a chunked signature: <c>{providerSignature}|c{chunkSize}o{overlap}</c>.
-    /// Example: <c>ollama:nomic-embed-text|c1200o200</c>.
+    /// Compose a chunked signature: <c>{providerSignature}|c{chunkSize}o{overlap}|{layout}</c>.
+    /// Example: <c>ollama:nomic-embed-text|c1200o200|e1</c>.
     /// </summary>
     public static string Compose(string providerSignature, int chunkSize, int overlap) =>
-        $"{providerSignature}|c{chunkSize}o{overlap}";
+        $"{providerSignature}|c{chunkSize}o{overlap}|{LayoutRevision}";
 
     /// <summary>
     /// The signature a live-serving store should expect for vectors produced by
