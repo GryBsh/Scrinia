@@ -170,4 +170,65 @@ public sealed class IndexCacheWritePathTests : IDisposable
                    + "exercising the omit logic under test");
         names.Should().BeEquivalentTo(["b"]);
     }
+
+    [Fact]
+    public void TryUpdateEntry_UpdatesTheCache_AndKeepsTheRestOfTheScope()
+    {
+        _store.Upsert(E("a"), "local");
+        _store.Upsert(E("b"), "local");
+
+        // Warm the cache before the update under test — see Cold_And_Warm_Caches_Agree for why
+        // the two Upserts above never do this themselves (the first Upsert to a fresh store
+        // always lands in "leave absent", and nothing here reads in between), and why skipping
+        // this step would let TryUpdateEntry fall back to the cold sidecar scan on both the read
+        // and the write side, masking the warm-path logic under test entirely.
+        _store.LoadIndex("local").Should().HaveCount(2);
+
+        // No Description property on ArtifactEntry — Uri is the second positional member.
+        bool ok = _store.TryUpdateEntry("a", "local", e => e with { Uri = "patched" });
+
+        ok.Should().BeTrue();
+        var entries = AssertReadIsACacheHit(
+            () => _store.LoadIndex("local"),
+            because: "TryUpdateEntry above must have taken the copy-on-write branch (cache was "
+                   + "warmed just above) rather than falling back to leave-absent — recreation "
+                   + "of the lock file here would mean this read cold-reloaded instead of "
+                   + "exercising the warm update logic under test");
+        entries.Select(x => x.Name).Should().BeEquivalentTo(["a", "b"]);
+        entries.Single(x => x.Name == "a").Uri.Should().Be("patched");
+    }
+
+    [Fact]
+    public void TryUpdateEntry_AgainstAMissingEntry_ReturnsFalse_AndLeavesTheCacheIntact()
+    {
+        _store.Upsert(E("a"), "local");
+
+        // Warm the cache before the lookup under test — see Cold_And_Warm_Caches_Agree for why
+        // the Upsert above never does this itself.
+        _store.LoadIndex("local").Should().ContainSingle();
+
+        bool ok = _store.TryUpdateEntry("nope", "local", e => e with { Uri = "x" });
+
+        ok.Should().BeFalse();
+        var names = AssertReadIsACacheHit(
+            () => _store.LoadIndex("local").Select(x => x.Name).ToArray(),
+            because: "a missing-entry lookup must have been served from the already-warm cache "
+                   + "and must not have disturbed it — recreation of the lock file here would "
+                   + "mean this read cold-reloaded instead of proving the cache stayed warm and "
+                   + "intact");
+        names.Should().BeEquivalentTo(["a"]);
+    }
+
+    [Fact]
+    public void TryUpdateEntry_AgainstAnUncachedScope_StillFindsTheEntry()
+    {
+        _store.Upsert(E("a"), "local");
+        using var fresh = new FileMemoryStore(_root);
+
+        // First operation on this instance, cold cache — must fall back to the sidecar scan.
+        bool ok = fresh.TryUpdateEntry("a", "local", e => e with { Uri = "cold" });
+
+        ok.Should().BeTrue();
+        fresh.LoadIndex("local").Single(x => x.Name == "a").Uri.Should().Be("cold");
+    }
 }

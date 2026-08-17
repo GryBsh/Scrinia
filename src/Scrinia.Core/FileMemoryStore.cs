@@ -1274,7 +1274,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // LoadEntriesFromSidecars is the load seam and normalizes legacy "fields" itself, so
             // the mutator below always sees Attributes populated even on this cold lookup path,
             // which (unlike LoadIndexUnsafe) has no AttributeMigration.MigratesTo forward-fill.
-            var current = LoadEntriesFromSidecars(storeDir)
+            //
+            // Serve the lookup from the cache when the scope is warm; fall back to the sidecar
+            // scan when it is not. The scan's cost was accepted above on the grounds that a hit
+            // and a miss pay the same thing — still true, and unchanged for the cold case. This
+            // only avoids the cost when the answer is already in memory.
+            var current = (_indexCache.TryGetValue(scope, out var warmIndex)
+                    ? (IEnumerable<ArtifactEntry>)warmIndex.Entries
+                    : LoadEntriesFromSidecars(storeDir))
                 .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
             if (current is null) return false;
 
@@ -1289,9 +1296,41 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
             WriteSidecar(updated, storeDir);
 
-            _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir);
-            _indexCache[scope] = new CachedIndex(entries);
+            // Copy-on-write cache update — see the matching comment in Upsert for why this must
+            // install a NEW CachedIndex and must not re-read the scope's sidecars.
+            //
+            // `updated` does not need a NormalizeAttributesKey() call before caching, unlike
+            // Upsert's caller-supplied entry: `current` above is the load seam's output, which is
+            // always already normalized (LegacyFields null), and `updated` is derived from it
+            // exclusively through `mutate`'s `with` expression and
+            // MemoryDerivation.ForMetadataUpdate's `with` expressions — neither can reintroduce
+            // LegacyFields, since it is not one of ArtifactEntry's positional constructor
+            // parameters and no caller in this codebase sets it explicitly. There is no external
+            // caller here handing this method a raw, possibly-un-normalized entry the way Upsert
+            // has.
+            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            {
+                string target = SanitizeName(updated.Name);
+                var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
+                bool replaced = false;
+                foreach (var existing in cachedIndex.Entries)
+                {
+                    if (!replaced
+                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        next.Add(updated);
+                        replaced = true;
+                        continue;
+                    }
+                    next.Add(existing);
+                }
+                if (!replaced) next.Add(updated);
+                _indexCache[scope] = new CachedIndex(next);
+            }
+            else
+            {
+                _indexCache.TryRemove(scope, out _);
+            }
 
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
