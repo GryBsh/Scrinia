@@ -30,6 +30,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Plugin.Embeddings\Scrinia.Plugin.Embeddings.csproj" />
+    <!-- EmbeddingsTools (the plugin's MCP wire surface) lives in the CLI project and had no direct
+         coverage, though this branch added its `index` tool and rewrote its Search projection. -->
+    <ProjectReference Include="..\..\src\Scrinia.Plugin.Embeddings.Cli\Scrinia.Plugin.Embeddings.Cli.csproj" />
     <ProjectReference Include="..\Scrinia.Tests\Scrinia.Tests.csproj" />
   </ItemGroup>
 </Project>

@@ -21,25 +21,15 @@ public sealed class EntityGraphTests
     //    seed → PPR walk EntityGraphScoreContributor runs, but returning the raw (unnormalized,
     //    unscaled) PPR mass — matching what the deleted EntityGraph.Score used to return. ──
 
+    // Shared with EntityGraphTests and StateMarkerNotAnEntityTests: see EntityGraphTestFixture,
+    // which builds stores through the real EntityFactDerivation instead of transcribing its body.
     private static EntityFactStore StoreOf(
-        params (string DocKey, string[]? Keywords, IReadOnlyDictionary<string, string[]>? Attributes)[] docs) =>
-        new(docs.Select(d => new MemoryEntities(
-            "s", d.DocKey, default,
-            EntityGraph.ParseEntityKeywords(d.Keywords)
-                .Concat(EntityGraph.ParseEntityAttributes(d.Attributes))
-                .Select(t => EntityRef.Of(t.Type, t.Value))
-                .Distinct()
-                .ToArray())));
+        params (string DocKey, string[]? Keywords, IReadOnlyDictionary<string, string[]>? Attributes)[] docs)
+        => EntityGraphTestFixture.StoreOf(docs);
 
     private static IReadOnlyDictionary<string, double> ScoreQuery(
         EntityFactStore store, string query, double alpha, int iterations)
-    {
-        var (entityToDocs, docToEntities) = store.ScoringAdjacency();
-        var seeds = EntityQuerySeeder.Seed(query, entityToDocs.Keys);
-        return seeds.Count == 0
-            ? new Dictionary<string, double>()
-            : PersonalizedPageRank.Score(entityToDocs, docToEntities, seeds, alpha, iterations);
-    }
+        => EntityGraphTestFixture.ScoreQuery(store, query, alpha, iterations);
 
     // Shared fixture. "entity:" is the legacy untyped marker ParseEntityKeywords already
     // recognizes, so raw values round-trip as their own type:value node without inventing a

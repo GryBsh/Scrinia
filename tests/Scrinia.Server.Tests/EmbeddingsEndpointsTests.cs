@@ -104,11 +104,15 @@ public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactor
 
         var resp = await client.PostAsync("/api/v1/plugins/embeddings/reindex", null);
 
-        // Be.NotFound, not NotBe.OK: the deleted handler returned 400 unconditionally, so
-        // NotBe(OK) passed against the merge base and pinned nothing. Only 404 distinguishes
-        // "the route is gone" from "the route is still mapped and rejecting the request".
-        resp.StatusCode.Should().Be(HttpStatusCode.NotFound,
+        // An exact status, not NotBe(OK): the deleted handler returned 400 unconditionally, so
+        // NotBe(OK) passed against the merge base and pinned nothing at all.
+        //
+        // 405, not 404, because MapFallbackToFile("index.html") claims GET/HEAD on every
+        // unmatched path for the SPA — so an unmatched POST surfaces as MethodNotAllowed. That
+        // is exactly the discriminator wanted here: 405 means no POST handler is mapped at this
+        // path, whereas the retired handler was a POST.
+        resp.StatusCode.Should().Be(HttpStatusCode.MethodNotAllowed,
             because: "the inline plugin-owned group was replaced by the {store}-scoped routes, "
-                   + "so nothing should be mapped at the old path at all");
+                   + "so no POST handler should remain at the old path");
     }
 }

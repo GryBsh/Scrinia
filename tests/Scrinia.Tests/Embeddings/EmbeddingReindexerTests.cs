@@ -237,6 +237,54 @@ public class EmbeddingReindexerTests : IDisposable
             => Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Pins <c>retryOnUnavailable: false</c> AT the bulk call site, not just on the indexer.
+    /// <c>MemoryVectorIndexerTests</c> proves the parameter behaves; nothing proved this loop
+    /// passes it, so reverting the argument here left the suite green.
+    ///
+    /// <para>What the argument buys: with the default <c>true</c>, <c>VectorWriteRetry.RunAsync</c>
+    /// catches <see cref="VectorStoreUnavailableException"/> and returns <c>false</c> after up to
+    /// 42s of backoff — per memory. This loop cannot tell that <c>false</c> apart from "nothing to
+    /// embed", so an unreadable vector file would be counted as <c>Skipped</c> and the whole run
+    /// would crawl. With <c>false</c> the exception reaches the catch ladder and is counted
+    /// <c>Failed</c>, which is what makes the result summary actionable.</para>
+    /// </summary>
+    [Fact]
+    public async Task ALockedVectorFile_IsReportedAsFailed_NotSkipped()
+    {
+        AddMemory("locked", "content that would embed fine if the vector file were readable");
+
+        // Seed a real vectors.bin so a fresh VectorStore has something to try (and fail) to load.
+        string scopeDir = Path.Combine(_embeddingsDir, "local");
+        Directory.CreateDirectory(scopeDir);
+        using (var seed = new VectorStore(_embeddingsDir, expectedSignature: null))
+            await seed.UpsertAsync("local", "seed", null, [1f, 0f, 0f]);
+
+        // A fresh instance with a COLD scope cache: its first operation against "local" must go to
+        // disk. Holding the file exclusively makes that read fail the way a held handle or a slow
+        // network filesystem would.
+        using var vectorStore = new VectorStore(_embeddingsDir, expectedSignature: null);
+        using var lockHandle = new FileStream(
+            Path.Combine(scopeDir, "vectors.bin"), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var started = DateTimeOffset.UtcNow;
+        var result = await EmbeddingReindexer.ReindexAsync(
+            _store, new FakeBatchProvider(), vectorStore, NullLogger.Instance,
+            progress: null, CancellationToken.None);
+        var elapsed = DateTimeOffset.UtcNow - started;
+
+        using var scope = new FluentAssertions.Execution.AssertionScope();
+
+        result.Failed.Should().Be(1,
+            because: "an unreadable vector file is recoverable and must be reported, not folded "
+                   + "into the skip count alongside 'this memory had nothing to embed'");
+        result.Skipped.Should().Be(0);
+        result.Embedded.Should().Be(0);
+        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(20),
+            because: "VectorWriteRetry's backoff runs up to ~42s PER MEMORY; if this loop stopped "
+                   + "passing retryOnUnavailable:false, a bulk run would stall rather than fail fast");
+    }
+
     private sealed class FakeBatchProvider : IEmbeddingProvider
     {
         public bool IsAvailable => true;
