@@ -40,13 +40,14 @@ public sealed record ScoringWeights(
     double ChunkContentPreviewContains = 5.0,
 
     // Chunk scoring also consults the PARENT entry, at reduced weight — a chunk of a
-    // well-named memory is more relevant than the same text in an unrelated one.
-    double ChunkParentNameExact = 50.0,          // WeightedAttributeScorer.cs:510
-    double ChunkParentNameContains = 10.0,       // :512
-    double ChunkParentKeywordExact = 20.0,       // :521
-    double ChunkParentKeywordContains = 6.0,     // :526
-    double ChunkParentTagExact = 20.0,           // :537
-    double ChunkParentTagContains = 6.0,         // :542
+    // well-named memory is more relevant than the same text in an unrelated one. These six
+    // rows are read by ScoreChunkEntryTerm against parentEntry.Name / .Keywords / .Attributes["tag"].
+    double ChunkParentNameExact = 50.0,
+    double ChunkParentNameContains = 10.0,
+    double ChunkParentKeywordExact = 20.0,
+    double ChunkParentKeywordContains = 6.0,
+    double ChunkParentTagExact = 20.0,
+    double ChunkParentTagContains = 6.0,
 
     // ── Composition ──
     /// <summary>Bonus per additional matched query term, applied as (matched - 1) x this.</summary>

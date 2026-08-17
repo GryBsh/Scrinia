@@ -16,8 +16,9 @@ namespace Scrinia.Core.Search;
 /// Tags, retrieval anchors, and description are no longer scored directly — read-time
 /// forward-fill (<see cref="Scrinia.Core.Migration.AttributeMigration"/>) promotes tags into
 /// Attributes["tag"] and anchors into Attributes["anchor"] before scoring ever runs, so they score
-/// as ordinary attribute rows above (P6.5 cleanup: Attributes is populated everywhere, so the legacy
-/// direct-carrier rows and the key:value-in-Keywords dual-read were retired).
+/// as ordinary attribute rows in <see cref="ScoreEntryTerm"/> (P6.5 cleanup: Attributes is
+/// populated everywhere, so the legacy direct-carrier rows and the key:value-in-Keywords
+/// dual-read were retired).
 ///
 /// All matching is case-insensitive. Results sorted by score desc, then newest first.
 /// Entries without TF data (v2 index) get bm25Score=0 (graceful degradation).
@@ -101,7 +102,8 @@ internal sealed class WeightedAttributeScorer
     /// BM25 scores are normalized to 0–100 (max-norm: raw / corpus-max) before combining with
     /// attribute scores. Max-norm (not min-max) so a single/weakest positive match still surfaces —
     /// min-max would zero out a candidate that is simultaneously the min and the max.
-    /// Multi-term intersection bonus of (matchedTerms - 1) * 15 rewards queries matching multiple terms.
+    /// Multi-term intersection bonus of (matchedTerms - 1) * <see cref="ScoringWeights.IntersectionBonus"/>
+    /// rewards queries matching multiple terms.
     /// Uses a min-heap (size K) for top-K selection instead of full sort for efficiency.
     /// </summary>
     public IReadOnlyList<SearchResult> SearchAll(
