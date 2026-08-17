@@ -123,6 +123,7 @@ Each API key carries a set of granular permissions:
 | `manage_roles` | Manage roles (integration point for auth plugins) |
 | `health` | Access `/health/details` endpoint for detailed diagnostics |
 | `chat` | Use the agent chat endpoint to query store memories via LLM |
+| `reindex` | Trigger a full-store re-embed via `POST .../embeddings/reindex` |
 
 ### Privilege Escalation Prevention
 

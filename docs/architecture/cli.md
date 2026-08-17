@@ -271,6 +271,6 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 - Bundle export/import
 - Workspace discovery
 - Configuration resolution
-- Embeddings (VectorStore, VectorIndex, HnswIndex, HybridReranker, BertTokenizer, SafeTensorsReader, Model2Vec, API providers)
+- Embeddings (VectorStore, VectorIndex, MemoryVectorIndexer, HybridReranker, BertTokenizer, SafeTensorsReader, Model2Vec, API providers)
 
 Test isolation uses `TestHelpers.StoreScope` which redirects workspace, store directory, ephemeral store, and `SessionBudget` via `AsyncLocal` overrides.

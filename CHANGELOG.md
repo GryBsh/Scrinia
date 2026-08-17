@@ -10,6 +10,103 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — one embed-and-index policy, and the GPU plugin no longer degrades the search it improves
+
+- **Installing the Vulkan embeddings plugin used to make semantic recall on long memories
+  worse or absent.** Seven implementations of embed-and-index had drifted apart, and the
+  load-bearing divergence was the chunking unit: Core and the server sliced content into
+  overlapping windows, while the plugin never windowed at all — so a 40 KB memory became one
+  mean-pooled vector, or the provider's context limit was exceeded and the memory silently got
+  zero vectors. A new `MemoryVectorIndexer` in `Scrinia.Core.Embeddings` now owns windowing,
+  the per-memory chunk cap, batching, the vector-count guard, remove-then-upsert ordering and
+  write retry for every path. The plugin's reindex additionally never removed prior vectors,
+  so it orphaned stale chunks behind each refresh; it now removes first like everything else.
+
+- **Chunk-level semantic scores never reached the ranker.** `ChunkEntry.ChunkIndex` is 1-based
+  over content elements, and that is the key the search scorer probes — but the built-in path
+  wrote 0-based character-window ordinals into that key position, so the probe could never hit.
+  Content elements are now the addressable unit and windows nest inside them, with a new
+  `VectorScoreProjection` owning the read-side key contract. **Existing vector files are
+  quarantined on first load and rebuilt** — the embedding signature carries a layout marker, so
+  this happens automatically through the same path that already handles a model switch.
+
+- **Appending to a memory destroyed its embeddings.** On the built-in path an append embedded
+  only the appended fragment, and indexing replaces a memory's vectors atomically — so the rest
+  of the memory lost its vectors entirely. Every path now re-reads the memory's full current
+  content on append, which is what the Vulkan plugin already did.
+
+- **A `forget` against a store whose vectors hadn't yet been loaded into memory could leave a
+  deleted memory's vectors in place and semantically searchable.** `VectorStore.RemoveAsync`
+  treated an unloaded scope's cache as empty instead of lazily loading it from disk first — the
+  same class of bug `UpsertAsync` already guarded against. Concretely: the first vector
+  operation a fresh `VectorStore` performed against a scope, if it happened to be a remove (e.g.
+  the leading half of `MemoryVectorIndexer`'s remove-then-upsert on a freshly started server),
+  silently no-opped — nothing looked stale in memory, so the on-disk vectors were never removed
+  and a subsequent upsert merged in beside them instead of replacing them. `RemoveAsync` now
+  loads the scope the same way `UpsertAsync` does.
+
+- **The whole-document vector has been retired.** Embedding a memory used to also produce one
+  mean-pooled vector over its entire joined content. A memory's semantic score is now the best
+  of its windows rather than the average of everything it contains — the same reason a long
+  memory needed windowing in the first place. Nothing needs to be done about this: the rebuild
+  described above produces the new layout.
+
+- **The plugin's configured chunk settings never reached its embedding signature.** It composed
+  the signature from a default-constructed options object, so a store with custom `ChunkSize`
+  or `ChunkOverlap` was stamped as though it used the defaults.
+
+### Fixed — the embeddings reindex route can now resolve a store
+
+- **`POST /api/v1/plugins/embeddings/reindex` returned "No store context available" on every
+  request, and most likely always had.** The route group carried no `{store}` segment, so
+  neither of the two ways its handler resolved a store could ever produce one. The three
+  embeddings routes have moved under the store-scoped group, where the existing middleware
+  resolves the store and applies access checks:
+
+  | Was | Now |
+  |---|---|
+  | `GET /api/v1/plugins/embeddings/status` | `GET /api/v1/stores/{store}/embeddings/status` |
+  | `GET /api/v1/plugins/embeddings/settings` | `GET /api/v1/stores/{store}/embeddings/settings` |
+  | `POST /api/v1/plugins/embeddings/reindex` | `POST /api/v1/stores/{store}/embeddings/reindex` |
+
+- **Reindex now requires a `reindex` permission.** The old group carried only
+  `RequireAuthorization()`, so any authenticated key could have triggered a full-store re-embed
+  if the route had worked.
+
+- **The web Settings page no longer offers a Save button that could not save.** It issued
+  `PUT .../embeddings/settings`, a route no server ever mapped; the request fell through to the
+  SPA fallback and returned HTML. Embedding settings are read from configuration, so the panel
+  is now read-only and says where the values come from.
+
+### Changed — plugin hosts prefer a single `index` call
+
+- The out-of-process plugin protocol gains an `index` tool that takes a memory's whole content
+  array, so the shared indexer runs inside the plugin process instead of the chunking policy
+  being restated by every caller that speaks the protocol. `upsert` is unchanged and still
+  supported: a plugin that offers only `upsert` keeps receiving the previous call sequence, and
+  the host warns on stderr naming what that costs.
+
+### Changed — `reindex` is a distinct API-key permission
+
+- Keys that should be able to trigger a full-store re-embed need `reindex` in their permission
+  list. Existing keys do not have it, and will get a 403 from the reindex route until it is
+  granted — the previous route was ungated, but it also never worked.
+
+### Removed — three unreachable features, and a config key that now works
+
+- `HnswIndex` (referenced only by its own tests and benchmarks; its documented 1000-vector
+  threshold existed nowhere in code), `EntityGraph`'s instance side (superseded by
+  `EntityFactStore.ScoringAdjacency`, which is what production uses), and `MergeConfig.Resolver`
+  and `ResolverCommand` (written by setup, never read by the merge driver) have been deleted.
+- **`EntityGraph` changed from a `public sealed class` to a `public static class`.** That is a
+  source- and binary-breaking change to a public type in `Scrinia.Core`, a BSD-licensed library
+  other code may compile against directly: anything that instantiated `EntityGraph` or held an
+  instance reference to it will fail to build against this version.
+- **`Scrinia:Search:Fusion` now selects the ranker's fusion mode.** RRF was implemented,
+  benchmarked and tested, but `RankerOptions.FromConfig` silently dropped the parameter — a
+  positional-record argument that was simply never passed — so production could not reach it.
+  Accepts `sum` (default) or `rrf`.
+
 ### Fixed — REST writes now fire the same event sinks as MCP writes
 
 - **A REST write gets the same ref-linking, orphan-marking and entity-typing treatment as the

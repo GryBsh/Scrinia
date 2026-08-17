@@ -19,7 +19,7 @@ scrinia/
       Encoding/                   <- NMP/2 strategy, chunked encoder
       Models/                     <- ArtifactEntry, ChunkEntry, EphemeralEntry, ScopedArtifact
       Search/                     <- BM25 + WeightedFieldScorer + KnownFields/FieldExtractor/AttributeReaders + TextAnalysis
-      Embeddings/                 <- IEmbeddingProvider, VectorStore, HnswIndex, HybridReranker, providers
+      Embeddings/                 <- IEmbeddingProvider, VectorStore, MemoryVectorIndexer, HybridReranker, providers
       Resilience/                 <- RetryPolicy, CircuitBreaker, TransientDetector
       Migration/                  <- AttributeMigration (forward-fill + "fields"→"attributes" key migration)
       IMemoryStore.cs             <- store interface (CRUD, search, list, scope routing)

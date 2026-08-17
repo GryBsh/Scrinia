@@ -39,7 +39,7 @@ web/
       MemoryBrowserPage.tsx   List/search memories with scope tabs
       MemoryDetailPage.tsx    View content + chunks + delete
       KeyManagementPage.tsx   Create/list/revoke API keys
-      SettingsPage.tsx        Embeddings config + reindex
+      SettingsPage.tsx        Embeddings status (read-only) + reindex
     components/
       Layout.tsx              Sidebar nav + outlet
       SearchBar.tsx           Reusable search input
@@ -97,7 +97,9 @@ No refresh tokens or session timeout — keys are long-lived. Logout clears loca
 
 **Key management:** `listKeys`, `createKey`, `revokeKey`
 
-**Embeddings:** `getEmbeddingsStatus`, `getEmbeddingsSettings`, `updateEmbeddingsSettings`, `reindexEmbeddings`
+**Embeddings:** `getEmbeddingsStatus`, `getEmbeddingsSettings`, `reindexEmbeddings`. Settings are
+read-only from the web UI — there is no `updateEmbeddingsSettings`; change embedding config via
+`scri config Scrinia:Embeddings:*` and restart the server.
 
 **Health:** `getHealth`
 

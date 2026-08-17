@@ -456,6 +456,16 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Embeddings:Azure*` | — | `Endpoint`, `ApiKey`, `Deployment`, `Model`, `ApiVersion`, `UseV1` for Azure AI Foundry. |
 | `Scrinia:Embeddings:Google*` | — | `ApiKey`, `Model`, `BaseUrl`, `Dimensions` for Google Gemini. |
 
+**Search Ranking**
+
+| Key | Default | Description |
+|---|---|---|
+| `Scrinia:Search:Alpha:Relevance` | `1.0` | Weight applied to the relevance term (attribute match + BM25 + supplemental embedding score) in the final ranking sum. |
+| `Scrinia:Search:Alpha:Recency` | `1.0` | Weight applied to the recency term. Set to `0` to rank on relevance alone. |
+| `Scrinia:Search:TauDays` | `14.0` | Decay constant for the recency term: `exp(-Δt_days / τ_days)`. |
+| `Scrinia:Search:Scale:Recency` | `50.0` | Multiplier applied to the (already 0..1) recency term before summing. |
+| `Scrinia:Search:Fusion` | `sum` | How the three relevance signals (attribute match, BM25, supplemental embedding) combine: `sum` (historical additive weighting, lexical-dominant) or `rrf` (Reciprocal Rank Fusion, scale-invariant across sources). |
+
 **Pre-send hint (`scri hint`)**
 
 | Key | Default | Description |
