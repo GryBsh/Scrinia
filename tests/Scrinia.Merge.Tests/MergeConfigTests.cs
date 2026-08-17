@@ -40,8 +40,6 @@ public sealed class MergeConfigTests : IDisposable
 
         config.JaccardThreshold.Should().Be(0.7);
         config.ConflictDir.Should().Be("conflict");
-        config.Resolver.Should().Be("none");
-        config.ResolverCommand.Should().BeNull();
     }
 
     [Fact]

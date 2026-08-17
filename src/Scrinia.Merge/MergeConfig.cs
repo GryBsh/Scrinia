@@ -5,8 +5,6 @@ namespace Scrinia.Merge;
 
 public sealed record MergeConfig(
     double JaccardThreshold = 0.7,
-    string Resolver = "none",
-    string? ResolverCommand = null,
     string ConflictDir = "conflict"
 )
 {

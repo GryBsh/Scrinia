@@ -325,7 +325,7 @@ want to enrich memories do so client-side and pass `attributes` (including
 
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] \
-    [--multi-user] [--resolver none|claude|copilot] \
+    [--multi-user] \
     [--hooks] [--uninstall-hooks] [--project]
 ```
 
@@ -333,7 +333,6 @@ scri setup [--workspace-root <path>] [--no-ollama] \
 |--------|---------|-------------|
 | `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
 | `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
-| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. Strictly merge-driver semantics. |
 | `--hooks` | `false` | Install SessionStart + UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
