@@ -1071,6 +1071,20 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             string storeDir = GetStoreDirForScope(scope);
             Directory.CreateDirectory(storeDir);
 
+            // A scope counts as "new" for topic-discovery purposes when it currently holds no
+            // sidecars — covers both a directory that did not exist yet AND one left behind,
+            // empty, by a prior Remove that emptied it (Remove deletes only the .meta.json
+            // files, never the directory). Checked AFTER Directory.CreateDirectory just above
+            // (idempotent — adds no files) but BEFORE WriteSidecar below, whose job is exactly
+            // to add the first file.
+            //
+            // Deliberately NOT `!Directory.Exists(storeDir)` computed before CreateDirectory:
+            // WithExclusiveLock already ran EnsureMaterialized, which unconditionally creates
+            // storeDir before this body executes at all, so by the time this body runs the
+            // directory always exists regardless of whether THIS write is the scope's first —
+            // that check would never fire.
+            bool scopeWasEmpty = !Directory.EnumerateFiles(storeDir, "*.meta.json").Any();
+
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
@@ -1128,8 +1142,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 _indexCache.TryRemove(scope, out _);
             }
 
-            // Invalidate topic discovery cache when saving a topic scope
-            if (scope.StartsWith("local:", StringComparison.Ordinal))
+            // Only a scope transitioning from empty (no sidecars) to non-empty changes the
+            // topic list; writing into an already-populated topic does not. Blanket
+            // invalidation here forced DiscoverTopics to re-enumerate directories on every
+            // write (finding H5).
+            if (scopeWasEmpty && scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
@@ -1215,11 +1232,16 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 _indexCache.TryRemove(scope, out _);
             }
 
-            // Invalidate topic discovery cache when removing from a topic scope. Without
-            // this, DiscoverTopics keeps reporting a topic that has no remaining entries
-            // until the cache TTL eventually flushes — mirrors what SaveIndex/Upsert do
-            // at the corresponding write paths.
-            if (scope.StartsWith("local:", StringComparison.Ordinal))
+            // Invalidate topic discovery cache only when removing this entry emptied the
+            // scope. Without invalidating at all, DiscoverTopics would keep reporting a topic
+            // that has no remaining entries until the cache TTL eventually flushes — mirrors
+            // what SaveIndex/Upsert do at the corresponding write paths. Narrowed to fire only
+            // WHEN the scope is now empty: a removal that leaves other entries behind cannot
+            // change the topic list. Probe the filesystem rather than the cache — the cache
+            // may be absent, and DiscoverTopics answers from the filesystem, so the
+            // filesystem is the authority for this question.
+            if (scope.StartsWith("local:", StringComparison.Ordinal)
+                && !Directory.EnumerateFiles(storeDir, "*.meta.json").Any())
                 _cachedTopics = null;
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
