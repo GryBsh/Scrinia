@@ -177,6 +177,26 @@ if (!pluginProvidesEmbeddings)
 
             bootLogger.LogInformation("Built-in embeddings ready (provider={Provider}, dims={Dims})",
                 embeddingProvider.GetType().Name, embeddingProvider.Dimensions);
+
+            // Stale-quarantine detection, report-only. The CLI reindexes automatically at this
+            // point (WorkspaceSetup -> EmbeddingReindexer.ReindexIfStaleAsync), but a server
+            // cannot: a full-corpus re-embed at boot is unbounded work that would hold up
+            // startup with no progress channel, and this vector store is shared across every
+            // store the server hosts, so there is no single correct thing to rebuild. Probing
+            // still runs — it is what performs the quarantine rename, so search degrades to BM25
+            // rather than scoring against vectors from a different provider — and the operator
+            // gets the exact route to finish the migration.
+            var staleScopes = EmbeddingReindexer.ProbeStaleScopes(vectorStore, embeddingsDir, bootLogger);
+            if (staleScopes.Count > 0)
+            {
+                bootLogger.LogWarning(
+                    "Embedding vectors for {Count} scope(s) were written under a different provider or "
+                    + "chunk configuration and have been quarantined: {Scopes}. Semantic search is "
+                    + "degraded to keyword-only for them until they are rebuilt. Rebuild with "
+                    + "POST /api/v1/stores/{{store}}/embeddings/reindex (requires the 'reindex' "
+                    + "permission), once per store.",
+                    staleScopes.Count, string.Join(", ", staleScopes));
+            }
         }
         else
         {

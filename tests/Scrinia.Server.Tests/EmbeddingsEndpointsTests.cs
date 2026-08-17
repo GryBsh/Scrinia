@@ -104,6 +104,11 @@ public sealed class EmbeddingsEndpointsTests : IClassFixture<ScriniaServerFactor
 
         var resp = await client.PostAsync("/api/v1/plugins/embeddings/reindex", null);
 
-        resp.StatusCode.Should().NotBe(HttpStatusCode.OK);
+        // Be.NotFound, not NotBe.OK: the deleted handler returned 400 unconditionally, so
+        // NotBe(OK) passed against the merge base and pinned nothing. Only 404 distinguishes
+        // "the route is gone" from "the route is still mapped and rejecting the request".
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound,
+            because: "the inline plugin-owned group was replaced by the {store}-scoped routes, "
+                   + "so nothing should be mapped at the old path at all");
     }
 }

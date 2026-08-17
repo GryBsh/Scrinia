@@ -207,6 +207,16 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// <c>InternalsVisibleTo("Scrinia.Plugin.Embeddings.Tests")</c> is already declared in
     /// AssemblyInfo.cs.
     /// </summary>
+    /// <summary>
+    /// Test-only seam: the options <see cref="ConfigureServices"/> actually bound. Exists because
+    /// the only production consumer of them — the signature passed to <c>VectorStore</c> in
+    /// <see cref="EnsureInitialized"/> — is null whenever the provider is unavailable, which is
+    /// every test environment (no GGUF model). Without this, "ConfigureServices binds the whole
+    /// section, not just SemanticWeight" is unobservable, and that binding is the fix for the
+    /// configured chunk settings never reaching the signature.
+    /// </summary>
+    internal EmbeddingOptions BoundOptionsForTests => _options;
+
     internal void InitializeForTests(
         IEmbeddingProvider provider, VectorStore store, ILogger logger, EmbeddingOptions? options = null)
     {

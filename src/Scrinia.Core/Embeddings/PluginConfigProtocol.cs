@@ -32,6 +32,67 @@ public static class PluginConfigProtocol
         "Scrinia:Embeddings:MaxChunksPerMemory",
     ];
 
+    /// <summary>
+    /// Rebuilds an <see cref="EmbeddingOptions"/> from the forwarded keys, plugin-side counterpart
+    /// to the host's argument build. Only the keys in <see cref="Keys"/> are read — anything else
+    /// never crossed the process boundary, so reading it here would silently produce settings the
+    /// host does not share.
+    ///
+    /// <para>Applies the same two guardrails the CLI host applies: an overlap at or above the
+    /// window size makes <c>TextChunker.SliceWindows</c> throw, and a chunk cap at or above
+    /// <see cref="MemoryVectorIndexer.ChunkIndexStride"/> makes the indexer's constructor throw.
+    /// In a plugin child process either would be a startup crash, so both clamp and report through
+    /// <paramref name="warn"/>.</para>
+    /// </summary>
+    public static EmbeddingOptions BuildOptions(Func<string, string?> getConfig, Action<string>? warn = null)
+    {
+        var options = new EmbeddingOptions();
+
+        if (getConfig("Scrinia:Embeddings:Provider") is { Length: > 0 } provider)
+            options.Provider = provider;
+
+        if (double.TryParse(getConfig("Scrinia:Embeddings:SemanticWeight"), out double semanticWeight))
+            options.SemanticWeight = semanticWeight;
+
+        if (getConfig("Scrinia:Embeddings:OllamaBaseUrl") is { Length: > 0 } ollamaUrl)
+            options.OllamaBaseUrl = ollamaUrl;
+        if (getConfig("Scrinia:Embeddings:OllamaModel") is { Length: > 0 } ollamaModel)
+            options.OllamaModel = ollamaModel;
+
+        if (getConfig("Scrinia:Embeddings:OpenAiApiKey") is { Length: > 0 } openAiKey)
+            options.OpenAiApiKey = openAiKey;
+        if (getConfig("Scrinia:Embeddings:OpenAiModel") is { Length: > 0 } openAiModel)
+            options.OpenAiModel = openAiModel;
+        if (getConfig("Scrinia:Embeddings:OpenAiBaseUrl") is { Length: > 0 } openAiUrl)
+            options.OpenAiBaseUrl = openAiUrl;
+
+        if (int.TryParse(getConfig("Scrinia:Embeddings:ChunkSize"), out int chunkSize) && chunkSize > 0)
+            options.ChunkSize = chunkSize;
+        if (int.TryParse(getConfig("Scrinia:Embeddings:ChunkOverlap"), out int chunkOverlap) && chunkOverlap >= 0)
+            options.ChunkOverlap = chunkOverlap;
+        if (int.TryParse(getConfig("Scrinia:Embeddings:MaxChunksPerMemory"), out int maxChunks) && maxChunks > 0)
+            options.MaxChunksPerMemory = maxChunks;
+
+        if (options.ChunkOverlap >= options.ChunkSize)
+        {
+            warn?.Invoke(
+                $"ChunkOverlap ({options.ChunkOverlap}) >= ChunkSize ({options.ChunkSize}); "
+                + $"reverting to defaults {TextChunker.DefaultWindowSize}/{TextChunker.DefaultOverlap}.");
+            options.ChunkSize = TextChunker.DefaultWindowSize;
+            options.ChunkOverlap = TextChunker.DefaultOverlap;
+        }
+
+        int requestedCap = options.MaxChunksPerMemory;
+        if (options.ClampChunkCapBelowStride())
+        {
+            warn?.Invoke(
+                $"MaxChunksPerMemory ({requestedCap}) must be below "
+                + $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {options.MaxChunksPerMemory}.");
+        }
+
+        return options;
+    }
+
     /// <summary>A key is a secret when it names an API key. Covers current and future *ApiKey keys.</summary>
     public static bool IsSecret(string key) =>
         key.EndsWith("ApiKey", StringComparison.OrdinalIgnoreCase);

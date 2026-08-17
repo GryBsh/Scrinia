@@ -27,16 +27,22 @@ public sealed class ChunkedSignatureLayoutTests
                        + "the element key would silently never resolve for them");
     }
 
+    /// <summary>
+    /// Precondition only, NOT regression coverage: <c>ForProvider</c> already honoured its options
+    /// argument before this branch — the bug was at the call sites, which passed a
+    /// default-constructed <see cref="EmbeddingOptions"/>. This pins the half of the contract the
+    /// call sites depend on. The call sites themselves are covered where they live:
+    /// <c>EmbeddingsPluginConfigBindingTests</c> for the in-process plugin and
+    /// <c>PluginChunkConfigTransportTests</c> for the out-of-process one.
+    /// </summary>
     [Fact]
-    public void ForProvider_UsesTheSuppliedOptions_NotDefaults()
+    public void ForProvider_ReadsTheSuppliedOptions()
     {
         var provider = new StubAvailableProvider();
         var options = new EmbeddingOptions { ChunkSize = 400, ChunkOverlap = 40 };
 
         ChunkedSignature.ForProvider(provider, options)
-            .Should().Contain("c400o40",
-                because: "EmbeddingsPlugin.cs:118 passed a default-constructed EmbeddingOptions, "
-                       + "so configured chunk settings never reached the signature");
+            .Should().Contain("c400o40");
     }
 
     private sealed class StubAvailableProvider : IEmbeddingProvider

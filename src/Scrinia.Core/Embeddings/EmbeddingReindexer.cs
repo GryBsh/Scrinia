@@ -237,10 +237,35 @@ public static class EmbeddingReindexer
         options ??= new EmbeddingOptions();
         string expectedSignature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
 
-        // Force a header read on every scope by enumerating subdirectories. The
-        // signature-mismatch logic in VectorStore.LoadFromDisk handles the quarantine
-        // rename and records the scope in HasStaleQuarantines.
         var probeStore = new VectorStore(embeddingsDir, expectedSignature);
+        var stale = ProbeStaleScopes(probeStore, embeddingsDir, logger);
+        if (stale.Count == 0)
+            return null;
+
+        logger.LogInformation(
+            "Reindexing {Count} scope(s) after embedding config change: {Scopes}",
+            stale.Count, string.Join(", ", stale));
+
+        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, options);
+    }
+
+    /// <summary>
+    /// Forces a header read on every scope under <paramref name="embeddingsDir"/> by enumerating
+    /// its subdirectories, so <c>VectorStore.LoadFromDisk</c>'s signature check runs and
+    /// quarantines any file written under a different provider or chunk configuration. Returns
+    /// the scopes that were quarantined — empty when everything is already in-sync.
+    ///
+    /// <para>Separate from <see cref="ReindexIfStaleAsync"/> because detection and remediation
+    /// are not always the same decision. The CLI reindexes immediately (a one-shot startup cost
+    /// the user is already waiting on); a long-lived server only reports, since a full-corpus
+    /// re-embed at boot is unbounded work with no progress channel and no way to know which of
+    /// its stores the operator wants rebuilt first.</para>
+    /// </summary>
+    public static IReadOnlyCollection<string> ProbeStaleScopes(
+        VectorStore probeStore, string embeddingsDir, ILogger logger)
+    {
+        if (!Directory.Exists(embeddingsDir)) return [];
+
         foreach (string scopeDir in Directory.EnumerateDirectories(embeddingsDir))
         {
             string scope = Path.GetFileName(scopeDir);
@@ -249,14 +274,6 @@ public static class EmbeddingReindexer
             catch (Exception ex) { logger.LogDebug(ex, "Probe failed for scope {Scope}", scope); }
         }
 
-        if (!probeStore.HasStaleQuarantines)
-            return null;
-
-        logger.LogInformation(
-            "Reindexing {Count} scope(s) after embedding config change: {Scopes}",
-            probeStore.StaleQuarantineScopes.Count,
-            string.Join(", ", probeStore.StaleQuarantineScopes));
-
-        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, options);
+        return probeStore.HasStaleQuarantines ? probeStore.StaleQuarantineScopes : [];
     }
 }

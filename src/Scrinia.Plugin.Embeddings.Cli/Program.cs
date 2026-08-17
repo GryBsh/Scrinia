@@ -43,46 +43,13 @@ ILogger logger = NullLogger.Instance;
 string embeddingsDir = Path.Combine(dataDir, "embeddings");
 Directory.CreateDirectory(embeddingsDir);
 
-var options = new EmbeddingOptions();
-
-if (configValues.TryGetValue("Scrinia:Embeddings:SemanticWeight", out var sw) && double.TryParse(sw, out var swVal))
-    options.SemanticWeight = swVal;
-
-// The chunking keys reach this process the same way every other forwarded key does
-// (PluginConfigProtocol.Keys). Without them the plugin embedded at built-in defaults while the
-// host's signature was composed from the configured values, so `Scrinia:Embeddings:ChunkSize`
-// was silently ignored end to end whenever this plugin owned embeddings.
-if (configValues.TryGetValue("Scrinia:Embeddings:ChunkSize", out var csRaw)
-    && int.TryParse(csRaw, out int cs) && cs > 0)
-    options.ChunkSize = cs;
-
-if (configValues.TryGetValue("Scrinia:Embeddings:ChunkOverlap", out var coRaw)
-    && int.TryParse(coRaw, out int co) && co >= 0)
-    options.ChunkOverlap = co;
-
-if (configValues.TryGetValue("Scrinia:Embeddings:MaxChunksPerMemory", out var mcRaw)
-    && int.TryParse(mcRaw, out int mc) && mc > 0)
-    options.MaxChunksPerMemory = mc;
-
-// Same two guardrails the CLI host applies (WorkspaceSetup.BuildEmbeddingOptions): overlap at or
-// above the window size makes SliceWindows throw, and a cap at or above the stride makes
-// MemoryVectorIndexer's constructor throw. Both would kill this process at startup.
-if (options.ChunkOverlap >= options.ChunkSize)
-{
-    Console.Error.WriteLine(
-        $"[scrinia:warn] ChunkOverlap ({options.ChunkOverlap}) >= ChunkSize ({options.ChunkSize}); " +
-        $"reverting to defaults {TextChunker.DefaultWindowSize}/{TextChunker.DefaultOverlap}.");
-    options.ChunkSize = TextChunker.DefaultWindowSize;
-    options.ChunkOverlap = TextChunker.DefaultOverlap;
-}
-
-int requestedCap = options.MaxChunksPerMemory;
-if (options.ClampChunkCapBelowStride())
-{
-    Console.Error.WriteLine(
-        $"[scrinia:warn] MaxChunksPerMemory ({requestedCap}) must be below " +
-        $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {options.MaxChunksPerMemory}.");
-}
+// Every forwarded key is parsed by PluginConfigProtocol.BuildOptions — the plugin-side half of
+// the same contract the host used to build these arguments — so the two ends cannot drift. It
+// also applies the ChunkOverlap and MaxChunksPerMemory guardrails, either of which would
+// otherwise be a startup crash in this child process.
+var options = PluginConfigProtocol.BuildOptions(
+    key => configValues.GetValueOrDefault(key),
+    warning => Console.Error.WriteLine($"[scrinia:warn] {warning}"));
 
 IEmbeddingProvider provider;
 
