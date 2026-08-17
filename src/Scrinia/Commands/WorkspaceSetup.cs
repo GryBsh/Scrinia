@@ -614,6 +614,17 @@ internal static class WorkspaceSetup
             options.ChunkOverlap = TextChunker.DefaultOverlap;
         }
 
+        // Guardrail: a cap at or above the chunk-index stride would let one element's windows
+        // overflow into the next element's index space, so MemoryVectorIndexer's constructor
+        // rejects it. Clamp rather than let that throw out of a DI factory or a plugin init.
+        int requestedCap = options.MaxChunksPerMemory;
+        if (options.ClampChunkCapBelowStride())
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] MaxChunksPerMemory ({requestedCap}) must be below " +
+                $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {options.MaxChunksPerMemory}.");
+        }
+
         return options;
     }
 

@@ -348,8 +348,12 @@ if (!keyStore.HasAnyKeys())
     var storeManager = app.Services.GetRequiredService<StoreManager>();
     var (rawKey, keyId, _) = keyStore.CreateKey(
         "admin", storeManager.StoreNames.ToArray(),
+        // Every permission the server recognises. This key is the ONLY key on a fresh server, so
+        // any omission here is a permission an operator cannot reach at all — including 'reindex',
+        // whose route (POST /api/v1/stores/{store}/embeddings/reindex) is the documented migration
+        // step for a deployment that does not auto-reindex on startup.
         ["read", "search", "store", "append", "forget", "copy",
-         "export", "import", "manage_keys", "health", "chat"], "bootstrap");
+         "export", "import", "manage_keys", "manage_roles", "health", "chat", "reindex"], "bootstrap");
 
     // Write bootstrap key to a file (read once, then delete)
     string keyFile = Path.Combine(dataDir, "BOOTSTRAP_KEY");

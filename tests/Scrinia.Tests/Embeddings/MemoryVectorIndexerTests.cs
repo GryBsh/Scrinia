@@ -142,6 +142,40 @@ public sealed class MemoryVectorIndexerTests
     }
 
     [Fact]
+    public async Task ManyShortElements_AreAllVectorReachableUnderTheDefaultCap()
+    {
+        // Every non-blank element plans at least one window, so the cap is also a floor on how
+        // many content elements can carry a vector. `append` adds elements at the END, so a cap
+        // that bites truncates the NEWEST content — the default must therefore clear a
+        // realistically long append-built memory. 100 (the pre-fix default) failed this.
+        var (indexer, store, _) = NewIndexer(new CountingProvider());
+        string[] content = [.. Enumerable.Range(1, 150).Select(i => $"element {i}")];
+
+        await indexer.IndexAsync("local", "note", content, default);
+
+        var elements = store.GetVectors("local")
+            .Select(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value))
+            .ToHashSet();
+
+        elements.Should().HaveCount(150);
+        elements.Should().Contain(150,
+            because: "element 150 is the newest content an append would have added; dropping it "
+                   + "would silently leave the most recent write vector-unreachable");
+    }
+
+    [Fact]
+    public void TheDefaultCap_StaysBelowTheStride_SoTheCollisionGuardHolds()
+    {
+        new EmbeddingOptions().MaxChunksPerMemory.Should().BeLessThan(
+            MemoryVectorIndexer.ChunkIndexStride,
+            because: "the constructor rejects a default that could overflow one element's "
+                   + "window space into the next element's index range");
+
+        var (indexer, _, _) = NewIndexer(new CountingProvider(), new EmbeddingOptions());
+        indexer.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task MismatchedVectorCount_LeavesExistingVectorsIntact()
     {
         var (good, store, dir) = NewIndexer(new CountingProvider());

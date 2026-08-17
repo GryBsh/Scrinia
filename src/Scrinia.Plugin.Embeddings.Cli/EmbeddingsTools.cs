@@ -81,7 +81,12 @@ public sealed class EmbeddingsTools(
         [Description("Scope")] string scope,
         [Description("Memory name")] string name,
         [Description("Text to embed")] string text,
-        [Description("Chunk index (1-based)")] int? chunkIndex = null,
+        [Description(
+            "Legacy per-window chunk index. Any value passed here is below one chunk-index "
+            + "stride, so the read side resolves it to content element 0 — which does not exist "
+            + "— and the vector contributes to the memory's score but never to a chunk's. "
+            + "Use the `index` tool to get correctly-keyed per-element vectors.")]
+        int? chunkIndex = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))

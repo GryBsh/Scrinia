@@ -4,7 +4,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
-using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Plugin.Abstractions;
@@ -91,6 +90,22 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             // "revert to defaults" is a safe, previously-established failure mode here.
             _options = new EmbeddingOptions();
         }
+
+        // Guardrail mirroring WorkspaceSetup's: a cap at or above the chunk-index stride makes
+        // MemoryVectorIndexer's constructor throw, and here that throw would escape from inside
+        // EnsureInitialized AFTER VulkanEmbeddingProvider.Create succeeded but BEFORE _vectorStore
+        // is assigned — so the init sentinel never latches and every retry leaks another GPU
+        // context. Clamp and warn instead.
+        int requestedCap = _options.MaxChunksPerMemory;
+        if (_options.ClampChunkCapBelowStride())
+        {
+            // _logger is not wired until ConfigureMiddleware; stderr is the only channel that
+            // exists this early, and it is where the CLI reports the identical clamp.
+            Console.Error.WriteLine(
+                $"[scrinia:warn] MaxChunksPerMemory ({requestedCap}) must be below " +
+                $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {_options.MaxChunksPerMemory}.");
+        }
+
         _semanticWeight = _options.SemanticWeight;
 
         // Compose with PathSegmentScoreContributor so a memory's qualified path also
@@ -281,11 +296,15 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     private async Task EmbedAndIndexAsync(
         string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
     {
-        EnsureInitialized();
-        if (_indexer is null) return;
-
         try
         {
+            // Inside the try: EnsureInitialized can throw (bad config reaching
+            // MemoryVectorIndexer's ctor, a provider load failure), and these are detached
+            // event-sink/hook callbacks — on the REST path PluginPipeline awaits them with no
+            // guard of its own, so an escaping throw would land in the caller's request.
+            EnsureInitialized();
+            if (_indexer is null) return;
+
             var (scope, subject) = store.ParseQualifiedName(qualifiedName);
             await _indexer.IndexAsync(scope, subject, content, ct);
         }
@@ -305,16 +324,17 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// </summary>
     private async Task ReembedFullMemoryAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
     {
-        EnsureInitialized();
-        if (_indexer is null) return;
-
         try
         {
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            string artifact = await store.ReadArtifactAsync(subject, scope, ct);
-            if (string.IsNullOrWhiteSpace(artifact)) return;
+            // Inside the try — see EmbedAndIndexAsync.
+            EnsureInitialized();
+            if (_indexer is null) return;
 
-            var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+            // MemoryArtifactSource, not ReadArtifactAsync: ephemeral memories have no artifact
+            // keyed by (scope, subject), so reading them directly throws FileNotFoundException
+            // and this catch would silently turn an ephemeral append into a no-op (finding M-2).
+            var elements = await MemoryArtifactSource.ReadContentElementsAsync(store, scope, subject, ct);
             if (elements.Length == 0) return;
 
             await _indexer.IndexAsync(scope, subject, elements, ct);
@@ -329,13 +349,21 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     {
         if (!wasDeleted) return;
 
-        EnsureInitialized();
-        if (_indexer is null) return;
+        try
+        {
+            // Inside the try — see EmbedAndIndexAsync. The (qualifiedName, store) overload below
+            // already owns its own parse, but EnsureInitialized does not, and PluginPipeline
+            // awaits OnAfterForgetAsync with no try/catch on the REST path, so a throw here
+            // would otherwise propagate into the forget request itself.
+            EnsureInitialized();
+            if (_indexer is null) return;
 
-        // (qualifiedName, store) overload owns the parse inside its own try — PluginPipeline
-        // awaits OnAfterForgetAsync with no surrounding try/catch on the REST path, so a throw
-        // here would otherwise propagate into the forget request itself.
-        await _indexer.RemoveAsync(qualifiedName, store, ct);
+            await _indexer.RemoveAsync(qualifiedName, store, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to remove vectors for '{Name}'", qualifiedName);
+        }
     }
 
     public async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
@@ -348,21 +376,13 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         {
             try
             {
-                // Resolve directly by (scope, subject) rather than round-tripping through
-                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
-                // namespaced topic scope (e.g. "local:memory/api"), FormatQualifiedName
-                // intentionally strips the "memory/" prefix for display, so re-parsing that
-                // string reconstructs the WRONG scope and the artifact can never be found.
-                // Mirrors EmbeddingReindexer.ReindexAsync's fix for the identical bug. Ephemeral
-                // memories aren't backed by an on-disk artifact keyed by (scope, subject), so
-                // they still resolve via the "~name" qualified-name path.
-                string artifact = item.Scope == "ephemeral"
-                    ? await store.ResolveArtifactAsync($"~{item.Entry.Name}", ct)
-                    : await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-
-                // Reconstruct the memory's content array from the artifact rather than passing one
-                // decoded blob, so reindex reproduces the same per-element layout a write produces.
-                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                // MemoryArtifactSource owns both halves of this read: resolving by
+                // (scope, subject) rather than through the lossy FormatQualifiedName round trip,
+                // and taking the "~name" path for ephemeral memories. It also reconstructs the
+                // memory's content array rather than one decoded blob, so reindex reproduces the
+                // same per-element layout a write produces.
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
                 if (elements.Length == 0) continue;
 
                 // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException reach

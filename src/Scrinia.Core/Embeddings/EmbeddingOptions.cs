@@ -90,6 +90,38 @@ public sealed class EmbeddingOptions
     /// <summary>Overlap in characters between adjacent windows. Must be strictly less than <see cref="ChunkSize"/>.</summary>
     public int ChunkOverlap { get; set; } = TextChunker.DefaultOverlap;
 
-    /// <summary>Safety cap on chunks per memory; excess tail is dropped from embedding (BM25 still indexes full text).</summary>
-    public int MaxChunksPerMemory { get; set; } = 100;
+    /// <summary>
+    /// Safety cap on chunks per memory; excess tail is dropped from embedding (BM25 still
+    /// indexes full text).
+    ///
+    /// <para>The cap counts <b>windows across the whole content array</b>, and every non-blank
+    /// content element contributes at least one window. A memory of N short elements therefore
+    /// plans at least N chunks — so this value is also a floor on how many content elements can
+    /// be vector-reachable. Because <c>append</c> adds an element at the end, the tail this cap
+    /// drops is the <i>newest</i> content, which is why the default is generous rather than
+    /// tight. Must stay strictly below <see cref="MemoryVectorIndexer.ChunkIndexStride"/> (1000);
+    /// <see cref="MemoryVectorIndexer"/>'s constructor enforces that.</para>
+    /// </summary>
+    public int MaxChunksPerMemory { get; set; } = 500;
+
+    /// <summary>Largest <see cref="MaxChunksPerMemory"/> <see cref="MemoryVectorIndexer"/> accepts.</summary>
+    public static int MaxChunksPerMemoryCeiling => MemoryVectorIndexer.ChunkIndexStride - 1;
+
+    /// <summary>
+    /// Clamps <see cref="MaxChunksPerMemory"/> to <see cref="MaxChunksPerMemoryCeiling"/>, returning
+    /// <c>true</c> when it had to. The one place hosts share the rule; each reports the clamp its own
+    /// way (the CLI writes to stderr, the plugin logs).
+    ///
+    /// <para>Without it, an out-of-range config value reaches <see cref="MemoryVectorIndexer"/>'s
+    /// constructor and throws from wherever that construction happens: swallowed into a generic
+    /// init failure on the CLI, a 500 on every request from the server's DI factory, and a leaked
+    /// GPU context per retry in the plugin. A clamp plus a warning is the same treatment the
+    /// sibling <see cref="ChunkOverlap"/>/<see cref="ChunkSize"/> invariant already gets.</para>
+    /// </summary>
+    public bool ClampChunkCapBelowStride()
+    {
+        if (MaxChunksPerMemory <= MaxChunksPerMemoryCeiling) return false;
+        MaxChunksPerMemory = MaxChunksPerMemoryCeiling;
+        return true;
+    }
 }

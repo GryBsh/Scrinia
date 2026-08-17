@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
-using Scrinia.Core.Encoding;
 
 namespace Scrinia.Services;
 
@@ -42,10 +41,10 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         try
         {
             var (scope, subject) = memoryStore.ParseQualifiedName(qualifiedName);
-            string artifact = await memoryStore.ReadArtifactAsync(subject, scope, ct);
-            if (string.IsNullOrWhiteSpace(artifact)) return;
-
-            var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+            // MemoryArtifactSource, not ReadArtifactAsync: ephemeral memories have no artifact
+            // keyed by (scope, subject), so reading them directly throws FileNotFoundException
+            // and this catch would silently turn an ephemeral append into a no-op (finding M-2).
+            var elements = await MemoryArtifactSource.ReadContentElementsAsync(memoryStore, scope, subject, ct);
             if (elements.Length == 0) return;
 
             await _indexer.IndexAsync(scope, subject, elements, ct);

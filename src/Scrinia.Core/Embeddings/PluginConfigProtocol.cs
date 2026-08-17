@@ -23,6 +23,13 @@ public static class PluginConfigProtocol
         "Scrinia:Embeddings:OpenAiApiKey",
         "Scrinia:Embeddings:OpenAiModel",
         "Scrinia:Embeddings:OpenAiBaseUrl",
+        // The chunking keys must travel too. They are baked into the active embedding signature
+        // (ChunkedSignature.Compose), so a host and a plugin that disagree about them disagree
+        // about which vectors are valid — and without them the out-of-process plugin silently
+        // ignored `scri config Scrinia:Embeddings:ChunkSize` end to end.
+        "Scrinia:Embeddings:ChunkSize",
+        "Scrinia:Embeddings:ChunkOverlap",
+        "Scrinia:Embeddings:MaxChunksPerMemory",
     ];
 
     /// <summary>A key is a secret when it names an API key. Covers current and future *ApiKey keys.</summary>

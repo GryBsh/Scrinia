@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging;
-using Scrinia.Core.Encoding;
 
 namespace Scrinia.Core.Embeddings;
 
@@ -57,33 +56,19 @@ public static class EmbeddingReindexer
 
             try
             {
-                // Resolve directly by (scope, subject) rather than round-tripping through
-                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
-                // namespaced topic scope (e.g. "local:memory/api"), FormatQualifiedName
-                // intentionally strips the "memory/" prefix for display, so re-parsing that
-                // string reconstructs the WRONG scope ("local:api") and the artifact can
-                // never be found. item.Scope is already the correct scope.
-                string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-                if (string.IsNullOrWhiteSpace(artifact))
-                {
-                    skipped++;
-                    continue;
-                }
-
-                // Reconstruct the memory's content array from the artifact rather than passing
-                // one decoded blob. Reindex must reproduce the layout a write produces — Task 7's
-                // signature bump rebuilds every existing vector through this exact path, so a
-                // reindex that collapsed a memory to element 1 would mean the element contract
-                // held only for memories written after this branch.
-                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                // MemoryArtifactSource owns the read: it resolves by (scope, subject) rather than
+                // round-tripping through FormatQualifiedName -> ResolveArtifactAsync ->
+                // ParseQualifiedName (for a v1 namespaced topic scope like "local:memory/api",
+                // FormatQualifiedName strips the "memory/" prefix for display, so re-parsing that
+                // string reconstructs the WRONG scope), and it reconstructs the memory's content
+                // array rather than one decoded blob. Reindex must reproduce the layout a write
+                // produces — Task 7's signature bump rebuilds every existing vector through this
+                // exact path, so a reindex that collapsed a memory to element 1 would mean the
+                // element contract held only for memories written after this branch. An empty
+                // result covers "no artifact text" and "nothing embeddable in it" alike.
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
                 if (elements.Length == 0)
-                {
-                    skipped++;
-                    continue;
-                }
-
-                string joined = string.Concat(elements);
-                if (string.IsNullOrWhiteSpace(joined))
                 {
                     skipped++;
                     continue;
@@ -160,10 +145,18 @@ public static class EmbeddingReindexer
     /// write would, producing a clean rebuild without needing to expose the plugin's internal
     /// embed/store internals.
     ///
-    /// <para>Pass the active <see cref="MemoryEventSinkContext.Default"/> (or a specific sink
-    /// for tests). Each memory's content array is reconstructed from its artifact via
-    /// <see cref="Nmp2ChunkedEncoder.DecodeAllChunksVerified"/> and handed to the sink whole —
-    /// the same content array a regular write carries, not a single decoded blob.</para>
+    /// <para>Each memory's content array is reconstructed from its artifact and handed to the
+    /// sink whole — the same content array a regular write carries, not a single decoded
+    /// blob.</para>
+    ///
+    /// <para><b>Pass a plugin-backed sink, not whatever happens to be installed.</b> This method
+    /// is for the case where the host has no in-process provider. On a CLI that <i>does</i> have
+    /// one, the ambient sink is <c>CoreEmbeddingEventHandler</c>, whose <c>OnStoredAsync</c> runs
+    /// <see cref="MemoryVectorIndexer.IndexAsync"/> at its default <c>retryOnUnavailable: true</c>
+    /// — up to 42s of <see cref="VectorWriteRetry"/> backoff per memory, in a loop over the whole
+    /// corpus. For an in-process provider use <see cref="ReindexAsync"/> or
+    /// <see cref="ForceReindexAsync"/>, which pass <c>retryOnUnavailable: false</c> and report
+    /// failures instead of stalling on them.</para>
     /// </summary>
     public static async Task<Result> ReindexViaSinkAsync(
         IMemoryStore store,
@@ -185,19 +178,11 @@ public static class EmbeddingReindexer
 
             try
             {
-                // See the matching comment in ReindexAsync above: resolve by (scope, subject)
-                // directly rather than through the lossy FormatQualifiedName round trip.
-                string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-                if (string.IsNullOrWhiteSpace(artifact))
-                {
-                    skipped++;
-                    continue;
-                }
-
-                // Reconstruct the memory's content array — a regular write carries the real
+                // See the matching comment in ReindexAsync above. A regular write carries the real
                 // content array, so replaying with a single decoded element would produce a
                 // different layout than the write this is supposed to reproduce.
-                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
                 if (elements.Length == 0)
                 {
                     skipped++;

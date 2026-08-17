@@ -21,15 +21,18 @@ namespace Scrinia.Core.Embeddings;
 /// below <see cref="MemoryVectorIndexer.ChunkIndexStride"/> decodes to element 0, which does not
 /// exist — 1-based elements start at 1. That shape only arises from a vector written by
 /// pre-branch code, which stamped a raw window ordinal (0-based, never multiplied by the
-/// stride) or a 1-based content-element index too small to reach the stride on its own. Once
-/// this branch's signature bump lands (<c>ChunkedSignature.LayoutRevision</c>), every such
-/// vector's file fails <see cref="VectorStore"/>'s signature check on load and is quarantined
-/// wholesale — not partially read — so in the shipped state no legacy-shaped chunk index ever
-/// reaches this method; it is rebuilt through <see cref="MemoryVectorIndexer"/> first. The guard
-/// therefore only matters for the window between this task landing and the signature bump
-/// landing, where a store built with the old signature could still hold vectors in the old
-/// shape. Below one stride, such a vector's similarity still counts toward the memory key — it
-/// is real data — it just cannot be legitimately relabeled with the wrong element.</para>
+/// stride) or a 1-based content-element index too small to reach the stride on its own.
+///
+/// <para>This branch's signature bump (<c>ChunkedSignature.LayoutRevision</c>) is what retires
+/// that shape: a legacy file fails <see cref="VectorStore"/>'s signature check on load and is
+/// quarantined wholesale — not partially read — and rebuilt through
+/// <see cref="MemoryVectorIndexer"/>. But the check only runs when the store was constructed
+/// with an expected signature, which requires the provider to have been available at
+/// construction time. A store built while the provider was unavailable is unsigned, loads legacy
+/// files as-is, and can hand them straight to this method. The guard is therefore live in normal
+/// operation, not merely a migration-window courtesy. Below one stride, such a vector's
+/// similarity still counts toward the memory key — it is real data — it just cannot be
+/// legitimately relabeled with the wrong element.</para>
 /// </summary>
 public static class VectorScoreProjection
 {

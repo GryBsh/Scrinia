@@ -1,6 +1,5 @@
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
-using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Plugin.Abstractions;
@@ -115,24 +114,14 @@ public sealed class BuiltInEmbeddingsService :
         {
             try
             {
-                // Resolve directly by (scope, subject) rather than round-tripping through
-                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
-                // namespaced topic scope (e.g. "local:memory/api"), FormatQualifiedName
-                // intentionally strips the "memory/" prefix for display, so re-parsing that
-                // string reconstructs the WRONG scope and the artifact can never be found.
-                // Mirrors EmbeddingReindexer.ReindexAsync's fix for the identical bug. Ephemeral
-                // memories aren't backed by an on-disk artifact keyed by (scope, subject), so
-                // they still resolve via the "~name" qualified-name path.
-                string artifact = item.Scope == "ephemeral"
-                    ? await store.ResolveArtifactAsync($"~{item.Entry.Name}", ct)
-                    : await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-
-                // Reconstruct the memory's content array from the artifact rather than passing
-                // one decoded blob. Reindex must reproduce the layout a write produces — Task 7's
-                // signature bump rebuilds every existing vector through this exact path, so a
-                // reindex that collapsed a memory to element 1 would mean the element contract
-                // held only for memories written after this branch.
-                var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                // MemoryArtifactSource owns both halves of this read: resolving by
+                // (scope, subject) rather than through the lossy FormatQualifiedName round trip,
+                // and taking the "~name" path for ephemeral memories. It also reconstructs the
+                // memory's content array rather than one decoded blob — reindex must reproduce
+                // the layout a write produces, or the element contract would hold only for
+                // memories written after this branch.
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
                 if (elements.Length == 0) continue;
 
                 // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException reach
@@ -182,10 +171,10 @@ public sealed class BuiltInEmbeddingsService :
         try
         {
             var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            string artifact = await store.ReadArtifactAsync(subject, scope, ct);
-            if (string.IsNullOrWhiteSpace(artifact)) return;
-
-            var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+            // MemoryArtifactSource, not ReadArtifactAsync: ephemeral memories have no artifact
+            // keyed by (scope, subject), so reading them directly throws FileNotFoundException
+            // and this catch would silently turn an ephemeral append into a no-op (finding M-2).
+            var elements = await MemoryArtifactSource.ReadContentElementsAsync(store, scope, subject, ct);
             if (elements.Length == 0) return;
 
             await _indexer.IndexAsync(scope, subject, elements, ct);
