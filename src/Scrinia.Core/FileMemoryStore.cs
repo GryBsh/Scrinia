@@ -1280,7 +1280,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // and a miss pay the same thing — still true, and unchanged for the cold case. This
             // only avoids the cost when the answer is already in memory.
             var current = (_indexCache.TryGetValue(scope, out var warmIndex)
-                    ? (IEnumerable<ArtifactEntry>)warmIndex.Entries
+                    ? warmIndex.Entries
                     : LoadEntriesFromSidecars(storeDir))
                 .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
             if (current is null) return false;
@@ -1299,18 +1299,24 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Copy-on-write cache update — see the matching comment in Upsert for why this must
             // install a NEW CachedIndex and must not re-read the scope's sidecars.
             //
-            // `updated` does not need a NormalizeAttributesKey() call before caching, unlike
-            // Upsert's caller-supplied entry: `current` above is the load seam's output, which is
-            // always already normalized (LegacyFields null), and `updated` is derived from it
-            // exclusively through `mutate`'s `with` expression and
-            // MemoryDerivation.ForMetadataUpdate's `with` expressions — neither can reintroduce
-            // LegacyFields, since it is not one of ArtifactEntry's positional constructor
-            // parameters and no caller in this codebase sets it explicitly. There is no external
-            // caller here handing this method a raw, possibly-un-normalized entry the way Upsert
-            // has.
+            // Cache the NORMALIZED entry, exactly as Upsert does at :1108, and for the same
+            // reason. `current` above is NOT provably normalized on the warm branch: it comes
+            // from `warmIndex.Entries`, i.e. whatever LoadIndexUnsafe last cached, and
+            // LoadIndexUnsafe only overwrites a slot with its normalized form when
+            // AttributeMigration.MigratesTo reports a change (:740-745). MigratesTo can report
+            // NO change for an entry that still carries LegacyFields: NormalizeAttributesKey's
+            // coalesce is `Attributes = Attributes ?? _legacyFields`, a no-op whenever Attributes
+            // is already non-null, so an entry with populated Attributes AND separately
+            // populated, divergent LegacyFields diffs as unchanged and is cached RAW, LegacyFields
+            // still set (see ArtifactEntry.cs:63-68's documented footgun — inert there, but not
+            // once it reaches here). `mutate`'s `with` expression and
+            // MemoryDerivation.ForMetadataUpdate's `with` expressions both carry that
+            // un-normalized state straight through to `updated`. Normalizing here closes it and
+            // keeps this write path consistent with Upsert's.
+            var cacheEntry = updated.NormalizeAttributesKey();
             if (_indexCache.TryGetValue(scope, out var cachedIndex))
             {
-                string target = SanitizeName(updated.Name);
+                string target = SanitizeName(cacheEntry.Name);
                 var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
                 bool replaced = false;
                 foreach (var existing in cachedIndex.Entries)
@@ -1318,13 +1324,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                     if (!replaced
                         && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
                     {
-                        next.Add(updated);
+                        next.Add(cacheEntry);
                         replaced = true;
                         continue;
                     }
                     next.Add(existing);
                 }
-                if (!replaced) next.Add(updated);
+                if (!replaced) next.Add(cacheEntry);
                 _indexCache[scope] = new CachedIndex(next);
             }
             else

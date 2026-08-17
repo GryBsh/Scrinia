@@ -231,4 +231,64 @@ public sealed class IndexCacheWritePathTests : IDisposable
         ok.Should().BeTrue();
         fresh.LoadIndex("local").Single(x => x.Name == "a").Uri.Should().Be("cold");
     }
+
+    /// <summary>
+    /// Fix-round guard (task-3 review): the warm-path `current` TryUpdateEntry reads is NOT
+    /// provably normalized the way the cold path's `LoadEntriesFromSidecars` output is — it comes
+    /// from whatever LoadIndexUnsafe last cached, and LoadIndexUnsafe only overwrites a slot with
+    /// its normalized form when AttributeMigration.MigratesTo reports a change. MigratesTo can
+    /// report NO change for an entry that already has non-null Attributes but ALSO still carries
+    /// separately-populated, divergent LegacyFields: NormalizeAttributesKey's coalesce
+    /// (`Attributes = Attributes ?? _legacyFields`) is then a no-op, so the before/after diff sees
+    /// nothing and the raw, LegacyFields-bearing entry is what gets cached. This is the "inert"
+    /// edge case documented at ArtifactEntry.cs:63-68 — inert there, but not once a warm
+    /// TryUpdateEntry can carry it straight into the cache via `mutate`'s and
+    /// ForMetadataUpdate's `with` expressions, neither of which clears LegacyFields.
+    /// </summary>
+    [Fact]
+    public void TryUpdateEntry_WarmPath_NormalizesTheCachedEntry_EvenWhenTheCachedSourceWasNot()
+    {
+        // Attributes already populated (so the coalesce below is a no-op) — this is what makes
+        // MigratesTo see no change and leave LegacyFields in place on the cached slot.
+        var seed = new ArtifactEntry("legacy-warm", "", 5, 1, DateTimeOffset.UtcNow)
+        {
+            Attributes = new Dictionary<string, string[]> { ["topic"] = ["alpha"] },
+        };
+        _store.Upsert(seed, "local");
+
+        // Hand-corrupt the sidecar to also carry a legacy "fields" value, mirroring
+        // NormalizationSeamTests' pattern of rewriting the store's own output rather than
+        // hand-authoring JSON (ArtifactEntry's persisted key names are owned by
+        // FileStoreJsonContext, so a hand-written literal would silently drift).
+        string metaPath = Directory.GetFiles(_root, "legacy-warm.meta.json", SearchOption.AllDirectories).Single();
+        string json = File.ReadAllText(metaPath);
+        json = json.TrimEnd().TrimEnd('}') + ""","fields":{"legacy":["beta"]}}""";
+        File.WriteAllText(metaPath, json);
+
+        // Cold-load through the real production path (LoadIndexUnsafe) to warm the cache — a
+        // hand-seeded cache would not prove LoadIndexUnsafe's MigratesTo-guarded write-back can
+        // actually leave LegacyFields behind; this reproduces it for real.
+        var warmed = _store.LoadIndex("local").Single(e => e.Name == "legacy-warm");
+        warmed.LegacyFields.Should().NotBeNull(
+            because: "sanity check on the scenario setup itself: if this is null, the seeded "
+                   + "sidecar did not reproduce MigratesTo reporting no change, and the assertions "
+                   + "below would be proving nothing about the fix under test");
+
+        bool ok = _store.TryUpdateEntry("legacy-warm", "local", e => e with { Uri = "patched" });
+        ok.Should().BeTrue();
+
+        var updated = AssertReadIsACacheHit(
+            () => _store.LoadIndex("local").Single(e => e.Name == "legacy-warm"),
+            because: "TryUpdateEntry above must have taken the warm copy-on-write branch (the "
+                   + "cache was warmed by the LoadIndex call above) — recreation of the lock file "
+                   + "here would mean this read cold-reloaded instead of exercising the warm "
+                   + "cache-write logic under test");
+        updated.LegacyFields.Should().BeNull(
+            because: "TryUpdateEntry's warm-path cache write must normalize the entry before "
+                   + "caching it, same as Upsert does — caching it raw would let a "
+                   + "LegacyFields-bearing entry sit in the cache diverging from disk (which "
+                   + "WriteSidecarCore always normalizes before serializing), reproducing exactly "
+                   + "the divergence the load seam exists to prevent");
+        updated.Uri.Should().Be("patched");
+    }
 }
