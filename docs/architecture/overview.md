@@ -180,4 +180,4 @@ still fires exactly once.**
 - **[Core Architecture](core.md)** -- IMemoryStore, FileMemoryStore, NMP/2 encoding, search algorithms, models
 - **[CLI Architecture](cli.md)** -- Workspace discovery, commands, MCP tools, plugin host
 - **[Server Architecture](server.md)** -- Startup, middleware, auth, multi-store, plugin loading
-- **[Embeddings Architecture](embeddings.md)** -- Providers, vector store, HNSW, hybrid scoring
+- **[Embeddings Architecture](embeddings.md)** -- Providers, vector store, hybrid scoring
