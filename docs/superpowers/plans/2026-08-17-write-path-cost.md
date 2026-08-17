@@ -51,6 +51,14 @@
 
 **Why first:** every later task removes or bypasses a rebuild that currently carries `.Select(e => e.NormalizeAttributesKey())`. Until the seam owns that rule, removing any wrapper is a silent data-visibility bug.
 
+**This is a REFACTOR UNDER A GREEN SUITE, not a red-then-green fix. Do not expect the tests below to fail first.** A plan falsification pass established why, and it is worth understanding before you start:
+
+`AttributeMigration.MigratesTo` (`src/Scrinia.Core/Migration/AttributeMigration.cs:113-122`) calls `Forward`, which calls `NormalizeAttributesKey()` as its first statement, then returns true when `entry.Attributes` and `migrated.Attributes` differ. For an entry carrying only the legacy `"fields"` key, `entry.Attributes` is null and `migrated.Attributes` is populated — so `MigratesTo` returns **true** and the cold path (`FileMemoryStore.cs:731-739`) installs the normalized entry. **Today's cold read already normalizes.**
+
+So the seam change fixes no bug that is reachable today. What it does is make the rule structural, so that Tasks 2 and 3 can delete four hand-copied wrappers without creating one. The place it becomes genuinely load-bearing is `TryUpdateEntry`'s COLD lookup path, which Task 3 keeps: that path calls `LoadEntriesFromSidecars` directly, without `MigratesTo`, so without the seam it would hand a mutator an entry with `Attributes == null` while its data sat in `LegacyFields`.
+
+Your tests are therefore **regression guards**. They must be green before and after. Their job is to fail if someone later removes the seam call while the wrappers are gone. Record in your report that they were green beforehand — for this task, "the tests pass" is only meaningful alongside that.
+
 **Files:**
 - Modify: `src/Scrinia.Core/FileMemoryStore.cs:747-771` (`LoadEntriesFromSidecars`)
 - Modify: `src/Scrinia.Core/FileMemoryStore.cs:1050`, `:1119`, `:1179`, `:1195` (remove four wrappers)
@@ -105,13 +113,15 @@ public sealed class NormalizationSeamTests : IDisposable
         // the on-disk shape written before the attributes rename.
         var seed = new ArtifactEntry("legacy-note", "", 10, 1, DateTimeOffset.UtcNow);
         _store.Upsert(seed, "local");
-        string metaPath = _store.MetaPath("legacy-note", "local");
+        string metaPath = FindSidecar("legacy-note");
 
-        File.WriteAllText(metaPath, """
-            {"name":"legacy-note","description":"","size":10,"chunks":1,
-             "createdAt":"2026-01-01T00:00:00+00:00",
-             "fields":{"topic":["alpha"]}}
-            """);
+        // Build the legacy shape by rewriting the sidecar the store just wrote, rather than
+        // hand-authoring JSON: ArtifactEntry's positional members are
+        // (Name, Uri, OriginalBytes, ChunkCount, CreatedAt) and its persisted key names are
+        // set by FileStoreJsonContext, so a hand-written literal silently drifts.
+        string json = File.ReadAllText(metaPath);
+        json = json.TrimEnd().TrimEnd('}') + ""","fields":{"topic":["alpha"]}}""";
+        File.WriteAllText(metaPath, json);
 
         // Force a cold load: drop the cache the Upsert above installed.
         using var reader = new FileMemoryStore(_root);
@@ -131,12 +141,10 @@ public sealed class NormalizationSeamTests : IDisposable
         // entries must be normalized even though no read populated the cache.
         var seed = new ArtifactEntry("note-a", "", 5, 1, DateTimeOffset.UtcNow);
         _store.Upsert(seed, "local");
-        string metaPath = _store.MetaPath("note-a", "local");
-        File.WriteAllText(metaPath, """
-            {"name":"note-a","description":"","size":5,"chunks":1,
-             "createdAt":"2026-01-01T00:00:00+00:00",
-             "fields":{"topic":["beta"]}}
-            """);
+        string metaPath = FindSidecar("note-a");
+        string json = File.ReadAllText(metaPath);
+        json = json.TrimEnd().TrimEnd('}') + ""","fields":{"topic":["beta"]}}""";
+        File.WriteAllText(metaPath, json);
 
         // Second write to a DIFFERENT name in the same scope — whatever populates the cache
         // as a result must carry note-a normalized.
@@ -146,18 +154,61 @@ public sealed class NormalizationSeamTests : IDisposable
         a.Attributes.Should().NotBeNull();
         a.Attributes!["topic"].Should().BeEquivalentTo(["beta"]);
     }
+
+    /// <summary>
+    /// The guard that most directly justifies the seam. TryUpdateEntry's COLD path calls
+    /// LoadEntriesFromSidecars directly, with no AttributeMigration.MigratesTo forward-fill —
+    /// so it is the one production path where an un-normalized entry would reach a caller.
+    /// Task 3 keeps that path; this test fails if the seam call is ever removed from under it.
+    /// </summary>
+    [Fact]
+    public void TryUpdateEntry_ColdPath_HandsTheMutatorANormalizedEntry()
+    {
+        _store.Upsert(new ArtifactEntry("legacy-b", "", 5, 1, DateTimeOffset.UtcNow), "local");
+        string metaPath = FindSidecar("legacy-b");
+        string json = File.ReadAllText(metaPath);
+        json = json.TrimEnd().TrimEnd('}') + ""","fields":{"topic":["gamma"]}}""";
+        File.WriteAllText(metaPath, json);
+
+        // Fresh instance: TryUpdateEntry is the FIRST operation, so the scope is uncached and
+        // the lookup takes the sidecar-scan path.
+        using var fresh = new FileMemoryStore(_root);
+
+        Dictionary<string, string[]>? seenByMutator = null;
+        bool ok = fresh.TryUpdateEntry("legacy-b", "local", e =>
+        {
+            seenByMutator = e.Attributes;
+            return e;
+        });
+
+        ok.Should().BeTrue();
+        seenByMutator.Should().NotBeNull(
+            because: "the cold lookup path has no MigratesTo forward-fill, so the load seam is "
+                   + "the only thing that folds the legacy \"fields\" key before a mutator sees it");
+        seenByMutator!["topic"].Should().BeEquivalentTo(["gamma"]);
+    }
+
+    private string FindSidecar(string name) =>
+        Directory.GetFiles(_root, $"{name}.meta.json", SearchOption.AllDirectories).Single();
 }
 ```
 
-If `MetaPath` is not public, use `Path.Combine(_root, ".scrinia", "memories", "local", "note-a.meta.json")` — verify the real layout first with `Directory.GetFiles(_root, "*.meta.json", SearchOption.AllDirectories)` and hard-code what you observe. Do not guess.
+`FindSidecar` locates the sidecar by search rather than by assuming a layout — the on-disk path is
+`.scrinia/memories/<scope>/` today, but the test should not encode that.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+Verify `TryUpdateEntry`'s mutator signature (`Func<ArtifactEntry, ArtifactEntry?>`) and
+`ArtifactEntry.Attributes`' exact type against the source before running; adjust the local
+variable's type to match. `ArtifactEntry`'s positional members are
+`(string Name, string Uri, long OriginalBytes, int ChunkCount, DateTimeOffset CreatedAt)` —
+**there is no `Description` property.**
+
+- [ ] **Step 2: Run the tests and confirm they are GREEN**
 
 Run: `dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~NormalizationSeamTests"`
 
-Expected: `LoadIndex_NormalizesLegacyFieldsKey_OnAColdLoad` FAILS — `Attributes` is null, because `LoadEntriesFromSidecars` returns the raw deserialized entry and the cold path only installs a normalized form when `AttributeMigration.MigratesTo` returns true.
+Expected: **all PASS** against unchanged code, for the reason given at the top of this task. Record that they were green in your report.
 
-**Record the observed failure message in your report.** If a test passes here, it is not testing what it claims — fix the test before touching source.
+If any test FAILS here, stop and report it — that would mean the falsification analysis was wrong and there is a live normalization bug, which changes this task from a refactor into a fix.
 
 - [ ] **Step 3: Apply normalization at the seam**
 
@@ -187,7 +238,7 @@ Update the method's doc/comment to state that it is THE load seam and owns this 
                 .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
 ```
 
-Also update the three comments above those sites that explain the coalescing (`:1043-1048`, `:1115-1117`, and the one above `:1195`) — they now describe a rule that lives at the seam. Do not delete the explanation; move it.
+Also update the comments above those sites that explain the coalescing. There are **two**, in `Upsert` (`:1043-1048`) and `Remove` (`:1115-1117`); `TryUpdateEntry`'s write tail near `:1195` has no such comment. Do not delete the explanation — move its substance onto `LoadEntriesFromSidecars`, which now owns the rule.
 
 - [ ] **Step 5: Verify**
 
@@ -231,7 +282,13 @@ Entry identity: `SanitizeName(e.Name).Equals(SanitizeName(target), StringCompari
 
 **ORDERING — decide explicitly and record the decision.** Every cache population today comes from `Directory.EnumerateFiles` order. Appending a new entry produces a different order than a cold load would, so a warm cache and a cold cache could disagree. Pick ONE:
 
-- **(a)** Replace-in-slot for existing entries, append for new ones — and establish that no caller depends on `LoadIndex` ordering. The callers to check: `BundleFormatService.cs:60`, `EntityTypingEventHandler.cs:40`, `FileMemoryStore.cs:1253, 1334, 1647, 1798, 1908, 2022, 2085, 2215, 2233, 2253`, `IMemoryStore.cs:110`, `MemoryTools.Lifecycle.cs:1110, 1286, 1298`, `MemoryEndpoints.cs:291`. Most are `FirstOrDefault` by name and are order-independent; the enumerating ones (`ListScoped` at `:1647`/`:1798`, and the `MemoryTools.Lifecycle` ones) need an actual look at whether output order is observable.
+- **(a)** Replace-in-slot for existing entries, append for new ones — and establish that no caller depends on `LoadIndex` ordering.
+
+  **Order-independent** (`FirstOrDefault` by name — verified): `EntityTypingEventHandler.cs:40`, `FileMemoryStore.cs:1253, 1334, 1908, 2022, 2085`, `IMemoryStore.cs:110`, `MemoryTools.Lifecycle.cs:1110`, `MemoryEndpoints.cs:291`.
+
+  **Enumerating — these are the ones that need an actual look:** `FileMemoryStore.cs:1647` and `:1798` (both inside `ListScoped`, which feeds search and list output), `FileMemoryStore.cs:2215` (`GatherTopicInfos`) and `:2233` (`ListTopicArtifacts`) — both order-sensitive and both inside this same file, `FileMemoryStore.cs:2253`, `BundleFormatService.cs:60` (export ordering), `MemoryTools.Lifecycle.cs:1286, 1298`.
+
+  An earlier draft of this list mislabelled `MemoryTools.Lifecycle.cs:1110` as enumerating and omitted `:2215`/`:2233` entirely; the grouping above is the corrected one. Re-verify rather than trusting it.
 - **(b)** Sort both the cold path and the warm update by the same key, so they are identical by construction.
 
 State which you chose and why in your report and in a code comment. `Cold_And_Warm_Caches_Agree` below must pass either way.
@@ -334,12 +391,14 @@ public sealed class IndexCacheWritePathTests : IDisposable
     public void Upsert_ReplacesAnExistingEntry_RatherThanDuplicatingIt()
     {
         _store.Upsert(E("a"), "local");
-        var updated = new ArtifactEntry("a", "second", 9, 1, DateTimeOffset.UtcNow);
+        // ArtifactEntry's positional members are (Name, Uri, OriginalBytes, ChunkCount,
+        // CreatedAt). There is NO Description property — assert on a member that exists.
+        var updated = new ArtifactEntry("a", "", 99, 1, DateTimeOffset.UtcNow);
         _store.Upsert(updated, "local");
 
         var entries = _store.LoadIndex("local").Where(e => e.Name == "a").ToList();
         entries.Should().HaveCount(1);
-        entries[0].Description.Should().Be("second");
+        entries[0].OriginalBytes.Should().Be(99);
     }
 
     [Fact]
@@ -470,12 +529,13 @@ Append to `IndexCacheWritePathTests`:
         _store.Upsert(E("a"), "local");
         _store.Upsert(E("b"), "local");
 
-        bool ok = _store.TryUpdateEntry("a", "local", e => e with { Description = "patched" });
+        // No Description property on ArtifactEntry — Uri is the second positional member.
+        bool ok = _store.TryUpdateEntry("a", "local", e => e with { Uri = "patched" });
 
         ok.Should().BeTrue();
         var entries = _store.LoadIndex("local");
         entries.Select(x => x.Name).Should().BeEquivalentTo(["a", "b"]);
-        entries.Single(x => x.Name == "a").Description.Should().Be("patched");
+        entries.Single(x => x.Name == "a").Uri.Should().Be("patched");
     }
 
     [Fact]
@@ -483,7 +543,7 @@ Append to `IndexCacheWritePathTests`:
     {
         _store.Upsert(E("a"), "local");
 
-        bool ok = _store.TryUpdateEntry("nope", "local", e => e with { Description = "x" });
+        bool ok = _store.TryUpdateEntry("nope", "local", e => e with { Uri = "x" });
 
         ok.Should().BeFalse();
         _store.LoadIndex("local").Select(x => x.Name).Should().BeEquivalentTo(["a"]);
@@ -496,10 +556,10 @@ Append to `IndexCacheWritePathTests`:
         using var fresh = new FileMemoryStore(_root);
 
         // First operation on this instance, cold cache — must fall back to the sidecar scan.
-        bool ok = fresh.TryUpdateEntry("a", "local", e => e with { Description = "cold" });
+        bool ok = fresh.TryUpdateEntry("a", "local", e => e with { Uri = "cold" });
 
         ok.Should().BeTrue();
-        fresh.LoadIndex("local").Single(x => x.Name == "a").Description.Should().Be("cold");
+        fresh.LoadIndex("local").Single(x => x.Name == "a").Uri.Should().Be("cold");
     }
 ```
 
@@ -725,7 +785,22 @@ git commit -m "perf(store): invalidate the topic cache on scope lifecycle, not o
 
 **Do NOT route this through `EntityFactStore`.** It genuinely is a reverse index for `("ref", target)`, but `_factStore` is invalidated by the write that immediately precedes this sink, so a cold `GetEntityFactStore()` would call `ListScoped(null)` AND read or rebuild a `facts.json` sidecar per scope — strictly more work. The spec records this; do not re-litigate it.
 
-**The change:** keep the same predicate and the same answer; stop materializing. `ListScoped` returns `List<ScopedArtifact>`, so it materializes inside the store too. Add a short-circuiting path rather than changing `ListScoped`'s contract:
+**`allEntries` IS USED TWICE. A falsification pass caught a version of this task that broke the build.** The listing is consumed again at `MaintenanceEventSink.cs:216`:
+
+```csharp
+            if (hasInboundRefs && CarriesLegacyOrphanKeyword(store, allEntries, sourceScope, sourceSubject))
+```
+
+`CarriesLegacyOrphanKeyword` (`:90-91`) takes `IEnumerable<ScopedArtifact> allEntries` and does its own `.Any(...)`. The comment at `:210-215` explicitly justifies sharing one listing between the two questions ("Gated on the listing already in hand"), so this is a deliberate optimization, not an oversight.
+
+Both questions must therefore move together, or neither does. Convert **both**:
+
+- the inbound-ref question (`:150`) → a lazy `AnyScoped` call
+- `CarriesLegacyOrphanKeyword` → take the store and run its own lazy `AnyScoped`, rather than receiving a materialized listing
+
+Two lazy passes beat one full materialization here: when `hasInboundRefs` is false the second question is never asked, and when it is true both passes short-circuit at their first match. Update the `:210-215` comment — its "listing already in hand" rationale no longer describes the code.
+
+**The change:** keep both predicates and both answers byte-identical; stop materializing. `ListScoped` returns `List<ScopedArtifact>`, so it materializes inside the store too. Add a short-circuiting path rather than changing `ListScoped`'s contract:
 
 - Add to `IMemoryStore` a default-implemented `bool AnyScoped(string? scopes, Func<ScopedArtifact, bool> predicate) => ListScoped(scopes).Any(predicate);` and override it in `FileMemoryStore` to enumerate lazily (`ListEphemeral()` then per-scope `LoadIndex(scope)`) and return on the first match.
 - **Read `src/Scrinia.Core/IMemoryStore.cs:55-70` first.** That file carries an explicit warning about default-bodied interface members, and a prior review finding (H1) turned on exactly this. If adding a default-bodied member conflicts with what that comment requires, implement it as a concrete method on `FileMemoryStore` plus an explicit `HttpMemoryStore` implementation instead, and say so in your report. **Do not add a default body that silently gives `HttpMemoryStore` wrong behaviour.**
@@ -1069,6 +1144,16 @@ git commit -m "docs: describe the write path as it now behaves"
 ## Self-review notes
 
 **Spec coverage:** A1 → Task 1. A2 → Task 2. A3 → Task 3. A4 → Task 4. B → Task 5. C → Task 6. D → Task 7. Testing section → distributed across the task that owns each behaviour. Scope boundaries → carried into Global Constraints and Task 5's "do not route through EntityFactStore".
+
+**Falsification pass (run before execution, report at `.superpowers/sdd/2026-08-17-write-path-cost/plan-falsification.md`)** found five wrong claims, all corrected above:
+
+1. Task 5's refactor would not have compiled — `allEntries` is used a second time at `MaintenanceEventSink.cs:216`, and the plan's change deleted it. Both consumers now move together.
+2. Task 1's tests were labelled red-then-green but pass unchanged: `AttributeMigration.MigratesTo` returns true for a legacy-fields entry, so the cold path already normalizes. Task 1 is now correctly framed as a refactor under green, with a new `TryUpdateEntry` cold-path guard that pins the one path where the seam is genuinely load-bearing.
+3. Task 2's and Task 3's test code referenced `ArtifactEntry.Description`, which does not exist — the second positional member is `Uri`. This would have broken both test files' build and invalidated the "baseline green" checkpoints.
+4. The `LoadIndex` caller ordering analysis misgrouped one caller and omitted two genuinely order-sensitive ones (`GatherTopicInfos`, `ListTopicArtifacts`).
+5. Task 1 referenced a third coalescing comment that does not exist.
+
+**Line numbers throughout this plan are as-of `f89f204` and some drift by a line or two.** Locate code by its content, not by trusting the citation.
 
 **Known gaps handed to the implementer deliberately, with the decision framed rather than hidden:**
 - The ordering decision in Task 2 (spec requires it be explicit; the caller list is provided).
