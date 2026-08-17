@@ -744,7 +744,34 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return entries;
     }
 
+    /// <summary>
+    /// THE load seam: every sidecar read in this type funnels through here. Owns the legacy
+    /// "fields" → Attributes normalization rule (<see cref="ArtifactEntry.NormalizeAttributesKey"/>)
+    /// per the invariant at <c>ArtifactEntry.cs:67</c> — an entry never escapes this method with
+    /// data still sitting in <c>LegacyFields</c>. Callers must NOT re-apply the rule; that used to
+    /// be pasted around every call site (Upsert, Remove, TryUpdateEntry's two lookups) and one
+    /// missed copy would have silently hidden an entry's facets from search/filter/display for the
+    /// process lifetime. See Scrinia.Tests.Store.NormalizationSeamTests for the regression guard.
+    /// </summary>
     private List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
+    {
+        var entries = LoadEntriesFromSidecarsRaw(storeDir);
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = entries[i].NormalizeAttributesKey();
+        return entries;
+    }
+
+    /// <summary>
+    /// The actual disk read behind <see cref="LoadEntriesFromSidecars"/>, deliberately NOT
+    /// normalized. Kept separate for <see cref="EnumerateRawForMigration"/>, whose documented
+    /// contract is to hand <see cref="Migration.AttributeMigration.MigratesTo"/> genuinely raw
+    /// entries: <c>MigratesTo</c> calls <c>NormalizeAttributesKey()</c> itself as part of
+    /// detecting whether an entry still carries the legacy "fields" key, and needs
+    /// <see cref="ArtifactEntry.LegacyFields"/> to still be populated to do that. If this fed
+    /// pre-normalized entries instead, every legacy-"fields" sidecar would look already-migrated
+    /// and <c>scri migrate</c> would silently stop rewriting it on disk.
+    /// </summary>
+    private List<ArtifactEntry> LoadEntriesFromSidecarsRaw(string storeDir)
     {
         if (!Directory.Exists(storeDir)) return [];
 
@@ -814,7 +841,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         foreach (string scope in ResolveReadScopes("all"))
         {
             string primaryDir = GetStoreDirForScope(scope);
-            var primary = LoadEntriesFromSidecars(primaryDir);
+            var primary = LoadEntriesFromSidecarsRaw(primaryDir);
             if (primary.Count == 0)
                 primary = LoadEntriesFromLegacyIndex(primaryDir); // raw index.json fallback
             foreach (var entry in primary)
@@ -1040,14 +1067,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
-            // Invalidate cache and rebuild from sidecars. Coalesce each entry's legacy "fields"
-            // key here (in-memory only, no write-back) so a write-first session — an Upsert
-            // before any cold LoadIndex on this scope — never caches an entry with Attributes ==
-            // null while its data sits in LegacyFields; that would silently hide the entry's
-            // facets from search/filter/display for the rest of the process lifetime. Mirrors
-            // LoadIndexUnsafe's cold-path forward-fill.
+            // Invalidate cache and rebuild from sidecars. LoadEntriesFromSidecars is the load
+            // seam and normalizes each entry's legacy "fields" key itself, so a write-first
+            // session — an Upsert before any cold LoadIndex on this scope — never caches an
+            // entry with Attributes == null while its data sits in LegacyFields; that would
+            // silently hide the entry's facets from search/filter/display for the rest of the
+            // process lifetime. Mirrors LoadIndexUnsafe's cold-path forward-fill.
             _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
+            var entries = LoadEntriesFromSidecars(storeDir);
             _indexCache[scope] = new CachedIndex(entries);
 
             // Invalidate topic discovery cache when saving a topic scope
@@ -1112,11 +1139,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Delete the sidecar file
             File.Delete(metaPath);
 
-            // Invalidate cache and rebuild from remaining sidecars. Coalesce legacy "fields" here
-            // too, in-memory only — see the matching comment in Upsert for why a write-first
-            // Remove must not cache an un-coalesced entry.
+            // Invalidate cache and rebuild from remaining sidecars. LoadEntriesFromSidecars
+            // normalizes legacy "fields" itself — see the matching comment in Upsert for why a
+            // write-first Remove must not cache an un-coalesced entry.
             _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
+            var entries = LoadEntriesFromSidecars(storeDir);
             _indexCache[scope] = new CachedIndex(entries);
 
             // Invalidate topic discovery cache when removing from a topic scope. Without
@@ -1175,8 +1202,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // is unchanged), and the sole production caller is EntityTypingEventHandler.PromoteAsync
             // on a detached background task, one call per write event, never in a loop. Trading a
             // correct answer for a stat on the rare path is the wrong way round.
+            // LoadEntriesFromSidecars is the load seam and normalizes legacy "fields" itself, so
+            // the mutator below always sees Attributes populated even on this cold lookup path,
+            // which (unlike LoadIndexUnsafe) has no AttributeMigration.MigratesTo forward-fill.
             var current = LoadEntriesFromSidecars(storeDir)
-                .Select(e => e.NormalizeAttributesKey())
                 .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
             if (current is null) return false;
 
@@ -1192,7 +1221,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             WriteSidecar(updated, storeDir);
 
             _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
+            var entries = LoadEntriesFromSidecars(storeDir);
             _indexCache[scope] = new CachedIndex(entries);
 
             if (scope.StartsWith("local:", StringComparison.Ordinal))
