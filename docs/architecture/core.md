@@ -186,6 +186,10 @@ Where:
 
 ### Weighted Attribute Scoring
 
+> **The table below is a restatement, not the source of truth.** The rubric lives in
+> `ScoringWeights` (`Scrinia.Core.Search`) — one record, read directly by
+> `WeightedAttributeScorer`. If this table and that record ever disagree, the record is right.
+
 Each query term is matched against entry attributes with different weights:
 
 | Match Type | Score |
@@ -296,7 +300,7 @@ public static class KnownAttributes
 Every consumer of typed/prefixed data reads **both** shapes so old entries (which only ever had prefixed `Keywords`, since `Attributes` didn't exist yet) and new entries (which have `Attributes`) retrieve identically:
 
 - **Scorer** (`WeightedAttributeScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
-- **Entity graph** (`EntityGraph.Build`): unions `ParseEntityKeywords(keywords)` (legacy `type:value` keywords) with `ParseEntityAttributes(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownAttributes.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
+- **Entity graph** (`EntityFactDerivation.Derive`, which `EntityGraphScoreContributor` runs via `EntityFactStore.ScoringAdjacency`; `EntityGraph.Build` was deleted): unions `ParseEntityKeywords(keywords)` (legacy `type:value` keywords) with `ParseEntityAttributes(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownAttributes.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
 - **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownAttributes.Merge`.
 - **FileHashes**: the derivation pipeline (`MemoryDerivation`) unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `FileHashes` — on `ArtifactEntry` for a persistent write and identically on `EphemeralEntry` for an ephemeral one, both local and remote. An append hashes only newly-referenced paths and keeps an already-baselined path's original hash (see CHANGELOG); a plain `remember()`/`Store` hashes every referenced path. Because `Attributes["file"]` is itself fence-aware (`ExtractRefAttributes`, above), a path mentioned only inside a properly closed fenced block no longer reaches `Attributes["file"]` and therefore no longer reaches `FileHashes` either — a drift baseline can only be built from a file reference that reads as a real reference, not a pasted example.
 
@@ -566,6 +570,13 @@ public interface ISearchScoreContributor
 ```
 
 Scores are keyed by `"{scope}|{name}"` for entries or `"{scope}|{name}|{chunkIndex}"` for chunks.
+
+**`chunkIndex` is a 1-based index over the memory's nmp2 content elements** — the same value
+`ChunkEntry.ChunkIndex` carries, which is what the scorer probes with. It is *not* a character-window
+ordinal and it is *not* 0-based. Getting this wrong is invisible: a mis-keyed chunk score simply
+never matches, and the entry-level key silently absorbs the lookup, so search keeps working and
+quietly loses its chunk-level signal. Use `VectorScoreProjection.Project`, which owns the mapping
+from stored vectors to these keys, rather than composing them by hand.
 
 Dispatch via `SearchContributorContext`:
 - `.Current` (AsyncLocal): set per-request by the server

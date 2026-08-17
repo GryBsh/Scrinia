@@ -78,6 +78,23 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Remove_OnColdCache_RemovesVectorsWrittenByAnotherInstance()
+    {
+        // Both existing Remove tests upsert first on the SAME instance, so the scope's cache is
+        // already warm by the time RemoveAsync runs. RemoveAsync must load from disk on a cache
+        // miss the same way UpsertAsync does — otherwise calling it as the first operation this
+        // instance performs against a scope silently no-ops (nothing looks stale in memory) and
+        // leaves the on-disk vectors behind.
+        await _store.UpsertAsync("local", "gone", null, [0.1f, 0.2f]);
+
+        using (var cold = new VectorStore(_tempDir))
+            await cold.RemoveAsync("local", "gone");          // first op on this instance
+
+        using var verify = new VectorStore(_tempDir);
+        verify.GetVectors("local").Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Persistence_SurvivesNewInstance()
     {
         float[] vec = [0.1f, 0.2f, 0.3f, 0.4f];
@@ -243,6 +260,28 @@ public class VectorStoreTests : IDisposable
         using var fresh = new VectorStore(_tempDir, expectedSignature: newSig);
         fresh.GetVectors("local").Should().BeEmpty();
         fresh.HasStaleQuarantines.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Svf3_PreBranchSignature_QuarantinesUnderTheLayoutMarkedSignature()
+    {
+        // Pre-branch files were signed with the un-marked "{provider}|c{size}o{overlap}" form —
+        // no "|e1" suffix — because their chunk index was a raw window ordinal. Reopening under
+        // today's ChunkedSignature.Compose (which appends the layout marker) must quarantine
+        // them rather than let the new element/window reader misinterpret old indices.
+        const string preBranchSignature = "ollama:nomic-embed-text|c1200o200";
+        string layoutMarkedSignature = ChunkedSignature.Compose("ollama:nomic-embed-text", 1200, 200);
+        layoutMarkedSignature.Should().NotBe(preBranchSignature);
+
+        using (var old = new VectorStore(_tempDir, expectedSignature: preBranchSignature))
+        {
+            await old.UpsertAsync("local", "memo", 0, [0.1f, 0.2f, 0.3f]);
+        }
+
+        using var fresh = new VectorStore(_tempDir, expectedSignature: layoutMarkedSignature);
+        fresh.GetVectors("local").Should().BeEmpty();
+        fresh.HasStaleQuarantines.Should().BeTrue();
+        fresh.StaleQuarantineScopes.Should().Contain("local");
     }
 
     [Fact]

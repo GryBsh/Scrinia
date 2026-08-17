@@ -84,7 +84,7 @@ public sealed class EntityTypeClassifier(IEmbeddingProvider provider)
     }
 
     // Vectors are L2-normalized on cache so VectorIndex.CosineSimilarity (dot product over
-    // normalized vectors) can be reused as-is (DRY with HybridReranker/HnswIndex).
+    // normalized vectors) can be reused as-is (DRY with HybridReranker).
     private async Task<float[]?> EmbedCachedAsync(string text, CancellationToken ct)
     {
         if (_vectorCache.TryGetValue(text, out var cached)) return cached;

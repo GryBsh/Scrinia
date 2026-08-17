@@ -24,6 +24,12 @@ public sealed class MergeConfigTests : IDisposable
     {
         // Write config JSON manually to avoid using internal MergeConfigJsonContext. merge.config
         // on disk uses camelCase keys.
+        //
+        // "resolver" and "resolverCommand" are DELIBERATE, not leftovers: MergeConfig no longer
+        // has those members, and this fixture is the forward-compat check that an existing
+        // on-disk merge.config written before they were dropped still loads. System.Text.Json
+        // skips unmapped members, so the assertions below must keep passing — if they ever stop,
+        // reading a real user's older config has become a breaking change.
         string configContent = """{"jaccardThreshold":0.85,"resolver":"none","resolverCommand":null,"conflictDir":"my-conflicts"}""";
         File.WriteAllText(Path.Combine(_tempDir, "merge.config"), configContent);
 
@@ -40,8 +46,6 @@ public sealed class MergeConfigTests : IDisposable
 
         config.JaccardThreshold.Should().Be(0.7);
         config.ConflictDir.Should().Be("conflict");
-        config.Resolver.Should().Be("none");
-        config.ResolverCommand.Should().BeNull();
     }
 
     [Fact]

@@ -103,7 +103,9 @@ Keys are generated as `scri_` + 32 random bytes (Base64url, no padding). Only th
 
 ### Bootstrap Key
 
-On first startup (when no keys exist), the server auto-generates an admin key with all permissions for all stores. The raw key is written to `{dataDir}/BOOTSTRAP_KEY`. Use it to create scoped keys, then revoke the bootstrap key for security.
+On first startup (when no keys exist), the server auto-generates an admin key for all stores. The raw key is written to `{dataDir}/BOOTSTRAP_KEY`. Use it to create scoped keys, then revoke the bootstrap key for security.
+
+The bootstrap key carries every permission in the table below — an explicit list in `Program.cs`, not a wildcard. It is the only key on a fresh server, so anything omitted from that list is a permission no operator can reach; if you add a permission to the server, add it there too.
 
 ### Permissions
 
@@ -123,6 +125,7 @@ Each API key carries a set of granular permissions:
 | `manage_roles` | Manage roles (integration point for auth plugins) |
 | `health` | Access `/health/details` endpoint for detailed diagnostics |
 | `chat` | Use the agent chat endpoint to query store memories via LLM |
+| `reindex` | Trigger a full-store re-embed via `POST .../embeddings/reindex` |
 
 ### Privilege Escalation Prevention
 
@@ -470,6 +473,60 @@ POST /api/v1/stores/{store}/import
 
 **Permission:** `import`. Accepts multipart form upload of a `.scrinia-bundle` file with optional topic filter and overwrite flag.
 
+### Embeddings Status
+
+```
+GET /api/v1/stores/{store}/embeddings/status
+```
+
+**Permission:** `read`. Returns the active provider, its hardware (`CPU` or `Vulkan GPU`),
+availability, vector dimensionality, the semantic weight applied in hybrid scoring, and the
+total stored vector count. When no provider is installed and no plugin is loaded, returns a
+`"none"` provider rather than an error.
+
+```json
+{
+  "provider": "Model2VecProvider",
+  "hardware": "CPU",
+  "available": true,
+  "dimensions": 384,
+  "semanticWeight": 50.0,
+  "vectorCount": 1284
+}
+```
+
+### Embeddings Settings
+
+```
+GET /api/v1/stores/{store}/embeddings/settings
+```
+
+**Permission:** `read`. Read-only — embedding configuration comes from `Scrinia:Embeddings:*`
+and takes effect on restart. There is no `PUT`.
+
+```json
+{ "provider": "Model2VecProvider", "hardware": "CPU", "semanticWeight": 50.0 }
+```
+
+### Reindex Embeddings
+
+```
+POST /api/v1/stores/{store}/embeddings/reindex
+```
+
+**Permission:** `reindex`, plus a writable grant on `{store}`. Re-embeds every memory in the
+store through the active provider, replacing each memory's vectors atomically. This is the
+manual migration path after a provider switch or a chunk-config change — see "Vector data
+isolation" below. Returns `400` when no provider is available.
+
+```json
+{ "message": "Reindexed 1284 memories." }
+```
+
+These three routes were previously mounted under `/api/v1/plugins/embeddings/`, where the
+handler had no `{store}` in scope and the reindex route failed on every request. The old paths
+are gone.
+
 ## Key Management API
 
 Requires the `manage_keys` permission.
@@ -724,7 +781,7 @@ The server includes production-ready security features:
 
 Each store is a full `.scrinia/` workspace with its own index, artifacts, topics, embeddings, and exports.
 
-**Vector data isolation:** Embedding vectors are stored per-store in `.scrinia/embeddings/` within each store's workspace directory — never shared across stores. The Model2Vec model binary lives at `{exeDir}/models/m2v-MiniLM-L6-v2/` (shared, read-only). Both the built-in Model2Vec and optional Vulkan plugin produce 384-dim vectors in the same MiniLM embedding space, so switching providers does not require reindexing.
+**Vector data isolation:** Embedding vectors are stored per-store in `.scrinia/embeddings/` within each store's workspace directory — never shared across stores. The Model2Vec model binary lives at `{exeDir}/models/m2v-MiniLM-L6-v2/` (shared, read-only). Both the built-in Model2Vec and optional Vulkan plugin produce 384-dim vectors in the same MiniLM embedding space, but they report different embedding signatures (`model2vec:m2v-MiniLM-L6-v2` vs `vulkan:{ggufFileName}`) and write to the same per-store `.scrinia/embeddings` directory — so **switching providers does require a reindex**. The vector files self-quarantine on the first load after a switch; rebuild each store with `POST /api/v1/stores/{store}/embeddings/reindex`. Until then those memories fall back to keyword-only search.
 
 ### Version Retention
 

@@ -3,6 +3,7 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -19,7 +20,28 @@ namespace Scrinia.Services;
 /// </summary>
 internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink, IAsyncDisposable
 {
+    /// <summary>
+    /// The one operation this host performs against the plugin process. Extracted so tests can
+    /// observe which tool a write dispatches to without starting a child process; production
+    /// still goes through McpClient.CallToolAsync.
+    /// </summary>
+    internal interface IPluginToolCaller
+    {
+        Task<string?> CallToolAsync(string tool, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct);
+    }
+
+    private sealed class McpClientToolCaller(McpClient client) : IPluginToolCaller
+    {
+        public async Task<string?> CallToolAsync(
+            string tool, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct)
+        {
+            var result = await client.CallToolAsync(tool, arguments, cancellationToken: ct);
+            return GetTextContent(result);
+        }
+    }
+
     private McpClient? _client;
+    private IPluginToolCaller? _toolCaller;
     private string _exePath = "";
     private string[] _arguments = [];
     private Dictionary<string, string?> _environment = new();
@@ -28,12 +50,28 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     private bool _degraded;
 
     // Capability flags discovered via ListToolsAsync
-    private bool _hasSearch, _hasUpsert, _hasRemove, _hasStatus;
+    private bool _hasSearch, _hasUpsert, _hasRemove, _hasStatus, _hasIndex;
     // Set to true only when the plugin's status reports available=true (i.e. a real provider, not NullEmbeddingProvider)
     private bool _isAvailable;
 
+    /// <summary>Production construction path — connects lazily via <see cref="StartAsync"/>.</summary>
+    public McpPluginHost() { }
+
+    /// <summary>Test-only: supply a tool caller and capability set directly, skipping StartAsync.</summary>
+    internal McpPluginHost(IPluginToolCaller toolCaller, IEnumerable<string> toolNames)
+    {
+        _toolCaller = toolCaller;
+        var names = new HashSet<string>(toolNames, StringComparer.OrdinalIgnoreCase);
+        _hasSearch = names.Contains("search");
+        _hasUpsert = names.Contains("upsert");
+        _hasRemove = names.Contains("remove");
+        _hasStatus = names.Contains("status");
+        _hasIndex = names.Contains("index");
+        _isAvailable = true;
+    }
+
     public bool HasSearchCapability => _hasSearch && _isAvailable && !_degraded;
-    public bool HasEventSinkCapability => (_hasUpsert || _hasRemove) && _isAvailable && !_degraded;
+    public bool HasEventSinkCapability => (_hasIndex || _hasUpsert || _hasRemove) && _isAvailable && !_degraded;
 
     /// <summary>
     /// Starts the plugin process via MCP stdio transport. Verifies it's alive with a status call.
@@ -116,6 +154,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         });
 
         _client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+        _toolCaller = new McpClientToolCaller(_client);
 
         // Discover capabilities
         var tools = await _client.ListToolsAsync(cancellationToken: ct);
@@ -124,6 +163,17 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         _hasUpsert = names.Contains("upsert");
         _hasRemove = names.Contains("remove");
         _hasStatus = names.Contains("status");
+        _hasIndex = names.Contains("index");
+
+        // Capability fact, logged once per connection rather than once per memory — see
+        // OnStoredAsync/OnAppendedAsync, which used to log this on every legacy-fallback call and
+        // would spam one identical line per memory during a bulk reindex.
+        if (!_hasIndex && _hasUpsert)
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Plugin offers 'upsert' but not 'index'; indexing without windowing. "
+                + "Long memories will be less reachable by semantic search.");
+        }
     }
 
     // ── ISearchScoreContributor ──────────────────────────────────────────
@@ -153,20 +203,40 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnStoredAsync(string qualifiedName, string[] content,
         IMemoryStore store, CancellationToken ct)
     {
-        if (_degraded || !_hasUpsert) return;
+        // Restored the early return in front of ParseQualifiedName: a plugin advertising only
+        // `remove` has neither flag set, and must not pay for a parse (which throws on a
+        // malformed name) on every store/append when it was never going to call out anyway.
+        if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
         var (scope, name) = store.ParseQualifiedName(qualifiedName);
+
+        if (_hasIndex)
+        {
+            // Preferred: hand the plugin the whole content array and let MemoryVectorIndexer run
+            // inside the plugin process. The chunking policy lives in one place instead of being
+            // restated by every caller that speaks this protocol (finding H3).
+            await CallToolWithRetryAsync("index", new Dictionary<string, object?>
+            {
+                ["scope"] = scope,
+                ["name"] = name,
+                ["content"] = content,
+            }, ct);
+            return;
+        }
+
+        // Legacy fallback for plugins that predate the `index` tool. This path does not window, so
+        // a long memory becomes one mean-pooled vector — the exact H3 regression. Kept so a
+        // third-party plugin keeps being indexed rather than silently stopping. The capability
+        // warning for this fallback is logged once per connection, in ConnectAsync — not here,
+        // where it would repeat once per memory during a bulk reindex.
         string joined = string.Concat(content);
         if (string.IsNullOrWhiteSpace(joined)) return;
 
         await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
         {
-            ["scope"] = scope,
-            ["name"] = name,
-            ["text"] = joined,
+            ["scope"] = scope, ["name"] = name, ["text"] = joined,
         }, ct);
 
-        // Also embed individual chunks if multi-chunk
         if (content.Length > 1)
         {
             for (int i = 0; i < content.Length; i++)
@@ -174,10 +244,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
                 if (string.IsNullOrWhiteSpace(content[i])) continue;
                 await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
                 {
-                    ["scope"] = scope,
-                    ["name"] = name,
-                    ["text"] = content[i],
-                    ["chunkIndex"] = i + 1,
+                    ["scope"] = scope, ["name"] = name, ["text"] = content[i], ["chunkIndex"] = i + 1,
                 }, ct);
             }
         }
@@ -186,9 +253,35 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnAppendedAsync(string qualifiedName, string content,
         IMemoryStore store, CancellationToken ct)
     {
-        if (_degraded || !_hasUpsert) return;
+        // See OnStoredAsync — same early-return-before-parse fix, same reason.
+        if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
         var (scope, name) = store.ParseQualifiedName(qualifiedName);
+
+        if (_hasIndex)
+        {
+            // An append mutates the memory, and the plugin-side indexer replaces a memory's
+            // vectors atomically — sending only the appended fragment would destroy every vector
+            // for the rest of the memory. Re-read the current artifact and send the full
+            // post-append content array, same reasoning as CoreEmbeddingEventHandler.
+            string artifact = await store.ReadArtifactAsync(name, scope, ct);
+            if (string.IsNullOrWhiteSpace(artifact)) return;
+
+            var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+            if (elements.Length == 0) return;
+
+            await CallToolWithRetryAsync("index", new Dictionary<string, object?>
+            {
+                ["scope"] = scope,
+                ["name"] = name,
+                ["content"] = elements,
+            }, ct);
+            return;
+        }
+
+        // Legacy fallback: the old protocol has no way to express a replace, so this keeps
+        // today's fragment-only behaviour. The top guard already guarantees _hasUpsert here,
+        // since _hasIndex is false and at least one of the two must be true to reach this line.
         if (string.IsNullOrWhiteSpace(content)) return;
 
         await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
@@ -217,13 +310,13 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     private async Task<string?> CallToolWithRetryAsync(
         string toolName, Dictionary<string, object?> arguments, CancellationToken ct)
     {
-        if (_degraded || _client is null) return null;
+        if (_degraded || _toolCaller is null) return null;
 
         try
         {
-            var result = await _client.CallToolAsync(toolName, arguments, cancellationToken: ct);
+            var text = await _toolCaller.CallToolAsync(toolName, arguments, ct);
             _failCount = 0; // success → reset counter
-            return GetTextContent(result);
+            return text;
         }
         catch (OperationCanceledException)
         {
@@ -239,9 +332,9 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
             try
             {
-                var result = await _client!.CallToolAsync(toolName, arguments, cancellationToken: ct);
+                var text = await _toolCaller!.CallToolAsync(toolName, arguments, ct);
                 _failCount = 0;
-                return GetTextContent(result);
+                return text;
             }
             catch (OperationCanceledException)
             {

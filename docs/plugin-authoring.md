@@ -171,6 +171,15 @@ Two patterns worth noting:
 - **Options are bound the same way as core server options.** `Scrinia:` configuration sections are merged from `appsettings.json`, environment variables, and command-line — your plugin participates in the standard pipeline.
 - **Scoring keys are `{scope}|{name}` for entries and `{scope}|{name}|{chunkIndex}` for chunks.** Returning `null` is equivalent to returning an empty dictionary.
 
+  `chunkIndex` is a **1-based index over the memory's content elements** — the same value
+  `ChunkEntry.ChunkIndex` carries. It is not a character-window ordinal and not 0-based. This is
+  worth getting right the first time, because getting it wrong is silent: a mis-keyed chunk score
+  never matches, the entry-level key absorbs the lookup, and search keeps working while quietly
+  losing the chunk-level signal. If you slice a long element into overlapping windows, every
+  window rolls up into that one element's key with the maximum score winning —
+  `VectorScoreProjection.Project` in `Scrinia.Core.Embeddings` does exactly this and is the
+  supported way to build the dictionary.
+
 ## Lifecycle hooks reference
 
 `IMemoryOperationHook` (REST path) gives you before/after pairs for each mutating operation:
@@ -197,6 +206,46 @@ public override void MapEndpoints(IEndpointRouteBuilder endpoints)
 ```
 
 The server mounts plugin endpoints under `/api/v1/plugins` and applies `RequireAuthorization` + the `api` rate-limit policy to the group, so your endpoints inherit those. Override `ConfigureMiddleware` if you need to add cross-cutting middleware — it runs after authentication, before endpoint routing.
+
+## Out-of-process plugins: the MCP tool protocol
+
+The four interfaces above are for **in-process** plugins — a DLL the server loads. There is a
+second kind: a standalone executable the CLI launches as a child process and drives over MCP
+stdio. `scri-plugin-embeddings` is the reference implementation. Choose this shape when your
+plugin has heavyweight or awkward native dependencies (GPU runtimes, large models) that you do
+not want inside the host process, or when you want the plugin to crash without taking the host
+with it.
+
+The host (`McpPluginHost`) launches the child, hands it `--data-dir`, `--models-dir` and a
+`--config key=value` pair per forwarded configuration key, and then calls its tools. Which keys
+are forwarded, which of them are secrets, and how a secret maps to an environment variable are
+all defined in one place: `PluginConfigProtocol` in `Scrinia.Core.Embeddings`.
+`PluginConfigProtocol.BuildOptions` is the plugin-side half — call it rather than parsing keys
+yourself, so the two ends cannot drift.
+
+**Secrets never travel on argv.** A process command line is world-readable on the local host
+(`ps`, Task Manager, `/proc/<pid>/cmdline`). Any key matching `*ApiKey` is passed through the
+child's environment instead; `PluginConfigProtocol.ApplySecretEnvironment` reads them back.
+
+### Tools an embeddings-shaped plugin exposes
+
+| Tool | Purpose |
+|---|---|
+| `index` | **Preferred.** Takes a memory's whole content array and replaces its vectors. The plugin runs the shared `MemoryVectorIndexer` internally, so the chunking policy lives in one place instead of being restated by every caller that speaks the protocol. |
+| `search` | Query text plus scopes; returns a JSON map of supplemental scores in the same key shape described above. |
+| `upsert` | Legacy single-vector write. Still supported, but its `chunkIndex` cannot express the element/window layout — see below. |
+| `remove` | Drops every vector for a memory. |
+| `status` | Provider name, availability, dimensions, vector count. |
+
+The host negotiates: it calls `index` when the plugin advertises it, and falls back to the
+previous `upsert` call sequence when it does not, warning on stderr about what that costs.
+**Offer `index`.** `upsert`'s `chunkIndex` is a flat integer, and any value small enough to pass
+through it decodes to content element 0 — which does not exist, since elements are 1-based — so
+those vectors contribute to a memory's score but never to a chunk's.
+
+Retry belongs at exactly one layer. `McpPluginHost.CallToolWithRetryAsync` owns it for this
+process boundary, so a tool implementation should fail fast and return an error rather than
+retrying internally — otherwise a bulk reindex retries twice over and stalls.
 
 ## Loading and isolation
 

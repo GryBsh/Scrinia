@@ -39,7 +39,7 @@ web/
       MemoryBrowserPage.tsx   List/search memories with scope tabs
       MemoryDetailPage.tsx    View content + chunks + delete
       KeyManagementPage.tsx   Create/list/revoke API keys
-      SettingsPage.tsx        Embeddings config + reindex
+      SettingsPage.tsx        Embeddings status (read-only) + reindex
     components/
       Layout.tsx              Sidebar nav + outlet
       SearchBar.tsx           Reusable search input
@@ -97,7 +97,9 @@ No refresh tokens or session timeout — keys are long-lived. Logout clears loca
 
 **Key management:** `listKeys`, `createKey`, `revokeKey`
 
-**Embeddings:** `getEmbeddingsStatus`, `getEmbeddingsSettings`, `updateEmbeddingsSettings`, `reindexEmbeddings`
+**Embeddings:** `getEmbeddingsStatus`, `getEmbeddingsSettings`, `reindexEmbeddings`. Settings are
+read-only from the web UI — there is no `updateEmbeddingsSettings`; change embedding config via
+`scri config Scrinia:Embeddings:*` and restart the server.
 
 **Health:** `getHealth`
 
@@ -174,4 +176,4 @@ Interactive chat with the cloud LLM providers configured under `Scrinia:Chat` (A
 Create keys with userId, stores, permissions, and label. Lists existing keys with status. Copy-to-clipboard for new keys. Revoke with confirmation.
 
 ### SettingsPage
-Embeddings status display (provider, availability, dimensions, vector count). Update semantic weight and batch size. Reindex action. Gracefully handles missing embeddings plugin.
+Embeddings status display (provider, hardware, availability, dimensions, vector count, semantic weight) and a Reindex action. **Read-only** — there is no editing of semantic weight or batch size, and no Save button: embedding settings come from `Scrinia:Embeddings:*` configuration and take effect on restart. The page says so. Gracefully handles a missing embeddings provider or plugin. (The removed Save button issued `PUT .../embeddings/settings`, a route no server ever mapped; the request fell through to the SPA fallback and came back as HTML.)

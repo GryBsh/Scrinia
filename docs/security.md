@@ -80,8 +80,8 @@ permissions they don't themselves hold.
 - **Cross-process write races** — OS-enforced file locks (`FileLock`) serialise index
   mutations across processes. Contention is logged at `Warning` and timeouts at `Error`
   with structured `{LockPath}` and `{ElapsedMs}` fields for SIEM ingestion.
-- **In-process read/write conflicts** — `HnswIndex` uses `ReaderWriterLockSlim`;
-  `FileMemoryStore` uses per-scope reader-writer locks.
+- **In-process read/write conflicts** — `VectorStore` uses a per-scope `SemaphoreSlim` to
+  serialize writes; `FileMemoryStore` uses per-scope reader-writer locks.
 
 ### Network surface
 - **CORS** — restrictive by default. Configure allowed origins via `Scrinia:CorsOrigins`.

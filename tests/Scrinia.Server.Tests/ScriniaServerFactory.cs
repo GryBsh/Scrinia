@@ -40,7 +40,7 @@ public sealed class ScriniaServerFactory : WebApplicationFactory<Program>
                 TestUserId,
                 [PrimaryStore, SecondaryStore],
                 ["read", "search", "store", "append", "forget", "copy",
-                 "export", "import", "manage_keys", "manage_roles", "health", "chat"],
+                 "export", "import", "manage_keys", "manage_roles", "health", "chat", "reindex"],
                 "test");
             TestApiKey = rawKey;
             TestKeyId = keyId;
@@ -55,6 +55,15 @@ public sealed class ScriniaServerFactory : WebApplicationFactory<Program>
         var client = CreateClient();
         client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TestApiKey);
+        return client;
+    }
+
+    /// <summary>Creates an HttpClient authenticated as an arbitrary previously-created key.</summary>
+    public HttpClient CreateClientWithKey(string rawKey)
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rawKey);
         return client;
     }
 

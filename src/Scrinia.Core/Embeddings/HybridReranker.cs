@@ -4,13 +4,17 @@ using Scrinia.Core.Search;
 namespace Scrinia.Core.Embeddings;
 
 /// <summary>
-/// Hybrid re-ranking search contributor: embeds only the BM25 top-K candidates
-/// rather than the entire corpus, making semantic search efficient for large stores.
+/// Hybrid re-ranking search contributor: scores only the vectors belonging to the BM25 +
+/// attribute candidate set, rather than the whole corpus, making semantic search efficient for
+/// large stores.
 ///
 /// Flow:
 /// 1. WeightedAttributeScorer produces BM25+attribute scored candidates
-/// 2. This contributor receives those candidates and embeds only them
-/// 3. Cosine similarity scores are returned as supplemental scores
+/// 2. This contributor filters vectors down to that candidate set (<c>candidateVectors</c>)
+/// 3. Every surviving vector is then scored — <see cref="VectorIndex.Search"/> is called with
+///    the full candidate count rather than a smaller K, because the candidate filter is what
+///    already bounds the work
+/// 4. Cosine similarity scores are returned as supplemental scores
 ///
 /// This is more efficient than embedding the entire corpus on every search,
 /// since only the top candidates (typically 20-50) need embedding.
@@ -60,25 +64,8 @@ public sealed class HybridReranker : ISearchScoreContributor
             if (candidateVectors.Count == 0) continue;
 
             var topK = VectorIndex.Search(queryVec, candidateVectors, candidateVectors.Count);
-            foreach (var (entry, similarity) in topK)
-            {
-                // Dedupe-by-memory: under chunked embeddings every vector is keyed by
-                // ChunkIndex 0..N-1, but the downstream scorer's whole-memory pass looks up
-                // the {scope}|{name} key. Aggregate per-chunk similarities by taking the max
-                // — "the best matching window's score wins" — and emit a single supplemental
-                // entry per memory. Also write the chunked key for diagnostic/chunk-aware
-                // scoring paths (nmp2 chunk fanout) that may want the per-chunk value.
-                double score = similarity * _weight;
-                string entryKey = $"{group.Key}|{entry.Name}";
-                if (!scores.TryGetValue(entryKey, out double existing) || score > existing)
-                    scores[entryKey] = score;
-
-                if (entry.ChunkIndex is not null)
-                {
-                    string chunkKey = $"{group.Key}|{entry.Name}|{entry.ChunkIndex}";
-                    scores[chunkKey] = score;
-                }
-            }
+            VectorScoreProjection.Project(
+                group.Key, topK.Select(t => (t.Entry, (double)t.Similarity)), _weight, scores);
         }
 
         return scores.Count > 0 ? scores : null;

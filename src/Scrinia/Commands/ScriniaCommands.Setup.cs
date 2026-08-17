@@ -22,7 +22,6 @@ public partial class ScriniaCommands
     /// <summary>Download embedding models for built-in providers and installed plugins.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="multiUser">Configure git merge drivers for multi-user collaboration.</param>
-    /// <param name="resolver">Conflict resolver when --multi-user is set (none, claude, copilot).</param>
     /// <param name="noOllama">Skip Ollama auto-detection even if it is running. Use to force local-only setup.</param>
     /// <param name="hooks">Install SessionStart/UserPromptSubmit hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
     /// <param name="uninstallHooks">Remove scrinia-managed hooks from agent CLIs and exit.</param>
@@ -30,7 +29,6 @@ public partial class ScriniaCommands
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool multiUser = false,
-        string? resolver = null,
         bool noOllama = false,
         bool hooks = false,
         bool uninstallHooks = false,
@@ -53,7 +51,7 @@ public partial class ScriniaCommands
 
         if (multiUser)
         {
-            ConfigureMultiUser(resolver);
+            ConfigureMultiUser();
         }
 
         string exeDir = AppContext.BaseDirectory;
@@ -325,7 +323,7 @@ public partial class ScriniaCommands
         }
     }
 
-    private static void ConfigureMultiUser(string? resolver)
+    private static void ConfigureMultiUser()
     {
         string root = WorkspaceSetup.Root;
         string scriniaDir = Path.Combine(root, ".scrinia");
@@ -346,9 +344,8 @@ public partial class ScriniaCommands
         AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(gitattributesPath)}");
 
         // 3. Create .scrinia/merge.config
-        string resolverValue = resolver ?? "none";
         string mergeConfigPath = Path.Combine(scriniaDir, "merge.config");
-        string mergeConfigJson = SerializeMergeConfig(0.7, resolverValue, "conflict");
+        string mergeConfigJson = SerializeMergeConfig(0.7, "conflict");
         File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
         AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
 
@@ -364,9 +361,9 @@ public partial class ScriniaCommands
     /// Scrinia.Merge.MergeConfig — in two assemblies with two independent camelCase policies, and
     /// a divergence between them is a shipped bug that no reader-side test can see.
     /// </summary>
-    internal static string SerializeMergeConfig(double jaccardThreshold, string resolver, string conflictDir) =>
+    internal static string SerializeMergeConfig(double jaccardThreshold, string conflictDir) =>
         JsonSerializer.Serialize(
-            new MergeConfig(JaccardThreshold: jaccardThreshold, Resolver: resolver, ConflictDir: conflictDir),
+            new MergeConfig(JaccardThreshold: jaccardThreshold, ConflictDir: conflictDir),
             CliJsonContext.Default.MergeConfig);
 
     /// <summary>

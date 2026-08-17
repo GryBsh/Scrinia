@@ -43,9 +43,13 @@ ILogger logger = NullLogger.Instance;
 string embeddingsDir = Path.Combine(dataDir, "embeddings");
 Directory.CreateDirectory(embeddingsDir);
 
-double semanticWeight = 50.0;
-if (configValues.TryGetValue("Scrinia:Embeddings:SemanticWeight", out var sw) && double.TryParse(sw, out var swVal))
-    semanticWeight = swVal;
+// Every forwarded key is parsed by PluginConfigProtocol.BuildOptions — the plugin-side half of
+// the same contract the host used to build these arguments — so the two ends cannot drift. It
+// also applies the ChunkOverlap and MaxChunksPerMemory guardrails, either of which would
+// otherwise be a startup crash in this child process.
+var options = PluginConfigProtocol.BuildOptions(
+    key => configValues.GetValueOrDefault(key),
+    warning => Console.Error.WriteLine($"[scrinia:warn] {warning}"));
 
 IEmbeddingProvider provider;
 
@@ -60,8 +64,6 @@ else
     provider = new NullEmbeddingProvider();
 }
 
-var options = new EmbeddingOptions { SemanticWeight = semanticWeight };
-
 // Sign the store with the active provider's signature (null when unavailable — non-destructive).
 var vectorStore = new VectorStore(embeddingsDir, ChunkedSignature.ForProvider(provider, options));
 
@@ -75,6 +77,8 @@ builder.Logging.SetMinimumLevel(LogLevel.Warning);
 builder.Services.AddSingleton(vectorStore);
 builder.Services.AddSingleton(provider);
 builder.Services.AddSingleton(options);
+builder.Services.AddSingleton(new MemoryVectorIndexer(
+    provider, vectorStore, NullLogger.Instance, options));
 
 string pluginVersion = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()

@@ -134,6 +134,15 @@ if (!pluginProvidesEmbeddings)
         var embeddingOptions = builder.Configuration.GetSection("Scrinia:Embeddings")
             .Get<EmbeddingOptions>() ?? new EmbeddingOptions();
 
+        // The raw bind above has no guardrails of its own — an out-of-range MaxChunksPerMemory,
+        // ChunkOverlap, or ChunkSize would otherwise reach BuiltInEmbeddingsService's
+        // MemoryVectorIndexer ctor (a throw here would 500 every request from this DI factory) or
+        // silently wipe every memory's vectors on write. NormalizeGuardrails is the one shared
+        // rule the CLI already applies via WorkspaceSetup; the server logs what it corrects
+        // instead of writing to stderr.
+        foreach (string warning in embeddingOptions.NormalizeGuardrails())
+            bootLogger.LogWarning("Scrinia:Embeddings config: {Warning}", warning);
+
         var embeddingProvider = EmbeddingProviderFactory.Create(
             embeddingOptions, modelsDir,
             loggerFactory.CreateLogger("Scrinia.Embeddings"));
@@ -165,6 +174,8 @@ if (!pluginProvidesEmbeddings)
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
             builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
+            builder.Services.AddSingleton<IEmbeddingsAdmin>(sp =>
+                sp.GetRequiredService<BuiltInEmbeddingsService>());
 
             // Parity with the CLI, which has run this since WorkspaceSetup. Safe only because the
             // store-contract branch fixed remote listing truncation first: PromoteAsync reads the
@@ -175,6 +186,26 @@ if (!pluginProvidesEmbeddings)
 
             bootLogger.LogInformation("Built-in embeddings ready (provider={Provider}, dims={Dims})",
                 embeddingProvider.GetType().Name, embeddingProvider.Dimensions);
+
+            // Stale-quarantine detection, report-only. The CLI reindexes automatically at this
+            // point (WorkspaceSetup -> EmbeddingReindexer.ReindexIfStaleAsync), but a server
+            // cannot: a full-corpus re-embed at boot is unbounded work that would hold up
+            // startup with no progress channel, and this vector store is shared across every
+            // store the server hosts, so there is no single correct thing to rebuild. Probing
+            // still runs — it is what performs the quarantine rename, so search degrades to BM25
+            // rather than scoring against vectors from a different provider — and the operator
+            // gets the exact route to finish the migration.
+            var staleScopes = EmbeddingReindexer.ProbeStaleScopes(vectorStore, embeddingsDir, bootLogger);
+            if (staleScopes.Count > 0)
+            {
+                bootLogger.LogWarning(
+                    "Embedding vectors for {Count} scope(s) were written under a different provider or "
+                    + "chunk configuration and have been quarantined: {Scopes}. Semantic search is "
+                    + "degraded to keyword-only for them until they are rebuilt. Rebuild with "
+                    + "POST /api/v1/stores/{{store}}/embeddings/reindex (requires the 'reindex' "
+                    + "permission), once per store.",
+                    staleScopes.Count, string.Join(", ", staleScopes));
+            }
         }
         else
         {
@@ -346,8 +377,12 @@ if (!keyStore.HasAnyKeys())
     var storeManager = app.Services.GetRequiredService<StoreManager>();
     var (rawKey, keyId, _) = keyStore.CreateKey(
         "admin", storeManager.StoreNames.ToArray(),
+        // Every permission the server recognises. This key is the ONLY key on a fresh server, so
+        // any omission here is a permission an operator cannot reach at all — including 'reindex',
+        // whose route (POST /api/v1/stores/{store}/embeddings/reindex) is the documented migration
+        // step for a deployment that does not auto-reindex on startup.
         ["read", "search", "store", "append", "forget", "copy",
-         "export", "import", "manage_keys", "health", "chat"], "bootstrap");
+         "export", "import", "manage_keys", "manage_roles", "health", "chat", "reindex"], "bootstrap");
 
     // Write bootstrap key to a file (read once, then delete)
     string keyFile = Path.Combine(dataDir, "BOOTSTRAP_KEY");
@@ -529,6 +564,7 @@ foreach (var plugin in loadedPlugins)
 app.MapMemoryEndpoints();
 app.MapKeyEndpoints();
 app.MapHealthEndpoints();
+app.MapEmbeddingsEndpoints();
 app.MapChatEndpoints(app.Services.GetRequiredService<Scrinia.Server.Chat.ChatOptions>());
 
 // Plugin endpoints
@@ -537,48 +573,6 @@ var pluginGroup = app.MapGroup("/api/v1/plugins")
     .RequireRateLimiting("api");
 foreach (var plugin in loadedPlugins)
     plugin.MapEndpoints(pluginGroup);
-
-// Built-in embeddings endpoints (if no plugin provides them)
-if (!pluginProvidesEmbeddings)
-{
-    var embGroup = pluginGroup.MapGroup("/embeddings");
-
-    embGroup.MapGet("/status", (HttpContext ctx) =>
-    {
-        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
-        if (svc is null)
-            return Results.Ok(new { provider = "none", available = false, dimensions = 0, semanticWeight = 0.0, vectorCount = 0, hardware = "" });
-        return Results.Ok(new { provider = svc.ProviderName, available = svc.IsAvailable, dimensions = svc.Dimensions, semanticWeight = svc.SemanticWeight, vectorCount = svc.TotalVectorCount, hardware = "CPU" });
-    });
-
-    embGroup.MapGet("/settings", (HttpContext ctx) =>
-    {
-        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
-        if (svc is null)
-            return Results.Ok(new { provider = "none", semanticWeight = 0.0, maxBatchSize = 1 });
-        return Results.Ok(new { provider = svc.ProviderName, semanticWeight = svc.SemanticWeight, maxBatchSize = 1 });
-    });
-
-    embGroup.MapPost("/reindex", async (HttpContext ctx, CancellationToken ct) =>
-    {
-        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
-        if (svc is null || !svc.IsAvailable)
-            return Results.BadRequest(new { error = "Embedding provider is not available." });
-
-        var store = MemoryStoreContext.Current;
-        if (store is null)
-        {
-            // Resolve from request context
-            var reqCtx = ctx.RequestServices.GetRequiredService<RequestContext>();
-            store = reqCtx.Store;
-        }
-        if (store is null)
-            return Results.BadRequest(new { error = "No store context available." });
-
-        int count = await svc.ReindexStoreAsync(store, ct);
-        return Results.Ok(new { message = $"Reindexed {count} memories." });
-    });
-}
 
 if (app.Environment.IsDevelopment() || app.Configuration.GetValue("Scrinia:ExposeOpenApi", false))
 {

@@ -38,34 +38,48 @@ public sealed class StateMarkerNotAnEntityTests
         return attributes;
     }
 
+    // EntityGraph.Build/Score were deleted as dead code (replaced in production by
+    // EntityFactStore.ScoringAdjacency + PersonalizedPageRank + EntityQuerySeeder — what
+    // EntityGraphScoreContributor actually runs). The corpus and every test below are
+    // re-expressed against that live path; only the final test's direct call to
+    // EntityGraph.ParseEntityAttributes is unchanged, since that static parser survives.
+
+    // Shared with EntityGraphTests and StateMarkerNotAnEntityTests: see EntityGraphTestFixture,
+    // which builds stores through the real EntityFactDerivation instead of transcribing its body.
+    private static EntityFactStore StoreOf(
+        params (string DocKey, string[]? Keywords, IReadOnlyDictionary<string, string[]>? Attributes)[] docs)
+        => EntityGraphTestFixture.StoreOf(docs);
+
+    private static IReadOnlyDictionary<string, double> ScoreQuery(
+        EntityFactStore store, string query, double alpha, int iterations)
+        => EntityGraphTestFixture.ScoreQuery(store, query, alpha, iterations);
+
     /// <summary>Six orphans, one of which shares a real person with a seventh, non-orphan memory —
     /// the shape the divergence was measured on.</summary>
-    private static EntityGraph BuildCorpus() => EntityGraph.Build(
-    [
-        ("orphan-with-person", null, (IReadOnlyDictionary<string, string[]>?)Orphan(("person", "zanzibar"))),
+    private static EntityFactStore BuildCorpus() => StoreOf(
+        ("orphan-with-person", null, Orphan(("person", "zanzibar"))),
         ("orphan-a", null, Orphan(("topic", "apricots"))),
         ("orphan-b", null, Orphan(("topic", "bicycles"))),
         ("orphan-c", null, Orphan(("topic", "cement"))),
         ("orphan-d", null, Orphan(("topic", "dolphins"))),
         ("orphan-e", null, Orphan(("topic", "engines"))),
-        ("linked", null, new Dictionary<string, string[]> { ["person"] = ["zanzibar"] }),
-    ]);
+        ("linked", null, new Dictionary<string, string[]> { ["person"] = ["zanzibar"] }));
 
     [Fact]
     public void OrphanMarker_IsNotAGraphNode()
     {
-        var graph = BuildCorpus();
+        var store = BuildCorpus();
 
         // person:zanzibar plus five topic:* nodes. The marker would be a seventh — one hub node
         // shared by six of the seven memories, and it grows with every orphan the corpus gains.
-        graph.EntityCount.Should().Be(6,
+        store.Entities().Should().HaveCount(6,
             because: "a value shared by every orphan is a hub, not an entity; counting the nodes " +
                      "is what catches it appearing, and the count is exact so a node cannot be " +
                      "added silently");
 
         // The corpus is genuinely graphed otherwise; without this the assertion above would pass
         // just as well against a build that produced nothing.
-        graph.DocCount.Should().Be(7);
+        store.ScoringAdjacency().DocToEntities.Count.Should().Be(7);
     }
 
     /// <summary>A query naming a real entity must reach the memories that carry it — and only
@@ -74,13 +88,13 @@ public sealed class StateMarkerNotAnEntityTests
     [Fact]
     public void QueryNamingAnEntity_DoesNotCollectUnrelatedOrphansThroughTheMarker()
     {
-        var scores = BuildCorpus().Score("zanzibar", alpha: 0.15, iterations: 20);
+        var scores = ScoreQuery(BuildCorpus(), "zanzibar", alpha: 0.15, iterations: 20);
 
-        scores.Keys.Should().Contain("linked");
-        scores.Keys.Should().Contain("orphan-with-person",
+        scores.Keys.Should().Contain("s|linked");
+        scores.Keys.Should().Contain("s|orphan-with-person",
             because: "this one genuinely carries person:zanzibar");
 
-        foreach (string unrelated in new[] { "orphan-a", "orphan-b", "orphan-c", "orphan-d", "orphan-e" })
+        foreach (string unrelated in new[] { "s|orphan-a", "s|orphan-b", "s|orphan-c", "s|orphan-d", "s|orphan-e" })
             scores.Should().NotContainKey(unrelated,
                 because: "being an orphan is not a relationship to zanzibar, and routing one " +
                          "through a shared boolean is how five unrelated memories scored on a " +
@@ -95,7 +109,7 @@ public sealed class StateMarkerNotAnEntityTests
     [InlineData("true")]
     public void QueryContainingTheMarkerValue_SeedsNothing(string query)
     {
-        var scores = BuildCorpus().Score(query, alpha: 0.15, iterations: 20);
+        var scores = ScoreQuery(BuildCorpus(), query, alpha: 0.15, iterations: 20);
 
         scores.Should().BeEmpty(
             because: "no node in this corpus is named by these words — the only thing that ever " +
@@ -110,7 +124,7 @@ public sealed class StateMarkerNotAnEntityTests
     [Fact]
     public void QueryNamingTheMarkerItself_SeedsNothing()
     {
-        BuildCorpus().Score(KnownAttributes.OrphanKey, alpha: 0.15, iterations: 20)
+        ScoreQuery(BuildCorpus(), KnownAttributes.OrphanKey, alpha: 0.15, iterations: 20)
             .Should().BeEmpty();
     }
 

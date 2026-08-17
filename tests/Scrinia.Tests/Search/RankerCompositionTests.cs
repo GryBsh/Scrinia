@@ -255,6 +255,28 @@ public sealed class RankerCompositionTests
     }
 
     [Fact]
+    public void FromConfig_ReadsTheFusionMode()
+    {
+        var opts = RankerOptions.FromConfig(key =>
+            key == "Scrinia:Search:Fusion" ? "rrf" : null);
+
+        opts.Fusion.Should().Be(FusionMode.Rrf,
+            because: "the positional-record constructor silently dropped this parameter, so a "
+                   + "mode the bench harness and these tests both exercise was unreachable in production");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("sum")]
+    [InlineData("nonsense")]
+    public void FromConfig_FallsBackToSum(string? raw)
+    {
+        RankerOptions.FromConfig(key => key == "Scrinia:Search:Fusion" ? raw : null)
+            .Fusion.Should().Be(FusionMode.Sum);
+    }
+
+    [Fact]
     public void RrfFusion_OnlyOneSourceMatches_StillScores()
     {
         // A doc with signal in only one source (e.g., only embeddings match) must still

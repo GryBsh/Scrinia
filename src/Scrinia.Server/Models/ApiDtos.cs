@@ -225,3 +225,14 @@ public sealed record KeySummaryDto(
 // ── Plugins ─────────────────────────────────────────────────────────────────
 
 public sealed record PluginInfo(string Name, string Version, int Order);
+
+// ── Embeddings ───────────────────────────────────────────────────────────────
+
+public sealed record EmbeddingsStatusResponse(
+    string Provider, string Hardware, bool Available, int Dimensions,
+    double SemanticWeight, int VectorCount);
+
+public sealed record EmbeddingsSettingsResponse(
+    string Provider, string Hardware, double SemanticWeight);
+
+public sealed record ReindexResponse(string Message);

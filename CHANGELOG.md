@@ -10,6 +10,194 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — one embed-and-index policy, and the GPU plugin no longer degrades the search it improves
+
+- **Installing the Vulkan embeddings plugin used to make semantic recall on long memories
+  worse or absent.** Seven implementations of embed-and-index had drifted apart, and the
+  load-bearing divergence was the chunking unit: Core and the server sliced content into
+  overlapping windows, while the plugin never windowed at all — so a 40 KB memory became one
+  mean-pooled vector, or the provider's context limit was exceeded and the memory silently got
+  zero vectors. A new `MemoryVectorIndexer` in `Scrinia.Core.Embeddings` now owns windowing,
+  the per-memory chunk cap, batching, the vector-count guard, remove-then-upsert ordering and
+  write retry for every path. The plugin's reindex additionally never removed prior vectors,
+  so it orphaned stale chunks behind each refresh; it now removes first like everything else.
+
+- **Chunk-level semantic scores never reached the ranker.** `ChunkEntry.ChunkIndex` is 1-based
+  over content elements, and that is the key the search scorer probes — but the built-in path
+  wrote 0-based character-window ordinals into that key position, so the probe could never hit.
+  Content elements are now the addressable unit and windows nest inside them, with a new
+  `VectorScoreProjection` owning the read-side key contract. **Existing vector files are
+  quarantined on first load** — the embedding signature carries a layout marker, so the same
+  path that already handles a model switch detects them. Until they are rebuilt those memories
+  fall back to keyword-only search; nothing is lost, because vectors are derived data.
+
+  **Which deployments rebuild them for you:**
+
+  | Deployment | Migration |
+  |---|---|
+  | CLI with built-in or HTTP embeddings | Automatic on next launch |
+  | CLI with the Vulkan plugin | Run `scri reindex` |
+  | Server (`scri serve` / container) | `POST /api/v1/stores/{store}/embeddings/reindex`, once per store, with a key holding the `reindex` permission |
+
+  The server logs a warning at startup naming the quarantined scopes and this route. It does not
+  rebuild automatically: a full-corpus re-embed is unbounded work with no progress channel at
+  boot, and one server hosts many stores.
+
+- **Appending to a memory destroyed its embeddings.** On the built-in path an append embedded
+  only the appended fragment, and indexing replaces a memory's vectors atomically — so the rest
+  of the memory lost its vectors entirely. Every path now re-reads the memory's full current
+  content on append, which is what the Vulkan plugin already did.
+
+- **A `forget` against a store whose vectors hadn't yet been loaded into memory could leave a
+  deleted memory's vectors in place and semantically searchable.** `VectorStore.RemoveAsync`
+  treated an unloaded scope's cache as empty instead of lazily loading it from disk first — the
+  same class of bug `UpsertAsync` already guarded against. Concretely: the first vector
+  operation a fresh `VectorStore` performed against a scope, if it happened to be a remove (e.g.
+  the leading half of `MemoryVectorIndexer`'s remove-then-upsert on a freshly started server),
+  silently no-opped — nothing looked stale in memory, so the on-disk vectors were never removed
+  and a subsequent upsert merged in beside them instead of replacing them. `RemoveAsync` now
+  loads the scope the same way `UpsertAsync` does.
+
+- **The whole-document vector has been retired.** Embedding a memory used to also produce one
+  mean-pooled vector over its entire joined content. A memory's semantic score is now the best
+  of its windows rather than the average of everything it contains — the same reason a long
+  memory needed windowing in the first place. Nothing needs to be done about this: the rebuild
+  described above produces the new layout.
+
+- **The plugin's configured chunk settings never reached its embedding signature.** It composed
+  the signature from a default-constructed options object, so a store with custom `ChunkSize`
+  or `ChunkOverlap` was stamped as though it used the defaults.
+
+- **`Scrinia:Embeddings:ChunkSize`, `:ChunkOverlap` and `:MaxChunksPerMemory` were silently
+  ignored whenever the out-of-process Vulkan plugin owned embeddings.** The host forwards a
+  fixed set of config keys to the plugin child process and these three were not on it, so the
+  plugin embedded at built-in defaults while the host composed its signature from the configured
+  values. They are now forwarded and parsed. Same defect as the in-process one above, one
+  process boundary further out.
+
+- **`MaxChunksPerMemory` now defaults to 500, up from 100, and is clamped below 1000.** Under
+  the element/window layout every non-blank content element plans at least one chunk, so the cap
+  is also a floor on how many content elements can be vector-reachable — a memory of 150 short
+  elements lost everything past the hundredth. Because `append` adds elements at the end, the
+  dropped tail was the *newest* content. A configured value of 1000 or more used to throw from a
+  constructor with no config guardrail (a generic init failure on the CLI, a 500 on every server
+  request, a leaked GPU context per retry in the plugin); it now clamps to 999 with a warning,
+  matching how the sibling `ChunkOverlap`/`ChunkSize` invariant already behaved.
+
+- **Appending to an *ephemeral* memory silently left its vectors stale.** All three append
+  re-embed paths read the memory back through `ReadArtifactAsync`, which has no artifact keyed by
+  `(scope, subject)` for ephemeral memories and throws — straight into the catch that logs and
+  moves on. The two reindex loops already handled it. One helper now owns that rule for all five
+  call sites.
+
+### Fixed — a fresh server could not run the migration this changelog prescribes
+
+- **The bootstrap key was missing the `reindex` permission**, so the only key that exists on a
+  fresh server got a 403 from the only route that rebuilds quarantined vectors. It was also
+  missing `manage_roles`. Both are now granted. This affects new servers only — the bootstrap
+  key is minted once, when no keys exist.
+
+- **The server now detects quarantined vectors at startup** and logs a warning naming the
+  affected scopes and the reindex route. Previously only the CLI's in-process path noticed.
+
+### Fixed — the embeddings reindex route can now resolve a store
+
+- **`POST /api/v1/plugins/embeddings/reindex` returned "No store context available" on every
+  request, and most likely always had.** The route group carried no `{store}` segment, so
+  neither of the two ways its handler resolved a store could ever produce one. The three
+  embeddings routes have moved under the store-scoped group, where the existing middleware
+  resolves the store and applies access checks:
+
+  | Was | Now |
+  |---|---|
+  | `GET /api/v1/plugins/embeddings/status` | `GET /api/v1/stores/{store}/embeddings/status` |
+  | `GET /api/v1/plugins/embeddings/settings` | `GET /api/v1/stores/{store}/embeddings/settings` |
+  | `POST /api/v1/plugins/embeddings/reindex` | `POST /api/v1/stores/{store}/embeddings/reindex` |
+
+- **Reindex now requires a `reindex` permission.** The old group carried only
+  `RequireAuthorization()`, so any authenticated key could have triggered a full-store re-embed
+  if the route had worked.
+
+- **The web Settings page no longer offers a Save button that could not save.** It issued
+  `PUT .../embeddings/settings`, a route no server ever mapped; the request fell through to the
+  SPA fallback and returned HTML. Embedding settings are read from configuration, so the panel
+  is now read-only and says where the values come from.
+
+### Changed — plugin hosts prefer a single `index` call
+
+- The out-of-process plugin protocol gains an `index` tool that takes a memory's whole content
+  array, so the shared indexer runs inside the plugin process instead of the chunking policy
+  being restated by every caller that speaks the protocol. `upsert` is unchanged and still
+  supported: a plugin that offers only `upsert` keeps receiving the previous call sequence, and
+  the host warns on stderr naming what that costs.
+
+### Changed — `reindex` is a distinct API-key permission
+
+- Keys that should be able to trigger a full-store re-embed need `reindex` in their permission
+  list. Existing keys do not have it, and will get a 403 from the reindex route until it is
+  granted — the previous route was ungated, but it also never worked.
+
+### Removed — three unreachable features, and a config key that now works
+
+- `HnswIndex` (referenced only by its own tests and benchmarks; its documented 1000-vector
+  threshold existed nowhere in code), `EntityGraph`'s instance side (superseded by
+  `EntityFactStore.ScoringAdjacency`, which is what production uses), and `MergeConfig.Resolver`
+  and `ResolverCommand` (written by setup, never read by the merge driver) have been deleted.
+- **`Scrinia:Search:Fusion` now selects the ranker's fusion mode.** RRF was implemented,
+  benchmarked and tested, but `RankerOptions.FromConfig` silently dropped the parameter — a
+  positional-record argument that was simply never passed — so production could not reach it.
+  Accepts `sum` (default) or `rrf`.
+
+### Changed (breaking) — public surface of `Scrinia.Core`, `Scrinia.Merge` and `Scrinia.Server`
+
+`Scrinia.Core` is BSD-licensed and other code may compile against it directly, so every change
+to a public type is listed here in full.
+
+**Removed or narrowed**
+
+- **`EntityGraph` changed from a `public sealed class` to a `public static class`.** Source- and
+  binary-breaking: anything that instantiated `EntityGraph` or held an instance reference will
+  fail to build. Both `public static EntityGraph.Build` overloads are gone as well — the
+  `(DocKey, Keywords)` one and the `(DocKey, Keywords, Attributes)` one — along with the
+  instance members `AddDoc` and `Score`. Use `EntityFactDerivation.BuildStore` and
+  `EntityFactStore.ScoringAdjacency`, which is what production runs. `ParseEntityKeywords`,
+  `ParseEntityAttributes` and `RealTypes` survive unchanged.
+- **`HnswIndex` deleted.** It had no caller outside its own tests and benchmarks.
+- **`MergeConfig`'s constructor arity dropped from 4 to 2**, and `ConflictDir` moved from the
+  4th positional slot to the 2nd, because `Resolver` and `ResolverCommand` were removed.
+  **`new MergeConfig(0.7, "conflict")` still compiles and silently means something different**:
+  the second argument used to be `Resolver` and is now `ConflictDir`. Any positional
+  construction must be re-read, not just recompiled.
+
+  Reading an existing `merge.config` file is safe. System.Text.Json skips members it cannot map,
+  so a file still carrying `resolver` / `resolverCommand` loads with the remaining fields intact
+  — there is no migration to run and no need to rewrite the file. A test fixture pins this.
+- **`ScriniaCommands.Setup` lost its `resolver` parameter**, and the `scri setup --resolver`
+  flag is gone. It only ever wrote the `MergeConfig` fields that nothing read.
+- **`GET /api/v1/stores/{store}/embeddings/settings` no longer returns `maxBatchSize`** and now
+  returns `hardware`. The removed field described a batching knob that no longer exists.
+
+**Added**
+
+- `Scrinia.Core.Embeddings.MemoryVectorIndexer` — the single embed-and-index policy.
+- `Scrinia.Core.Embeddings.VectorScoreProjection` — the single read-side key projection.
+- `Scrinia.Core.Embeddings.MemoryArtifactSource` — reads a memory's content array by
+  `(scope, subject)`, ephemeral scope included.
+- `Scrinia.Core.Embeddings.IEmbeddingsAdmin` — what the embeddings REST routes resolve, so the
+  built-in service and the Vulkan plugin are served by one set of handlers.
+- `Scrinia.Core.Search.ScoringWeights` — the scoring rubric, previously restated in prose in
+  five places.
+- `Scrinia.Server.Endpoints.EmbeddingsEndpoints`, plus the response records
+  `EmbeddingsStatusResponse`, `EmbeddingsSettingsResponse` and `ReindexResponse`.
+- `EmbeddingOptions.ClampChunkCapBelowStride` and `EmbeddingOptions.MaxChunksPerMemoryCeiling`.
+- `PluginConfigProtocol.BuildOptions` — the plugin-side half of the host's config forwarding.
+- `EmbeddingReindexer.ProbeStaleScopes` — quarantine detection, separated from remediation.
+
+**Widened**
+
+- `EmbeddingsPlugin.ReindexStoreAsync` changed from `internal` to `public` (it implements
+  `IEmbeddingsAdmin`).
+
 ### Fixed — REST writes now fire the same event sinks as MCP writes
 
 - **A REST write gets the same ref-linking, orphan-marking and entity-typing treatment as the
@@ -1653,15 +1841,22 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 
 ### Added — Chunked embeddings + reindex
 - `TextChunker.SliceWindows` slices every memory's decoded content into
-  overlapping 1200/200-char windows. Each window becomes one vector keyed by
-  `(scope, name, chunkIndex)`. Search-time dedup in
-  `WeightedFieldScorer.SearchAll` collapses chunk matches back to one result
-  per memory but lets the best-matching window drive the score. A needle
+  overlapping 1200/200-char windows. Each window becomes one vector. Search-time
+  dedup in `WeightedFieldScorer.SearchAll` collapses chunk matches back to one
+  result per memory but lets the best-matching window drive the score. A needle
   buried mid-memory is now vector-reachable; the prior single-vector-per-memory
   layout silently lost it past whatever context window the provider supported.
+  **Superseded — see the unreleased "one embed-and-index policy" entry.** The
+  per-window key described here is the layout that entry identifies as a bug:
+  a raw window ordinal was written into the position the search scorer reads a
+  1-based content-element index from, so the chunk-level probe could never hit.
+  Content elements are now the addressable unit and windows nest inside them.
 - SVF3 signed vector file format: header carries the active embedding
   signature `{provider}|c{chunkSize}o{overlap}` (e.g.
-  `ollama:nomic-embed-text|c1200o200`). On startup, vector files whose
+  `ollama:nomic-embed-text|c1200o200`). **The format gained a layout-revision
+  suffix in the unreleased entry above** — it is now
+  `{provider}|c{chunkSize}o{overlap}|e{layoutRevision}`, which is what
+  quarantines vectors written under the old per-window key. On startup, vector files whose
   signature doesn't match the active config are quarantined as
   `vectors.bin.stale-{timestamp}` and `EmbeddingReindexer.ReindexIfStaleAsync`
   rebuilds them. Same flow triggers when the user changes
@@ -1673,6 +1868,9 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   `Scrinia:Embeddings:ChunkOverlap` (default 200),
   `Scrinia:Embeddings:MaxChunksPerMemory` (default 100, caps embed cost on
   pathologically long memories — BM25 still indexes the full text).
+  **The default is now 500 and the cap has a ceiling — see the unreleased entry
+  above.** Under the element/window layout the cap also bounds how many content
+  elements can carry a vector, which 100 was too low for.
 - `IEmbeddingProvider.EmbedBatchAsync(IReadOnlyList<string>)` default
   implementation (loops `EmbedAsync`) makes per-memory batch embedding work
   on every provider without HTTP-batch overrides; concrete providers can
@@ -1733,7 +1931,8 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 - `FileLock` contention observability via `ILogger` — `Warning` on first retry and
   `Error` on timeout with structured `{LockPath}` and `{ElapsedMs}` fields.
 - `HnswIndex` upgraded to `ReaderWriterLockSlim` for concurrent search/insert workloads;
-  exposes `IDisposable`.
+  exposes `IDisposable`. **Moot — `HnswIndex` was deleted unreleased** (see "three
+  unreachable features" above); nothing outside its own tests ever referenced it.
 - BM25 corpus-stats dictionary is pre-sized via a `docCountHint` parameter,
   removing rehash churn during search corpus computation.
 - `IOptions<EmbeddingOptions>` and `IOptions<ChatOptions>` migration with
@@ -1765,8 +1964,11 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   budget intermittently).
 - HybridReranker max-aggregates per-chunk vector scores under the
   `{scope}|{name}` key the whole-memory scorer pass looks up. The chunked
-  `{scope}|{name}|{chunkIndex}` keys are still emitted alongside for any
-  future per-chunk scoring path.
+  `{scope}|{name}|{chunkIndex}` keys are still emitted alongside.
+  **Superseded — see the unreleased "one embed-and-index policy" entry.** That
+  per-chunk path is no longer hypothetical: the scorer's chunk pass consumes
+  those keys today, and `chunkIndex` now means a 1-based content-element index
+  rather than the window ordinal this entry emitted.
 
 ### Changed
 - Trimmed CLI publish now declares `<IsTrimmable>true</IsTrimmable>` on `Scrinia` and

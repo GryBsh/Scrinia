@@ -5,51 +5,26 @@ namespace Scrinia.Core.Search;
 /// <summary>
 /// Linear-scan weighted attribute scorer with multi-term support and BM25 content search.
 ///
-/// Multi-term queries split on whitespace; each term is scored independently
-/// and per-term max scores are summed. This ensures "DI patterns" ranks entries
-/// matching both terms higher than entries matching only one.
+/// Multi-term queries split on whitespace; each term is scored independently and per-term max
+/// scores are summed, so "DI patterns" ranks entries matching both terms above entries matching
+/// one. Hybrid scoring: finalScore = weightedAttributeScore + bm25Score * Bm25Weight.
 ///
-/// Hybrid scoring: finalScore = weightedAttributeScore + bm25Score * 5.0
-///
-/// Entry scoring (per term):
-///
-/// Match type                    Score
-/// ─────────────────────         ─────
-/// Exact name match               100
-/// Attribute key:value pair exact  50
-/// Keyword exact match             40
-/// Attribute value exact match     40
-/// Name starts with                30
-/// Name contains                   20
-/// Keyword contains                12
-/// Attribute value contains        12
-/// Content preview contains         5
+/// <para>The per-match-type score table lives in <see cref="ScoringWeights"/>. It used to be
+/// restated here as ASCII art requiring manual sync with three literal ladders below — finding
+/// M6. Read the record; it is the rubric.</para>
 ///
 /// Tags, retrieval anchors, and description are no longer scored directly — read-time
 /// forward-fill (<see cref="Scrinia.Core.Migration.AttributeMigration"/>) promotes tags into
 /// Attributes["tag"] and anchors into Attributes["anchor"] before scoring ever runs, so they score
-/// as ordinary attribute rows above (P6.5 cleanup: Attributes is populated everywhere, so the legacy
-/// direct-carrier rows and the key:value-in-Keywords dual-read were retired).
-///
-/// Topic scoring (per term):
-///
-/// Match type               Score
-/// ─────────────────────    ─────
-/// Exact topic name          100
-/// Topic tag exact match      50
-/// Topic name starts with     30
-/// Topic name contains        20
-/// Topic tag contains         15
-/// Topic description cont.    10
-/// 3+ entry names match        8
+/// as ordinary attribute rows in <see cref="ScoreEntryTerm"/> (P6.5 cleanup: Attributes is
+/// populated everywhere, so the legacy direct-carrier rows and the key:value-in-Keywords
+/// dual-read were retired).
 ///
 /// All matching is case-insensitive. Results sorted by score desc, then newest first.
 /// Entries without TF data (v2 index) get bm25Score=0 (graceful degradation).
 /// </summary>
 internal sealed class WeightedAttributeScorer
 {
-    private const double Bm25Weight = 5.0;
-
     /// <summary>
     /// Ranker composition weights. <see cref="SearchAll(string, IEnumerable{ScopedArtifact},
     /// IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/> combines
@@ -59,11 +34,17 @@ internal sealed class WeightedAttributeScorer
     /// </summary>
     private readonly RankerOptions _options;
 
-    public WeightedAttributeScorer() : this(RankerOptions.Default) { }
+    /// <summary>The scoring rubric (Finding M6). See <see cref="ScoringWeights"/> for the table.</summary>
+    private readonly ScoringWeights _weights;
 
-    public WeightedAttributeScorer(RankerOptions options)
+    public WeightedAttributeScorer() : this(RankerOptions.Default, ScoringWeights.Default) { }
+
+    public WeightedAttributeScorer(RankerOptions options) : this(options, ScoringWeights.Default) { }
+
+    public WeightedAttributeScorer(RankerOptions options, ScoringWeights weights)
     {
         _options = options ?? RankerOptions.Default;
+        _weights = weights ?? ScoringWeights.Default;
     }
 
     public IReadOnlyList<ScoredArtifact> Search(
@@ -90,7 +71,7 @@ internal sealed class WeightedAttributeScorer
         {
             double attributeScore = ScoreEntry(query, candidate.Entry);
             double bm25Score = ComputeBm25(queryTerms, candidate.Entry, avgDocLen, corpusSize, docFreqs);
-            double total = attributeScore + bm25Score * Bm25Weight;
+            double total = attributeScore + bm25Score * _weights.Bm25Weight;
             if (total > 0)
                 scored.Add(new ScoredArtifact(candidate, total));
         }
@@ -121,7 +102,8 @@ internal sealed class WeightedAttributeScorer
     /// BM25 scores are normalized to 0–100 (max-norm: raw / corpus-max) before combining with
     /// attribute scores. Max-norm (not min-max) so a single/weakest positive match still surfaces —
     /// min-max would zero out a candidate that is simultaneously the min and the max.
-    /// Multi-term intersection bonus of (matchedTerms - 1) * 15 rewards queries matching multiple terms.
+    /// Multi-term intersection bonus of (matchedTerms - 1) * <see cref="ScoringWeights.IntersectionBonus"/>
+    /// rewards queries matching multiple terms.
     /// Uses a min-heap (size K) for top-K selection instead of full sort for efficiency.
     /// </summary>
     public IReadOnlyList<SearchResult> SearchAll(
@@ -198,7 +180,7 @@ internal sealed class WeightedAttributeScorer
                 // Entity-graph PPR is its own additive source (keyed at entry level), not folded
                 // into supplemental — so it stays a distinct signal under any fusion mode.
                 double entityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
-                TryInsert(candidate, attributeScore + normalizedBm25 * Bm25Weight + supplemental + entityGraph,
+                TryInsert(candidate, attributeScore + normalizedBm25 * _weights.Bm25Weight + supplemental + entityGraph,
                     total => new EntryResult(candidate, total));
             }
 
@@ -211,7 +193,7 @@ internal sealed class WeightedAttributeScorer
                 double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
                 // Entity scores are entry-level; reuse the parent's value for chunk cells.
                 double chunkEntityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
-                TryInsert(candidate, chunkAttributeScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental + chunkEntityGraph,
+                TryInsert(candidate, chunkAttributeScore + normalizedChunkBm25 * _weights.Bm25Weight + chunkSupplemental + chunkEntityGraph,
                     total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
             }
         }
@@ -302,7 +284,7 @@ internal sealed class WeightedAttributeScorer
 
     // ── Multi-term entry scoring ─────────────────────────────────────────────
 
-    private static double ScoreEntry(string query, ArtifactEntry entry)
+    private double ScoreEntry(string query, ArtifactEntry entry)
     {
         string[] terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (terms.Length == 0) return 0;
@@ -318,22 +300,22 @@ internal sealed class WeightedAttributeScorer
 
         // Intersection bonus: reward matching multiple query terms
         if (matchedTerms > 1)
-            total += (matchedTerms - 1) * 15.0;
+            total += (matchedTerms - 1) * _weights.IntersectionBonus;
 
         return total;
     }
 
-    private static double ScoreEntryTerm(string term, ArtifactEntry entry)
+    private double ScoreEntryTerm(string term, ArtifactEntry entry)
     {
         double score = 0;
 
         // Name matching
         if (entry.Name.Equals(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 100);
+            score = Math.Max(score, _weights.NameExact);
         else if (entry.Name.StartsWith(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 30);
+            score = Math.Max(score, _weights.NameStartsWith);
         else if (entry.Name.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 20);
+            score = Math.Max(score, _weights.NameContains);
 
         // Keyword matching
         if (entry.Keywords is { Length: > 0 })
@@ -342,22 +324,23 @@ internal sealed class WeightedAttributeScorer
             {
                 if (kw.Equals(term, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = Math.Max(score, 40);
+                    score = Math.Max(score, _weights.KeywordExact);
                     break;
                 }
 
                 if (kw.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 12);
+                    score = Math.Max(score, _weights.KeywordContains);
             }
         }
 
         // Attribute matching. Compound "key:value" query terms hitting a (key, value)
-        // pair score 50 (tag-exact parity); a term equal to a value scores 40 (keyword-exact
-        // parity); contained in a value, 12. Explicit OrdinalIgnoreCase everywhere: dictionary
-        // comparers don't survive JSON round-trips. Attributes is now populated everywhere (read-time
-        // forward-fill promotes legacy Tags/RetrievalAnchors/key:value-shaped Keywords into Attributes
-        // before this ever runs — see AttributeMigration.Forward), so this is the sole tag/keyword
-        // -pair scorer; the old direct key:value-in-Keywords parse here was retired in P6.5.
+        // pair score AttributePairExact (tag-exact parity); a term equal to a value scores
+        // AttributeValueExact (keyword-exact parity); contained in a value, AttributeValueContains.
+        // Explicit OrdinalIgnoreCase everywhere: dictionary comparers don't survive JSON round-trips.
+        // Attributes is now populated everywhere (read-time forward-fill promotes legacy
+        // Tags/RetrievalAnchors/key:value-shaped Keywords into Attributes before this ever runs
+        // — see AttributeMigration.Forward), so this is the sole tag/keyword-pair scorer; the old
+        // direct key:value-in-Keywords parse here was retired in P6.5.
         int sep = term.IndexOf(':');
         string? termKey = sep > 0 && sep < term.Length - 1 ? term[..sep] : null;
         string? termValue = termKey is not null ? term[(sep + 1)..] : null;
@@ -372,11 +355,11 @@ internal sealed class WeightedAttributeScorer
                     if (termKey is not null
                         && attr.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
                         && value.Equals(termValue, StringComparison.OrdinalIgnoreCase))
-                        score = Math.Max(score, 50 * w);
+                        score = Math.Max(score, _weights.AttributePairExact * w);
                     else if (value.Equals(term, StringComparison.OrdinalIgnoreCase))
-                        score = Math.Max(score, 40 * w);
+                        score = Math.Max(score, _weights.AttributeValueExact * w);
                     else if (value.Contains(term, StringComparison.OrdinalIgnoreCase))
-                        score = Math.Max(score, 12 * w);
+                        score = Math.Max(score, _weights.AttributeValueContains * w);
                 }
             }
         }
@@ -384,14 +367,14 @@ internal sealed class WeightedAttributeScorer
         // Content preview contains
         if (!string.IsNullOrEmpty(entry.ContentPreview)
             && entry.ContentPreview.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 5);
+            score = Math.Max(score, _weights.ContentPreviewContains);
 
         return score;
     }
 
     // ── Multi-term topic scoring ─────────────────────────────────────────────
 
-    private static double ScoreTopic(string query, TopicInfo topic)
+    private double ScoreTopic(string query, TopicInfo topic)
     {
         string[] terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (terms.Length == 0) return 0;
@@ -406,22 +389,22 @@ internal sealed class WeightedAttributeScorer
         }
 
         if (matchedTerms > 1)
-            total += (matchedTerms - 1) * 15.0;
+            total += (matchedTerms - 1) * _weights.IntersectionBonus;
 
         return total;
     }
 
-    private static double ScoreTopicTerm(string term, TopicInfo topic)
+    private double ScoreTopicTerm(string term, TopicInfo topic)
     {
         double score = 0;
 
         // Topic name matching
         if (topic.TopicName.Equals(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 100);
+            score = Math.Max(score, _weights.TopicNameExact);
         else if (topic.TopicName.StartsWith(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 30);
+            score = Math.Max(score, _weights.TopicNameStartsWith);
         else if (topic.TopicName.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 20);
+            score = Math.Max(score, _weights.TopicNameContains);
 
         // Topic tags
         if (topic.Tags is { Length: > 0 })
@@ -430,31 +413,31 @@ internal sealed class WeightedAttributeScorer
             {
                 if (tag.Equals(term, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = Math.Max(score, 50);
+                    score = Math.Max(score, _weights.TopicTagExact);
                     break;
                 }
 
                 if (tag.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 15);
+                    score = Math.Max(score, _weights.TopicTagContains);
             }
         }
 
         // Topic description
         if (!string.IsNullOrEmpty(topic.Description)
             && topic.Description.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 10);
+            score = Math.Max(score, _weights.TopicDescriptionContains);
 
         // Entry names aggregate: 3+ matching entries indicates topical relevance
         int matchingEntries = topic.EntryNames.Count(n => n.Contains(term, StringComparison.OrdinalIgnoreCase));
         if (matchingEntries >= 3)
-            score = Math.Max(score, 8);
+            score = Math.Max(score, _weights.TopicEntryNameAggregate);
 
         return score;
     }
 
     // ── Chunk-level scoring ─────────────────────────────────────────────────
 
-    private static double ScoreChunkEntry(
+    private double ScoreChunkEntry(
         string query,
         ChunkEntry chunk,
         ArtifactEntry parentEntry)
@@ -472,12 +455,12 @@ internal sealed class WeightedAttributeScorer
         }
 
         if (matchedTerms > 1)
-            total += (matchedTerms - 1) * 15.0;
+            total += (matchedTerms - 1) * _weights.IntersectionBonus;
 
         return total;
     }
 
-    private static double ScoreChunkEntryTerm(
+    private double ScoreChunkEntryTerm(
         string term,
         ChunkEntry chunk,
         ArtifactEntry parentEntry)
@@ -491,55 +474,55 @@ internal sealed class WeightedAttributeScorer
             {
                 if (kw.Equals(term, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = Math.Max(score, 40);
+                    score = Math.Max(score, _weights.ChunkKeywordExact);
                     break;
                 }
 
                 if (kw.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 12);
+                    score = Math.Max(score, _weights.ChunkKeywordContains);
             }
         }
 
         // Chunk content preview
         if (!string.IsNullOrEmpty(chunk.ContentPreview)
             && chunk.ContentPreview.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 5);
+            score = Math.Max(score, _weights.ChunkContentPreviewContains);
 
         // Parent name matching
         if (parentEntry.Name.Equals(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 50);
+            score = Math.Max(score, _weights.ChunkParentNameExact);
         else if (parentEntry.Name.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 10);
+            score = Math.Max(score, _weights.ChunkParentNameContains);
 
-        // Parent keywords at half weight (20 exact, 6 contains)
+        // Parent keywords at reduced weight
         if (parentEntry.Keywords is { Length: > 0 })
         {
             foreach (string kw in parentEntry.Keywords)
             {
                 if (kw.Equals(term, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = Math.Max(score, 20);
+                    score = Math.Max(score, _weights.ChunkParentKeywordExact);
                     break;
                 }
 
                 if (kw.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 6);
+                    score = Math.Max(score, _weights.ChunkParentKeywordContains);
             }
         }
 
-        // Parent tags at half weight (20 exact, 6 contains) — sourced from Attributes["tag"] (Tags->Attributes cutover)
+        // Parent tags at reduced weight — sourced from Attributes["tag"] (Tags->Attributes cutover)
         if (parentEntry.Attributes is { } pf && pf.TryGetValue(KnownAttributes.TagKey, out var parentTags) && parentTags is not null)
         {
             foreach (string tag in parentTags)
             {
                 if (tag.Equals(term, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = Math.Max(score, 20);
+                    score = Math.Max(score, _weights.ChunkParentTagExact);
                     break;
                 }
 
                 if (tag.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 6);
+                    score = Math.Max(score, _weights.ChunkParentTagContains);
             }
         }
 

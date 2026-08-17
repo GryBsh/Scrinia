@@ -9,15 +9,19 @@ namespace Scrinia.Server.Services;
 /// <summary>
 /// Built-in Model2Vec embeddings for the server. Implements the same three interfaces
 /// as the Vulkan plugin so it can be cleanly overridden when the plugin is installed.
+///
+/// <para>Write/reindex paths delegate to <see cref="MemoryVectorIndexer"/> — the single
+/// embed-and-index policy — and the read-side projection delegates to
+/// <see cref="VectorScoreProjection"/>.</para>
 /// </summary>
 public sealed class BuiltInEmbeddingsService :
-    ISearchScoreContributor, IMemoryEventSink, IMemoryOperationHook
+    ISearchScoreContributor, IMemoryEventSink, IMemoryOperationHook, IEmbeddingsAdmin
 {
     private readonly IEmbeddingProvider _provider;
     private readonly VectorStore _vectorStore;
     private readonly double _semanticWeight;
     private readonly ILogger _logger;
-    private readonly EmbeddingOptions _options;
+    private readonly MemoryVectorIndexer _indexer;
 
     public BuiltInEmbeddingsService(
         IEmbeddingProvider provider,
@@ -30,7 +34,7 @@ public sealed class BuiltInEmbeddingsService :
         _vectorStore = vectorStore;
         _semanticWeight = semanticWeight;
         _logger = logger;
-        _options = options ?? new EmbeddingOptions();
+        _indexer = new MemoryVectorIndexer(provider, vectorStore, logger, options);
     }
 
     public bool IsAvailable => _provider.IsAvailable;
@@ -38,6 +42,7 @@ public sealed class BuiltInEmbeddingsService :
     public int Dimensions => _provider.Dimensions;
     public double SemanticWeight => _semanticWeight;
     public int TotalVectorCount => _vectorStore.Count();
+    public string Hardware => "CPU";
 
     // ── ISearchScoreContributor ──────────────────────────────────────────────
 
@@ -59,19 +64,8 @@ public sealed class BuiltInEmbeddingsService :
             if (vectors.Count == 0) continue;
 
             var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
-            foreach (var (entry, similarity) in topK)
-            {
-                // Dedupe-by-memory for chunked embeddings: max-aggregate per-chunk scores
-                // under the {scope}|{name} key the whole-memory scorer pass looks up. Keep
-                // the chunked key too so any future per-chunk scoring path can use it.
-                double score = similarity * _semanticWeight;
-                string entryKey = $"{group.Key}|{entry.Name}";
-                if (!scores.TryGetValue(entryKey, out double existing) || score > existing)
-                    scores[entryKey] = score;
-
-                if (entry.ChunkIndex is not null)
-                    scores[$"{group.Key}|{entry.Name}|{entry.ChunkIndex}"] = score;
-            }
+            VectorScoreProjection.Project(
+                group.Key, topK.Select(t => (t.Entry, (double)t.Similarity)), _semanticWeight, scores);
         }
 
         return scores.Count > 0 ? scores : null;
@@ -83,20 +77,13 @@ public sealed class BuiltInEmbeddingsService :
         => await EmbedAndIndexAsync(qualifiedName, content, store, ct);
 
     public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
-        => await EmbedAndIndexAsync(qualifiedName, [content], store, ct);
+        => await ReembedFullMemoryAsync(qualifiedName, store, ct);
 
     public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
     {
         if (!wasDeleted) return;
-        try
-        {
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            await _vectorStore.RemoveAsync(scope, subject, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to remove vectors for '{Name}'", qualifiedName);
-        }
+        // (qualifiedName, store) overload owns the parse inside its own try.
+        await _indexer.RemoveAsync(qualifiedName, store, ct);
     }
 
     // ── IMemoryOperationHook (REST path) ────────────────────────────────────
@@ -105,20 +92,15 @@ public sealed class BuiltInEmbeddingsService :
         => await EmbedAndIndexAsync(ctx.QualifiedName, ctx.Content, ctx.Store, ct);
 
     public async Task OnAfterAppendAsync(AfterAppendContext ctx, CancellationToken ct)
-        => await EmbedAndIndexAsync(ctx.Name, [ctx.Content], ctx.Store, ct);
+        => await ReembedFullMemoryAsync(ctx.Name, ctx.Store, ct);
 
     public async Task OnAfterForgetAsync(AfterForgetContext ctx, CancellationToken ct)
     {
         if (!ctx.WasDeleted) return;
-        try
-        {
-            var (scope, subject) = ctx.Store.ParseQualifiedName(ctx.Name);
-            await _vectorStore.RemoveAsync(scope, subject, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to remove vectors for '{Name}'", ctx.Name);
-        }
+        // (qualifiedName, store) overload owns the parse inside its own try — PluginPipeline
+        // awaits this hook with no surrounding try/catch on the REST path, so a throw here
+        // would otherwise propagate into the forget request itself.
+        await _indexer.RemoveAsync(ctx.Name, ctx.Store, ct);
     }
 
     // ── Reindex ─────────────────────────────────────────────────────────────
@@ -132,32 +114,21 @@ public sealed class BuiltInEmbeddingsService :
         {
             try
             {
-                // Resolve directly by (scope, subject) rather than round-tripping through
-                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
-                // namespaced topic scope (e.g. "local:memory/api"), FormatQualifiedName
-                // intentionally strips the "memory/" prefix for display, so re-parsing that
-                // string reconstructs the WRONG scope and the artifact can never be found.
-                // Mirrors EmbeddingReindexer.ReindexAsync's fix for the identical bug. Ephemeral
-                // memories aren't backed by an on-disk artifact keyed by (scope, subject), so
-                // they still resolve via the "~name" qualified-name path.
-                string artifact = item.Scope == "ephemeral"
-                    ? await store.ResolveArtifactAsync($"~{item.Entry.Name}", ct)
-                    : await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-                string decoded = System.Text.Encoding.UTF8.GetString(
-                    new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
+                // MemoryArtifactSource owns both halves of this read: resolving by
+                // (scope, subject) rather than through the lossy FormatQualifiedName round trip,
+                // and taking the "~name" path for ephemeral memories. It also reconstructs the
+                // memory's content array rather than one decoded blob — reindex must reproduce
+                // the layout a write produces, or the element contract would hold only for
+                // memories written after this branch.
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
+                if (elements.Length == 0) continue;
 
-                var chunks = TextChunker.SliceWindows(decoded, _options.ChunkSize, _options.ChunkOverlap);
-                if (chunks.Count == 0) continue;
-                if (chunks.Count > _options.MaxChunksPerMemory)
-                    chunks = [.. chunks.Take(_options.MaxChunksPerMemory)];
-
-                var vectors = await _provider.EmbedBatchAsync(chunks.Select(c => c.Text).ToList(), ct);
-                if (vectors is null || vectors.Length != chunks.Count) continue;
-
-                await _vectorStore.RemoveAsync(item.Scope, item.Entry.Name, ct);
-                for (int i = 0; i < chunks.Count; i++)
-                    await _vectorStore.UpsertAsync(item.Scope, item.Entry.Name, chunks[i].Index, vectors[i], ct);
-                count++;
+                // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException reach
+                // the catch ladder below instead of being retried for up to 42s per memory and
+                // then swallowed to false.
+                if (await _indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct, retryOnUnavailable: false))
+                    count++;
             }
             catch (VectorStoreUnavailableException ex)
             {
@@ -177,37 +148,44 @@ public sealed class BuiltInEmbeddingsService :
 
     private async Task EmbedAndIndexAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
     {
-        if (!_provider.IsAvailable) return;
-
         try
         {
             var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-
-            string joined = string.Concat(content);
-            if (string.IsNullOrWhiteSpace(joined)) return;
-
-            var chunks = TextChunker.SliceWindows(joined, _options.ChunkSize, _options.ChunkOverlap);
-            if (chunks.Count == 0) return;
-            if (chunks.Count > _options.MaxChunksPerMemory)
-                chunks = [.. chunks.Take(_options.MaxChunksPerMemory)];
-
-            var vectors = await _provider.EmbedBatchAsync(chunks.Select(c => c.Text).ToList(), ct);
-            if (vectors is null || vectors.Length != chunks.Count) return;
-
-            // Already detached from the write response, so a declined write can wait for the
-            // file to free up instead of deferring to the next write.
-            await VectorWriteRetry.RunAsync(
-                async () =>
-                {
-                    await _vectorStore.RemoveAsync(scope, subject, ct);
-                    for (int i = 0; i < chunks.Count; i++)
-                        await _vectorStore.UpsertAsync(scope, subject, chunks[i].Index, vectors[i], ct);
-                },
-                _logger, qualifiedName, ct);
+            await _indexer.IndexAsync(scope, subject, content, ct);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to embed memory '{Name}'", qualifiedName);
+        }
+    }
+
+    /// <summary>
+    /// An append mutates the memory. Indexing only the appended fragment would be wrong twice
+    /// over: the indexer replaces a memory's vectors atomically, so the rest of the memory would
+    /// lose its vectors entirely, and the surviving element indices would not match the memory's
+    /// real content array. Re-read and index the whole thing, as the plugin already does
+    /// (EmbeddingsPlugin.cs).
+    /// </summary>
+    private async Task ReembedFullMemoryAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    {
+        try
+        {
+            // ReadForAppendAsync, not ParseQualifiedName + ReadContentElementsAsync: ephemeral
+            // memories have no artifact keyed by (scope, subject) — ParseQualifiedName itself
+            // parses "~note" to SCOPE "local" (it has no "~" branch), so a scope-keyed ephemeral
+            // check can never see it. Reading via the scope-keyed path throws FileNotFoundException
+            // and this catch would silently turn an ephemeral append into a no-op (finding M-2).
+            // ReadForAppendAsync checks ephemerality on the NAME instead, and still returns the
+            // ParseQualifiedName-derived (scope, subject) pair, so the index write below lands on
+            // exactly the same key the store path used.
+            var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(store, qualifiedName, ct);
+            if (elements.Length == 0) return;
+
+            await _indexer.IndexAsync(scope, subject, elements, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
         }
     }
 }

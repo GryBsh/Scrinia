@@ -75,10 +75,20 @@ public sealed record RankerOptions(
             AlphaRelevance:    ParseDouble(getConfig("Scrinia:Search:Alpha:Relevance"),    d.AlphaRelevance),
             AlphaRecency:      ParseDouble(getConfig("Scrinia:Search:Alpha:Recency"),      d.AlphaRecency),
             TauDays:           ParseDouble(getConfig("Scrinia:Search:TauDays"),            d.TauDays),
-            RecencyScale:      ParseDouble(getConfig("Scrinia:Search:Scale:Recency"),      d.RecencyScale));
+            RecencyScale:      ParseDouble(getConfig("Scrinia:Search:Scale:Recency"),      d.RecencyScale),
+            Fusion:            ParseFusion(getConfig("Scrinia:Search:Fusion"),             d.Fusion));
     }
 
     private static double ParseDouble(string? s, double fallback)
         => s is not null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
            ? v : fallback;
+
+    /// <summary>Matches the bench harness's parser (RetrieverFactory.ParseFusion) so a mode
+    /// selected on the command line and the same mode in config mean the same thing.</summary>
+    private static FusionMode ParseFusion(string? raw, FusionMode fallback) => raw?.ToLowerInvariant() switch
+    {
+        "sum" => FusionMode.Sum,
+        "rrf" => FusionMode.Rrf,
+        _ => fallback,
+    };
 }

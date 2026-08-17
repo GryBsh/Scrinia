@@ -7,8 +7,35 @@ namespace Scrinia.Plugin.Embeddings.Cli;
 
 [McpServerToolType]
 public sealed class EmbeddingsTools(
-    VectorStore vectorStore, IEmbeddingProvider provider, EmbeddingOptions options)
+    VectorStore vectorStore, IEmbeddingProvider provider, EmbeddingOptions options,
+    MemoryVectorIndexer indexer)
 {
+    [McpServerTool(Name = "index")]
+    [Description("Embed a memory's full content array and replace its vectors. Preferred over upsert.")]
+    public async Task<string> Index(
+        [Description("Scope")] string scope,
+        [Description("Memory name")] string name,
+        [Description("The memory's content elements, in order")] string[] content,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            // retryOnUnavailable: false — this tool is the wire surface for BOTH a single write
+            // AND a bulk `scri reindex` replay (McpPluginHost.OnStoredAsync, awaited once per
+            // memory). The default `true` would route through VectorWriteRetry's up-to-42s
+            // backoff PER MEMORY here, on top of the retry McpPluginHost.CallToolWithRetryAsync
+            // already owns at the wire level — double retry, and a 1000-memory reindex against a
+            // locked vector file would stall for hours instead of failing fast. Retry belongs at
+            // exactly one layer; CallToolWithRetryAsync is that layer for this process boundary.
+            bool wrote = await indexer.IndexAsync(scope, name, content, ct, retryOnUnavailable: false);
+            return JsonSerializer.Serialize(new { ok = wrote });
+        }
+        catch (VectorStoreUnavailableException ex)
+        {
+            return JsonSerializer.Serialize(new { error = ex.Message });
+        }
+    }
+
     [McpServerTool(Name = "status")]
     [Description("Returns plugin status as JSON.")]
     public string Status()
@@ -41,14 +68,8 @@ public sealed class EmbeddingsTools(
             if (vectors.Count == 0) continue;
 
             var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
-            foreach (var (entry, similarity) in topK)
-            {
-                string key = entry.ChunkIndex is not null
-                    ? $"{scope}|{entry.Name}|{entry.ChunkIndex}"
-                    : $"{scope}|{entry.Name}";
-
-                scores[key] = similarity * options.SemanticWeight;
-            }
+            VectorScoreProjection.Project(
+                scope, topK.Select(t => (t.Entry, (double)t.Similarity)), options.SemanticWeight, scores);
         }
 
         return JsonSerializer.Serialize(scores);
@@ -60,7 +81,12 @@ public sealed class EmbeddingsTools(
         [Description("Scope")] string scope,
         [Description("Memory name")] string name,
         [Description("Text to embed")] string text,
-        [Description("Chunk index (1-based)")] int? chunkIndex = null,
+        [Description(
+            "Legacy per-window chunk index. Any value passed here is below one chunk-index "
+            + "stride, so the read side resolves it to content element 0 — which does not exist "
+            + "— and the vector contributes to the memory's score but never to a chunk's. "
+            + "Use the `index` tool to get correctly-keyed per-element vectors.")]
+        int? chunkIndex = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))

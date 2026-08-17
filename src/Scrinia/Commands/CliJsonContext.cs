@@ -27,7 +27,6 @@ internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record MergeConfig(
     double JaccardThreshold,
-    string Resolver,
     string ConflictDir);
 
 internal sealed record CliMemoryEntry(

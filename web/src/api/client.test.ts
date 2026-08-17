@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { validateApiKey, classifyDetailsStatus, classifyReadyStatus, validateEmbeddingsSettings } from './client'
+import { validateApiKey, classifyDetailsStatus, classifyReadyStatus } from './client'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -44,47 +44,6 @@ describe('classifyReadyStatus', () => {
   it('200 → use-body', () => expect(classifyReadyStatus(200)).toBe('use-body'))
   it('503 → use-body', () => expect(classifyReadyStatus(503)).toBe('use-body'))
   it('502 → error', () => expect(classifyReadyStatus(502)).toBe('error'))
-})
-
-describe('validateEmbeddingsSettings', () => {
-  it('accepts valid inputs', () => {
-    const r = validateEmbeddingsSettings('50', '16')
-    expect(r.values).toEqual({ semanticWeight: 50, maxBatchSize: 16 })
-    expect(r.errors).toEqual({})
-  })
-
-  it('rejects empty semantic weight', () => {
-    const r = validateEmbeddingsSettings('', '16')
-    expect(r.values).toBeNull()
-    expect(r.errors.semanticWeight).toBeTruthy()
-  })
-
-  it('rejects empty batch size', () => {
-    const r = validateEmbeddingsSettings('50', '')
-    expect(r.values).toBeNull()
-    expect(r.errors.maxBatchSize).toBeTruthy()
-  })
-
-  it('rejects out-of-range semantic weight', () => {
-    expect(validateEmbeddingsSettings('-1', '16').values).toBeNull()
-    expect(validateEmbeddingsSettings('250', '16').values).toBeNull()
-  })
-
-  it('rejects out-of-range batch size', () => {
-    expect(validateEmbeddingsSettings('50', '0').values).toBeNull()
-    expect(validateEmbeddingsSettings('50', '65').values).toBeNull()
-  })
-
-  it('rejects non-integer batch size', () => {
-    const r = validateEmbeddingsSettings('50', '3.5')
-    expect(r.values).toBeNull()
-    expect(r.errors.maxBatchSize).toBeTruthy()
-  })
-
-  it('accepts boundary values', () => {
-    expect(validateEmbeddingsSettings('0', '1').values).toEqual({ semanticWeight: 0, maxBatchSize: 1 })
-    expect(validateEmbeddingsSettings('200', '64').values).toEqual({ semanticWeight: 200, maxBatchSize: 64 })
-  })
 })
 
 import { drainSse } from './client'

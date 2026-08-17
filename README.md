@@ -237,7 +237,7 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 - **[CLI Architecture](docs/architecture/cli.md)** — workspace discovery, plugin host, MCP tools
 - **[Server Architecture](docs/architecture/server.md)** — startup, middleware, auth, multi-store, plugins
 - **[Core Internals](docs/architecture/core.md)** — IMemoryStore, NMP/2 encoding, search algorithms
-- **[Embeddings Architecture](docs/architecture/embeddings.md)** — providers, vector store, HNSW, hybrid scoring
+- **[Embeddings Architecture](docs/architecture/embeddings.md)** — providers, vector store, hybrid scoring
 
 ### Specification
 - **[NMP/2 Spec](NMP_SPEC.md)** — encoding format specification
@@ -254,7 +254,7 @@ dotnet test tests/Scrinia.Plugin.Embeddings.Tests # Vulkan embeddings plugin tes
 ## Running benchmarks
 
 [BenchmarkDotNet](https://benchmarkdotnet.org/) is used for measuring hot-path performance
-(BM25 corpus stats, HNSW search). Run from the repo root:
+(BM25 corpus stats). Run from the repo root:
 
 ```bash
 # Run everything (a full pass takes several minutes)

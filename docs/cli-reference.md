@@ -325,7 +325,7 @@ want to enrich memories do so client-side and pass `attributes` (including
 
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] \
-    [--multi-user] [--resolver none|claude|copilot] \
+    [--multi-user] \
     [--hooks] [--uninstall-hooks] [--project]
 ```
 
@@ -333,7 +333,6 @@ scri setup [--workspace-root <path>] [--no-ollama] \
 |--------|---------|-------------|
 | `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
 | `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
-| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. Strictly merge-driver semantics. |
 | `--hooks` | `false` | Install SessionStart + UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
@@ -448,14 +447,32 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Embeddings:Provider` | `model2vec` | Provider: `model2vec`, `ollama`, `openai`, `voyageai`, `azure`, `google`, or `none`. HTTP providers skip the built-in Model2Vec + Vulkan plugin entirely. |
 | `Scrinia:Embeddings:SemanticWeight` | `50.0` | Multiplier applied to cosine similarity in hybrid scoring. |
 | `Scrinia:Embeddings:ChunkSize` | `1200` | Sliding-window size in characters for chunked embeddings. Roughly 300 tokens for English. |
-| `Scrinia:Embeddings:ChunkOverlap` | `200` | Overlap in characters between adjacent windows. Must be strictly less than `ChunkSize`. |
-| `Scrinia:Embeddings:MaxChunksPerMemory` | `100` | Safety cap on chunks per memory; excess tail is dropped from embed (BM25 still indexes full text). |
+| `Scrinia:Embeddings:ChunkOverlap` | `200` | Overlap in characters between adjacent windows. Must be strictly less than `ChunkSize`; a value at or above it reverts both keys to their defaults with a warning. |
+| `Scrinia:Embeddings:MaxChunksPerMemory` | `500` | Safety cap on chunks per memory; excess tail is dropped from embed (BM25 still indexes full text). **Maximum 999** — larger values clamp to 999 with a warning. See the note below. |
 | `Scrinia:Embeddings:OllamaBaseUrl` | `http://localhost:11434` | Ollama API endpoint. |
 | `Scrinia:Embeddings:OllamaModel` | `all-minilm` | Ollama embedding model name. |
 | `Scrinia:Embeddings:OpenAi*` | — | `ApiKey`, `Model`, `BaseUrl` for OpenAI / compatible. |
 | `Scrinia:Embeddings:VoyageAi*` | — | `ApiKey`, `Model`, `BaseUrl` for Voyage AI. |
 | `Scrinia:Embeddings:Azure*` | — | `Endpoint`, `ApiKey`, `Deployment`, `Model`, `ApiVersion`, `UseV1` for Azure AI Foundry. |
 | `Scrinia:Embeddings:Google*` | — | `ApiKey`, `Model`, `BaseUrl`, `Dimensions` for Google Gemini. |
+
+`MaxChunksPerMemory` counts windows across a memory's **whole content array**, and every
+non-blank content element contributes at least one window. It is therefore also a floor on how
+many content elements can be vector-reachable: a memory of 600 short elements has its 501st
+onward dropped from embedding. Because `append` adds elements at the end, the tail this drops is
+the *newest* content, which is why the default is generous. The 999 ceiling is structural — the
+stored chunk index encodes an element index and a window ordinal against a stride of 1000, so a
+cap of 1000 or more would let one element's windows overflow into the next element's index space.
+
+**Search Ranking**
+
+| Key | Default | Description |
+|---|---|---|
+| `Scrinia:Search:Alpha:Relevance` | `1.0` | Weight applied to the relevance term (attribute match + BM25 + supplemental embedding score) in the final ranking sum. |
+| `Scrinia:Search:Alpha:Recency` | `1.0` | Weight applied to the recency term. Set to `0` to rank on relevance alone. |
+| `Scrinia:Search:TauDays` | `14.0` | Decay constant for the recency term: `exp(-Δt_days / τ_days)`. |
+| `Scrinia:Search:Scale:Recency` | `50.0` | Multiplier applied to the (already 0..1) recency term before summing. |
+| `Scrinia:Search:Fusion` | `sum` | How the three relevance signals (attribute match, BM25, supplemental embedding) combine: `sum` (historical additive weighting, lexical-dominant) or `rrf` (Reciprocal Rank Fusion, scale-invariant across sources). |
 
 **Pre-send hint (`scri hint`)**
 

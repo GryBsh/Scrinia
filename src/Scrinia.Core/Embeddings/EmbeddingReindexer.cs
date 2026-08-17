@@ -1,21 +1,19 @@
 using Microsoft.Extensions.Logging;
-using Scrinia.Core.Encoding;
 
 namespace Scrinia.Core.Embeddings;
 
 /// <summary>
-/// Walks every persistent memory in a <see cref="IMemoryStore"/>, slices each one's decoded
-/// content into overlapping windows via <see cref="TextChunker.SliceWindows"/>, embeds the
-/// windows in a single batch call, and upserts one vector per chunk into the target
-/// <see cref="VectorStore"/>. Called after a vector-file quarantine (provider or chunk-config
-/// changed), after a <c>scri config Scrinia:Embeddings:*</c> write, or explicitly via
-/// <c>scri reindex</c>.
+/// Walks every persistent memory in a <see cref="IMemoryStore"/>, reconstructs each one's
+/// content array from its stored artifact, and routes it through <see cref="MemoryVectorIndexer"/>
+/// — the same embed-and-index policy a regular write uses. Called after a vector-file quarantine
+/// (provider or chunk-config changed), after a <c>scri config Scrinia:Embeddings:*</c> write, or
+/// explicitly via <c>scri reindex</c>.
 ///
 /// <para>Ephemeral scope is skipped — those vectors are by definition session-bound and
 /// can't be reproduced from sidecars. Per-memory failures are logged and the batch continues
-/// so a single bad artifact doesn't abort the whole pass. Each memory is treated atomically:
-/// existing vectors for the memory are removed before the new chunks are upserted, so a
-/// shrink-replace (memory edited from 8 chunks down to 5) leaves no orphans.</para>
+/// so a single bad artifact doesn't abort the whole pass. Each memory is treated atomically —
+/// see <see cref="MemoryVectorIndexer.IndexAsync"/> — so a shrink-replace (memory edited from
+/// 8 chunks down to 5) leaves no orphans.</para>
 /// </summary>
 public static class EmbeddingReindexer
 {
@@ -42,9 +40,6 @@ public static class EmbeddingReindexer
         }
 
         options ??= new EmbeddingOptions();
-        int windowSize = options.ChunkSize;
-        int overlap = options.ChunkOverlap;
-        int maxChunks = options.MaxChunksPerMemory;
 
         var items = store.ListScoped()
             .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
@@ -52,7 +47,7 @@ public static class EmbeddingReindexer
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
 
-        var decoder = new Nmp2Strategy();
+        var indexer = new MemoryVectorIndexer(provider, vectorStore, logger, options);
 
         for (int i = 0; i < total; i++)
         {
@@ -61,60 +56,32 @@ public static class EmbeddingReindexer
 
             try
             {
-                // Resolve directly by (scope, subject) rather than round-tripping through
-                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
-                // namespaced topic scope (e.g. "local:memory/api"), FormatQualifiedName
-                // intentionally strips the "memory/" prefix for display, so re-parsing that
-                // string reconstructs the WRONG scope ("local:api") and the artifact can
-                // never be found. item.Scope is already the correct scope.
-                string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-                if (string.IsNullOrWhiteSpace(artifact))
+                // MemoryArtifactSource owns the read: it resolves by (scope, subject) rather than
+                // round-tripping through FormatQualifiedName -> ResolveArtifactAsync ->
+                // ParseQualifiedName (for a v1 namespaced topic scope like "local:memory/api",
+                // FormatQualifiedName strips the "memory/" prefix for display, so re-parsing that
+                // string reconstructs the WRONG scope), and it reconstructs the memory's content
+                // array rather than one decoded blob. Reindex must reproduce the layout a write
+                // produces — Task 7's signature bump rebuilds every existing vector through this
+                // exact path, so a reindex that collapsed a memory to element 1 would mean the
+                // element contract held only for memories written after this branch. An empty
+                // result covers "no artifact text" and "nothing embeddable in it" alike.
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
+                if (elements.Length == 0)
                 {
                     skipped++;
                     continue;
                 }
 
-                string decoded = System.Text.Encoding.UTF8.GetString(decoder.Decode(artifact));
-                if (string.IsNullOrWhiteSpace(decoded))
-                {
+                // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException
+                // propagate to the catch ladder below instead of being retried for up to 42s
+                // per memory and then swallowed to false, which would stall the whole run and
+                // mis-count "vectors unavailable" as skipped rather than failed.
+                if (await indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct, retryOnUnavailable: false))
+                    embedded++;
+                else
                     skipped++;
-                    continue;
-                }
-
-                var chunks = TextChunker.SliceWindows(decoded, windowSize, overlap);
-                if (chunks.Count == 0)
-                {
-                    skipped++;
-                    continue;
-                }
-
-                if (chunks.Count > maxChunks)
-                {
-                    logger.LogWarning(
-                        "Reindex: {Name} would produce {Count} chunks; capping at {Cap}. " +
-                        "Tail content embed-skipped (BM25 still indexes it).",
-                        item.Entry.Name, chunks.Count, maxChunks);
-                    chunks = [.. chunks.Take(maxChunks)];
-                }
-
-                var texts = chunks.Select(c => c.Text).ToList();
-                var vectors = await provider.EmbedBatchAsync(texts, ct);
-                if (vectors is null || vectors.Length != chunks.Count)
-                {
-                    failed++;
-                    logger.LogDebug("Reindex: batch embed failed or returned mismatched count for {Name}", item.Entry.Name);
-                    continue;
-                }
-
-                // Atomic per-memory replace: clear any prior vectors for this name (including
-                // stale chunk indices from a previous, larger chunk count) before upserting
-                // the new set. Order matters — if the upsert loop is interrupted mid-flight,
-                // the next reindex will pick this memory back up cleanly.
-                await vectorStore.RemoveAsync(item.Scope, item.Entry.Name, ct);
-                for (int c = 0; c < chunks.Count; c++)
-                    await vectorStore.UpsertAsync(item.Scope, item.Entry.Name, chunks[c].Index, vectors[c], ct);
-
-                embedded++;
             }
             catch (OperationCanceledException) { throw; }
             catch (VectorStoreUnavailableException ex)
@@ -173,12 +140,23 @@ public static class EmbeddingReindexer
     /// <see cref="IEmbeddingProvider"/> to batch-embed against — but it does have an
     /// <see cref="IMemoryEventSink"/> that the plugin subscribed to via MCP. Replaying every
     /// persistent memory through <see cref="IMemoryEventSink.OnStoredAsync"/> drives the
-    /// plugin's <c>upsert</c> tool the same way a fresh write would, producing a clean
-    /// rebuild without needing to expose the plugin's internal embed/store internals.
+    /// plugin's <c>index</c> tool when the plugin offers it (or its legacy <c>upsert</c> tool
+    /// otherwise — see <c>McpPluginHost.OnStoredAsync</c>'s negotiation) the same way a fresh
+    /// write would, producing a clean rebuild without needing to expose the plugin's internal
+    /// embed/store internals.
     ///
-    /// <para>Pass the active <see cref="MemoryEventSinkContext.Default"/> (or a specific sink
-    /// for tests). Each memory's decoded content is handed to the sink as a single-element
-    /// array; the sink does its own chunking (matches how a regular write flows through).</para>
+    /// <para>Each memory's content array is reconstructed from its artifact and handed to the
+    /// sink whole — the same content array a regular write carries, not a single decoded
+    /// blob.</para>
+    ///
+    /// <para><b>Pass a plugin-backed sink, not whatever happens to be installed.</b> This method
+    /// is for the case where the host has no in-process provider. On a CLI that <i>does</i> have
+    /// one, the ambient sink is <c>CoreEmbeddingEventHandler</c>, whose <c>OnStoredAsync</c> runs
+    /// <see cref="MemoryVectorIndexer.IndexAsync"/> at its default <c>retryOnUnavailable: true</c>
+    /// — up to 42s of <see cref="VectorWriteRetry"/> backoff per memory, in a loop over the whole
+    /// corpus. For an in-process provider use <see cref="ReindexAsync"/> or
+    /// <see cref="ForceReindexAsync"/>, which pass <c>retryOnUnavailable: false</c> and report
+    /// failures instead of stalling on them.</para>
     /// </summary>
     public static async Task<Result> ReindexViaSinkAsync(
         IMemoryStore store,
@@ -193,8 +171,6 @@ public static class EmbeddingReindexer
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
 
-        var decoder = new Nmp2Strategy();
-
         for (int i = 0; i < total; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -202,17 +178,12 @@ public static class EmbeddingReindexer
 
             try
             {
-                // See the matching comment in ReindexAsync above: resolve by (scope, subject)
-                // directly rather than through the lossy FormatQualifiedName round trip.
-                string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
-                if (string.IsNullOrWhiteSpace(artifact))
-                {
-                    skipped++;
-                    continue;
-                }
-
-                string decoded = System.Text.Encoding.UTF8.GetString(decoder.Decode(artifact));
-                if (string.IsNullOrWhiteSpace(decoded))
+                // See the matching comment in ReindexAsync above. A regular write carries the real
+                // content array, so replaying with a single decoded element would produce a
+                // different layout than the write this is supposed to reproduce.
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
+                    store, item.Scope, item.Entry.Name, ct);
+                if (elements.Length == 0)
                 {
                     skipped++;
                     continue;
@@ -222,7 +193,7 @@ public static class EmbeddingReindexer
                 // plugins) to decide which scope to store vectors under. Under v3
                 // FormatQualifiedName is round-trip-safe for every scope, so this is safe.
                 string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                await sink.OnStoredAsync(qualifiedName, [decoded], store, ct);
+                await sink.OnStoredAsync(qualifiedName, elements, store, ct);
                 embedded++;
             }
             catch (OperationCanceledException) { throw; }
@@ -266,10 +237,35 @@ public static class EmbeddingReindexer
         options ??= new EmbeddingOptions();
         string expectedSignature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
 
-        // Force a header read on every scope by enumerating subdirectories. The
-        // signature-mismatch logic in VectorStore.LoadFromDisk handles the quarantine
-        // rename and records the scope in HasStaleQuarantines.
         var probeStore = new VectorStore(embeddingsDir, expectedSignature);
+        var stale = ProbeStaleScopes(probeStore, embeddingsDir, logger);
+        if (stale.Count == 0)
+            return null;
+
+        logger.LogInformation(
+            "Reindexing {Count} scope(s) after embedding config change: {Scopes}",
+            stale.Count, string.Join(", ", stale));
+
+        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, options);
+    }
+
+    /// <summary>
+    /// Forces a header read on every scope under <paramref name="embeddingsDir"/> by enumerating
+    /// its subdirectories, so <c>VectorStore.LoadFromDisk</c>'s signature check runs and
+    /// quarantines any file written under a different provider or chunk configuration. Returns
+    /// the scopes that were quarantined — empty when everything is already in-sync.
+    ///
+    /// <para>Separate from <see cref="ReindexIfStaleAsync"/> because detection and remediation
+    /// are not always the same decision. The CLI reindexes immediately (a one-shot startup cost
+    /// the user is already waiting on); a long-lived server only reports, since a full-corpus
+    /// re-embed at boot is unbounded work with no progress channel and no way to know which of
+    /// its stores the operator wants rebuilt first.</para>
+    /// </summary>
+    public static IReadOnlyCollection<string> ProbeStaleScopes(
+        VectorStore probeStore, string embeddingsDir, ILogger logger)
+    {
+        if (!Directory.Exists(embeddingsDir)) return [];
+
         foreach (string scopeDir in Directory.EnumerateDirectories(embeddingsDir))
         {
             string scope = Path.GetFileName(scopeDir);
@@ -278,14 +274,6 @@ public static class EmbeddingReindexer
             catch (Exception ex) { logger.LogDebug(ex, "Probe failed for scope {Scope}", scope); }
         }
 
-        if (!probeStore.HasStaleQuarantines)
-            return null;
-
-        logger.LogInformation(
-            "Reindexing {Count} scope(s) after embedding config change: {Scopes}",
-            probeStore.StaleQuarantineScopes.Count,
-            string.Join(", ", probeStore.StaleQuarantineScopes));
-
-        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, options);
+        return probeStore.HasStaleQuarantines ? probeStore.StaleQuarantineScopes : [];
     }
 }

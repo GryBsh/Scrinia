@@ -31,4 +31,7 @@ namespace Scrinia.Server.Models;
 [JsonSerializable(typeof(KeySummaryDto[]))]
 [JsonSerializable(typeof(PluginInfo))]
 [JsonSerializable(typeof(PluginInfo[]))]
+[JsonSerializable(typeof(EmbeddingsStatusResponse))]
+[JsonSerializable(typeof(EmbeddingsSettingsResponse))]
+[JsonSerializable(typeof(ReindexResponse))]
 public partial class ServerJsonContext : JsonSerializerContext;

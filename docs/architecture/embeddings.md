@@ -45,11 +45,20 @@ src/Scrinia.Core/Embeddings/              Built-in embeddings (zero native deps)
   SafeTensorsReader.cs                    Binary SafeTensors parser (F16+F32, internal)
   UnigramTokenizer.cs                    SentencePiece-style tokenizer for distilled models
   BertTokenizer.cs                        WordPiece tokenizer (TokenizeRaw, Encode)
-  VectorStore.cs                          Per-scope binary vector storage (SVF2 format)
+  VectorStore.cs                          Per-scope binary vector storage (SVF3 format)
+  IVectorStore.cs                         VectorStore abstraction
+  VectorLoadResult.cs                     Load-from-disk result (vectors + authoritative flag)
+  VectorWriteRetry.cs                     Bounded retry for detached/event-sink writers
   VectorIndex.cs                          SIMD cosine similarity + flat-scan search
-  HnswIndex.cs                            HNSW approximate nearest neighbor
+  MemoryVectorIndexer.cs                  The single embed-and-index policy (windowing, cap,
+                                           batching, count guard, remove-then-upsert, retry)
+  VectorScoreProjection.cs                The single read-side key projection (element + memory keys)
+  EmbeddingReindexer.cs                   Bulk reindex (in-process and sink-driven variants)
+  ChunkedSignature.cs                     Composes the signature (provider|chunk config|layout)
+  IEmbeddingsAdmin.cs                     What the embeddings REST endpoints need, provider-agnostic
   HybridReranker.cs                       ISearchScoreContributor implementation
   VectorMath.cs                           Shared L2Normalize utility (used by all providers)
+  PluginConfigProtocol.cs                 Config keys passed to the out-of-process plugin
   Models/VectorEntry.cs                   Vector data record
   Providers/
     OllamaEmbeddingProvider.cs            Remote Ollama API
@@ -65,7 +74,7 @@ src/Scrinia.Plugin.Embeddings/            Optional Vulkan GPU plugin (LLamaSharp
 
 src/Scrinia.Plugin.Embeddings.Cli/        CLI plugin executable (MCP server)
   Program.cs                              Entry point, MCP registration (Vulkan provider)
-  EmbeddingsTools.cs                      4 MCP tools (status, search, upsert, remove)
+  EmbeddingsTools.cs                      5 MCP tools (index, status, search, upsert, remove)
 ```
 
 ## IEmbeddingProvider
@@ -206,7 +215,7 @@ Constructor failures (e.g., missing API key, model not downloaded) are caught an
 Manages per-scope binary vector files in SVF3 format.
 
 ```csharp
-public sealed class VectorStore : IDisposable
+public sealed class VectorStore : IDisposable, IVectorStore
 {
     public VectorStore(string baseDir, string? expectedSignature = null);
 
@@ -233,16 +242,25 @@ Signed, append-only format with lazy compaction:
 repeated entries:
   [op byte: 0=add, 1=delete]
   [nameLen uint16] [nameUtf8]
-  [chunkIndex int32]            // -1 = whole entry, 0+ = specific window
+  [chunkIndex int32]            // -1 = null (unused by any current writer, see below)
   (add only: [vector float32[dims]])
 ```
 
-**Signature** captures the active embedding provider + chunking config — e.g.
-`ollama:nomic-embed-text|c1200o200`. On load, if a file's signature doesn't
+The binary field is still a single `int32`, but what a live-serving store writes into it
+changed: it is no longer a raw window ordinal, and null (`-1`) is no longer written by
+`MemoryVectorIndexer` at all — see [Chunked Embeddings](#chunked-embeddings) below for the
+two-level element/window encoding a stored chunk index now carries. Null still round-trips
+for backward compatibility (a pre-branch SVF2 file, or a plugin's `upsert` tool called with no
+`chunkIndex`), it just doesn't participate in the element-keyed scoring path.
+
+**Signature** captures the active embedding provider + chunking config + layout revision — e.g.
+`ollama:nomic-embed-text|c1200o200|e1`. On load, if a file's signature doesn't
 match `expectedSignature` it gets renamed to `vectors.bin.stale-{timestamp}`,
 recorded in `StaleQuarantineScopes`, and the store returns empty for that scope.
 The caller (`EmbeddingReindexer.ReindexIfStaleAsync` from `WorkspaceSetup`) then
-walks scopes, observes `HasStaleQuarantines`, and rebuilds.
+walks scopes, observes `HasStaleQuarantines`, and rebuilds. This is also the mechanism that
+migrates every pre-branch vector file forward automatically — see the layout revision note
+under [Signature composition](#signature-composition).
 
 Legacy SVF1 and SVF2 files (no signature) are read transparently when
 `expectedSignature` is null (tests and ad-hoc tools). Production callers always
@@ -260,18 +278,29 @@ process holds the file open.
 ```csharp
 public sealed record VectorEntry(
     string Name,          // qualified memory name (e.g., "api:auth-flow")
-    int? ChunkIndex,      // null = whole entry, 0+ = specific window
+    int? ChunkIndex,      // stored chunk index — see "Chunked Embeddings" below; null is legacy
     float[] Vector);      // L2-normalized
 ```
 
 ## Chunked Embeddings
 
-Long memories are sliced into overlapping windows before embedding. Each window
-becomes one vector keyed by `(scope, name, chunkIndex)`. Search dedupes results
-back to one entry per memory but lets the best-matching window drive the score —
-so a needle buried at char 12000 of a long session log is still vector-reachable
-(it was silently lost to truncation under the previous one-vector-per-memory
-layout).
+A memory's **content array is its addressable unit**: element index, 1-based, the same unit
+`ChunkEntry.ChunkIndex` and the REST contract use (`docs/server-admin.md`'s `chunkEntries` and
+`GET .../chunks/{index}`). Each content element is further sliced into overlapping windows
+before embedding, and every window is embedded and stored as its own vector — long memories no
+longer degrade to one mean-pooled vector, and a needle buried at char 12000 of a long session
+log is still vector-reachable (it was silently lost to truncation, or to the provider's context
+limit, under the retired whole-document-vector layout).
+
+Windows are an implementation detail of the vector store: they never appear in a supplemental
+score key. **`VectorStore.UpsertAsync` deduplicates on `(name, chunkIndex)`**, so two windows of
+the same element could not share the element's own index without colliding — the stored chunk
+index is therefore two-level, `elementIndex * ChunkIndexStride + windowOrdinal` (stride =
+`MemoryVectorIndexer.ChunkIndexStride` = 1000), and `MemoryVectorIndexer.ElementIndexOf` recovers
+the element by integer division. `EmbeddingOptions.MaxChunksPerMemory` is asserted well below the
+stride so windows from one element can never overflow into the next element's index space. The
+alternative — a second field on `VectorEntry` — would change the SVF3 binary format, its op-log
+replay and its compaction, which was judged a larger change than this pipeline needed to carry.
 
 ### TextChunker
 
@@ -296,31 +325,51 @@ public static class TextChunker
   every supported provider's context window including nomic-embed-text's 2048-token
   cap.
 
-### Write paths
+### MemoryVectorIndexer — the single embed-and-index policy
 
-Both write paths use the same chunker:
+Every write path and every reindex path routes through one class:
+`MemoryVectorIndexer.IndexAsync(scope, subject, content, ct)`. It owns availability checking,
+windowing (via `TextChunker`, per content element), the `MaxChunksPerMemory` cap (default 500,
+ceiling 999 — excess tail is dropped from the vector path, BM25 still indexes the full text via
+the existing sidecar pipeline; note the cap counts windows across the whole content array, and
+every non-blank element contributes at least one, so it also bounds how many content elements
+can carry a vector), batching through `EmbedBatchAsync`, the vector-count guard (a provider
+returning the wrong vector count is treated as failure, not a partial write — the guard runs
+*before* `RemoveAsync` so a bad response can't wipe an existing memory's vectors and leave nothing
+in their place), remove-then-upsert ordering, and (for detached callers) write retry via
+`VectorWriteRetry`.
 
-- **Hot path** (`remember`): `CoreEmbeddingEventHandler.EmbedAndIndexAsync`
-  slices the joined content, batch-embeds via `EmbedBatchAsync`, then runs an
-  atomic per-memory replace — `RemoveAsync(scope, name)` first, then `UpsertAsync`
-  per chunk. The pre-emptive Remove guards against shrink-replace orphans (a
-  memory edited from 8 windows down to 5 leaves no stale chunks 5–7).
-- **Bulk path** (`EmbeddingReindexer.ReindexAsync`): same shape, but iterating
-  every persistent memory in the store. Used after a signature-mismatch
-  quarantine, after a `Scrinia:Embeddings:*` config write, or via
-  `scri reindex`.
+The write itself is an atomic per-memory replace — `RemoveAsync(scope, subject)` first, then
+`UpsertAsync` per window — so a memory shrunk from 8 windows to 5 leaves no stale chunks 5–7.
 
-A `MaxChunksPerMemory` cap (default 100) keeps embed cost bounded on
-pathologically long memories — excess tail is dropped from the vector path,
-BM25 still indexes the full text via the existing sidecar pipeline.
+This one policy replaces what used to be six divergent copies:
+
+- **Hot path** (`remember`/`append`): `CoreEmbeddingEventHandler` (CLI, `IMemoryEventSink`) and
+  `BuiltInEmbeddingsService` (server, both `IMemoryEventSink` and `IMemoryOperationHook`) each
+  construct a `MemoryVectorIndexer` and delegate to it. An append re-reads the memory's full
+  current content and reindexes the whole thing — indexing only the appended fragment would
+  destroy the rest of the memory's vectors, since the replace is atomic.
+- **Bulk path** (`EmbeddingReindexer.ReindexAsync` / `BuiltInEmbeddingsService.ReindexStoreAsync`):
+  same policy, iterating every persistent memory in the store, with `retryOnUnavailable: false` so
+  a locked vector file fails fast per item instead of retrying for up to 42s per memory and
+  stalling the whole run. Each memory's content array is reconstructed from its stored artifact via
+  `Nmp2ChunkedEncoder.DecodeAllChunksVerified` — a reindex must reproduce the same element layout a
+  write produces, not collapse every memory to one element. Used after a signature-mismatch
+  quarantine, after a `Scrinia:Embeddings:*` config write, or via `scri reindex`.
+- **Plugin path**: when the out-of-process plugin offers the `index` tool, `MemoryVectorIndexer`
+  runs *inside the plugin process* — see [EmbeddingsTools](#embeddingstools-plugin-mcp-server)
+  below. `EmbeddingReindexer.ReindexViaSinkAsync` drives the plugin-owned bulk case by replaying
+  every memory through the same `IMemoryEventSink.OnStoredAsync` a live write would use.
 
 ### Signature composition
 
 ```csharp
 public static class ChunkedSignature
 {
+    public const string LayoutRevision = "e1";
+
     public static string Compose(string providerSignature, int chunkSize, int overlap) =>
-        $"{providerSignature}|c{chunkSize}o{overlap}";
+        $"{providerSignature}|c{chunkSize}o{overlap}|{LayoutRevision}";
 }
 ```
 
@@ -329,17 +378,59 @@ public static class ChunkedSignature
 different signature → file quarantine → reindex on next launch. Same flow for
 manual `scri config Scrinia:Embeddings:ChunkSize 1800`.
 
+**`LayoutRevision` migrates every pre-branch vector file automatically.** It is bumped whenever
+the meaning of a stored chunk index changes — `e1` is "elements with nested windows," the layout
+described above; a file with no `e1` suffix predates it and carries raw window ordinals, not the
+`elementIndex * ChunkIndexStride + windowOrdinal` encoding. Because the signature changed, every
+such file fails the signature check on next load and is quarantined the same way a model switch
+quarantines a file.
+
+**Who rebuilds it, and who has to ask.** Automatic reindex runs from
+`WorkspaceSetup`, which reaches `EmbeddingReindexer.ReindexIfStaleAsync` only along the
+built-in and explicit-HTTP provider paths — that is, the CLI with an in-process provider. It
+covers neither the Vulkan plugin (`TryLoadVulkanPluginAsync` performs no reindex) nor the
+server (which never reads `HasStaleQuarantines` to trigger one).
+
+| Deployment | Migration |
+|---|---|
+| CLI, built-in Model2Vec or explicit HTTP provider | Automatic on next launch |
+| CLI, Vulkan plugin | `scri reindex` |
+| Server, built-in Model2Vec | `POST /api/v1/stores/{store}/embeddings/reindex`, once per store, with a key holding the `reindex` permission |
+| Server hosting the embeddings plugin (e.g. Vulkan) | Same route, same permission, once per store — also never automatic |
+
+**Neither server deployment rebuilds automatically, but they differ in how the quarantine gets
+logged.** For built-in embeddings, `EmbeddingReindexer.ProbeStaleScopes` runs once at boot and
+logs a single warning naming every quarantined scope. A server hosting the embeddings plugin has
+no equivalent boot-time scan — that probe sits inside `Program.cs`'s `!pluginProvidesEmbeddings`
+branch, and the plugin owns its vector store, possibly out of process, so the host has nothing to
+probe there. That does not mean the quarantine goes unlogged: `VectorStore.QuarantineStaleFile`
+logs it itself, through whatever logger owns that store, the first time a scope is loaded rather
+than all at once at boot. Either way the fix is the same manual step — rebuild each affected
+store with `POST /api/v1/stores/{store}/embeddings/reindex` (requires the `reindex` permission).
+A full-corpus re-embed is unbounded work with no progress channel at boot, and one server hosts
+many stores, which is why neither case triggers it automatically. Until a rebuild runs, the
+affected memories fall back to keyword-only search — nothing is lost, because vectors are derived
+data.
+
 ### Search-time dedup
 
-`HybridReranker.ComputeScoresAsync` writes two keys per matching chunk:
+`VectorScoreProjection.Project` is the single read-side projection from vector hits to
+supplemental score keys, called by both `HybridReranker` (CLI) and `BuiltInEmbeddingsService`
+(server). It writes up to two keys per matching vector, each holding the maximum score over the
+vectors that roll up into it — "the best-matching window's score wins":
 
-- `{scope}|{name}|{chunkIndex}` — per-chunk score (preserved for any future
-  per-chunk scoring path)
-- `{scope}|{name}` — max-aggregated score across all chunks of that memory
+- `{scope}|{name}` — max-aggregated score across every window of that memory.
+- `{scope}|{name}|{elementIndex}` — max-aggregated score across just that content element's
+  windows. `elementIndex` here is `ChunkEntry.ChunkIndex`'s own numbering — 1-based over content
+  elements, recovered from a stored chunk index via `MemoryVectorIndexer.ElementIndexOf`. Window
+  ordinals never appear in a key.
 
-`WeightedAttributeScorer.SearchAll` reads the whole-memory key for the per-entry
-scoring pass and ends up with exactly one result per memory at the best chunk's
-score. No chunk-vs-chunk-vs-whole double-counting.
+`WeightedAttributeScorer.SearchAll` reads the whole-memory key for its per-entry scoring pass and
+the element key for its chunk pass, ending up with exactly one result per memory at the
+best-matching window's score — no chunk-vs-chunk-vs-whole double-counting. A stored chunk index
+below one `ChunkIndexStride` (a vector written before the layout-revision migration above ran)
+decodes to a nonexistent element 0 and is skipped for the element key, though it still counts
+toward the memory key.
 
 ## Similarity Search
 
@@ -353,39 +444,17 @@ public static class VectorIndex
     public static float CosineSimilarity(ReadOnlySpan<float> a, ReadOnlySpan<float> b);
     public static IReadOnlyList<(VectorEntry Entry, float Similarity)> Search(
         ReadOnlySpan<float> query, IReadOnlyList<VectorEntry> entries,
-        int topK, HnswIndex? hnsw = null);
+        int topK);
 }
 ```
 
 **Strategy:**
-- < 1000 entries: flat scan (exact, SIMD dot product)
-- >= 1000 entries: HNSW approximate nearest neighbor (if index available)
-- Vectors are L2-normalized, so dot product = cosine similarity
-
-### HnswIndex
-
-Hierarchical Navigable Small World graph for approximate nearest neighbor search:
-
-```csharp
-public sealed class HnswIndex
-{
-    public void Insert(string key, float[] vector);
-    public IReadOnlyList<(string Key, float Similarity)> Search(float[] query, int topK, int efSearch = 0);
-    public void Remove(string key);         // lazy deletion (mark + skip)
-    public void Save(Stream stream);
-    public static HnswIndex Load(Stream stream);
-    public int Count { get; }
-}
-```
-
-**Parameters:**
-- `M = 16` (max connections per node per layer)
-- `M0 = 32` (doubled at layer 0 per HNSW paper)
-- `efConstruction = 200` (beam width during insertion)
-- `MaxLayers = 6`
-- `efSearch = max(topK, 50)` (beam width during search)
-
-**Persistence:** Binary format with `"HNSW"` magic, serializes full graph topology.
+- Flat scan (exact, SIMD dot product) over every candidate vector.
+- Vectors are L2-normalized, so dot product = cosine similarity.
+- `HybridReranker`/`BuiltInEmbeddingsService` already bound the work by scoring only the
+  BM25+attribute candidate set (typically 20–50 memories), not the whole corpus, so a
+  large-scale approximate index (HNSW) was carried by this codebase but never reached by any
+  production caller — it has been removed. See CHANGELOG's `## [Unreleased]` "Removed" entry.
 
 ## Hybrid Scoring
 
@@ -409,9 +478,15 @@ public sealed class HybridReranker : ISearchScoreContributor
 2. `HybridReranker` receives these candidates
 3. Embeds the search query
 4. Groups candidates by scope
-5. For each scope: loads vectors from `VectorStore`, runs `VectorIndex.Search`
-6. Returns scores keyed by `"{scope}|{name}"` or `"{scope}|{name}|{chunkIndex}"`
+5. For each scope: loads vectors from `VectorStore`, runs `VectorIndex.Search`, and hands the hits
+   to `VectorScoreProjection.Project`
+6. Returns scores keyed by `"{scope}|{name}"` (whole-memory) or `"{scope}|{name}|{elementIndex}"`
+   (per-element, `elementIndex` = `ChunkEntry.ChunkIndex`'s own 1-based numbering) — see
+   [Search-time dedup](#search-time-dedup) above
 7. Scores = cosine similarity * configured weight (default 50.0)
+
+`BuiltInEmbeddingsService`, the server's equivalent contributor, follows the identical flow —
+both delegate to the same `VectorScoreProjection.Project`.
 
 These supplemental scores are added to the final score:
 ```
@@ -440,11 +515,16 @@ This means semantic search works out of the box with zero plugins installed. The
 
 ### CoreEmbeddingEventHandler
 
-In-process `IMemoryEventSink` that handles embed-and-index without a child process:
+In-process `IMemoryEventSink` that handles embed-and-index without a child process. It holds a
+`MemoryVectorIndexer` and delegates every operation to it rather than embedding directly:
 
-- **On store:** Embeds full content + per-chunk vectors, upserts to VectorStore
-- **On append:** Embeds the new chunk, upserts to VectorStore
-- **On forget:** Removes all vectors for the memory from VectorStore
+- **On store:** `MemoryVectorIndexer.IndexAsync` — windows every content element, upserts every
+  window's vector.
+- **On append:** re-reads the memory's full current content from its artifact and calls
+  `IndexAsync` on the whole thing — indexing only the appended fragment would destroy the rest of
+  the memory's vectors, since `IndexAsync`'s replace is atomic.
+- **On forget:** `MemoryVectorIndexer.RemoveAsync` — removes all vectors for the memory from
+  `VectorStore`.
 
 ### Child-Process Plugin (Optional)
 
@@ -456,14 +536,19 @@ scri (MCP client) <--stdio--> scri-plugin-embeddings (MCP server)
 
 ### EmbeddingsTools (Plugin MCP Server)
 
-The plugin exposes 4 MCP tools:
+The plugin exposes 5 MCP tools:
 
 | Tool | Parameters | Returns |
 |------|-----------|---------|
+| `index` | `scope`, `name`, `content` (the memory's full content array) | `{ ok: bool }` — **preferred.** Runs `MemoryVectorIndexer.IndexAsync` inside the plugin process, so windowing, the chunk cap, and remove-then-upsert ordering are the same policy every other path uses. |
 | `status` | none | Provider type, availability, dimensions, vector count |
-| `search` | `query`, `scope`, `topK` | `Dictionary<string, double>` (name → similarity) |
-| `upsert` | `scope`, `name`, `chunkIndex?`, `text` | Success message |
+| `search` | `query`, `scope`, `topK` | `Dictionary<string, double>` (name → similarity), via `VectorScoreProjection` |
+| `upsert` | `scope`, `name`, `chunkIndex?`, `text` | Success message — **legacy.** Still supported for a plugin process too old to expose `index`, but does not window: a long memory embeds as one mean-pooled vector. `McpPluginHost` logs a `[scrinia:warn]` once per connection when it falls back to this. |
 | `remove` | `scope`, `name` | Success message |
+
+`McpPluginHost` (the CLI/server-side client of this protocol) discovers which tools a connected
+plugin offers via `ListToolsAsync` and prefers `index` whenever it's present; `upsert` is called
+only as the fallback for a plugin that doesn't offer `index`.
 
 ### Config Passthrough
 
@@ -489,7 +574,32 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     IMemoryEventSink             // MCP path hooks
 ```
 
-The server can also use Core's built-in embeddings directly without the plugin.
+The server can also use Core's built-in embeddings directly without the plugin, via
+`BuiltInEmbeddingsService` — see [`IEmbeddingsAdmin`](#iembeddingsadmin-and-the-embeddings-rest-routes)
+below. Whichever one is active also implements `IEmbeddingsAdmin`, so the REST endpoints below
+serve both without a second copy of the routing.
+
+### IEmbeddingsAdmin and the embeddings REST routes
+
+Both `BuiltInEmbeddingsService` and `EmbeddingsPlugin` implement `IEmbeddingsAdmin` (provider
+name, availability, dimensions, semantic weight, total vector count, a free-text `Hardware`
+label, and `ReindexStoreAsync`), and `EmbeddingsEndpoints.MapEmbeddingsEndpoints` maps three
+store-scoped routes against whichever implementation is registered:
+
+| Route | Permission | Purpose |
+|---|---|---|
+| `GET /api/v1/stores/{store}/embeddings/status` | `read` | Provider, hardware, availability, dimensions, vector count |
+| `GET /api/v1/stores/{store}/embeddings/settings` | `read` | Provider, hardware, semantic weight |
+| `POST /api/v1/stores/{store}/embeddings/reindex` | `reindex` | Triggers `IEmbeddingsAdmin.ReindexStoreAsync` for the resolved store |
+
+These live under `Endpoints/` alongside every other store-scoped route group specifically so the
+`{store}` route value resolves through the same auth middleware as everything else — an earlier
+inline `/api/v1/plugins/embeddings/*` group carried no `{store}` segment, so its handler could
+never resolve a store and reindex always failed with "No store context available." Reindex is
+gated by its own `reindex` permission (a full re-embed of an entire store is unbounded work);
+status and settings only need `read`. There is no settings-update route: embedding configuration
+is read from `Scrinia:Embeddings:*` config, not written through the API, and the web Settings
+page reflects that (read-only, with a pointer to `scri config`).
 
 ### Two Code Paths
 
@@ -512,14 +622,25 @@ This ensures multiple workspaces don't share vector data, even when using the sa
 
 ## Shared Vector Space
 
-Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-dimensional vectors in the MiniLM-L6-v2 semantic space. This means vectors are interchangeable — switching between providers does not require reindexing. Model2Vec uses static token embedding lookup (fast, CPU-only) while Vulkan runs the full transformer (slower per-query but with attention-based contextual embeddings).
+Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-dimensional vectors in the MiniLM-L6-v2 semantic space. Model2Vec uses static token embedding lookup (fast, CPU-only) while Vulkan runs the full transformer (slower per-query but with attention-based contextual embeddings).
+
+**Switching providers does still trigger a reindex.** The dimensionality matches, but the two
+providers report different signatures — `model2vec:m2v-MiniLM-L6-v2` versus
+`vulkan:{ggufFileName}` — and both write to the same `{Root}/.scrinia/embeddings` directory, so
+the vector files self-quarantine on the first load after a switch and must be rebuilt. That is
+the signature mechanism working as designed: comparable geometry is not the same thing as
+identical output, and the file header records which provider actually produced the vectors.
+Rebuild per the table under "LayoutRevision" above.
 
 ## Testing
 
-1,206 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
-- VectorStore: SVF2 format, upsert, remove, compaction, scope isolation
+`Scrinia.Tests` includes embedding tests in `Embeddings/`:
+- VectorStore: SVF1/SVF2/SVF3 format, upsert, remove (including the lazy-load-on-cold-scope fix),
+  compaction, scope isolation
 - VectorIndex: SIMD cosine similarity, search ranking
-- HnswIndex: Insert, search, remove, persistence, large-scale behavior
+- MemoryVectorIndexer: windowing, the chunk cap, the vector-count guard ordering, remove-then-upsert,
+  the element/window stride encoding, retry behavior
+- VectorScoreProjection: element-key and memory-key aggregation, the legacy below-stride guard
 - HybridReranker: Score integration with BM25
 - BertTokenizer: WordPiece tokenization, TokenizeRaw, VocabSize (skipped without vocab file)
 - UnigramTokenizer: SentencePiece vocab loading, tokenization, Model2Vec integration (skipped without model)
@@ -527,4 +648,5 @@ Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-
 - Model2VecProvider: Embed output shape (384-dim), L2 normalization, determinism, similarity (skipped without model)
 - Provider tests: Constructor validation, defaults, factory creation, fallback behavior
 
-12 tests in `Scrinia.Plugin.Embeddings.Tests` for Vulkan plugin CLI integration and 3-way benchmarks.
+`Scrinia.Plugin.Embeddings.Tests` covers Vulkan plugin CLI integration (including the `index` tool
+and the `upsert` fallback negotiation) and 3-way benchmarks.
