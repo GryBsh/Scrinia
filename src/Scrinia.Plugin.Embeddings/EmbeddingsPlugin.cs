@@ -340,11 +340,15 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             EnsureInitialized();
             if (_indexer is null) return;
 
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            // MemoryArtifactSource, not ReadArtifactAsync: ephemeral memories have no artifact
-            // keyed by (scope, subject), so reading them directly throws FileNotFoundException
+            // ReadForAppendAsync, not ParseQualifiedName + ReadContentElementsAsync: ephemeral
+            // memories have no artifact keyed by (scope, subject) — ParseQualifiedName itself
+            // parses "~note" to SCOPE "local" (it has no "~" branch), so a scope-keyed ephemeral
+            // check can never see it. Reading via the scope-keyed path throws FileNotFoundException
             // and this catch would silently turn an ephemeral append into a no-op (finding M-2).
-            var elements = await MemoryArtifactSource.ReadContentElementsAsync(store, scope, subject, ct);
+            // ReadForAppendAsync checks ephemerality on the NAME instead, and still returns the
+            // ParseQualifiedName-derived (scope, subject) pair, so the index write below lands on
+            // exactly the same key the store path used.
+            var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(store, qualifiedName, ct);
             if (elements.Length == 0) return;
 
             await _indexer.IndexAsync(scope, subject, elements, ct);
