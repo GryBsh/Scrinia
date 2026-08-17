@@ -111,6 +111,41 @@ public sealed class NormalizationSeamTests : IDisposable
         seenByMutator!["topic"].Should().BeEquivalentTo(["gamma"]);
     }
 
+    /// <summary>
+    /// Guards the DURABLE half of read-time forward-fill, which the in-memory-only assertions
+    /// above cannot see. LoadIndexUnsafe (FileMemoryStore.cs ~:701-745) feeds entries through
+    /// AttributeMigration.MigratesTo and, when it reports a change, calls WriteSidecar to rewrite
+    /// the sidecar on disk from the legacy "fields" key to "attributes" — this is what organically
+    /// migrates a workspace that never runs `scri migrate`. MigratesTo detects "needs migrating" by
+    /// calling NormalizeAttributesKey() itself and diffing before/after; that detection only works
+    /// if the entry MigratesTo receives is still raw (LegacyFields still populated). If
+    /// LoadIndexUnsafe's read is pre-normalized before reaching MigratesTo, the diff is a no-op,
+    /// MigratesTo reports false, and WriteSidecar never fires — the in-memory entry is still
+    /// correct (which is why Attributes-only assertions miss this), but the on-disk sidecar is
+    /// stuck carrying "fields" forever.
+    /// </summary>
+    [Fact]
+    public void LoadIndex_DurablyRewritesTheSidecar_FromLegacyFieldsToAttributes()
+    {
+        var seed = new ArtifactEntry("legacy-durable", "", 10, 1, DateTimeOffset.UtcNow);
+        _store.Upsert(seed, "local");
+        string metaPath = FindSidecar("legacy-durable");
+
+        string json = File.ReadAllText(metaPath);
+        json = json.TrimEnd().TrimEnd('}') + ""","fields":{"topic":["delta"]}}""";
+        File.WriteAllText(metaPath, json);
+
+        // Force a cold load so LoadIndexUnsafe's read-time forward-fill actually runs.
+        using var reader = new FileMemoryStore(_root);
+        _ = reader.LoadIndex("local");
+
+        string rewritten = File.ReadAllText(metaPath);
+        rewritten.Should().Contain("\"attributes\"",
+            because: "read-time forward-fill must durably rewrite a legacy sidecar to the current key");
+        rewritten.Should().NotContain("\"fields\"",
+            because: "a legacy sidecar must not survive a cold LoadIndex still carrying the old key");
+    }
+
     private string FindSidecar(string name) =>
         Directory.GetFiles(_root, $"{name}.meta.json", SearchOption.AllDirectories).Single();
 }

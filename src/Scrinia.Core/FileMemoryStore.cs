@@ -705,7 +705,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             return cached.Entries;
 
         string storeDir = GetStoreDirForScope(scope);
-        var entries = LoadEntriesFromSidecars(storeDir);
+        // RAW, not the normalizing seam: AttributeMigration.MigratesTo below needs to see an
+        // entry that still carries LegacyFields (if any) so its own NormalizeAttributesKey()
+        // call can detect a change and trigger the durable sidecar rewrite. Feeding it an
+        // already-normalized entry makes that diff a no-op — the in-memory result is still
+        // correct (MigratesTo's forward-fill is a superset of NormalizeAttributesKey, so
+        // `entries[i] = upgraded` below normalizes the cached slot either way), but the sidecar
+        // on disk would never get rewritten from "fields" to "attributes".
+        var entries = LoadEntriesFromSidecarsRaw(storeDir);
 
         // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
         // recognized-key keywords) into the attributes model (Fields/Keywords) so every
