@@ -134,6 +134,15 @@ if (!pluginProvidesEmbeddings)
         var embeddingOptions = builder.Configuration.GetSection("Scrinia:Embeddings")
             .Get<EmbeddingOptions>() ?? new EmbeddingOptions();
 
+        // The raw bind above has no guardrails of its own — an out-of-range MaxChunksPerMemory,
+        // ChunkOverlap, or ChunkSize would otherwise reach BuiltInEmbeddingsService's
+        // MemoryVectorIndexer ctor (a throw here would 500 every request from this DI factory) or
+        // silently wipe every memory's vectors on write. NormalizeGuardrails is the one shared
+        // rule the CLI already applies via WorkspaceSetup; the server logs what it corrects
+        // instead of writing to stderr.
+        foreach (string warning in embeddingOptions.NormalizeGuardrails())
+            bootLogger.LogWarning("Scrinia:Embeddings config: {Warning}", warning);
+
         var embeddingProvider = EmbeddingProviderFactory.Create(
             embeddingOptions, modelsDir,
             loggerFactory.CreateLogger("Scrinia.Embeddings"));

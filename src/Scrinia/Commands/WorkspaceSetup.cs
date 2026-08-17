@@ -603,27 +603,12 @@ internal static class WorkspaceSetup
         string? maxChunks = GetConfigValue("Scrinia:Embeddings:MaxChunksPerMemory");
         if (maxChunks is not null && int.TryParse(maxChunks, out int mc) && mc > 0) options.MaxChunksPerMemory = mc;
 
-        // Guardrail: overlap must be strictly less than chunk size, otherwise SliceWindows
-        // throws. Snap silently to sane defaults rather than crash the daemon on bad config.
-        if (options.ChunkOverlap >= options.ChunkSize)
-        {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] ChunkOverlap ({options.ChunkOverlap}) >= ChunkSize ({options.ChunkSize}); " +
-                $"reverting to defaults {TextChunker.DefaultWindowSize}/{TextChunker.DefaultOverlap}.");
-            options.ChunkSize = TextChunker.DefaultWindowSize;
-            options.ChunkOverlap = TextChunker.DefaultOverlap;
-        }
-
-        // Guardrail: a cap at or above the chunk-index stride would let one element's windows
-        // overflow into the next element's index space, so MemoryVectorIndexer's constructor
-        // rejects it. Clamp rather than let that throw out of a DI factory or a plugin init.
-        int requestedCap = options.MaxChunksPerMemory;
-        if (options.ClampChunkCapBelowStride())
-        {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] MaxChunksPerMemory ({requestedCap}) must be below " +
-                $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {options.MaxChunksPerMemory}.");
-        }
+        // NormalizeGuardrails is the one shared rule for every out-of-range EmbeddingOptions
+        // value (ChunkOverlap >= ChunkSize, a non-positive MaxChunksPerMemory, a cap at or above
+        // the chunk-index stride) — this host reports each correction to stderr, the server logs
+        // it instead. See EmbeddingOptions.NormalizeGuardrails for why each one matters.
+        foreach (string message in options.NormalizeGuardrails())
+            Console.Error.WriteLine($"[scrinia:warn] {message}");
 
         return options;
     }
