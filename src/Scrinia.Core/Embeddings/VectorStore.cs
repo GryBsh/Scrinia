@@ -245,6 +245,101 @@ public sealed class VectorStore : IDisposable, IVectorStore
         }
     }
 
+    /// <summary>
+    /// Replaces every vector held for <paramref name="name"/> in <paramref name="scope"/> with
+    /// <paramref name="vectors"/>, as a single locked file operation. Observationally identical
+    /// to calling <see cref="RemoveAsync"/> followed by one <see cref="UpsertAsync"/> per entry,
+    /// but at the cost of one lock acquisition, one file probe and one batch of appends instead
+    /// of 1 + K locks/probes and up to P + 2K appends — and, unlike the loop, atomic: nothing
+    /// observes a partially-replaced memory.
+    /// </summary>
+    public async Task ReplaceMemoryVectorsAsync(
+        string scope, string name, IReadOnlyList<(int? ChunkIndex, float[] Vector)> vectors, CancellationToken ct = default)
+    {
+        var lk = GetLock(scope);
+        await lk.WaitAsync(ct);
+        try
+        {
+            // Load explicitly rather than via GetOrAdd — same rationale as UpsertAsync/RemoveAsync:
+            // a failed read must not become the baseline this method writes back from.
+            if (!_scopeVectors.TryGetValue(scope, out var current))
+            {
+                var loaded = TryLoadFromDisk(scope);
+                if (!loaded.IsAuthoritative)
+                    throw new VectorStoreUnavailableException(scope, GetFilePath(scope));
+                current = loaded.Vectors;
+                _scopeVectors[scope] = current;
+            }
+
+            // Copy-on-write: build a new list rather than mutating `current` in place — same
+            // rationale as UpsertAsync/RemoveAsync. Every entry whose Name matches (Ordinal-
+            // IgnoreCase, matching UpsertAsync/RemoveAsync/ReadEntryOps) is dropped, regardless
+            // of chunk index, so a shrunk memory does not keep stale higher chunk indices.
+            var removed = current.Where(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            // Nothing to remove and nothing to add: the loop this replaces (RemoveAsync early-
+            // returns on nothing-to-remove; zero Upsert calls follow) never touches the file in
+            // this case, so neither do we — no probe, no potential VectorStoreUnavailableException.
+            if (removed.Count == 0 && vectors.Count == 0)
+                return;
+
+            var replacement = new List<VectorEntry>(current.Count - removed.Count + vectors.Count);
+            foreach (var v in current)
+            {
+                if (!v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    replacement.Add(v);
+            }
+            foreach (var (chunkIndex, vector) in vectors)
+                replacement.Add(new VectorEntry(name, chunkIndex, vector));
+            _scopeVectors[scope] = replacement;
+
+            // Persist if not ephemeral
+            if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            {
+                string path = GetFilePath(scope);
+                var probe = File.Exists(path) ? ProbeAppendable(path) : AppendProbe.NotAppendable;
+                if (probe == AppendProbe.Unknown)
+                    throw new VectorStoreUnavailableException(scope, path);
+
+                if (probe == AppendProbe.Appendable)
+                {
+                    // One open stream for the whole batch instead of one open/close per op —
+                    // that is the point of this method.
+                    using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
+                    await FileRetry.RunAsync(async () =>
+                    {
+                        await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
+                        await using var writer = new BinaryWriter(fs);
+
+                        foreach (var entry in removed)
+                            WriteDeleteOp(writer, entry.Name, entry.ChunkIndex);
+                        foreach (var (chunkIndex, vector) in vectors)
+                            WriteAddOp(writer, name, chunkIndex, vector);
+                    }, ct: ct);
+
+                    // Track ops for compaction — one delete per superseded entry, one add per
+                    // new vector, same accounting as UpsertAsync.
+                    int deletes = removed.Count > 0
+                        ? _scopeDeleteCount.AddOrUpdate(scope, removed.Count, (_, v) => v + removed.Count)
+                        : _scopeDeleteCount.GetOrAdd(scope, 0);
+                    int ops = _scopeOpCount.AddOrUpdate(scope, removed.Count + vectors.Count, (_, v) => v + removed.Count + vectors.Count);
+
+                    if (ops > 0 && (double)deletes / ops > 0.2 && deletes >= 10)
+                        await CompactAsync(scope, replacement, ct);
+                }
+                else
+                {
+                    // First write, or no file present. Always write SVF3.
+                    await SaveAsSvf3Async(scope, replacement, ct);
+                }
+            }
+        }
+        finally
+        {
+            lk.Release();
+        }
+    }
+
     /// <summary>Returns the count of vectors across all loaded scopes.</summary>
     public int Count() => _scopeVectors.Values.Sum(v => v.Count);
 
@@ -603,7 +698,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
         _scopeOpCount[scope] = vectors.Count;
     }
 
-    /// <summary>Appends a single add operation to an SVF2 file.</summary>
+    /// <summary>Appends a single add operation to an SVF2 file, opening and closing it for this one op.</summary>
     private static async Task AppendAddOpAsync(string path, string name, int? chunkIndex, float[] vector, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -612,18 +707,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
             await using var writer = new BinaryWriter(fs);
-
-            writer.Write((byte)0); // Add
-            byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
-            writer.Write((ushort)nameBytes.Length);
-            writer.Write(nameBytes);
-            writer.Write(chunkIndex ?? -1);
-            foreach (float f in vector)
-                writer.Write(f);
+            WriteAddOp(writer, name, chunkIndex, vector);
         }, ct: ct);
     }
 
-    /// <summary>Appends a single delete operation to an SVF2 file.</summary>
+    /// <summary>Appends a single delete operation to an SVF2 file, opening and closing it for this one op.</summary>
     private static async Task AppendDeleteOpAsync(string path, string name, int? chunkIndex, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -632,13 +720,30 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
             await using var writer = new BinaryWriter(fs);
-
-            writer.Write((byte)1); // Delete
-            byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
-            writer.Write((ushort)nameBytes.Length);
-            writer.Write(nameBytes);
-            writer.Write(chunkIndex ?? -1);
+            WriteDeleteOp(writer, name, chunkIndex);
         }, ct: ct);
+    }
+
+    /// <summary>Writes a single add-op record to an already-open writer — no file open/close per call.</summary>
+    private static void WriteAddOp(BinaryWriter writer, string name, int? chunkIndex, float[] vector)
+    {
+        writer.Write((byte)0); // Add
+        byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+        writer.Write((ushort)nameBytes.Length);
+        writer.Write(nameBytes);
+        writer.Write(chunkIndex ?? -1);
+        foreach (float f in vector)
+            writer.Write(f);
+    }
+
+    /// <summary>Writes a single delete-op record to an already-open writer — no file open/close per call.</summary>
+    private static void WriteDeleteOp(BinaryWriter writer, string name, int? chunkIndex)
+    {
+        writer.Write((byte)1); // Delete
+        byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+        writer.Write((ushort)nameBytes.Length);
+        writer.Write(nameBytes);
+        writer.Write(chunkIndex ?? -1);
     }
 
     /// <summary>Compacts an SVF3 file by rewriting only live entries.</summary>

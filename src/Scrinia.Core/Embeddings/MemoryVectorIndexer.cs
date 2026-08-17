@@ -127,14 +127,16 @@ public sealed class MemoryVectorIndexer
             return false;
         }
 
-        // Atomic per-memory replace: clearing first is what stops a shrunk memory keeping stale
-        // higher chunk indices. If the upsert loop is interrupted the next index pass rebuilds
-        // this memory cleanly.
+        // One locked file operation for the whole memory, not one per vector. This is also what
+        // makes the per-memory replace genuinely atomic — the previous RemoveAsync-then-loop
+        // could be interrupted between vectors, leaving the memory half-replaced until the next
+        // index pass.
         Func<Task> write = async () =>
         {
-            await _store.RemoveAsync(scope, subject, ct);
+            var batch = new (int? ChunkIndex, float[] Vector)[plan.Count];
             for (int i = 0; i < plan.Count; i++)
-                await _store.UpsertAsync(scope, subject, plan[i].ChunkIndex, vectors[i], ct);
+                batch[i] = (plan[i].ChunkIndex, vectors[i]);
+            await _store.ReplaceMemoryVectorsAsync(scope, subject, batch, ct);
         };
 
         if (retryOnUnavailable)
