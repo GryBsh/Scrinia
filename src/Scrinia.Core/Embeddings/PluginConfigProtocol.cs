@@ -38,11 +38,15 @@ public static class PluginConfigProtocol
     /// never crossed the process boundary, so reading it here would silently produce settings the
     /// host does not share.
     ///
-    /// <para>Applies the same two guardrails the CLI host applies: an overlap at or above the
-    /// window size makes <c>TextChunker.SliceWindows</c> throw, and a chunk cap at or above
-    /// <see cref="MemoryVectorIndexer.ChunkIndexStride"/> makes the indexer's constructor throw.
-    /// In a plugin child process either would be a startup crash, so both clamp and report through
-    /// <paramref name="warn"/>.</para>
+    /// <para>Applies the same guardrails the CLI host applies via
+    /// <see cref="EmbeddingOptions.NormalizeGuardrails"/>: an overlap at or above the window size
+    /// makes <c>TextChunker.SliceWindows</c> throw, a chunk cap at or above
+    /// <see cref="MemoryVectorIndexer.ChunkIndexStride"/> makes the indexer's constructor throw,
+    /// and a non-positive cap silently truncates every write's indexing plan to empty (this parse
+    /// already keeps the default for a non-positive <c>MaxChunksPerMemory</c>, so that guardrail
+    /// is not expected to fire here — it stays in the shared method as a backstop rather than
+    /// being re-decided per caller). In a plugin child process either of the first two would be a
+    /// startup crash, so all three clamp and report through <paramref name="warn"/>.</para>
     /// </summary>
     public static EmbeddingOptions BuildOptions(Func<string, string?> getConfig, Action<string>? warn = null)
     {
@@ -73,22 +77,8 @@ public static class PluginConfigProtocol
         if (int.TryParse(getConfig("Scrinia:Embeddings:MaxChunksPerMemory"), out int maxChunks) && maxChunks > 0)
             options.MaxChunksPerMemory = maxChunks;
 
-        if (options.ChunkOverlap >= options.ChunkSize)
-        {
-            warn?.Invoke(
-                $"ChunkOverlap ({options.ChunkOverlap}) >= ChunkSize ({options.ChunkSize}); "
-                + $"reverting to defaults {TextChunker.DefaultWindowSize}/{TextChunker.DefaultOverlap}.");
-            options.ChunkSize = TextChunker.DefaultWindowSize;
-            options.ChunkOverlap = TextChunker.DefaultOverlap;
-        }
-
-        int requestedCap = options.MaxChunksPerMemory;
-        if (options.ClampChunkCapBelowStride())
-        {
-            warn?.Invoke(
-                $"MaxChunksPerMemory ({requestedCap}) must be below "
-                + $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {options.MaxChunksPerMemory}.");
-        }
+        foreach (string message in options.NormalizeGuardrails())
+            warn?.Invoke(message);
 
         return options;
     }
