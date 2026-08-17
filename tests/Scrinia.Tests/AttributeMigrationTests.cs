@@ -109,7 +109,20 @@ public sealed class AttributeMigrationTests
 
         var summary = AttributeMigration.MigrateStore(store, dryRun: true);
         summary.Migrated.Should().Be(1);
-        store.LoadIndex("local").First(e => e.Name == "a").Attributes.Should().BeNull();   // unwritten
+
+        // Deliberately not asserted via store.LoadIndex("local") here: Task 2 (write-path cost)
+        // made Upsert leave a previously-uncached scope's index cache absent rather than eagerly
+        // rebuilding it, so this scope is still uncached at this point. A LoadIndex call would
+        // therefore cold-load the sidecar, which triggers LoadIndex's OWN independent read-time
+        // forward-fill (see FileMemoryStore.LoadIndexUnsafe) — an unconditional, best-effort
+        // upgrade-and-write-back that runs on every cold read regardless of MigrateStore's dryRun
+        // flag. That would populate and persist Attributes as a side effect of merely reading,
+        // which is a real but orthogonal mechanism, not evidence that dryRun itself wrote
+        // anything. Re-running the dry migration instead: EnumerateRawForMigration reads sidecars
+        // straight from disk on every call, so if the first dry run HAD persisted anything, this
+        // second pass would see the already-upgraded sidecar and report 0.
+        AttributeMigration.MigrateStore(store, dryRun: true).Migrated.Should().Be(1,
+            because: "the first dry run must not have persisted anything to disk");
     }
 
     [Fact]

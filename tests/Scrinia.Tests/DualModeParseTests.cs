@@ -604,6 +604,16 @@ public sealed class DualModeParseTests : IDisposable
             because: "the two scope strings produce two different directory PATH strings");
 
         _store.Upsert(MakeEntry("alpha"), cleanScope);
+
+        // Task 2 (write-path cost): Upsert now updates the cache copy-on-write and — per its
+        // "never populate a partial cache" rule — leaves a previously-uncached scope's cache
+        // absent rather than warming it. cleanScope was never read before the Upsert above, so
+        // without this call its cache would still be absent here, and the LoadIndex(cleanScope)
+        // assertion below would cold-load the (by-then two-entry) directory fresh instead of
+        // exercising the stale-cache aliasing bug this test exists to pin. Warm it explicitly so
+        // the desync below is caused by the alias write, not by an accident of cache timing.
+        _store.LoadIndex(cleanScope).Select(e => e.Name).Should().BeEquivalentTo(["alpha"]);
+
         _store.Upsert(MakeEntry("beta"), aliasScope);
 
         // Both sidecars landed in the SAME real directory — the paths are aliases.

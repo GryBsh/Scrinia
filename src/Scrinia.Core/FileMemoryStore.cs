@@ -1074,15 +1074,50 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
-            // Invalidate cache and rebuild from sidecars. LoadEntriesFromSidecars is the load
-            // seam and normalizes each entry's legacy "fields" key itself, so a write-first
-            // session — an Upsert before any cold LoadIndex on this scope — never caches an
-            // entry with Attributes == null while its data sits in LegacyFields; that would
-            // silently hide the entry's facets from search/filter/display for the rest of the
-            // process lifetime. Mirrors LoadIndexUnsafe's cold-path forward-fill.
-            _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir);
-            _indexCache[scope] = new CachedIndex(entries);
+            // Copy-on-write cache update. Never re-read the scope's sidecars here: that made a
+            // single write cost a full directory enumeration plus one read and JSON parse per
+            // entry, so writing N memories cost O(N^2) reads (finding H5).
+            //
+            // MUST install a NEW CachedIndex over a NEW list. LoadIndex hands Entries out BY
+            // REFERENCE, and that is safe only because every cache write replaces the whole
+            // object rather than mutating it — see
+            // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
+            //
+            // When the scope is not cached, leave it absent rather than installing a cache
+            // holding only this entry; the next read cold-loads the whole scope.
+            //
+            // ORDERING (decision, see task-2-report.md): replace-in-slot for an existing name,
+            // append for a new one — option (a), not a sort-both-paths scheme. The cold path
+            // (LoadEntriesFromSidecarsRaw) never sorts; it yields raw Directory.EnumerateFiles
+            // order, which .NET does not document as stable or alphabetical. No caller of
+            // LoadIndex/ListScoped/GatherTopicInfos/ListTopicArtifacts sorts or otherwise
+            // depends on a particular order for correctness — they consume whatever order
+            // arrives, which was already filesystem-arbitrary before this change. Appending a
+            // new entry (or replacing one in place) therefore cannot violate an ordering
+            // contract that never existed.
+            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            {
+                string target = SanitizeName(entry.Name);
+                var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
+                bool replaced = false;
+                foreach (var existing in cachedIndex.Entries)
+                {
+                    if (!replaced
+                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        next.Add(entry);
+                        replaced = true;
+                        continue;
+                    }
+                    next.Add(existing);
+                }
+                if (!replaced) next.Add(entry);
+                _indexCache[scope] = new CachedIndex(next);
+            }
+            else
+            {
+                _indexCache.TryRemove(scope, out _);
+            }
 
             // Invalidate topic discovery cache when saving a topic scope
             if (scope.StartsWith("local:", StringComparison.Ordinal))
@@ -1146,12 +1181,30 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Delete the sidecar file
             File.Delete(metaPath);
 
-            // Invalidate cache and rebuild from remaining sidecars. LoadEntriesFromSidecars
-            // normalizes legacy "fields" itself — see the matching comment in Upsert for why a
-            // write-first Remove must not cache an un-coalesced entry.
-            _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir);
-            _indexCache[scope] = new CachedIndex(entries);
+            // Copy-on-write cache update — see the matching comment in Upsert for why this must
+            // install a NEW CachedIndex and must not re-read the scope's sidecars.
+            //
+            // Match against the sidecar that was actually deleted, not necessarily the caller's
+            // raw `name`: the case-mismatch fallback above can resolve `name` to a differently
+            // -cased sidecar on a case-sensitive filesystem (see the RULING comment above).
+            // metaPath's file name IS the sanitized stem WriteSidecar used to write it, so
+            // compare against that directly instead of re-deriving it from the caller's argument.
+            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            {
+                string target = Path.GetFileName(metaPath)[..^".meta.json".Length];
+                var next = new List<ArtifactEntry>(cachedIndex.Entries.Count);
+                foreach (var existing in cachedIndex.Entries)
+                {
+                    if (SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    next.Add(existing);
+                }
+                _indexCache[scope] = new CachedIndex(next);
+            }
+            else
+            {
+                _indexCache.TryRemove(scope, out _);
+            }
 
             // Invalidate topic discovery cache when removing from a topic scope. Without
             // this, DiscoverTopics keeps reporting a topic that has no remaining entries
