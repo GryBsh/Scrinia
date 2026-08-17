@@ -57,24 +57,49 @@ public sealed class NormalizationSeamTests : IDisposable
         entry.Attributes!["topic"].Should().BeEquivalentTo(["alpha"]);
     }
 
+    /// <summary>
+    /// Task 2 (write-path cost) repoint: the original version of this test wrote to a scope that
+    /// was uncached both times (a fresh store's first Upsert never warms the cache — see
+    /// IndexCacheWritePathTests), so its final LoadIndex was a genuine cold load and the
+    /// assertion passed via LoadIndexUnsafe's unrelated read-time forward-fill, not via anything
+    /// Upsert's own cache update did. This version warms the scope FIRST so the Upsert under test
+    /// runs its copy-on-write branch, and proves the following read is a cache hit (not a cold
+    /// reload) before trusting what it returns — otherwise the same masking could recur silently.
+    /// </summary>
     [Fact]
-    public void WriteFirstSession_DoesNotCacheAnUnnormalizedEntry()
+    public void Upsert_CachesTheNormalizedEntry_NotTheCallersRawLegacyFieldsEntry()
     {
-        // A write-first session: Upsert before any cold LoadIndex on this scope. The cached
-        // entries must be normalized even though no read populated the cache.
-        var seed = new ArtifactEntry("note-a", "", 5, 1, DateTimeOffset.UtcNow);
-        _store.Upsert(seed, "local");
-        string metaPath = FindSidecar("note-a");
-        string json = File.ReadAllText(metaPath);
-        json = json.TrimEnd().TrimEnd('}') + ""","fields":{"topic":["beta"]}}""";
-        File.WriteAllText(metaPath, json);
-
-        // Second write to a DIFFERENT name in the same scope — whatever populates the cache
-        // as a result must carry note-a normalized.
         _store.Upsert(new ArtifactEntry("note-b", "", 5, 1, DateTimeOffset.UtcNow), "local");
+        _store.LoadIndex("local").Should().ContainSingle();   // warm the scope
+
+        // A legacy-shaped entry constructed directly — LegacyFields populated, Attributes null —
+        // rather than corrupting a sidecar on disk, because what is under test is whether
+        // Upsert's copy-on-write cache update normalizes the CALLER'S entry before caching it,
+        // not whether a cold read can forward-fill a legacy sidecar (LoadIndex_NormalizesLegacy-
+        // FieldsKey_OnAColdLoad above already covers that).
+        var legacyEntry = new ArtifactEntry("note-a", "", 5, 1, DateTimeOffset.UtcNow)
+        {
+            LegacyFields = new Dictionary<string, string[]> { ["topic"] = ["beta"] }
+        };
+        _store.Upsert(legacyEntry, "local");
+
+        string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
+        File.Delete(lockPath);
 
         var a = _store.LoadIndex("local").Single(e => e.Name == "note-a");
-        a.Attributes.Should().NotBeNull();
+
+        File.Exists(lockPath).Should().BeFalse(
+            because: "this read must be a cache hit — both Upserts above ran against an "
+                   + "already-warmed scope, so a lock file recreated here would mean the read "
+                   + "cold-reloaded instead, and the assertion below would be proving the "
+                   + "unrelated forward-fill mechanism again rather than the cache update");
+        a.Attributes.Should().NotBeNull(
+            because: "Upsert's copy-on-write cache update must cache "
+                   + "entry.NormalizeAttributesKey(), not the caller's raw entry — caching the "
+                   + "raw form would let a LegacyFields-bearing entry sit in the cache with "
+                   + "Attributes == null while disk holds the normalized form (WriteSidecarCore "
+                   + "normalizes before serializing), hiding this entry's facets from "
+                   + "search/filter/display for the rest of the process lifetime");
         a.Attributes!["topic"].Should().BeEquivalentTo(["beta"]);
     }
 

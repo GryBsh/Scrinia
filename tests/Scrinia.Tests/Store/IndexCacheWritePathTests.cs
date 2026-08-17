@@ -31,6 +31,26 @@ public sealed class IndexCacheWritePathTests : IDisposable
     private static ArtifactEntry E(string name) =>
         new(name, "", 4, 1, DateTimeOffset.UtcNow);
 
+    /// <summary>
+    /// Proves <paramref name="read"/> was a cache HIT rather than a cold disk load — the same
+    /// observable proxy LoadIndexCacheHitTests uses: FileLock's Acquire opens the ".lock" file
+    /// with FileMode.OpenOrCreate, so any cold read (which takes the shared lock) recreates a
+    /// deleted lock file, while a genuine cache hit never touches it. Deletes the lock file
+    /// immediately before running <paramref name="read"/> so only that call's own lock behaviour
+    /// is observed, then asserts it was not recreated. Exists so IndexCacheWritePathTests can
+    /// prove the writes ABOVE `read` genuinely warmed/kept-warm the cache — a content-only
+    /// assertion on `read`'s result cannot distinguish "warm cache, copy-on-write ran" from
+    /// "cache went absent, this read cold-reloaded and happened to get the right answer anyway".
+    /// </summary>
+    private T AssertReadIsACacheHit<T>(Func<T> read, string because)
+    {
+        string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
+        File.Delete(lockPath);
+        T result = read();
+        File.Exists(lockPath).Should().BeFalse(because: because);
+        return result;
+    }
+
     [Fact]
     public void AReaderHoldingALoadIndexResult_IsNotDisturbedByALaterWrite()
     {
@@ -55,11 +75,26 @@ public sealed class IndexCacheWritePathTests : IDisposable
     public void Cold_And_Warm_Caches_Agree()
     {
         _store.Upsert(E("a"), "local");
+
+        // LoadIndexUnsafe only caches a NON-EMPTY cold-load result, so the very first Upsert to a
+        // fresh store is against an uncached scope and — per the "leave absent" rule — leaves it
+        // absent. Warm it explicitly here so every write below actually takes the copy-on-write
+        // branch (cache present) instead of also landing in "leave absent", which would make this
+        // test compare a cold load against a cold load and could never catch the
+        // slot-replacement/append/omit logic diverging from disk.
+        _store.LoadIndex("local").Should().ContainSingle();
+
         _store.Upsert(E("b"), "local");
         _store.Upsert(E("c"), "local");
         _store.Remove("b", "local");
 
-        var warm = _store.LoadIndex("local").Select(e => e.Name).ToArray();
+        var warm = AssertReadIsACacheHit(
+            () => _store.LoadIndex("local").Select(e => e.Name).ToArray(),
+            because: "if every write above stayed on the copy-on-write branch, the cache never "
+                   + "went absent and this read never needed the shared lock — recreation here "
+                   + "would mean at least one write silently fell back to the uncached-scope "
+                   + "path despite the scope being cached, which is exactly the bug this test "
+                   + "exists to catch");
 
         using var cold = new FileMemoryStore(_root);
         var coldNames = cold.LoadIndex("local").Select(e => e.Name).ToArray();
@@ -91,12 +126,24 @@ public sealed class IndexCacheWritePathTests : IDisposable
     public void Upsert_ReplacesAnExistingEntry_RatherThanDuplicatingIt()
     {
         _store.Upsert(E("a"), "local");
+
+        // Warm the cache before the replacing Upsert — see Cold_And_Warm_Caches_Agree for why the
+        // first Upsert to a fresh store never does this itself, and why skipping this step would
+        // let the second Upsert also land in "leave absent" and mask the slot-replacement loop
+        // under test (a cold reload afterward would still report the right OriginalBytes).
+        _store.LoadIndex("local").Should().ContainSingle();
+
         // ArtifactEntry's positional members are (Name, Uri, OriginalBytes, ChunkCount,
         // CreatedAt). There is NO Description property — assert on a member that exists.
         var updated = new ArtifactEntry("a", "", 99, 1, DateTimeOffset.UtcNow);
         _store.Upsert(updated, "local");
 
-        var entries = _store.LoadIndex("local").Where(e => e.Name == "a").ToList();
+        var entries = AssertReadIsACacheHit(
+            () => _store.LoadIndex("local").Where(e => e.Name == "a").ToList(),
+            because: "the Upsert above must have taken the copy-on-write replace-in-slot branch "
+                   + "(cache was warmed just above) rather than falling back to leave-absent — "
+                   + "recreation of the lock file here would mean this read cold-reloaded instead "
+                   + "of exercising the replacement logic under test");
         entries.Should().HaveCount(1);
         entries[0].OriginalBytes.Should().Be(99);
     }
@@ -106,8 +153,21 @@ public sealed class IndexCacheWritePathTests : IDisposable
     {
         _store.Upsert(E("a"), "local");
         _store.Upsert(E("b"), "local");
+
+        // Warm the cache before Remove — see Cold_And_Warm_Caches_Agree for why the first write
+        // to a fresh store never does this itself, and why skipping this step would let Remove
+        // land in "leave absent" and mask the omit-logic under test (a cold reload afterward
+        // would still report the right surviving name).
+        _store.LoadIndex("local").Should().HaveCount(2);
+
         _store.Remove("a", "local");
 
-        _store.LoadIndex("local").Select(e => e.Name).Should().BeEquivalentTo(["b"]);
+        var names = AssertReadIsACacheHit(
+            () => _store.LoadIndex("local").Select(e => e.Name).ToArray(),
+            because: "Remove above must have taken the copy-on-write omit branch (cache was "
+                   + "warmed just above) rather than falling back to leave-absent — recreation "
+                   + "of the lock file here would mean this read cold-reloaded instead of "
+                   + "exercising the omit logic under test");
+        names.Should().BeEquivalentTo(["b"]);
     }
 }

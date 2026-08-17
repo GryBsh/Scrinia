@@ -1097,7 +1097,16 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // contract that never existed.
             if (_indexCache.TryGetValue(scope, out var cachedIndex))
             {
-                string target = SanitizeName(entry.Name);
+                // Cache the NORMALIZED entry, not the caller's raw parameter. WriteSidecarCore
+                // calls entry.NormalizeAttributesKey() on a LOCAL copy before serializing, so disk
+                // always gets the "attributes"-keyed form — but that normalization never escaped
+                // back to this method. Caching `entry` unchanged would let a LegacyFields-bearing
+                // entry (still carrying data under the old "fields" key, Attributes == null) sit
+                // in the cache while disk holds the normalized form: exactly the divergence the
+                // load seam (LoadEntriesFromSidecars) exists to prevent, reintroduced on the write
+                // side. Idempotent no-op for an already-normalized or freshly-constructed entry.
+                var cacheEntry = entry.NormalizeAttributesKey();
+                string target = SanitizeName(cacheEntry.Name);
                 var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
                 bool replaced = false;
                 foreach (var existing in cachedIndex.Entries)
@@ -1105,13 +1114,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                     if (!replaced
                         && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
                     {
-                        next.Add(entry);
+                        next.Add(cacheEntry);
                         replaced = true;
                         continue;
                     }
                     next.Add(existing);
                 }
-                if (!replaced) next.Add(entry);
+                if (!replaced) next.Add(cacheEntry);
                 _indexCache[scope] = new CachedIndex(next);
             }
             else
