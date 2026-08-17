@@ -34,6 +34,21 @@ public sealed class TopicCacheInvalidationTests : IDisposable
     private static ArtifactEntry E(string name) =>
         new(name, "", 4, 1, DateTimeOffset.UtcNow);
 
+    /// <summary>
+    /// Plants a topic directly on disk, bypassing the store entirely, so it is invisible to any
+    /// currently-cached <c>_cachedTopics</c> but WOULD be picked up by a fresh directory scan.
+    /// DiscoverTopics only checks for the presence of a "*.meta.json"/"*.nmp2" file — it never
+    /// parses one — so an empty file with the right extension is sufficient. Used to prove a
+    /// cache survived an operation: if DiscoverTopics still does not see the phantom topic
+    /// afterward, the operation did not force a rescan.
+    /// </summary>
+    private void PlantPhantomTopicBehindTheStoresBack(string scope)
+    {
+        string dir = _store.GetStoreDirForScope(scope);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "ghost.meta.json"), "{}");
+    }
+
     [Fact]
     public void ANewTopicScope_AppearsInDiscoverTopics_AfterItsFirstWrite()
     {
@@ -46,16 +61,29 @@ public sealed class TopicCacheInvalidationTests : IDisposable
                    + "the topic list");
     }
 
+    /// <summary>
+    /// Diagnostic for the narrowing itself, not just correctness: a content-only assertion here
+    /// (e.g. "still Contain local:alpha") would pass identically whether the cache stayed warm
+    /// or was invalidated and rescanned, because the true on-disk state contains "alpha" either
+    /// way — over-invalidation and a correctly-served warm cache are indistinguishable to it. So
+    /// this plants a topic behind the store's back before the write under test, and asserts
+    /// DiscoverTopics still cannot see it afterward — proving the write into an
+    /// already-populated topic did NOT force a rescan.
+    /// </summary>
     [Fact]
-    public void AdditionalWritesIntoAnExistingTopic_KeepItDiscoverable()
+    public void AdditionalWritesIntoAnExistingTopic_DoNotInvalidateTheCache()
     {
         _store.Upsert(E("first"), "local:alpha");
-        _store.DiscoverTopics().Should().Contain("local:alpha");
+        _store.DiscoverTopics().Should().Contain("local:alpha"); // primes the cache
+
+        PlantPhantomTopicBehindTheStoresBack("local:epsilon");
 
         _store.Upsert(E("second"), "local:alpha");
 
-        _store.DiscoverTopics().Should().Contain("local:alpha",
-            because: "narrowing invalidation must not stale the topic list");
+        _store.DiscoverTopics().Should().NotContain("local:epsilon",
+            because: "a write into an already-populated topic must not invalidate _cachedTopics "
+                   + "— if it did, this call would rescan the filesystem and pick up the topic "
+                   + "planted directly on disk above");
     }
 
     [Fact]
@@ -70,15 +98,29 @@ public sealed class TopicCacheInvalidationTests : IDisposable
             because: "DiscoverTopics must not keep reporting a topic with no remaining entries");
     }
 
+    /// <summary>
+    /// Diagnostic for the narrowing itself — see
+    /// <see cref="AdditionalWritesIntoAnExistingTopic_DoNotInvalidateTheCache"/> for why a
+    /// content-only assertion can't distinguish a warm cache from an invalidated-and-correctly
+    /// -rescanned one. Plants a topic behind the store's back before the removal under test, and
+    /// asserts DiscoverTopics still cannot see it afterward — proving a removal that leaves
+    /// other entries behind did NOT force a rescan.
+    /// </summary>
     [Fact]
-    public void RemovingOneOfSeveralEntries_KeepsTheTopic()
+    public void RemovingOneOfSeveralEntries_DoesNotInvalidateTheCache()
     {
         _store.Upsert(E("a"), "local:gamma");
         _store.Upsert(E("b"), "local:gamma");
+        _store.DiscoverTopics().Should().Contain("local:gamma"); // primes the cache
+
+        PlantPhantomTopicBehindTheStoresBack("local:zeta");
 
         _store.Remove("a", "local:gamma");
 
-        _store.DiscoverTopics().Should().Contain("local:gamma");
+        _store.DiscoverTopics().Should().NotContain("local:zeta",
+            because: "removing one of several entries must not invalidate _cachedTopics — if it "
+                   + "did, this call would rescan the filesystem and pick up the topic planted "
+                   + "directly on disk above");
     }
 
     /// <summary>
