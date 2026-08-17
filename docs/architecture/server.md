@@ -182,6 +182,25 @@ All memory endpoints require store resolution and appropriate permissions. They 
 | POST | `/export` | `export` |
 | POST | `/import` | `import` |
 
+### EmbeddingsEndpoints
+
+Also under `/api/v1/stores/{store}` — they were moved there from a store-less
+`/api/v1/plugins/embeddings` group whose handler could never resolve a store. One set of
+handlers serves both the built-in service and the Vulkan plugin, resolving `IEmbeddingsAdmin`
+from DI; when neither is registered the read routes return a `"none"` provider rather than 404.
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/embeddings/status` | `read` |
+| GET | `/embeddings/settings` | `read` |
+| POST | `/embeddings/reindex` | `reindex` (and a writable store grant) |
+
+### ChatEndpoints
+
+| Method | Path | Permission |
+|--------|------|------------|
+| POST | `/chat` | `chat` |
+
 `{name}` addresses the memory the route acts on — the one being read, deleted, appended to,
 patched, or copied FROM — on every route above except `copy-from-client`, where it names the
 **destination** instead: there is no server-side source to name, since a `copy-from-client`
@@ -208,7 +227,12 @@ No authentication required.
 | `/health/live` | Always 200 (liveness) |
 | `/health/ready` | Checks SQLite, storage, stores, plugins (readiness) |
 | `/health` | Alias for `/health/ready` |
-| `/health/details` | Authenticated. Returns full check array including circuit breaker state. |
+| `/health/details` | Requires the `health` permission. Returns full check array including circuit breaker state. |
+
+### Permissions not reached by a route
+
+`manage_roles` is a grantable permission with no endpoint of its own — it exists as an
+integration point for auth plugins. The bootstrap key carries it along with everything above.
 
 ## Services
 

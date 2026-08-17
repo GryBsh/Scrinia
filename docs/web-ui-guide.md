@@ -176,4 +176,4 @@ Interactive chat with the cloud LLM providers configured under `Scrinia:Chat` (A
 Create keys with userId, stores, permissions, and label. Lists existing keys with status. Copy-to-clipboard for new keys. Revoke with confirmation.
 
 ### SettingsPage
-Embeddings status display (provider, availability, dimensions, vector count). Update semantic weight and batch size. Reindex action. Gracefully handles missing embeddings plugin.
+Embeddings status display (provider, hardware, availability, dimensions, vector count, semantic weight) and a Reindex action. **Read-only** — there is no editing of semantic weight or batch size, and no Save button: embedding settings come from `Scrinia:Embeddings:*` configuration and take effect on restart. The page says so. Gracefully handles a missing embeddings provider or plugin. (The removed Save button issued `PUT .../embeddings/settings`, a route no server ever mapped; the request fell through to the SPA fallback and came back as HTML.)

@@ -329,9 +329,11 @@ public static class TextChunker
 
 Every write path and every reindex path routes through one class:
 `MemoryVectorIndexer.IndexAsync(scope, subject, content, ct)`. It owns availability checking,
-windowing (via `TextChunker`, per content element), the `MaxChunksPerMemory` cap (default 100 —
-excess tail is dropped from the vector path, BM25 still indexes the full text via the existing
-sidecar pipeline), batching through `EmbedBatchAsync`, the vector-count guard (a provider
+windowing (via `TextChunker`, per content element), the `MaxChunksPerMemory` cap (default 500,
+ceiling 999 — excess tail is dropped from the vector path, BM25 still indexes the full text via
+the existing sidecar pipeline; note the cap counts windows across the whole content array, and
+every non-blank element contributes at least one, so it also bounds how many content elements
+can carry a vector), batching through `EmbedBatchAsync`, the vector-count guard (a provider
 returning the wrong vector count is treated as failure, not a partial write — the guard runs
 *before* `RemoveAsync` so a bad response can't wipe an existing memory's vectors and leave nothing
 in their place), remove-then-upsert ordering, and (for detached callers) write retry via
@@ -380,9 +382,26 @@ manual `scri config Scrinia:Embeddings:ChunkSize 1800`.
 the meaning of a stored chunk index changes — `e1` is "elements with nested windows," the layout
 described above; a file with no `e1` suffix predates it and carries raw window ordinals, not the
 `elementIndex * ChunkIndexStride + windowOrdinal` encoding. Because the signature changed, every
-such file fails the signature check on next load, is quarantined the same way a model switch
-quarantines a file, and gets rebuilt through `MemoryVectorIndexer`. No user action or manual
-`scri reindex` is required — this happens on ordinary startup.
+such file fails the signature check on next load and is quarantined the same way a model switch
+quarantines a file.
+
+**Who rebuilds it, and who has to ask.** Automatic reindex runs from
+`WorkspaceSetup`, which reaches `EmbeddingReindexer.ReindexIfStaleAsync` only along the
+built-in and explicit-HTTP provider paths — that is, the CLI with an in-process provider. It
+covers neither the Vulkan plugin (`TryLoadVulkanPluginAsync` performs no reindex) nor the
+server (which never reads `HasStaleQuarantines` to trigger one).
+
+| Deployment | Migration |
+|---|---|
+| CLI, built-in Model2Vec or explicit HTTP provider | Automatic on next launch |
+| CLI, Vulkan plugin | `scri reindex` |
+| Server (`scri serve`, container) | `POST /api/v1/stores/{store}/embeddings/reindex`, once per store, with a key holding the `reindex` permission |
+
+The server logs a warning at startup naming the quarantined scopes and this route
+(`EmbeddingReindexer.ProbeStaleScopes`). It deliberately does not rebuild automatically: a
+full-corpus re-embed is unbounded work with no progress channel at boot, and one server hosts
+many stores. Until a rebuild runs, the affected memories fall back to keyword-only search —
+nothing is lost, because vectors are derived data.
 
 ### Search-time dedup
 
@@ -594,7 +613,15 @@ This ensures multiple workspaces don't share vector data, even when using the sa
 
 ## Shared Vector Space
 
-Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-dimensional vectors in the MiniLM-L6-v2 semantic space. This means vectors are interchangeable — switching between providers does not require reindexing. Model2Vec uses static token embedding lookup (fast, CPU-only) while Vulkan runs the full transformer (slower per-query but with attention-based contextual embeddings).
+Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-dimensional vectors in the MiniLM-L6-v2 semantic space. Model2Vec uses static token embedding lookup (fast, CPU-only) while Vulkan runs the full transformer (slower per-query but with attention-based contextual embeddings).
+
+**Switching providers does still trigger a reindex.** The dimensionality matches, but the two
+providers report different signatures — `model2vec:m2v-MiniLM-L6-v2` versus
+`vulkan:{ggufFileName}` — and both write to the same `{Root}/.scrinia/embeddings` directory, so
+the vector files self-quarantine on the first load after a switch and must be rebuilt. That is
+the signature mechanism working as designed: comparable geometry is not the same thing as
+identical output, and the file header records which provider actually produced the vectors.
+Rebuild per the table under "LayoutRevision" above.
 
 ## Testing
 
