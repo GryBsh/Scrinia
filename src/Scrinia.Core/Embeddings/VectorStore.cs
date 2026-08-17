@@ -28,8 +28,10 @@ namespace Scrinia.Core.Embeddings;
 ///
 /// Compaction (deletes &gt; 20% of total ops, &gt;=10 deletes) rewrites in SVF3.
 /// Ephemeral scope vectors are stored in-memory only.
-/// Persistent scopes write to {baseDir}/{scope}/vectors.bin with atomic writes for full rewrites
-/// and direct append for single-entry upserts.
+/// Persistent scopes write to {baseDir}/{scope}/vectors.bin with atomic writes for full rewrites,
+/// direct append for single-entry upserts/removes, and one batched append (all deletes then all
+/// adds, one open/close) for <see cref="ReplaceMemoryVectorsAsync"/>. None of the append paths
+/// are atomic against a crash mid-write — see <see cref="ReplaceMemoryVectorsAsync"/>'s remarks.
 /// </summary>
 public sealed class VectorStore : IDisposable, IVectorStore
 {
@@ -248,10 +250,21 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// <summary>
     /// Replaces every vector held for <paramref name="name"/> in <paramref name="scope"/> with
     /// <paramref name="vectors"/>, as a single locked file operation. Observationally identical
-    /// to calling <see cref="RemoveAsync"/> followed by one <see cref="UpsertAsync"/> per entry,
-    /// but at the cost of one lock acquisition, one file probe and one batch of appends instead
-    /// of 1 + K locks/probes and up to P + 2K appends — and, unlike the loop, atomic: nothing
-    /// observes a partially-replaced memory.
+    /// to calling <see cref="RemoveAsync"/> followed by one <see cref="UpsertAsync"/> per entry
+    /// (including for a batch with a repeated <c>ChunkIndex</c>, which is de-duped last-write-wins
+    /// to match the state a sequential Upsert loop converges to), but at the cost of one lock
+    /// acquisition, one file probe and one batch of appends instead of 1 + K locks/probes and up
+    /// to P + 2K appends.
+    ///
+    /// <para>The <b>in-memory</b> replace is atomic: the new list is built and swapped into
+    /// <c>_scopeVectors</c> in one step under the scope lock, so a concurrent <see cref="GetVectors"/>
+    /// can never observe the old-removed/new-not-yet-added gap the loop could expose. The
+    /// <b>on-disk</b> append is not atomic — the P deletes and K adds still share one open
+    /// file/writer whose buffer can flush more than once for anything but a small batch, so a
+    /// crash mid-batch can still leave a partially-replaced memory on disk (recoverable: the next
+    /// index pass rebuilds it cleanly, same as before this method existed). What improved over the
+    /// loop is the width of that on-disk window — one open/close instead of up to K — not its
+    /// existence.</para>
     /// </summary>
     public async Task ReplaceMemoryVectorsAsync(
         string scope, string name, IReadOnlyList<(int? ChunkIndex, float[] Vector)> vectors, CancellationToken ct = default)
@@ -283,13 +296,38 @@ public sealed class VectorStore : IDisposable, IVectorStore
             if (removed.Count == 0 && vectors.Count == 0)
                 return;
 
-            var replacement = new List<VectorEntry>(current.Count - removed.Count + vectors.Count);
+            // De-dup the incoming batch by ChunkIndex, last-write-wins. An UpsertAsync loop
+            // given the same repeated (name, chunkIndex) converges to one entry — each later
+            // call deletes-then-re-adds the earlier one — so without this, a batch containing a
+            // repeat chunk index would leave two entries in memory (only one of which survives a
+            // reload, since the on-disk op-log replay is itself last-write-wins), silently
+            // breaking the "observationally identical" guarantee this method promises (finding
+            // I-3). Not reachable from MemoryVectorIndexer today — its chunk-index stride keeps
+            // indices distinct by construction — but this is a public API.
+            var deduped = new List<(int? ChunkIndex, float[] Vector)>();
+            // int key, not int?: Dictionary<TKey,...> requires notnull, and -1 is already this
+            // format's reserved null-chunk-index sentinel (see WriteAddOp/WriteDeleteOp and
+            // LoadSvf1/ReadEntryOps), so grouping on it here matches the on-disk dedup exactly.
+            var dedupedAt = new Dictionary<int, int>();
+            foreach (var (chunkIndex, vector) in vectors)
+            {
+                int key = chunkIndex ?? -1;
+                if (dedupedAt.TryGetValue(key, out int idx))
+                    deduped[idx] = (chunkIndex, vector);
+                else
+                {
+                    dedupedAt[key] = deduped.Count;
+                    deduped.Add((chunkIndex, vector));
+                }
+            }
+
+            var replacement = new List<VectorEntry>(current.Count - removed.Count + deduped.Count);
             foreach (var v in current)
             {
                 if (!v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
                     replacement.Add(v);
             }
-            foreach (var (chunkIndex, vector) in vectors)
+            foreach (var (chunkIndex, vector) in deduped)
                 replacement.Add(new VectorEntry(name, chunkIndex, vector));
             _scopeVectors[scope] = replacement;
 
@@ -304,7 +342,8 @@ public sealed class VectorStore : IDisposable, IVectorStore
                 if (probe == AppendProbe.Appendable)
                 {
                     // One open stream for the whole batch instead of one open/close per op —
-                    // that is the point of this method.
+                    // that narrows the on-disk window from up to K opens to one; see the class
+                    // remarks above on why that window still exists.
                     using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
                     await FileRetry.RunAsync(async () =>
                     {
@@ -313,16 +352,16 @@ public sealed class VectorStore : IDisposable, IVectorStore
 
                         foreach (var entry in removed)
                             WriteDeleteOp(writer, entry.Name, entry.ChunkIndex);
-                        foreach (var (chunkIndex, vector) in vectors)
+                        foreach (var (chunkIndex, vector) in deduped)
                             WriteAddOp(writer, name, chunkIndex, vector);
                     }, ct: ct);
 
                     // Track ops for compaction — one delete per superseded entry, one add per
-                    // new vector, same accounting as UpsertAsync.
+                    // new (deduped) vector, same accounting as UpsertAsync.
                     int deletes = removed.Count > 0
                         ? _scopeDeleteCount.AddOrUpdate(scope, removed.Count, (_, v) => v + removed.Count)
                         : _scopeDeleteCount.GetOrAdd(scope, 0);
-                    int ops = _scopeOpCount.AddOrUpdate(scope, removed.Count + vectors.Count, (_, v) => v + removed.Count + vectors.Count);
+                    int ops = _scopeOpCount.AddOrUpdate(scope, removed.Count + deduped.Count, (_, v) => v + removed.Count + deduped.Count);
 
                     if (ops > 0 && (double)deletes / ops > 0.2 && deletes >= 10)
                         await CompactAsync(scope, replacement, ct);
