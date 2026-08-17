@@ -395,13 +395,22 @@ server (which never reads `HasStaleQuarantines` to trigger one).
 |---|---|
 | CLI, built-in Model2Vec or explicit HTTP provider | Automatic on next launch |
 | CLI, Vulkan plugin | `scri reindex` |
-| Server (`scri serve`, container) | `POST /api/v1/stores/{store}/embeddings/reindex`, once per store, with a key holding the `reindex` permission |
+| Server, built-in Model2Vec | `POST /api/v1/stores/{store}/embeddings/reindex`, once per store, with a key holding the `reindex` permission |
+| Server hosting the embeddings plugin (e.g. Vulkan) | Same route, same permission, once per store — also never automatic |
 
-The server logs a warning at startup naming the quarantined scopes and this route
-(`EmbeddingReindexer.ProbeStaleScopes`). It deliberately does not rebuild automatically: a
-full-corpus re-embed is unbounded work with no progress channel at boot, and one server hosts
-many stores. Until a rebuild runs, the affected memories fall back to keyword-only search —
-nothing is lost, because vectors are derived data.
+**Neither server deployment rebuilds automatically, but they differ in how the quarantine gets
+logged.** For built-in embeddings, `EmbeddingReindexer.ProbeStaleScopes` runs once at boot and
+logs a single warning naming every quarantined scope. A server hosting the embeddings plugin has
+no equivalent boot-time scan — that probe sits inside `Program.cs`'s `!pluginProvidesEmbeddings`
+branch, and the plugin owns its vector store, possibly out of process, so the host has nothing to
+probe there. That does not mean the quarantine goes unlogged: `VectorStore.QuarantineStaleFile`
+logs it itself, through whatever logger owns that store, the first time a scope is loaded rather
+than all at once at boot. Either way the fix is the same manual step — rebuild each affected
+store with `POST /api/v1/stores/{store}/embeddings/reindex` (requires the `reindex` permission).
+A full-corpus re-embed is unbounded work with no progress channel at boot, and one server hosts
+many stores, which is why neither case triggers it automatically. Until a rebuild runs, the
+affected memories fall back to keyword-only search — nothing is lost, because vectors are derived
+data.
 
 ### Search-time dedup
 
