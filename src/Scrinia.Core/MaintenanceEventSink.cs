@@ -82,13 +82,13 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
     public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
         => Task.CompletedTask; // no-op for now
 
-    /// <summary>True when the source entry, as seen in the listing already fetched for inbound-ref
-    /// detection, still carries the pre-attribute <c>orphan</c> KEYWORD. A cheap gate so a store
-    /// with no legacy entries never pays a round trip to discover it has nothing to clean up; the
-    /// write that follows re-checks against its own freshly-read entry.</summary>
-    private static bool CarriesLegacyOrphanKeyword(
-        IMemoryStore store, IEnumerable<ScopedArtifact> allEntries, string scope, string subject) =>
-        allEntries.Any(sa =>
+    /// <summary>True when the source entry still carries the pre-attribute <c>orphan</c> KEYWORD.
+    /// Runs its own lazy <see cref="IMemoryStore.AnyScoped"/> scan — short-circuiting at the first
+    /// matching row — rather than querying a listing materialized elsewhere, so a store with no
+    /// legacy entries never pays for a full scan to discover it has nothing to clean up; the write
+    /// that follows re-checks against its own freshly-read entry.</summary>
+    private static bool CarriesLegacyOrphanKeyword(IMemoryStore store, string scope, string subject) =>
+        store.AnyScoped(null, sa =>
             string.Equals(sa.Scope, scope, StringComparison.OrdinalIgnoreCase)
             && store.SanitizeName(sa.Entry.Name)
                 .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase)
@@ -145,9 +145,10 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
             // Computed before the update rather than after a separate LoadIndex: neither this nor
             // the qualified name needs the source entry itself, and TryUpdateEntry below reads the
-            // entry once, atomically, instead of the old racy load → mutate → Upsert.
-            var allEntries = store.ListScoped(null);
-            bool hasInboundRefs = allEntries.Any(sa =>
+            // entry once, atomically, instead of the old racy load → mutate → Upsert. AnyScoped
+            // instead of ListScoped(null).Any(...): a lazy scan that stops at the first matching
+            // referrer, rather than materializing every entry in the store to answer one boolean.
+            bool hasInboundRefs = store.AnyScoped(null, sa =>
                 (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
                 || (sa.Entry.Attributes is not null
                     && sa.Entry.Attributes.TryGetValue("ref", out var refs)
@@ -207,13 +208,16 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // stale "orphan" keyword scores above a genuine attribute-era orphan on a bare "orphan"
             // query — an entry with demonstrable inbound refs outranking the real ones.
             //
-            // Gated on the listing already in hand rather than on a speculative TryUpdateEntry: the
-            // read above is the source entry's own row, so a store with no legacy entries never
-            // pays a round trip for this. The callback re-checks against the freshly-read entry, so
-            // the gate is an optimization and not the correctness condition.
+            // Gated on hasInboundRefs, not on a listing shared with the check above: each question
+            // now runs its own lazy AnyScoped pass rather than both querying one materialized
+            // List<ScopedArtifact>. A store with no inbound refs never starts this second scan at
+            // all, and when it does run, it short-circuits at the first matching row exactly like
+            // the pass above — two lazy scans, gated so the second runs only when it can matter,
+            // beat one full listing. The callback re-checks against the freshly-read entry, so the
+            // gate is an optimization and not the correctness condition.
             bool keywordWriteAttempted = false;
             bool keywordWritePersisted = true;
-            if (hasInboundRefs && CarriesLegacyOrphanKeyword(store, allEntries, sourceScope, sourceSubject))
+            if (hasInboundRefs && CarriesLegacyOrphanKeyword(store, sourceScope, sourceSubject))
             {
                 keywordWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
                 {

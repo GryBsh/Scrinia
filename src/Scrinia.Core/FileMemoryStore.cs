@@ -1815,6 +1815,37 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Lazy override of the interface default: walks the same source ListScoped(string?) does —
+    /// <see cref="ListEphemeral"/> then per-scope <see cref="LoadIndex"/> — but returns on the
+    /// first match instead of materializing a <see cref="List{T}"/> first. A scope after the match
+    /// is never loaded at all; the default (<c>ListScoped(scopes).Any(predicate)</c>) would load
+    /// every scope before testing any of them.
+    /// </summary>
+    public bool AnyScoped(string? scopes, Func<ScopedArtifact, bool> predicate)
+    {
+        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
+        if (!includeEphemeral && scopes is not null)
+        {
+            includeEphemeral = scopes
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (includeEphemeral && ListEphemeral().Any(predicate))
+            return true;
+
+        foreach (string scope in ResolveReadScopes(scopes))
+        {
+            foreach (var entry in LoadIndex(scope))
+            {
+                if (predicate(new ScopedArtifact(scope, entry)))
+                    return true;
+            }
+        }
+        return false;
+    }
+
     // ── Entity Facts ─────────────────────────────────────────────────────────
 
     /// <summary>
