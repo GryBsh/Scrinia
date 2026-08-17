@@ -449,6 +449,12 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Embeddings:ChunkSize` | `1200` | Sliding-window size in characters for chunked embeddings. Roughly 300 tokens for English. |
 | `Scrinia:Embeddings:ChunkOverlap` | `200` | Overlap in characters between adjacent windows. Must be strictly less than `ChunkSize`; a value at or above it reverts both keys to their defaults with a warning. |
 | `Scrinia:Embeddings:MaxChunksPerMemory` | `500` | Safety cap on chunks per memory; excess tail is dropped from embed (BM25 still indexes full text). **Maximum 999** — larger values clamp to 999 with a warning. See the note below. |
+| `Scrinia:Embeddings:OllamaBaseUrl` | `http://localhost:11434` | Ollama API endpoint. |
+| `Scrinia:Embeddings:OllamaModel` | `all-minilm` | Ollama embedding model name. |
+| `Scrinia:Embeddings:OpenAi*` | — | `ApiKey`, `Model`, `BaseUrl` for OpenAI / compatible. |
+| `Scrinia:Embeddings:VoyageAi*` | — | `ApiKey`, `Model`, `BaseUrl` for Voyage AI. |
+| `Scrinia:Embeddings:Azure*` | — | `Endpoint`, `ApiKey`, `Deployment`, `Model`, `ApiVersion`, `UseV1` for Azure AI Foundry. |
+| `Scrinia:Embeddings:Google*` | — | `ApiKey`, `Model`, `BaseUrl`, `Dimensions` for Google Gemini. |
 
 `MaxChunksPerMemory` counts windows across a memory's **whole content array**, and every
 non-blank content element contributes at least one window. It is therefore also a floor on how
@@ -457,12 +463,6 @@ onward dropped from embedding. Because `append` adds elements at the end, the ta
 the *newest* content, which is why the default is generous. The 999 ceiling is structural — the
 stored chunk index encodes an element index and a window ordinal against a stride of 1000, so a
 cap of 1000 or more would let one element's windows overflow into the next element's index space.
-| `Scrinia:Embeddings:OllamaBaseUrl` | `http://localhost:11434` | Ollama API endpoint. |
-| `Scrinia:Embeddings:OllamaModel` | `all-minilm` | Ollama embedding model name. |
-| `Scrinia:Embeddings:OpenAi*` | — | `ApiKey`, `Model`, `BaseUrl` for OpenAI / compatible. |
-| `Scrinia:Embeddings:VoyageAi*` | — | `ApiKey`, `Model`, `BaseUrl` for Voyage AI. |
-| `Scrinia:Embeddings:Azure*` | — | `Endpoint`, `ApiKey`, `Deployment`, `Model`, `ApiVersion`, `UseV1` for Azure AI Foundry. |
-| `Scrinia:Embeddings:Google*` | — | `ApiKey`, `Model`, `BaseUrl`, `Dimensions` for Google Gemini. |
 
 **Search Ranking**
 
