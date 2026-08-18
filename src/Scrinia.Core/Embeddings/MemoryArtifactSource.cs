@@ -91,7 +91,7 @@ public static class MemoryArtifactSource
     /// three append call sites index under exactly what the store path indexed under.</para>
     /// </summary>
     public static async Task<(string Scope, string Subject, string[] Elements)> ReadForAppendAsync(
-        IMemoryStore store, string qualifiedName, CancellationToken ct)
+        IPluginStore store, string qualifiedName, CancellationToken ct)
     {
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
 
