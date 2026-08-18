@@ -38,7 +38,8 @@ public sealed partial class ScriniaMcpTools
                 {
                     string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
                     SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
-                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel);
+                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
+                        .WithTruncationAdvice(RecallTruncationAdvice);
                 }
             }
             // Fall through to NMP/2 resolution for legacy entries
@@ -89,7 +90,8 @@ public sealed partial class ScriniaMcpTools
         {
             string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
             SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
-            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel);
+            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel)
+                .WithTruncationAdvice(RecallTruncationAdvice);
         }
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
@@ -97,9 +99,11 @@ public sealed partial class ScriniaMcpTools
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
 
         if (chunkCount > 1)
-            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel);
+            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel)
+                .WithTruncationAdvice(RecallTruncationAdvice);
 
-        return ResponseBuilder.Success(decoded).WithAction(actionLabel);
+        return ResponseBuilder.Success(decoded).WithAction(actionLabel)
+            .WithTruncationAdvice(RecallTruncationAdvice);
     }
 
     // ── Persistent memory tools ───────────────────────────────────────────────
@@ -646,14 +650,17 @@ public sealed partial class ScriniaMcpTools
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
-            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed"));
+            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed")
+                .WithTruncationAdvice(ListTruncationAdvice));
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
 
         if (!string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed"));
+            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed")
+                .WithTruncationAdvice(ListTruncationAdvice));
 
-        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed"));
+        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed")
+            .WithTruncationAdvice(ListTruncationAdvice));
     }
 
     internal static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
@@ -905,10 +912,12 @@ public sealed partial class ScriniaMcpTools
         var matches = outcome.Matches;
 
         if (matches.Count == 0)
-            return ResponseBuilder.Success("No matching memories found.").WithAction("searched");
+            return ResponseBuilder.Success("No matching memories found.").WithAction("searched")
+                .WithTruncationAdvice(SearchTruncationAdvice);
 
         string body = SearchResultRenderer.FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
-        return ResponseBuilder.Success(body).WithAction("searched");
+        return ResponseBuilder.Success(body).WithAction("searched")
+            .WithTruncationAdvice(SearchTruncationAdvice);
     }
 
     /// <summary>Copies a memory artifact from one scope to another.</summary>
@@ -1297,7 +1306,8 @@ public sealed partial class ScriniaMcpTools
             string msg = okCount > 0
                 ? $"All {okCount} code references are current. No drift detected."
                 : "No memories have code references. Add a file attribute on remember (attributes: { file: ['path'] }) to track file dependencies.";
-            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed"));
+            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed")
+                .WithTruncationAdvice(ListTruncationAdvice));
         }
 
         string driftResponse = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
@@ -1306,7 +1316,8 @@ public sealed partial class ScriniaMcpTools
         if (driftCount > 0) driftWarnings.Add($"{driftCount} code reference(s) have drifted (files changed since stored).");
         if (missingCount > 0) driftWarnings.Add($"{missingCount} code reference(s) point to missing files.");
         return Task.FromResult(
-            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray()));
+            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray())
+                .WithTruncationAdvice(ListTruncationAdvice));
     }
 
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)

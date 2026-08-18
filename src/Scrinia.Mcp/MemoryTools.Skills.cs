@@ -414,13 +414,15 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Success(reconContent)
                 .WithPath($"/skill/{skillName}")
                 .WithAction("loaded")
-                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.");
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.")
+                .WithTruncationAdvice(SkillContentTruncationAdvice);
         }
 
         if (overrideContent is null)
         {
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
-                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in");
+                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in")
+                    .WithTruncationAdvice(SkillContentTruncationAdvice);
             return ResponseBuilder.Error(
                 $"Skill '{skillName}' not found.",
                 ErrorCodes.NotFound,
@@ -453,7 +455,8 @@ public sealed partial class ScriniaMcpTools
         var response = ResponseBuilder.Success(overrideContent)
             .WithPath($"/skill/{skillName}")
             .WithAction("loaded")
-            .WithInfo($"Loaded from {sourceLabel}");
+            .WithInfo($"Loaded from {sourceLabel}")
+            .WithTruncationAdvice(SkillContentTruncationAdvice);
         if (warnings.Count > 0)
             response = response.WithActionNeeded([.. warnings]);
         return response;

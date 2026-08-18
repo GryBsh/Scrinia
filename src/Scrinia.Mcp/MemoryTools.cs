@@ -68,16 +68,22 @@ public sealed partial class ScriniaMcpTools
         string guideContent = EmbeddedPrompts.LoadGuide()
             ?? throw new InvalidOperationException("Built-in guide not found in embedded resources");
 
+        // guide() is exempt from the response-size cap (Task 10, T10-A) — the document is
+        // embedded at build time, bounded by construction rather than by a caller's query, and
+        // guide() is the session-start tool every agent calls first. Truncating it protects
+        // nothing and silently damages the one document the agent most needs intact. The bound
+        // this trades for is enforced at test time; see GuideSizeTests.
+
         // No store configured (e.g. running outside a workspace): just return the static guide.
         if (MemoryStoreContext.Current is null)
-            return ResponseBuilder.Success(guideContent).WithAction("guide").ToYaml();
+            return ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide").ToYaml();
 
         // Fold the workspace-restore context into the guide response so the agent gets warnings,
         // available skills, and followUp pointers without a separate restore call —
         // closes the most common utilization failure mode (read guide, forget to restore).
         var ctx = await BuildRestoreContextAsync(cancellationToken);
         return ApplyRestoreContext(
-            ResponseBuilder.Success(guideContent).WithAction("guide"),
+            ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide"),
             ctx).ToYaml();
     }
 
@@ -91,6 +97,32 @@ public sealed partial class ScriniaMcpTools
 
     private const int MaxPathLength = 256;
     private const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
+
+    // ── Per-tool truncation advice (Task 10, T10-B) ─────────────────────────
+    //
+    // ResponseBuilder.DefaultTruncationAdvice ("narrow with search ... or recall a chunk") is
+    // wrong for a tool that has no query to narrow and no chunk to recall. Rather than a switch
+    // in the YAML renderer keyed on which tool is calling, each tool that can realistically
+    // truncate (search, recall, list) sets its own advice once here and chains it with
+    // .WithTruncationAdvice(...) at its own Success()/Warning() call sites — the renderer stays
+    // one rule (McpResponseExtensions.ToYaml), the tool identity is the input.
+
+    private const string RecallTruncationAdvice =
+        "This memory's content exceeds the response limit. Retrieve it in pieces with " +
+        "recall({ path, chunk: N }), starting at chunk 1. If chunk was already set, that chunk " +
+        "itself is oversized — compact() the memory to shrink its chunks.";
+
+    private const string SkillContentTruncationAdvice =
+        "This skill file exceeds the response limit and skill content is not chunked. Shorten " +
+        "the skill, or drop withBuiltin so only the override is returned.";
+
+    private const string SearchTruncationAdvice =
+        "Results were cut short. Narrow with a smaller limit, a pathPrefix, or an " +
+        "attributeFilter, or recall a specific hit's path for its full content.";
+
+    private const string ListTruncationAdvice =
+        "The listing was cut short. Narrow with excludeTopics or a smaller scopes list, or use " +
+        "mode: 'full' with offset/limit to page through it.";
 
     /// <summary>
     /// Canonicalizes an address arriving at the MCP facade. One helper rather than seven

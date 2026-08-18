@@ -70,6 +70,17 @@ public sealed record McpResponse
     /// proceeding on partial data.
     /// </summary>
     internal bool ContentTruncated { get; init; }
+
+    /// <summary>
+    /// The remedy to offer when <see cref="ContentTruncated"/> is true, phrased for the tool that
+    /// produced this response. Null falls back to <see cref="ResponseBuilder.DefaultTruncationAdvice"/>.
+    /// Set with <see cref="ResponseBuilder.WithTruncationAdvice"/> — one rendering rule
+    /// (<see cref="McpResponseExtensions.ToYaml"/>) with a per-tool input, rather than the renderer
+    /// switching on which tool called it (Task 10, T10-B): the generic "narrow with search, or
+    /// recall a chunk" advice is meaningless for a tool with no query to narrow and no chunk to
+    /// recall, such as <c>guide()</c> or <c>list()</c>.
+    /// </summary>
+    internal string? TruncationAdvice { get; init; }
 }
 
 /// <summary>
@@ -77,14 +88,41 @@ public sealed record McpResponse
 /// </summary>
 public static class ResponseBuilder
 {
-    private const int MaxResponseChars = 8 * 1024;
+    /// <summary>The per-response content cap every tool but <c>guide()</c> is subject to (see
+    /// <see cref="SuccessUntruncated"/>). Internal so <c>GuideSizeTests</c> can size its ceiling
+    /// off this value instead of duplicating the number.</summary>
+    internal const int MaxResponseChars = 8 * 1024;
     private const int YamlOverhead = 200;
+
+    /// <summary>
+    /// Fallback truncation remedy for any tool that has not called
+    /// <see cref="WithTruncationAdvice"/> — accurate for query-shaped tools (recall's own
+    /// call site sets a sharper one; this stays correct for anything reached only indirectly).
+    /// </summary>
+    internal const string DefaultTruncationAdvice =
+        "Content was truncated to fit the response limit. Narrow with search " +
+        "(e.g. a pathPrefix or attributeFilter), or recall a specific chunk, " +
+        "to retrieve the omitted portion.";
 
     public static McpResponse Success(string? content = null)
     {
         string? truncated = Truncate(content, out bool wasTruncated);
         return new() { Status = "success", Content = truncated, ContentTruncated = wasTruncated };
     }
+
+    /// <summary>
+    /// Like <see cref="Success"/> but exempt from the response-size cap that <see cref="Truncate"/>
+    /// enforces. Reserved for content that is bounded by construction rather than by a caller's
+    /// query — a build-time-fixed embedded resource, not a listing or a search result that can
+    /// grow without limit. <c>guide()</c> is the only caller (Task 10, T10-A): the cap exists to
+    /// stop unbounded content reaching a caller, and truncating a fixed document protects nothing
+    /// while silently damaging the one document every session depends on being intact. The bound
+    /// this trades for is enforced instead at test time — see the guide-size test in
+    /// <c>tests/Scrinia.Tests/Mcp/GuideSizeTests.cs</c> — so "bounded by construction" stays a
+    /// checked fact, not an assumption.
+    /// </summary>
+    public static McpResponse SuccessUntruncated(string content) =>
+        new() { Status = "success", Content = content };
 
     /// <summary>
     /// Creates an uncategorised error. Prefer the overload that takes an
@@ -131,6 +169,17 @@ public static class ResponseBuilder
 
     public static McpResponse WithAction(this McpResponse r, string action) =>
         r with { Action = action };
+
+    /// <summary>
+    /// Sets the remedy offered when this response's content ends up truncated. A no-op when
+    /// content was not truncated — safe to chain unconditionally after <see cref="Success"/> or
+    /// <see cref="Warning"/>, the two factories <see cref="Truncate"/> is ever called from. Callers
+    /// whose content can realistically hit the cap (<c>search</c>, <c>recall</c>, <c>list</c>) set
+    /// this to advice that names their own parameters; everything else keeps
+    /// <see cref="DefaultTruncationAdvice"/>.
+    /// </summary>
+    public static McpResponse WithTruncationAdvice(this McpResponse r, string advice) =>
+        r with { TruncationAdvice = advice };
 
     private const string FileChangesNotice = "Files in .scrinia/ were updated — these are your changes.";
 
@@ -205,9 +254,7 @@ public static class McpResponseExtensions
                     sb.AppendLine(ci, $"  - {YamlEscape(name)}");
             if (r.ContentTruncated)
                 sb.AppendLine("  - " + YamlEscape(
-                    "Content was truncated to fit the response limit. Narrow with search " +
-                    "(e.g. a pathPrefix or attributeFilter), or recall a specific chunk, " +
-                    "to retrieve the omitted portion."));
+                    r.TruncationAdvice ?? ResponseBuilder.DefaultTruncationAdvice));
         }
 
         if (r.Content is not null)
