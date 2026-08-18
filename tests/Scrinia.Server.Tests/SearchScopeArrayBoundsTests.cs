@@ -120,4 +120,96 @@ public sealed class SearchScopeArrayBoundsTests : IClassFixture<ScriniaServerFac
             because: "an empty scopes/excludeTopics array is not a narrower filter than omitting them");
         emptyBody.Results.Should().Contain(r => r.Name.Contains("gamma-probe", StringComparison.Ordinal));
     }
+
+    /// <summary>Task 9 fix round 1, F-1: ASP.NET Core binds an empty <c>?scopes=</c> query value to
+    /// <c>string[] { "" }</c>, NOT an empty array — a different shape from the POST body's
+    /// <c>Scopes: []</c>, which the test above already covered and which is why this GET-side
+    /// regression went unnoticed. <c>ResolveReadScopes</c>'s old <c>is {{ Count: &gt; 0 }}</c> guard
+    /// took the filter branch for a one-element list containing only <c>""</c>, and
+    /// <c>NormalizeScopeFilters("")</c> resolved that to <c>["local"]</c> — silently narrowing
+    /// "no filter" down to the local scope.</summary>
+    [Fact]
+    public async Task Search_Get_EmptyScopesParam_BehavesIdenticallyToOmittingIt()
+    {
+        var seed = await _client.PostAsJsonAsync(_base + "/memories",
+            new StoreRequest(["zeta content"], "/zeta-topic/zeta-probe", "zeta"));
+        seed.EnsureSuccessStatusCode();
+
+        var withEmptyParam = await _client.GetAsync($"{_base}/search?q=zeta&limit=10&scopes=");
+        var withOmitted = await _client.GetAsync($"{_base}/search?q=zeta&limit=10");
+
+        withEmptyParam.StatusCode.Should().Be(HttpStatusCode.OK);
+        var emptyBody = await withEmptyParam.Content.ReadFromJsonAsync<SearchResponse>();
+        var omittedBody = await withOmitted.Content.ReadFromJsonAsync<SearchResponse>();
+
+        emptyBody!.Results.Select(r => r.Name).Should().BeEquivalentTo(
+            omittedBody!.Results.Select(r => r.Name),
+            because: "a literal `?scopes=` with no value must behave exactly like omitting scopes " +
+                     "entirely, not silently narrow the search to the local scope");
+        emptyBody.Results.Should().Contain(r => r.Name.Contains("zeta-probe", StringComparison.Ordinal),
+            because: "zeta-probe lives in a topic scope, not local — a narrowed search would miss it");
+    }
+
+    /// <summary>Task 9 fix round 1, F-2: <c>{"scopes":[null]}</c> is schema-valid JSON for
+    /// <c>string[]</c> regardless of the non-nullable element annotation, and used to reach an
+    /// unguarded <c>.Trim()</c> a few frames downstream, throwing a <c>NullReferenceException</c>
+    /// that the server answered as a 500 <c>{"error":"An internal error occurred."}</c>. Must never
+    /// 500 — normalizing the null element away to "no filter" is an acceptable outcome (it is what
+    /// this fix does), a 4xx would also be acceptable; a 500 is the one forbidden answer.</summary>
+    [Fact]
+    public async Task Search_Post_ScopesContainingOnlyANullElement_NeverReturns500()
+    {
+        var seed = await _client.PostAsJsonAsync(_base + "/memories",
+            new StoreRequest(["theta content"], "/theta-topic/theta-probe", "theta"));
+        seed.EnsureSuccessStatusCode();
+
+        var req = new SearchRequest("theta", Limit: 10, Scopes: new string[] { null! });
+        var resp = await _client.PostAsJsonAsync($"{_base}/search", req);
+
+        resp.StatusCode.Should().NotBe(HttpStatusCode.InternalServerError,
+            because: "a null scope element must never reach a bare .Trim() and crash the request");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: "a scopes array containing only a null element normalizes away to \"no filter\", " +
+                     "the same as omitting scopes entirely");
+        var body = await resp.Content.ReadFromJsonAsync<SearchResponse>();
+        body!.Results.Should().Contain(r => r.Name.Contains("theta-probe", StringComparison.Ordinal));
+    }
+
+    /// <summary>Task 9 fix round 1, F-2, the mixed-array sibling: a real scope name alongside a null
+    /// element must not crash either — the null is dropped, the real entry still filters.</summary>
+    [Fact]
+    public async Task Search_Post_ScopesWithARealEntryAndANullElement_NeverReturns500()
+    {
+        var req = new SearchRequest("beta", Limit: 10, Scopes: new string[] { "local", null! });
+        var resp = await _client.PostAsJsonAsync($"{_base}/search", req);
+
+        resp.StatusCode.Should().NotBe(HttpStatusCode.InternalServerError,
+            because: "a mix of a real scope and a null element must never crash the request");
+    }
+
+    /// <summary>Task 9 fix round 1, F-3: the old comma-string encoding dropped blank entries
+    /// (<c>RemoveEmptyEntries | TrimEntries</c>), so <c>",api"</c> became <c>["api"]</c>. The new
+    /// array path passed blanks straight to <c>NormalizeScopeFilters</c>, which maps <c>""</c> to
+    /// <c>["local"]</c> — so <c>scopes: ["", "api"]</c> silently ADDED the local scope instead of
+    /// resolving exactly as <c>["api"]</c>.</summary>
+    [Fact]
+    public async Task Search_Post_ScopesWithABlankAndANonBlankEntry_ResolvesExactlyAsTheNonBlankEntry()
+    {
+        var localSeed = await _client.PostAsJsonAsync(_base + "/memories",
+            new StoreRequest(["kappa content in local"], "kappa-local-probe"));
+        localSeed.EnsureSuccessStatusCode();
+        var apiSeed = await _client.PostAsJsonAsync(_base + "/memories",
+            new StoreRequest(["kappa content in api"], "/api/kappa-api-probe"));
+        apiSeed.EnsureSuccessStatusCode();
+
+        var req = new SearchRequest("kappa", Limit: 10, Scopes: ["", "api"]);
+        var resp = await _client.PostAsJsonAsync($"{_base}/search", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<SearchResponse>();
+        body!.Results.Should().Contain(r => r.Name.Contains("kappa-api-probe", StringComparison.Ordinal));
+        body.Results.Should().NotContain(r => r.Name.Contains("kappa-local-probe", StringComparison.Ordinal),
+            because: "a blank entry must be DROPPED, not resolved to the local scope — " +
+                     "[\"\", \"api\"] must behave exactly as [\"api\"]");
+    }
 }

@@ -630,13 +630,19 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null)
     {
+        // Task 9 fix round 1 (F-1/F-2/F-3): normalize at entry, the same rule FileMemoryStore
+        // applies at its own entry points. Without this a null element (schema-valid JSON for
+        // string[] regardless of the non-nullable element annotation) reached the bare .Trim()
+        // below and threw (F-2), and a blank entry survived into the comma-join a few lines down.
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+
         var result = new List<ScopedArtifact>();
 
         // Include ephemeral. Task 9, D-4: an empty scopes list means "no filter", identically to
         // null — both fall through to true here, same as the old whitespace-string check did for
         // null and "".
         bool includeEphemeral = scopes is not { Count: > 0 }
-            || scopes.Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+            || scopes.Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
         if (includeEphemeral)
             result.AddRange(ListEphemeral());
 

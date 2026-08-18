@@ -99,4 +99,39 @@ public class SearchParameterShapeTests
             "an empty scopes/excludeTopics array must not narrow the listing away from the entry");
         withEmpty.Content.Should().Be(withNull.Content);
     }
+
+    /// <summary>Task 9 fix round 1, F-2: <c>{"scopes":[null]}</c> is schema-valid JSON for
+    /// <c>string[]</c> regardless of the non-nullable element annotation, and the same input over
+    /// MCP JSON-RPC takes an identical path to REST's — an unguarded <c>.Trim()</c> a few frames
+    /// downstream threw a <c>NullReferenceException</c>. Must never error; normalizing the null
+    /// element away to "no filter" is what this fix does.</summary>
+    [Fact]
+    public async Task Search_ScopesContainingOnlyANullElement_NeverErrors()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "/findings/gamma", content: ["gamma probe content"]);
+
+        var response = ResponseParser.Parse(
+            await Tools().MemorySearch(query: "gamma", scopes: new string[] { null! }));
+
+        response.Status.Should().NotBe("error",
+            "a null scope element must never reach a bare .Trim() and crash the request");
+        response.Content.Should().Contain("gamma",
+            "a scopes array containing only a null element normalizes away to \"no filter\"");
+    }
+
+    /// <summary>Task 9 fix round 1, F-2, the <c>list</c> sibling, and the mixed-array case: a real
+    /// scope alongside a null element must not crash either.</summary>
+    [Fact]
+    public async Task List_ScopesWithARealEntryAndANullElement_NeverErrors()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "/findings/delta", content: ["delta probe content"]);
+
+        var response = ResponseParser.Parse(
+            await Tools().MemoryList(scopes: new string[] { "local", null! }, mode: "full"));
+
+        response.Status.Should().NotBe("error",
+            "a mix of a real scope and a null element must never crash the request");
+    }
 }

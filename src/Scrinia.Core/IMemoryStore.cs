@@ -242,12 +242,14 @@ public interface IMemoryStore
     /// constructor splits on '/' itself, so the fork is gone; the lower-casing went with it, since
     /// this set is already <see cref="StringComparer.OrdinalIgnoreCase"/>. Being an exclusion
     /// FILTER, an unconstructable topic is dropped rather than throwing — it could not have named
-    /// a stored scope, so it excludes nothing.</para></summary>
+    /// a stored scope, so it excludes nothing.</para>
+    /// <para>Blank and null entries are dropped by <see cref="MemoryNaming.NormalizeFilterList"/>
+    /// rather than a bespoke <c>Where(!IsNullOrWhiteSpace)</c> here (Task 9 fix round 1, F-1/F-2/
+    /// F-3) — one shared rule for both <c>scopes</c> and <c>excludeTopics</c>, not two.</para></summary>
     static HashSet<string> BuildExcludedScopeSet(IReadOnlyList<string> excludeTopics) =>
         new(
-            excludeTopics
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .Select(t => MemoryNaming.TryBuildScopedTopicScope(t.Trim(), out string scope) ? scope : null)
+            (MemoryNaming.NormalizeFilterList(excludeTopics) ?? [])
+                .Select(t => MemoryNaming.TryBuildScopedTopicScope(t, out string scope) ? scope : null)
                 .OfType<string>(),
             StringComparer.OrdinalIgnoreCase);
 

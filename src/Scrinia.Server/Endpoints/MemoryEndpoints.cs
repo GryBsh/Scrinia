@@ -314,7 +314,17 @@ public static class MemoryEndpoints
     /// a COUNT bound (how many scope names) and a PER-ELEMENT length bound (how long one scope
     /// name may be) — dropping either would let the total go unbounded again: a count-only bound
     /// admits arbitrarily long individual entries, and a length-only bound admits arbitrarily many
-    /// short ones.</summary>
+    /// short ones.
+    ///
+    /// <para><b>The numbers are a DELIBERATE loosening, not a preservation (Task 9 fix round 1,
+    /// F-7).</b> 64 entries x 1024 chars/entry accepts up to 64 KB total per field, against the old
+    /// single string's 1 KB ceiling — 64x. D-5 required "do not let the total go unbounded", which
+    /// this satisfies, but it never said "keep the same ceiling", and it would not have been
+    /// preservable anyway: the old 1 KB cap was already ambiguous once split across multiple scope
+    /// names (was it 1 KB total, or 1 KB per name?), so there was no single old number to carry
+    /// forward. 64 mirrors this file's existing <c>attributeFilter</c> key-count bound
+    /// (<c>ValidateAttributeBounds(attributeFilter, 64, 64, ...)</c>) and 1024 mirrors the old
+    /// single-string cap, now applied per element instead of to the whole request.</para></summary>
     private static string? ValidateStringArrayBounds(
         string[]? values, int maxCount, int maxElementLength, string fieldName)
     {

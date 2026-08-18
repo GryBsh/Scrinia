@@ -95,6 +95,43 @@ public static class MemoryNaming
             ? null
             : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
+    /// <summary>
+    /// THE ONE RULE for a <c>scopes</c>/<c>excludeTopics</c> filter list, regardless of which
+    /// surface it arrived through: drops every null and blank entry, trims what survives, and
+    /// returns null when nothing does (so "no filter" is always exactly one shape — null — never
+    /// null, <c>[]</c> and <c>[""]</c> as three cases a caller has to check separately).
+    ///
+    /// <para>Task 9 fix round 1 (F-1/F-2/F-3). Three symptoms shared one root cause: ASP.NET Core
+    /// binds an empty <c>?scopes=</c> query value to <c>string[] { "" }</c>, not an empty array
+    /// (F-1); JSON allows a <c>null</c> array element regardless of a non-nullable element
+    /// annotation, and that null used to reach a bare <c>.Trim()</c> a few frames downstream and
+    /// throw (F-2); and blank entries used to be dropped by the old comma-string split but not by
+    /// the array path, so <c>["", "api"]</c> silently added the local scope instead of resolving
+    /// like <c>["api"]</c> (F-3). Rather than guard each of those three call sites separately —
+    /// which would be the branch's own defect in miniature, rules hand-placed at N call sites — this
+    /// is the one place the rule lives; every construction and entry path below routes through
+    /// it.</para>
+    /// </summary>
+    public static IReadOnlyList<string>? NormalizeFilterList(IReadOnlyList<string>? values)
+    {
+        if (values is not { Count: > 0 })
+            return null;
+
+        List<string>? result = null;
+        foreach (string value in values)
+        {
+            // `value` is annotated non-null by IReadOnlyList<string>'s element type, but neither
+            // JSON deserialization nor ASP.NET Core's array model binding actually enforces that at
+            // runtime — a `null` element reaches here as a real null despite the annotation, which
+            // is exactly F-2. IsNullOrWhiteSpace is null-safe, so this both drops nulls and blanks
+            // in the same check.
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+            (result ??= new List<string>(values.Count)).Add(value.Trim());
+        }
+        return result;
+    }
+
     // ── Scope construction ───────────────────────────────────────────────────
     //
     // THE ONE WAY a "local:{topic}" scope string is constructed from caller input. Task 13

@@ -544,6 +544,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     public IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null)
     {
+        // Task 9 fix round 1 (F-1/F-2/F-3): normalize at entry, for callers that reach the store
+        // directly rather than through a SearchQuery (whose Scopes/ExcludeTopics init accessors do
+        // the same thing). This is what turns ASP.NET Core's `?scopes=` -> ["" ] into "no filter"
+        // (F-1) instead of NormalizeScopeFilters("") -> ["local"], drops a null element before it
+        // can reach a bare .Trim() and throw (F-2), and drops blank entries so ["", "api"] resolves
+        // exactly as ["api"] instead of silently adding "local" (F-3).
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+
         // Task 9, D-4: an empty list means "no filter", identically to null.
         if (scopes is { Count: > 0 })
         {
@@ -551,7 +559,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // entity-classified ones. Matches the old single-string behaviour, where only an
             // exact (trimmed) "all" tripped this branch — "all,foo" fell through to the general
             // per-token path below, same as it does here when the list has more than one entry.
-            if (scopes.Count == 1 && scopes[0].Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
+            // (No .Trim() needed here any more — NormalizeFilterList already trimmed every entry.)
+            if (scopes.Count == 1 && scopes[0].Equals("all", StringComparison.OrdinalIgnoreCase))
             {
                 var all = new List<string> { "local" };
                 all.AddRange(DiscoverTopics());
@@ -1878,9 +1887,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// <see cref="FilterToQueryScopes"/> — the one place that decides whether ephemeral memories
     /// are in play for a given scope filter.
     /// </summary>
-    private static bool IncludesEphemeral(IReadOnlyList<string>? scopes) =>
-        scopes is not { Count: > 0 }
-        || scopes.Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+    private static bool IncludesEphemeral(IReadOnlyList<string>? scopes)
+    {
+        // Task 9 fix round 1 (F-2): normalize at entry so a null element (schema-valid JSON for
+        // string[] regardless of the non-nullable element annotation) cannot reach the bare
+        // .Trim() below and throw.
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+        return scopes is not { Count: > 0 }
+            || scopes.Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+    }
 
     public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null)
     {
