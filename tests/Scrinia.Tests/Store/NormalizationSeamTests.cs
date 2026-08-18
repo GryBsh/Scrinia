@@ -84,6 +84,10 @@ public sealed class NormalizationSeamTests : IDisposable
         _store.Upsert(legacyEntry, "local");
 
         string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
+        File.Exists(lockPath).Should().BeTrue(
+            because: "precondition: the Upserts above run under the exclusive scope lock and must "
+                   + "have created this file — File.Delete on a missing path is a silent no-op, so "
+                   + "without this the cache-hit assertion below could pass vacuously");
         File.Delete(lockPath);
 
         var a = _store.LoadIndex("local").Single(e => e.Name == "note-a");
@@ -132,6 +136,10 @@ public sealed class NormalizationSeamTests : IDisposable
         // SaveIndex installs the cache unconditionally, so this read is a cache hit and is
         // therefore reading what SaveIndex cached rather than what a cold reload would rebuild.
         string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
+        File.Exists(lockPath).Should().BeTrue(
+            because: "precondition: the SaveIndex above runs under the exclusive scope lock and "
+                   + "must have created this file — File.Delete on a missing path is a silent "
+                   + "no-op, so without this the assertion below could pass vacuously");
         File.Delete(lockPath);
 
         var saved = _store.LoadIndex("local").Single(e => e.Name == "saved-legacy");

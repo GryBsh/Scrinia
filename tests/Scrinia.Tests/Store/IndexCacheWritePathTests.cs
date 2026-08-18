@@ -45,6 +45,11 @@ public sealed class IndexCacheWritePathTests : IDisposable
     private T AssertReadIsACacheHit<T>(Func<T> read, string because)
     {
         string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
+        File.Exists(lockPath).Should().BeTrue(
+            because: "precondition: something above must already have taken the scope lock, or "
+                   + "its absence after `read` proves nothing — File.Delete on a missing path is a "
+                   + "silent no-op, so without this every test routed through this helper would "
+                   + "degrade to a no-op at once the moment a call site stopped locking first");
         File.Delete(lockPath);
         T result = read();
         File.Exists(lockPath).Should().BeFalse(because: because);
