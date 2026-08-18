@@ -8,7 +8,7 @@ namespace Scrinia.Core.Embeddings;
 /// (append re-embeds, reindex loops).
 ///
 /// <para><b>Why this exists (finding M-2).</b> Ephemeral memories are not backed by an on-disk
-/// artifact keyed by (scope, subject), so <see cref="IMemoryStore.ReadArtifactAsync"/> throws
+/// artifact keyed by (scope, subject), so <see cref="IPluginStore.ReadArtifactAsync"/> throws
 /// <see cref="FileNotFoundException"/> for them; they resolve only through the <c>~name</c>
 /// qualified-name path. All three append re-embed paths called <c>ReadArtifactAsync</c>
 /// unconditionally and swallowed the resulting exception into a warning — so appending to an

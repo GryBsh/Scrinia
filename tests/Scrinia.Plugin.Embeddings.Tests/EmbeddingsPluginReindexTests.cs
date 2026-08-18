@@ -17,7 +17,7 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 ///
 /// <see cref="IMemoryStore.FormatQualifiedName"/> intentionally strips the "memory/"/"entity/"
 /// namespace prefix for human-friendly display. Re-parsing that display string via
-/// <see cref="IMemoryStore.ParseQualifiedName"/> reconstructs a scope MISSING the namespace
+/// <see cref="IPluginStore.ParseQualifiedName"/> reconstructs a scope MISSING the namespace
 /// prefix, so <c>ResolveArtifactAsync</c> can't find the artifact and the memory is silently
 /// skipped (caught, logged, dropped from the reindex count).
 ///

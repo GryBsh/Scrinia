@@ -81,7 +81,7 @@ public sealed class PluginPipeline
 
     /// <summary>
     /// Hooks (e.g. the built-in/Vulkan embedding services) re-parse the after-store/append
-    /// qualified name via <see cref="IMemoryStore.ParseQualifiedName"/> to decide which scope to
+    /// qualified name via <see cref="IPluginStore.ParseQualifiedName"/> to decide which scope to
     /// route vectors under. Historically <see cref="IMemoryStore.FormatQualifiedName"/> stripped
     /// the v1 "memory/"/"entity/" namespace prefix for human-friendly REST responses, which made
     /// the display string lossy to re-parse — under v3 (Task 8) that stripping is gone and
