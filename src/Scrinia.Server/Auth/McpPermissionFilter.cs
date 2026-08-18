@@ -102,6 +102,19 @@ public static class McpPermissionFilter
     /// and the wrong answer for a tool nobody mapped; one value cannot carry both. The
     /// filter denies when this returns false, so an unmapped tool fails closed without
     /// inventing a sentinel permission string that a key might somehow be granted.
+    ///
+    /// <para>Returning <c>true</c> unconditionally for every non-<c>tools/call</c> method looks like
+    /// the same "unrecognised → ungated" hole one level up, but it is not: it is safe only because the
+    /// SDK's method-dispatch table is a closed set. <see cref="ModelContextProtocol.Protocol.RequestMethods"/>
+    /// enumerates every method the SDK will ever route to a handler, and an incoming JSON-RPC request
+    /// naming anything outside that set is rejected with <c>MethodNotFound</c> inside the SDK before
+    /// this filter's handler chain — let alone an application handler — ever runs. Every method in that
+    /// closed set beyond <c>tools/call</c> and <c>resources/read</c> is, on this server role, either
+    /// unregistered, an SDK-internal no-op (handshake/discovery/notifications), or read-only
+    /// (<c>prompts/*</c>, <c>resources/list</c>, <c>resources/templates/list</c> — this server registers
+    /// no prompts and no writable resources). If an SDK upgrade ever opens that dispatch table to
+    /// caller-supplied or dynamically-registered methods, this blanket <c>true</c> needs revisiting.
+    /// </para>
     /// </summary>
     public static bool HasExplicitDecision(string method, string? toolName)
     {

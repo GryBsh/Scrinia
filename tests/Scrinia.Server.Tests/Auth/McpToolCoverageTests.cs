@@ -57,4 +57,15 @@ public class McpToolCoverageTests
         // the theory above vacuously green.
         DeclaredToolNames().Should().NotBeEmpty();
     }
+
+    [Fact]
+    public void ToolsCallWithNoName_HasNoExplicitDecision()
+    {
+        // A tools/call with a missing name used to fall through RequiredPermission's default
+        // arm ungated, same as any other unmapped name. It now fails closed like every other
+        // unmapped name — strictly safer than before, and worth pinning so it can't regress
+        // back to "no name means no gate" unnoticed.
+        McpPermissionFilter.HasExplicitDecision("tools/call", null)
+            .Should().BeFalse("a tools/call with no tool name must not be treated as an explicit ungating decision");
+    }
 }

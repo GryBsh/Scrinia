@@ -1,11 +1,8 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using FluentAssertions;
-using FluentAssertions.Execution;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
-using Scrinia.Mcp;
 using Scrinia.Server.Auth;
 
 namespace Scrinia.Server.Tests;
@@ -219,31 +216,26 @@ public sealed class McpPermissionFilterTests
             (await act.Should().ThrowAsync<McpException>()).WithMessage("*lacks the 'store' permission*");
             reached.Should().BeFalse();
         }
-    }
 
-    [Fact]
-    public void EveryRegisteredTool_HasAPermissionMapping_OrIsIntentionallyUngated()
-    {
-        // Guards the hand-maintained parallel copy: a tool advertised to agents that the
-        // permission map doesn't know about would silently fall through to the ungated
-        // default. Bootstrap/recovery tools are ungated on purpose (parity with REST).
-        var intentionallyUngated = new HashSet<string>(StringComparer.Ordinal) { "guide", "restore" };
-
-        var toolNames = typeof(ScriniaMcpTools)
-            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
-            .Select(m => m.GetCustomAttribute<McpServerToolAttribute>()?.Name)
-            .Where(n => !string.IsNullOrEmpty(n))
-            .Select(n => n!)
-            .ToList();
-
-        toolNames.Should().NotBeEmpty("the tool type must expose [McpServerTool] methods");
-
-        using var scope = new AssertionScope();
-        foreach (var name in toolNames)
+        [Fact]
+        public async Task UnmappedTool_DeniedBeforeReachingNextHandler()
         {
-            if (intentionallyUngated.Contains(name)) continue;
-            McpPermissionFilter.RequiredPermission("tools/call", name)
-                .Should().NotBeNull($"tool '{name}' must have an explicit permission mapping");
+            // Drives the real Filter delegate (not the pure RequiredPermission/HasExplicitDecision
+            // functions) with every permission granted, so the only thing that can block the call is
+            // the explicit-decision gate itself: RequiredPermission returns null for an unmapped tool
+            // regardless of what CurrentPermissions holds, so a filter that only checked
+            // "required is not null" would let this straight through to next().
+            McpPermissionFilter.CurrentPermissions = ["store", "append", "forget", "search", "read"];
+            McpPermissionFilter.CurrentStoreReadOnly = false;
+            bool reached = false;
+            McpMessageHandler next = (_, _) => { reached = true; return Task.CompletedTask; };
+            McpMessageHandler handler = McpPermissionFilter.Filter(next);
+            MessageContext ctx = CreateToolCallContext("nonexistent_tool");
+
+            Func<Task> act = () => handler(ctx, CancellationToken.None);
+
+            await act.Should().ThrowAsync<McpException>();
+            reached.Should().BeFalse("an unrecognised tool must be denied before the next handler runs, not merely reported as unmapped by the pure functions");
         }
     }
 }
