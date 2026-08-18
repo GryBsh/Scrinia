@@ -114,6 +114,10 @@ Per-contradiction tests for each row in B2.
 ## Part C — Plugin contract inversion (M3)
 
 > **SPLIT OUT OF THIS BRANCH, 2026-08-18. The design below is superseded — do not implement it.**
+> **Superseded by `docs/superpowers/specs/2026-08-18-plugin-contract-narrowing-design.md` (2026-08-18).**
+> That spec establishes there is no external plugin audience, so the assembly move, the
+> `ProjectReference` reversal and the `AssemblyVersion` pin are all withdrawn. What survives —
+> narrowing the sink contract — is implemented there without moving any type between assemblies.
 >
 > A pre-implementation falsification pass found Part C structurally blocked, and found that two of the measurements this section rests on were wrong. Both errors share one cause: a `grep` whose pattern could not express the usage shape that actually exists, returning empty, with the emptiness reported as a measurement.
 >
