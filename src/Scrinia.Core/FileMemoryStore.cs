@@ -1434,8 +1434,9 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // write only ever adds or replaces a sidecar — even a name-changing `mutate` leaves the
             // original in place and writes a second one. The topic list therefore cannot change.
             // Clearing it unconditionally cost the next ResolveReadScopes/search a full re-walk of
-            // the memories/ tree, 1-3 times per store event via MaintenanceEventSink — H5's own
-            // shape on the branch that removes H5.
+            // the memories/ tree — repeatedly, since MaintenanceEventSink calls this once per
+            // memory the stored content references plus once or twice for the orphan marker, on
+            // every store event. H5's own shape, on the branch that removes H5.
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
 

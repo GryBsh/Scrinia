@@ -126,8 +126,9 @@ public sealed class TopicCacheInvalidationTests : IDisposable
     /// <summary>
     /// The third write path, held to the same rule. <c>TryUpdateEntry</c> used to clear
     /// <c>_cachedTopics</c> unconditionally on every call against a <c>local:</c> scope — and
-    /// <c>MaintenanceEventSink</c> calls it 1-3 times per store event, so that was a full re-walk
-    /// of the memories/ tree per write, which is finding H5's own shape.
+    /// <c>MaintenanceEventSink</c> calls it once per memory the stored content references plus once
+    /// or twice for the orphan marker, so that was a full re-walk of the memories/ tree several
+    /// times per store event — finding H5's own shape.
     /// <para>It cannot change the topic list: <c>DiscoverTopics</c> lists a directory exactly when
     /// it holds at least one <c>.nmp2</c>/<c>.meta.json</c>, a successful <c>TryUpdateEntry</c>
     /// requires an existing sidecar, and the write only ever adds or replaces one — even a

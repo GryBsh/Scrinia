@@ -50,8 +50,9 @@ and all assembly attributes.
   gaining its first sidecar, or losing its last — instead of on every single write into an
   already-populated scope. `TryUpdateEntry` no longer clears it at all: it only ever updates an
   existing entry, so the scope was and stays non-empty and the topic list cannot change. It used to
-  clear it on every call, and `MaintenanceEventSink` calls it up to three times per store event, so
-  that forced a full re-walk of the `memories/` tree on the next search or scope resolution.
+  clear it on every call, and `MaintenanceEventSink` calls it once per memory the stored content
+  references plus once or twice for the orphan marker, so that forced a full re-walk of the
+  `memories/` tree on the next search or scope resolution, several times per store event.
 
 - **`MaintenanceEventSink`'s auto-link/orphan-detection pass no longer materializes the whole
   store to answer "does anything reference this memory?"** A new `IMemoryStore.AnyScoped(scopes,
