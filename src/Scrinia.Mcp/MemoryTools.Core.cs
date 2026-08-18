@@ -612,6 +612,13 @@ public sealed partial class ScriniaMcpTools
         // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
 
+        // A caller can send "mode": null over JSON-RPC, distinct from omitting the field.
+        // Pre-task behaviour treated null and empty identically to the "summary" default, and
+        // facts() normalises its op the same way ((op ?? string.Empty).Trim()) -- match that so
+        // list() does not newly disagree with the sibling it is meant to converge on.
+        if (string.IsNullOrWhiteSpace(mode))
+            mode = "summary";
+
         if (!string.Equals(mode, "summary", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))

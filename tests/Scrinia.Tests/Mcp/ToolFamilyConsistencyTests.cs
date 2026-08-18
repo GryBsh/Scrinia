@@ -36,6 +36,29 @@ public class ToolFamilyConsistencyTests
     }
 
     [Fact]
+    public async Task List_TreatsExplicitNullModeAsSummary()
+    {
+        // A caller can send "mode": null over JSON-RPC -- distinct from omitting the field, and
+        // distinct from a typo. Pre-task behaviour fell through to summary and succeeded; the
+        // unknown-mode guard must not have overreached into rejecting this too.
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().List(scopes: null, mode: null!, offset: 0, limit: 50,
+            excludeTopics: null, CancellationToken.None);
+
+        response.Status.Should().NotBe("error");
+    }
+
+    [Fact]
+    public async Task List_TreatsEmptyModeAsSummary()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().List(scopes: null, mode: "", offset: 0, limit: 50,
+            excludeTopics: null, CancellationToken.None);
+
+        response.Status.Should().NotBe("error");
+    }
+
+    [Fact]
     public async Task Reconcile_RejectsAChoiceWithNoConflictId()
     {
         using var scope = new TestHelpers.StoreScope();
