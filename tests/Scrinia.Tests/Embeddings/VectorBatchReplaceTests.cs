@@ -166,4 +166,61 @@ public sealed class VectorBatchReplaceTests : IDisposable
 
         store.GetVectors("local").Where(v => v.Name == "note").Should().BeEmpty();
     }
+
+    /// <summary>
+    /// Nothing to remove and nothing to add touches the file at all — the RemoveAsync-then-loop
+    /// this replaces never did either (RemoveAsync early-returns on nothing-to-remove and zero
+    /// Upserts follow), so probing here would newly risk a VectorStoreUnavailableException on a
+    /// call that used to be free.
+    /// </summary>
+    [Fact]
+    public async Task BatchReplace_WithNothingToRemoveAndNothingToAdd_TouchesNoFile()
+    {
+        using var store = new VectorStore(_dir, expectedSignature: null);
+
+        await store.ReplaceMemoryVectorsAsync("local", "ghost", []);
+
+        store.GetVectors("local").Should().BeEmpty();
+        Directory.GetFiles(_dir, "*", SearchOption.AllDirectories).Should().BeEmpty(
+            because: "a no-op replace must not create a vector file for a scope that has none");
+    }
+
+    /// <summary>
+    /// The ephemeral scope is in-memory only: the replace still swaps the scope's vector list, but
+    /// writes nothing, exactly as <c>UpsertAsync</c>/<c>RemoveAsync</c> do for that scope.
+    /// </summary>
+    [Fact]
+    public async Task BatchReplace_OnTheEphemeralScope_UpdatesMemoryAndWritesNothing()
+    {
+        using var store = new VectorStore(_dir, expectedSignature: null);
+
+        await store.ReplaceMemoryVectorsAsync("ephemeral", "note", Plan(3));
+
+        store.GetVectors("ephemeral").Should().HaveCount(3);
+        Directory.GetFiles(_dir, "*", SearchOption.AllDirectories).Should().BeEmpty(
+            because: "the ephemeral scope never persists — its vectors die with the instance");
+    }
+
+    /// <summary>
+    /// Scope-local, not name-local: a memory of the same name in another scope is a different
+    /// memory, and the replace's remove-every-matching-Name sweep must not reach across scopes.
+    /// <see cref="BatchReplace_LeavesOtherMemoriesAlone"/> covers the same-scope half.
+    /// </summary>
+    [Fact]
+    public async Task BatchReplace_LeavesTheSameNameInAnotherScopeAlone()
+    {
+        using var store = new VectorStore(_dir, expectedSignature: null);
+
+        await store.ReplaceMemoryVectorsAsync("local", "note", Plan(3));
+        await store.ReplaceMemoryVectorsAsync("local:alpha", "note", Plan(4));
+
+        await store.ReplaceMemoryVectorsAsync("local", "note", []);
+
+        store.GetVectors("local").Should().BeEmpty();
+        store.GetVectors("local:alpha").Where(v => v.Name == "note").Should().HaveCount(4);
+
+        using var reload = new VectorStore(_dir, expectedSignature: null);
+        reload.GetVectors("local:alpha").Where(v => v.Name == "note").Should().HaveCount(4,
+            because: "the other scope's file must be untouched on disk too, not merely in memory");
+    }
 }
