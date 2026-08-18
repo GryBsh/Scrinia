@@ -569,9 +569,15 @@ app.MapEmbeddingsEndpoints();
 app.MapChatEndpoints(app.Services.GetRequiredService<Scrinia.Server.Chat.ChatOptions>());
 
 // Plugin endpoints
+// Plugins map their own routes into this group, so the permissions are not knowable here.
+// Empty in the default configuration — plugins load only when Vulkan is explicitly enabled
+// (see the loadedPlugins block above) — which is why no test exercises the populated case.
+// "the plugin declares it" is a promise nothing enforces; making plugin-mapped routes
+// declare their permissions is a plugin-contract change, tracked as follow-up.
 var pluginGroup = app.MapGroup("/api/v1/plugins")
     .RequireAuthorization()
-    .RequireRateLimiting("api");
+    .RequireRateLimiting("api")
+    .PermissionCheckedElsewhere("the plugin's own endpoint declarations");
 foreach (var plugin in loadedPlugins)
     plugin.MapEndpoints(pluginGroup);
 
@@ -581,10 +587,23 @@ if (app.Environment.IsDevelopment() || app.Configuration.GetValue("Scrinia:Expos
     app.MapScalarApiReference();
 }
 
-app.MapMcp("/mcp").RequireAuthorization().RequireRateLimiting("api");
+// One HTTP route carrying every JSON-RPC operation. The permission varies per call and is
+// resolved by McpPermissionFilter, which EndpointDataSource cannot see; naming a single
+// permission here would name one that isn't the real one.
+app.MapMcp("/mcp")
+   .RequireAuthorization()
+   .RequireRateLimiting("api")
+   .PermissionCheckedElsewhere("McpPermissionFilter (per JSON-RPC method/tool)");
 
 // SPA fallback — must be last so API routes take priority
 app.MapFallbackToFile("index.html");
+
+// ── Permission coverage ──────────────────────────────────────────────────────
+
+// Runs after every Map* call, because it reads the fully populated route table, and before
+// the server accepts a request, because a route that authenticates without authorizing must
+// never be reachable. A failure here names the offending endpoint; fix the declaration.
+PermissionCoverageValidator.Validate(app.Services.GetRequiredService<EndpointDataSource>());
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 
