@@ -452,6 +452,29 @@ public sealed class RemoteStoreToolTests
             because: "the local-only sections are skipped remotely, but restore still succeeds");
     }
 
+    /// <summary>
+    /// Guide and restore's envelope parity is otherwise only pinned on a local store
+    /// (<c>RestoreEnvelopeTests.GuideAndRestore_PutTheRestoreContextInTheSameField</c>), where the
+    /// built-in skills list always makes <c>info:</c> non-empty. A remote store is the path where
+    /// the two tools' payloads differ most: all three local-only sections (conflict scan, skills,
+    /// agent followUp) are skipped, so this is also the only reachable path where
+    /// <c>ContentSections</c> ends up genuinely empty before the "nothing found" fallback fires —
+    /// exercising the truthful-empty-summary shape from the restore-summary fix alongside parity.
+    /// </summary>
+    [Fact]
+    public async Task GuideAndRestore_AgreeOnEmptyInfo_OnARemoteStore()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var guide = ResponseParser.Parse(await Tools().Guide());
+        var restore = ResponseParser.Parse(await Tools().MemoryRestore());
+
+        guide.Info.Should().BeEquivalentTo(restore.Info,
+            because: "the same workspace-context payload must arrive under the same field for both tools, even when every local-only section is skipped");
+        restore.Content.Should().Be("No stored workspace context yet. See info for details.",
+            because: "no local-only section fires remotely, so the summary must not claim a section was found");
+    }
+
     // ── I2: ephemeral remember() ─────────────────────────────────────────────
     //
     // HttpMemoryStore implements ephemeral storage for real (in-process dictionary). The

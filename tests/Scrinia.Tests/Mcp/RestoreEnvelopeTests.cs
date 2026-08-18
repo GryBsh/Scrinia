@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Scrinia.Mcp;
-using Xunit;
 
 namespace Scrinia.Tests.Mcp;
 
@@ -32,8 +31,9 @@ public class RestoreEnvelopeTests
         var guide = ResponseParser.Parse(await Tools().Guide());
 
         // Guarded because the fix must not move the guide text out of content: in the
-        // course of aligning the sections.
-        guide.Content.Should().Contain("Scrinia");
+        // course of aligning the sections. Matches the guide's actual heading rather than a
+        // bare "Scrinia" substring, which Success("Scrinia") alone would also satisfy.
+        guide.Content.Should().Contain("# Scrinia — Agent Memory Guide");
     }
 
     [Fact]
@@ -55,6 +55,30 @@ public class RestoreEnvelopeTests
 
         var restore = ResponseParser.Parse(await Tools().MemoryRestore());
 
+        // Pins the actual action value, not just "not an error" — a response mutated to report
+        // the wrong action (e.g. "guide" instead of "restored") would still pass a NotBe("error")
+        // check, and did, until this assertion was tightened.
+        restore.Action.Should().Be("restored");
         restore.Status.Should().NotBe("error");
+    }
+
+    [Fact]
+    public async Task Restore_SummaryLine_ReportsCountsThatVary_NotAConstantSectionCount()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        var restore = ResponseParser.Parse(await Tools().MemoryRestore());
+
+        // A fresh local workspace has no follow-up items or warnings yet, but BuiltInSkills is
+        // always non-empty, so ContentSections.Count is always exactly 1 regardless of whether
+        // anything was actually found. The summary must report the counts that actually vary
+        // (follow-up items, warnings), not that constant section count.
+        //
+        // This pins the "something was found" shape. The complementary "nothing was found" shape
+        // is pinned in RemoteStoreToolTests.Guide_And_Restore_ReportNoStoredContext_OnARemoteStore
+        // — a remote store is the only reachable path where every local-only section, including
+        // the always-non-empty built-in skills list, is skipped, so ContentSections genuinely
+        // ends up empty before the fallback fires.
+        restore.Content.Should().Be("Restored workspace context: 0 follow-up items, 0 warnings. See info for details.");
     }
 }
