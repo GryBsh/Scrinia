@@ -60,7 +60,7 @@ public interface IMemoryStore : IPluginStore
     // go via LoadIndex and GetEphemeral respectively — and are safe for their own reasons,
     // documented on each.
 
-    // CRUD
+    // CRUD — ResolveArtifactAsync moved to IPluginStore (inherited).
 
     /// <summary>
     /// The scope's index entries. <b>The returned list may be a live view of the store's internal
@@ -308,7 +308,7 @@ public interface IMemoryStore : IPluginStore
     // Naming / addressing
     string ArtifactUri(string name, string scope = "local");
 
-    // Artifact file I/O
+    // Artifact file I/O — ReadArtifactAsync moved to IPluginStore (inherited).
     /// <summary>Writes the artifact text for <paramref name="subject"/>.</summary>
     Task WriteArtifactAsync(string subject, string scope, string artifactText,
         CancellationToken ct = default);

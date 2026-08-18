@@ -7,8 +7,12 @@ namespace Scrinia.Core;
 /// Best-effort <see cref="IMemoryEventSink"/> that upgrades untyped <c>mention:</c> prose spans to
 /// typed entity keys using <see cref="EntityTypeClassifier"/> (Piece 2, Stage 2). Runs out-of-band
 /// after a write; guarded by <see cref="IEmbeddingProvider.IsAvailable"/>; writes back only via
-/// <see cref="IMemoryStore.TryUpdateEntry"/> (fires no sinks). Never blocks or fails the write —
-/// on the embedder being absent or unsure, spans simply stay <c>mention:</c>.
+/// <see cref="IMemoryStore.TryUpdateEntry"/> (fires no sinks). Never blocks or fails the write it
+/// runs after — dispatch is detached and guarded, so nothing here can turn into a failed store or
+/// append. On the embedder being absent or unsure, spans simply stay <c>mention:</c>. The one path
+/// that DOES throw is <see cref="CoreSinkStore.Require"/>, when this handler is run outside Core
+/// against a store that is not a full <see cref="IMemoryStore"/>; that throw is a handler failure
+/// isolated by the sink dispatcher, not a write failure.
 /// </summary>
 // CA1711: the "EventHandler" suffix is deliberate here (it implements IMemoryEventSink, not a
 // delegate) — it names the class's role in the sink pipeline, matching CoreEmbeddingEventHandler.

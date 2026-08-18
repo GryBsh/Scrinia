@@ -435,6 +435,43 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             "no entry in any scope references this one, so it must still be marked orphan");
     }
 
+    /// <summary>
+    /// Pins that <c>OnStoredAsync</c> actually widens through <see cref="CoreSinkStore.Require"/>
+    /// rather than a bare <c>(IMemoryStore)store</c> cast that would also compile and also throw.
+    /// <c>OnStoredAsync</c> swallows the exception in its own <c>try</c>/<c>catch</c> and logs it to
+    /// <see cref="Console.Error"/> — see <see cref="MaintenanceEventSink.OnStoredAsync"/> — so the
+    /// throw itself is not observable here; the failure is observed through the logged message
+    /// instead. That message must carry <c>Require</c>'s own text naming the handler
+    /// ("MaintenanceEventSink is a Core-internal event handler..."), not just the catch block's own
+    /// hardcoded "MaintenanceEventSink error:" prefix, which a raw-cast mutation would still print
+    /// (with an <see cref="InvalidCastException"/> in place of Require's message) and would
+    /// therefore NOT distinguish the mutation.
+    /// </summary>
+    [Fact]
+    public async Task OnStoredAsync_LogsNamingTheHandler_WhenStoreIsNotAFullMemoryStore()
+    {
+        var sink = new MaintenanceEventSink();
+        var narrowStore = new NarrowPluginStore();
+
+        var captured = new StringWriter();
+        var previous = Console.Error;
+        try
+        {
+            Console.SetError(captured);
+            await sink.OnStoredAsync("/test/narrow", ["content"], narrowStore, CancellationToken.None);
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+
+        captured.ToString().Should().Contain(
+            "MaintenanceEventSink is a Core-internal event handler",
+            "this is CoreSinkStore.Require's own message text, naming the handler -- a raw-cast " +
+            "mutation would still print the catch block's generic 'MaintenanceEventSink error:' " +
+            "prefix but never this phrase, since an InvalidCastException carries no such text");
+    }
+
     // ── The legacy keyword carrier ─────────────────────────────────────────────
 
     /// <summary>

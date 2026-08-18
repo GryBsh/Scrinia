@@ -81,7 +81,7 @@ and all assembly attributes.
   sink implementation; the fix is a parameter type change. A sink needing more can cast to
   `IMemoryStore`, which every concrete store still implements.
 - `MemoryArtifactSource.ReadForAppendAsync` and `MemoryVectorIndexer.RemoveAsync(qualifiedName,
-  store, cancellationToken)` now take `IPluginStore` instead of `IMemoryStore`. Narrowing a
+  store, ct)` now take `IPluginStore` instead of `IMemoryStore`. Narrowing a
   parameter to its base interface is contravariant widening: a caller already holding an
   `IMemoryStore` still satisfies the new parameter type with no source change. What changes is
   binary: a precompiled caller assembly requires recompilation to link against the new signature,

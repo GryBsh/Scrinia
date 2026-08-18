@@ -194,6 +194,12 @@ Set `context.Cancel = true` and provide `context.CancelReason` to abort the oper
 
 `IMemoryEventSink` (MCP path) is notification-only — `OnStoredAsync`, `OnAppendedAsync`, `OnForgottenAsync`. There's no equivalent before-hook on the MCP path because MCP tools enforce permissions upstream.
 
+Each method hands the sink an `IPluginStore`, not the full `IMemoryStore` — four members:
+`ParseQualifiedName`, `IsEphemeral`, `ResolveArtifactAsync`, `ReadArtifactAsync`. That is what the
+sink path itself uses, and it is what most sinks need too: enough to key and read the memory that
+just changed. A sink that needs more — writing back, listing a scope, resolving entities — can cast
+to `IMemoryStore`, which every concrete store still implements.
+
 ## Endpoints and middleware
 
 Override `MapEndpoints` to add HTTP routes scoped under your plugin's own group:

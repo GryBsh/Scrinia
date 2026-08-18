@@ -188,6 +188,29 @@ public class EntityTypingEventHandlerTests
     /// otherwise this would still fail on a case-sensitive filesystem, where
     /// <c>FileMemoryStore.TryUpdateEntry</c>'s own <c>File.Exists</c> gate is case-sensitive.
     /// </summary>
+    /// <summary>
+    /// Pins that <c>OnStoredAsync</c> actually widens through <see cref="CoreSinkStore.Require"/>
+    /// rather than, say, a bare <c>(IMemoryStore)store</c> cast that would happen to compile and
+    /// throw too. A raw cast's <see cref="InvalidCastException"/> would not name
+    /// <see cref="EntityTypingEventHandler"/> anywhere in its message, so asserting on that name
+    /// distinguishes the two: this fails under the raw-cast mutation and passes only when
+    /// <c>Require</c> is the thing that ran.
+    /// </summary>
+    [Fact]
+    public async Task OnStoredAsync_ThrowsNamingTheHandler_WhenStoreIsNotAFullMemoryStore()
+    {
+        var sink = new EntityTypingEventHandler(new UnavailableEmbeddingProvider());
+        var narrowStore = new NarrowPluginStore();
+
+        var act = async () => await sink.OnStoredAsync(
+            "/test/narrow", ["content"], narrowStore, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*EntityTypingEventHandler is a Core-internal event handler*",
+                because: "this is CoreSinkStore.Require's own message, naming the handler -- a raw " +
+                         "cast mutation would throw InvalidCastException with no such text");
+    }
+
     [Fact]
     public async Task Promotes_WhenTheStoredNameDiffersInCasingFromTheEvent()
     {
@@ -209,6 +232,17 @@ public class EntityTypingEventHandlerTests
                      "the stored entry's");
         reloaded.Attributes!["thing"].Should().Contain("seraphim");
     }
+}
+
+/// <summary>An <see cref="IPluginStore"/> double that is deliberately NOT an <see cref="IMemoryStore"/>,
+/// used to drive <see cref="CoreSinkStore.Require"/>'s throw path from a real handler's own
+/// <c>OnStoredAsync</c> rather than by calling <c>Require</c> directly.</summary>
+internal sealed class NarrowPluginStore : IPluginStore
+{
+    public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
+    public bool IsEphemeral(string name) => false;
+    public Task<string> ResolveArtifactAsync(string n, CancellationToken ct = default) => Task.FromResult("");
+    public Task<string> ReadArtifactAsync(string s, string sc, CancellationToken ct = default) => Task.FromResult("");
 }
 
 internal sealed class UnavailableEmbeddingProvider : Scrinia.Core.Embeddings.IEmbeddingProvider
