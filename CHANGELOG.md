@@ -17,14 +17,28 @@ and all assembly attributes.
   and JSON-deserializing every sidecar in the scope — so writing N memories into a scope cost
   O(N²) file reads, and `TryUpdateEntry` paid that cost twice. They now update the cached index
   copy-on-write instead: build a new entry list with just the written entry's slot replaced (or
-  appended, or omitted for a remove) and install a new cached index over it, without touching disk
-  beyond the one sidecar actually being written. A scope that isn't already cached is left
-  uncached rather than partially populated; the next read cold-loads it as before. This still
-  honours the long-standing rule that a cached index is only ever swapped, never mutated in place
+  appended, or omitted for a remove) and install a new cached index over it, reading no sidecar the
+  write did not have to touch anyway. A scope that isn't already cached is left uncached rather
+  than partially populated; the next read cold-loads it as before. This still honours the
+  long-standing rule that a cached index is only ever swapped, never mutated in place
   (`docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md`) — the write path now
   satisfies it far more cheaply. See
   `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for measured before/after
   timing and allocation.
+
+- **`TryUpdateEntry` reads the entry it mutates off disk, inside the per-scope lock.** It writes
+  back a *complete* entry derived from what it read, so serving that read from the in-memory index
+  cache would republish stale metadata over a concurrent writer's — reverting fields the mutation
+  never touched. Since `.scrinia/memories/**/*.meta.json` are git-tracked in workspaces that
+  version their memory, a `git pull` under a running `scri serve` was enough to produce that state.
+  It now costs one sidecar read, not the scope-wide re-read it used to pay, so the cost this
+  release removes stays removed.
+
+- **Out-of-band changes to a scope's sidecars no longer surface on that scope's next write.**
+  Invalidate-and-rebuild made every write an accidental resync point with the filesystem; with
+  copy-on-write there is none, so a `git pull`, `merge` or `checkout` stays invisible to a
+  long-lived process (restart it, or read a scope it hasn't cached). The accepted cost of the
+  change above, recorded in `docs/architecture/core.md`.
 
 - **Legacy `"fields"`→`Attributes` normalization moved into the sidecar load seam itself.** Four
   call sites used to each wrap their own read with `.Select(e => e.NormalizeAttributesKey())`;

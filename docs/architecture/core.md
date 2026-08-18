@@ -480,8 +480,10 @@ nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted 
 and as of 2026-08-17 neither reloads the scope from sidecars to update the cache either: each
 builds a new `Entries` list with the written entry's slot replaced (or appended, or omitted for a
 remove) and installs a new `CachedIndex` over it — a single write no longer costs a full directory
-enumeration plus one read-and-parse per existing entry. `TryUpdateEntry` does the same. When the
-scope isn't already cached, a write leaves it uncached rather than installing a partial one; the
+enumeration plus one read-and-parse per existing entry. `TryUpdateEntry` updates the cache the same
+way; it does read one sidecar — the entry it is about to mutate, see below — but never the scope.
+When the scope isn't already cached, a write leaves it uncached rather than installing a partial
+one; the
 next read cold-loads the whole scope from sidecars. This is the same handed-out-by-reference
 aliasing invariant described above — swap the whole object, never mutate `Entries` in place — the
 write path now satisfies it more cheaply than before. See

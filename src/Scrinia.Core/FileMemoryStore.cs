@@ -621,9 +621,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         // hit already returns whatever this process last loaded, lock or no lock. Taking the
         // lock here bought a file handle open and close per call and no guarantee whatsoever.
         //
-        // The in-process read lock STAYS. Writes replace the cache under EnterWriteLock (:560),
-        // so dropping it here would newly open a same-process read-your-writes race — which is
-        // not the same as the cross-process staleness above, and is not ours to introduce.
+        // The in-process read lock STAYS. Writes replace the cache under the EnterWriteLock
+        // WithExclusiveLock takes, so dropping it here would newly open a same-process
+        // read-your-writes race — which is not the same as the cross-process staleness above, and
+        // is not ours to introduce.
         //
         // Skipping GetLockPath also skips its GetStoreDirForScope call — which is load-bearing
         // for the layout-migration latch. Safe because every path that populates _indexCache
@@ -633,11 +634,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         //
         // RULING (the-sweep, Task 1, G4): this EnterReadLock/ExitReadLock pair is deliberately
         // NOT pinned by a test, after a real attempt to write one — but it is not dead code, and
-        // the race :558-560 names is real and present-day, not a hypothetical future one. This
-        // ruling does not weaken that claim; it explains why nothing here can pin it.
+        // the race the paragraph above names is real and present-day, not a hypothetical future
+        // one. This ruling does not weaken that claim; it explains why nothing here can pin it.
         //
         // What it protects: every write runs inside WithExclusiveLock, which holds EnterWriteLock
-        // across the write's ENTIRE body — sidecar I/O, LoadEntriesFromSidecars, and the final
+        // across the write's ENTIRE body — sidecar I/O, the copy-on-write rebuild, and the final
         // `_indexCache[scope] = new CachedIndex(...)`. Because a reader takes EnterReadLock here,
         // a same-process reader on another thread blocks until that write finishes and therefore
         // always observes the post-write cache. Without this lock, the reader's lock-free

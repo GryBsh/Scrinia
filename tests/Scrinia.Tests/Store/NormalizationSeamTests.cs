@@ -187,7 +187,7 @@ public sealed class NormalizationSeamTests : IDisposable
 
     /// <summary>
     /// Guards the DURABLE half of read-time forward-fill, which the in-memory-only assertions
-    /// above cannot see. LoadIndexUnsafe (FileMemoryStore.cs ~:701-745) feeds entries through
+    /// above cannot see. LoadIndexUnsafe (in FileMemoryStore.cs) feeds entries through
     /// AttributeMigration.MigratesTo and, when it reports a change, calls WriteSidecar to rewrite
     /// the sidecar on disk from the legacy "fields" key to "attributes" — this is what organically
     /// migrates a workspace that never runs `scri migrate`. MigratesTo detects "needs migrating" by
