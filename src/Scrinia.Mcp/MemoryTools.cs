@@ -68,22 +68,23 @@ public sealed partial class ScriniaMcpTools
         string guideContent = EmbeddedPrompts.LoadGuide()
             ?? throw new InvalidOperationException("Built-in guide not found in embedded resources");
 
+        // guide() is exempt from the response-size cap (Task 10, T10-A) — the document is
+        // embedded at build time, bounded by construction rather than by a caller's query, and
+        // guide() is the session-start tool every agent calls first. Truncating it protects
+        // nothing and silently damages the one document the agent most needs intact. The bound
+        // this trades for is enforced at test time; see GuideSizeTests.
+
         // No store configured (e.g. running outside a workspace): just return the static guide.
         if (MemoryStoreContext.Current is null)
-            return ResponseBuilder.Success(guideContent).WithAction("guide").ToYaml();
+            return ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide").ToYaml();
 
         // Fold the workspace-restore context into the guide response so the agent gets warnings,
         // available skills, and followUp pointers without a separate restore call —
         // closes the most common utilization failure mode (read guide, forget to restore).
         var ctx = await BuildRestoreContextAsync(cancellationToken);
-        var combinedInfo = ctx.Info.Concat(ctx.ContentSections).ToArray();
-        return ResponseBuilder.Success(guideContent)
-            .WithAction("guide")
-            .WithActionNeeded(ctx.Warnings.ToArray())
-            .WithInfo(combinedInfo)
-            .WithInstruction(ctx.Instruction)
-            .WithFollowUp(ctx.FollowUpNames.ToArray())
-            .ToYaml();
+        return ApplyRestoreContext(
+            ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide"),
+            ctx).ToYaml();
     }
 
     // ── Per-verb memory tools ────────────────────────────────────────────────
@@ -96,6 +97,49 @@ public sealed partial class ScriniaMcpTools
 
     private const int MaxPathLength = 256;
     private const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
+
+    // ── Per-tool truncation advice (Task 10, T10-B) ─────────────────────────
+    //
+    // ResponseBuilder.DefaultTruncationAdvice ("narrow with search ... or recall a chunk") is
+    // wrong for a tool that has no query to narrow and no chunk to recall. Rather than a switch
+    // in the YAML renderer keyed on which tool is calling, each tool that can realistically
+    // truncate (search, recall, list) sets its own advice once here and chains it with
+    // .WithTruncationAdvice(...) at its own Success()/Warning() call sites — the renderer stays
+    // one rule (McpResponseExtensions.ToYaml), the tool identity is the input.
+
+    private const string RecallTruncationAdvice =
+        "This memory's content exceeds the response limit. Retrieve it in pieces with " +
+        "recall({ path, chunk: N }), starting at chunk 1. If chunk was already set, that chunk " +
+        "itself is oversized — compact() the memory to shrink its chunks.";
+
+    private const string SkillContentTruncationAdvice =
+        "This skill file exceeds the response limit and skill content is not chunked. Shorten " +
+        "the skill, or drop withBuiltin so only the override is returned.";
+
+    private const string SearchTruncationAdvice =
+        "Results were cut short. Narrow with a smaller limit, a pathPrefix, or an " +
+        "attributeFilter, or recall a specific hit's path for its full content.";
+
+    private const string ListTruncationAdvice =
+        "The listing was cut short. Narrow with excludeTopics or a smaller scopes list, or use " +
+        "mode: 'full' with offset/limit to page through it.";
+
+    /// <summary>
+    /// Canonicalizes an address arriving at the MCP facade. One helper rather than seven
+    /// repetitions of the same call — the CLI (<c>ScriniaCommands.RefuseEphemeral</c>) and REST
+    /// (<c>MemoryEndpoints.NameRefusal</c>) already have theirs.
+    ///
+    /// <para>The facade canonicalizes and PROCEEDS; the CLI and REST deliberately REFUSE instead,
+    /// because their processes cannot serve an ephemeral memory back — the CLI exits immediately,
+    /// and REST sits below the surface where the alias would resolve to the persistent scope
+    /// <c>local:temp</c>. Those are three considered policies, not an inconsistency to unify.</para>
+    ///
+    /// <para>Scope is deliberately this class only. The two remaining single-call surfaces
+    /// (<c>ScriniaMcpResources</c> and <c>AgentLoop</c>) keep their direct call: a one-line helper
+    /// wrapping a one-line call at one site is indirection without consolidation. All five are
+    /// pinned behaviourally by <c>Scrinia.Tests.Naming.AddressSurfaceCoverageTests</c>.</para>
+    /// </summary>
+    private static string Address(string raw) => MemoryNaming.CanonicalizeEphemeralAlias(raw);
 
     [McpServerTool(Name = "remember"), Description(
         "Persist a memory at a path. content is an array — each element becomes one independently " +
@@ -151,7 +195,7 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         // Skill-path routing: '/skill/{name}' → SkillCreate.
-        var skillRoute = TryRouteSkillRemember(path, content, cancellationToken);
+        var skillRoute = TryRouteSkillRemember(path, content, attributes, keywords, cancellationToken);
         if (skillRoute is not null) return (await skillRoute).ToYaml();
 
         if (content is null || content.Length == 0)
@@ -178,7 +222,7 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         McpResponse response = await Remember(content, path,
             keywords: keywords, attributes: attributes,
             actionLabel: "remembered", cancellationToken: cancellationToken);
@@ -213,7 +257,7 @@ public sealed partial class ScriniaMcpTools
                 "recall({ path: '...' })",
                 "list() to discover available paths").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
     }
 
@@ -225,9 +269,9 @@ public sealed partial class ScriniaMcpTools
     public async Task<string> MemorySearch(
         [Description("Search query string.")] string query,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when you know synonyms or related concepts the user didn't type.")] string? context = null,
-        [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'.")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("Maximum results to return (default 20). Rich-result format is verbose, so prefer 10 for broad exploratory queries.")] int limit = 20,
-        [Description("Optional comma-separated topic names to exclude from results.")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude from results. An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         [Description("Optional path prefix to scope results, e.g. '/findings/' or '/skill/'. Matches the qualified memory name.")] string? pathPrefix = null,
         [Description("Optional attribute filter — a map of key to values. Returns only memories whose attributes " +
                      "contain EVERY listed key; for a key with values, the memory must carry at least one of them. " +
@@ -248,11 +292,11 @@ public sealed partial class ScriniaMcpTools
         "List stored memories. mode 'summary' (default) shows scopes + top keywords and attributes; " +
         "'full' paginates the table; 'drift' surfaces memories whose file attributes have changed.")]
     public async Task<string> MemoryList(
-        [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'. Topic names filter to local topics.")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. Topic names filter to local topics. An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("'summary' (default), 'full' for a paginated table, 'drift' for a code-reference drift check.")] string mode = "summary",
         [Description("Starting index for full mode (0-based).")] int offset = 0,
         [Description("Maximum entries to return in full mode (default 50).")] int limit = 50,
-        [Description("Optional comma-separated topic names to exclude (e.g. 'plan,task,project,learn' to hide planning namespaces).")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude (e.g. ['plan', 'task', 'project', 'learn'] to hide planning namespaces). An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
         return (await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken)).ToYaml();
@@ -320,7 +364,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "Split the append into multiple smaller append calls.").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         McpResponse response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
 
         // Same hint application as MemoryRemember: applied to the typed response before
@@ -333,19 +377,27 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "forget"), Description(
-        "Delete a memory by path. " +
-        "Example: forget({ path: '/temp/scratch' }).")]
+        "Delete a memory by path. A '/skill/{name}' path deletes the stored skill file; a built-in " +
+        "skill is not a file here and cannot be deleted, so forget says so rather than reporting " +
+        "NOT_FOUND. " +
+        "Example: forget({ path: '/temp/scratch' }), or forget({ path: '/skill/qa' }) to drop a " +
+        "stored skill.")]
     public async Task<string> MemoryForget(
-        [Description("Memory path (e.g. '/findings/SEC-001', '~scratch') or a file:// URI.")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch') or a file:// URI.")] string path,
         CancellationToken cancellationToken = default)
     {
+        // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and
+        // remember, so the three tools agree about who owns the namespace.
+        var skillRoute = TryRouteSkillForget(path, cancellationToken);
+        if (skillRoute is not null) return (await skillRoute).ToYaml();
+
         if (string.IsNullOrWhiteSpace(path))
             return ResponseBuilder.Error(
                 "forget requires 'path'.",
                 ErrorCodes.InvalidParameter,
                 "forget({ path: '...' })").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         return (await Forget(path, cancellationToken)).ToYaml();
     }
 
@@ -366,7 +418,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "compact({ path: '...', keepRecent: 3 })").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
     }
 
@@ -393,8 +445,8 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "link({ path: '...', destination: '...' })").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
-        destination = MemoryNaming.CanonicalizeEphemeralAlias(destination);
+        path = Address(path);
+        destination = Address(destination);
         return (await Link(path, destination, reason, cancellationToken)).ToYaml();
     }
 
@@ -425,8 +477,8 @@ public sealed partial class ScriniaMcpTools
     // ── Skill-path routing ────────────────────────────────────────────────────
     //
     // Skills are conceptually memory at a reserved path — we route /skill/{name}
-    // requests to SkillLoad / SkillCreate inside recall and remember
-    // rather than exposing a separate skill_* tool surface. The routing key is
+    // requests to SkillLoad / SkillCreate / SkillDelete inside recall, remember and
+    // forget rather than exposing a separate skill_* tool surface. The routing key is
     // `path`, so a dedicated tool wouldn't reduce ambiguity — it would just
     // create a second surface the agent has to choose between.
 
@@ -445,8 +497,18 @@ public sealed partial class ScriniaMcpTools
     /// <summary>
     /// Routes a remember call to <see cref="SkillCreate"/> when the path is under
     /// /skill/. Returns null when the call should fall through to normal remember.
+    /// <para>Takes <paramref name="attributes"/> and <paramref name="keywords"/> only so it can
+    /// report that it did not use them. A skill is markdown instructions on disk, not an indexed
+    /// memory, so there is nowhere for facets to live — but remember's schema spends two kilobytes
+    /// telling the caller what they do, and dropping them under a plain success reads as if they
+    /// were stored.</para>
     /// </summary>
-    private static Task<McpResponse>? TryRouteSkillRemember(string? path, string[]? content, CancellationToken ct)
+    private static Task<McpResponse>? TryRouteSkillRemember(
+        string? path,
+        string[]? content,
+        Dictionary<string, string[]>? attributes,
+        string[]? keywords,
+        CancellationToken ct)
     {
         if (!TryParseSkillPath(path, out string? skillName))
             return null;
@@ -463,12 +525,60 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/your-name-here', content: [...] })"));
 
-        return SkillCreate(
+        var create = SkillCreate(
             name: skillName,
             scaffold: "custom",
             instructions: string.Join("\n\n", content),
             tools: null,
             ct);
+
+        // Conditional on purpose. A notice attached to every skill write is noise the caller
+        // learns to skip, which costs more than saying nothing.
+        var unused = new List<string>();
+        if (attributes is { Count: > 0 }) unused.Add("attributes");
+        if (keywords is { Length: > 0 }) unused.Add("keywords");
+        return unused.Count == 0 ? create : ReportUnusedSkillArgs(create, unused);
+    }
+
+    /// <summary>
+    /// Appends a note naming the remember arguments that a /skill/ write had no place to put.
+    /// No-op on an error response — an error already carries its own recovery text.
+    /// </summary>
+    private static async Task<McpResponse> ReportUnusedSkillArgs(
+        Task<McpResponse> create, List<string> unused)
+    {
+        McpResponse response = await create;
+        if (response.IsError) return response;
+
+        string names = string.Join(" and ", unused);
+        bool one = unused.Count == 1;
+        string verb = one ? "does" : "do";
+        return response.WithInfo([
+            .. response.Info ?? [],
+            $"{names} {verb} not apply to a skill and {(one ? "was" : "were")} not "
+            + "stored. A skill is markdown instructions on disk, not an indexed memory, so it has "
+            + "nowhere to hold facets. Put anything that must be searchable in the skill text, or "
+            + "store it as a memory at a path outside /skill/.",
+        ]);
+    }
+
+    /// <summary>
+    /// Routes a forget call to <see cref="SkillDelete"/> when the path is under
+    /// /skill/. Returns null when the call should fall through to normal forget.
+    /// </summary>
+    private static Task<McpResponse>? TryRouteSkillForget(string? path, CancellationToken ct)
+    {
+        if (!TryParseSkillPath(path, out string? skillName))
+            return null;
+
+        if (string.IsNullOrWhiteSpace(skillName))
+            return Task.FromResult(ResponseBuilder.Error(
+                "forget on a /skill/... path requires a skill name in the path.",
+                ErrorCodes.InvalidParameter,
+                "forget({ path: '/skill/the-one-to-delete' })",
+                "recall({ path: '/skill/' }) to list available skills"));
+
+        return SkillDelete(skillName, ct);
     }
 
     /// <summary>

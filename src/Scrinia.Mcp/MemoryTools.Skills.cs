@@ -232,6 +232,83 @@ public sealed partial class ScriniaMcpTools
         return response;
     }
 
+    /// <summary>
+    /// Delete a stored skill (.scrinia/skills/{name}.md) and its metadata sidecar.
+    /// <para>Only a skill on disk can be forgotten. A built-in ships inside the assembly, so it
+    /// answers with its own error rather than <see cref="ErrorCodes.NotFound"/> — NOT_FOUND would
+    /// be a false statement about a skill <see cref="SkillLoad"/> will happily return. A disk
+    /// skill that shadows a built-in of the same name deletes normally, and the built-in resolves
+    /// again afterwards; the response says so.</para>
+    /// <para>The file is archived into skills/versions/ first, the same way
+    /// <see cref="SkillCreate"/> archives before it overwrites, so a mistaken forget of
+    /// hand-authored instructions is recoverable from the workspace.</para>
+    /// </summary>
+    internal static Task<McpResponse> SkillDelete(
+        [Description("Skill name to forget (e.g. 'api-reviewer').")] string name,
+        CancellationToken cancellationToken = default)
+    {
+        if (!FileEntityName.IsValid(name))
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Invalid skill name '{name}'. Use letters, digits, '-', '_' or '.' only.",
+                ErrorCodes.InvalidParameter,
+                "forget({ path: '/skill/my-helper' })"));
+
+        // Guarded after validation, per TryGetLayout's contract: an invalid name is an invalid
+        // name whether the store is local or remote.
+        if (!TryGetLayout(out var store))
+            return Task.FromResult(ResponseBuilder.Error(
+                "Skills are stored as .scrinia/skills/*.md in the local workspace, and the active store is remote.",
+                ErrorCodes.NotSupported,
+                "Run this against a local workspace to forget a stored skill."));
+
+        if (!PathRouter.TryToFileEntityPath("skill", name, store.WorkspaceRoot, out string filePath))
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Invalid skill name '{name}'.",
+                ErrorCodes.InvalidParameter,
+                "forget({ path: '/skill/my-helper' })"));
+
+        bool isBuiltIn = BuiltInSkills.ContainsKey(name);
+
+        if (!File.Exists(filePath))
+        {
+            if (isBuiltIn)
+                return Task.FromResult(ResponseBuilder.Error(
+                    $"'{name}' is a built-in skill that ships with Scrinia, not a file in this "
+                    + "workspace, so it cannot be forgotten.",
+                    ErrorCodes.InvalidParameter,
+                    $"recall({{ path: '/skill/{name}' }}) still loads it.",
+                    $"remember({{ path: '/skill/{name}', content: [...] }}) writes a project "
+                    + "override that shadows the built-in; forget that override to fall back."));
+
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Skill '{name}' not found.",
+                ErrorCodes.NotFound,
+                "recall({ path: '/skill/' }) to list available skills"));
+        }
+
+        string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
+        ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
+        File.Delete(filePath);
+
+        string metaPath = Path.ChangeExtension(filePath, ".meta.json");
+        if (File.Exists(metaPath))
+            File.Delete(metaPath);
+
+        var response = ResponseBuilder.Success(
+                $"Forgot /skill/{name}. Deleted .scrinia/skills/{name}.md; the previous text is "
+                + "archived under .scrinia/skills/versions/.")
+            .WithFileChanges()
+            .WithPath($"/skill/{name}")
+            .WithAction("forgotten");
+
+        if (isBuiltIn)
+            response = response.WithInfo(
+                $"'{name}' was a project override of a built-in skill. The built-in resolves "
+                + $"again — recall({{ path: '/skill/{name}' }}) still returns instructions.");
+
+        return Task.FromResult(response);
+    }
+
     /// <summary>List or load stored specialist skills.</summary>
     internal static Task<McpResponse> SkillLoad(
         [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? name = null,
@@ -337,13 +414,15 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Success(reconContent)
                 .WithPath($"/skill/{skillName}")
                 .WithAction("loaded")
-                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.");
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.")
+                .WithTruncationAdvice(SkillContentTruncationAdvice);
         }
 
         if (overrideContent is null)
         {
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
-                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in");
+                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in")
+                    .WithTruncationAdvice(SkillContentTruncationAdvice);
             return ResponseBuilder.Error(
                 $"Skill '{skillName}' not found.",
                 ErrorCodes.NotFound,
@@ -376,7 +455,8 @@ public sealed partial class ScriniaMcpTools
         var response = ResponseBuilder.Success(overrideContent)
             .WithPath($"/skill/{skillName}")
             .WithAction("loaded")
-            .WithInfo($"Loaded from {sourceLabel}");
+            .WithInfo($"Loaded from {sourceLabel}")
+            .WithTruncationAdvice(SkillContentTruncationAdvice);
         if (warnings.Count > 0)
             response = response.WithActionNeeded([.. warnings]);
         return response;

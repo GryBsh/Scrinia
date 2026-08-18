@@ -133,7 +133,7 @@ public sealed class HttpMemoryStoreDerivedFieldsTests
     {
         using var store = NewStore();
 
-        var entry = store.ListScoped("local").Single().Entry;
+        var entry = store.ListScoped(["local"]).Single().Entry;
 
         entry.TermFrequencies.Should().NotBeNull().And.ContainKey("zebra");
         entry.ChunkEntries.Should().NotBeNull().And.HaveCount(2);

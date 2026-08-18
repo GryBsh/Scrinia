@@ -10,14 +10,31 @@ namespace Scrinia.Core.Search;
 /// </summary>
 public sealed record SearchQuery(string Query)
 {
-    /// <summary>Optional comma-separated scope filter. Null means every readable scope.</summary>
-    public string? Scopes { get; init; }
+    private readonly IReadOnlyList<string>? _scopes;
+    private readonly IReadOnlyList<string>? _excludeTopics;
+
+    /// <summary>Optional scope filter. Null or empty means every readable scope (Task 9, D-4: an
+    /// empty list behaves identically to null). Normalized through
+    /// <see cref="MemoryNaming.NormalizeFilterList"/> on construction (Task 9 fix round 1, F-1/F-2/
+    /// F-3) — a null element or a blank entry can never reach a consumer, and no construction path
+    /// can bypass the rule since it lives in the <c>init</c> accessor itself.</summary>
+    public IReadOnlyList<string>? Scopes
+    {
+        get => _scopes;
+        init => _scopes = MemoryNaming.NormalizeFilterList(value);
+    }
 
     /// <summary>Maximum results to return.</summary>
     public int Limit { get; init; } = 20;
 
-    /// <summary>Optional comma-separated topic names to exclude, e.g. "plan,task".</summary>
-    public string? ExcludeTopics { get; init; }
+    /// <summary>Optional topic names to exclude, e.g. ["plan", "task"]. Null or empty excludes
+    /// nothing (Task 9, D-4). Normalized the same way as <see cref="Scopes"/> and for the same
+    /// reason (Task 9 fix round 1, F-1/F-2/F-3).</summary>
+    public IReadOnlyList<string>? ExcludeTopics
+    {
+        get => _excludeTopics;
+        init => _excludeTopics = MemoryNaming.NormalizeFilterList(value);
+    }
 
     /// <summary>Case-insensitive prefix on the qualified label, e.g. "/findings/".</summary>
     public string? PathPrefix { get; init; }

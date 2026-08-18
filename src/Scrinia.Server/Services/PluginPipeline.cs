@@ -188,8 +188,8 @@ public sealed class PluginPipeline
     /// attributeFilter, no context augmentation. The copy is gone; only the hook-free forwarding
     /// remains.</summary>
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(
-        IMemoryStore store, string query, string? scopes, int limit,
-        string? excludeTopics = null,
+        IMemoryStore store, string query, IReadOnlyList<string>? scopes, int limit,
+        IReadOnlyList<string>? excludeTopics = null,
         string? pathPrefix = null,
         IReadOnlyDictionary<string, string[]>? attributeFilter = null,
         CancellationToken ct = default)

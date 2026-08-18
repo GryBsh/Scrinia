@@ -22,7 +22,9 @@ public partial class ScriniaCommands
 {
     /// <summary>List stored memories.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral).</param>
+    /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral). A scope
+    /// name containing a comma cannot be addressed this way; use the MCP `list` tool instead,
+    /// which takes scopes as a real array.</param>
     /// <param name="summary">Show summary (topics, keywords, stats) instead of full table.</param>
     /// <param name="offset">Starting index for paginated output (0-based).</param>
     /// <param name="limit">Maximum entries to show (0 = unlimited).</param>
@@ -32,7 +34,11 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
-        var entries = WorkspaceSetup.Store.ListScoped(scopes);
+        // Task 9, D-3: the CLI keeps a comma-separated `--scopes` argument on purpose — command-line
+        // arguments are strings, and forcing repeated `--scopes` flags would be a worse CLI for no
+        // gain. It splits at this boundary; a scope name containing a comma is therefore unaddressable
+        // from the CLI, unlike the MCP `list`/`search` tools, which take a real array.
+        var entries = WorkspaceSetup.Store.ListScoped(MemoryNaming.SplitCommaSeparated(scopes));
         if (entries.Count == 0)
         {
             if (json)
@@ -209,10 +215,13 @@ public partial class ScriniaCommands
     /// <summary>Search memories.</summary>
     /// <param name="query">Search term to match against memory names and descriptions.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
+    /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral). A scope
+    /// name containing a comma cannot be addressed this way; use the MCP `search` tool instead,
+    /// which takes scopes as a real array.</param>
     /// <param name="limit">Maximum results to return.</param>
     /// <param name="context">Context terms appended to the query for scoring only — bridges vocabulary mismatches.</param>
-    /// <param name="excludeTopics">Comma-separated topic names to exclude from results.</param>
+    /// <param name="excludeTopics">Comma-separated topic names to exclude from results. A topic
+    /// name containing a comma cannot be addressed this way; use the MCP `search` tool instead.</param>
     /// <param name="pathPrefix">Path prefix to scope results, e.g. '/findings/'.</param>
     /// <param name="json">Output as JSON instead of a table.</param>
     public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null,
@@ -227,13 +236,17 @@ public partial class ScriniaCommands
         // the same per-hit attributes/dates/anchors the tool does. MemoryStoreContext.Current is
         // set by WorkspaceSetup.Configure above.
         var store = MemoryStoreContext.Current!;
+        // Task 9, D-3: the CLI keeps comma-separated `--scopes`/`--exclude-topics` arguments on
+        // purpose and splits at this boundary — see the matching comment on `List` above. A scope
+        // name containing a comma is therefore unaddressable from `scri search`, unlike the MCP
+        // `search` tool, which takes a real array.
         var matches = (await SearchPipeline.ExecuteAsync(
             store,
             new SearchQuery(query)
             {
-                Scopes = scopes,
+                Scopes = MemoryNaming.SplitCommaSeparated(scopes),
                 Limit = limit,
-                ExcludeTopics = excludeTopics,
+                ExcludeTopics = MemoryNaming.SplitCommaSeparated(excludeTopics),
                 PathPrefix = pathPrefix,
             },
             SearchContributorContext.Current,

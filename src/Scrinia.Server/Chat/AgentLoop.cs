@@ -193,7 +193,13 @@ public static class AgentLoop
         return sb.ToString();
     }
 
-    private static async Task<string> ExecuteRecallAsync(
+    /// <summary>
+    /// Internal rather than private for one reason: this is a published address surface with no
+    /// other seam. The recall tool the LLM calls reaches <see cref="MemoryOrchestrator.ShowAsync"/>
+    /// directly, bypassing the MCP tool methods, so its ephemeral-alias handling can only be pinned
+    /// by driving this method. See <c>Scrinia.Server.Tests.AgentLoopEphemeralAliasTests</c>.
+    /// </summary>
+    internal static async Task<string> ExecuteRecallAsync(
         JsonElement args, IMemoryStore store, CancellationToken ct)
     {
         string name = args.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";

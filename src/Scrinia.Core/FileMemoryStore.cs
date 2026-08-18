@@ -354,7 +354,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     ///
     /// <para>The fact-store invalidation tail matches every other mutating write path here
     /// (<c>SaveIndex</c>, <c>Remove</c>, <c>TryUpdateEntry</c>): an ephemeral entry's attributes are
-    /// part of <see cref="GetEntityFactStore"/>'s merged view, which <see cref="ListScoped(string?)"/>
+    /// part of <see cref="GetEntityFactStore"/>'s merged view, which <see cref="ListScoped(IReadOnlyList{string}?)"/>
     /// builds INCLUDING the ephemeral scope, so a swap that did not invalidate would leave an
     /// already-built fact store blind to it for the rest of the session. Taken alone — no index lock
     /// is held here — so it cannot invert the documented (index lock, then fact-store lock)
@@ -542,12 +542,25 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return false;
     }
 
-    public IReadOnlyList<string> ResolveReadScopes(string? scopes = null)
+    public IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null)
     {
-        if (!string.IsNullOrWhiteSpace(scopes))
+        // Task 9 fix round 1 (F-1/F-2/F-3): normalize at entry, for callers that reach the store
+        // directly rather than through a SearchQuery (whose Scopes/ExcludeTopics init accessors do
+        // the same thing). This is what turns ASP.NET Core's `?scopes=` -> ["" ] into "no filter"
+        // (F-1) instead of NormalizeScopeFilters("") -> ["local"], drops a null element before it
+        // can reach a bare .Trim() and throw (F-2), and drops blank entries so ["", "api"] resolves
+        // exactly as ["api"] instead of silently adding "local" (F-3).
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+
+        // Task 9, D-4: an empty list means "no filter", identically to null.
+        if (scopes is { Count: > 0 })
         {
-            // "all" (case-insensitive) returns every scope including entity-classified ones
-            if (scopes.Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
+            // "all" (case-insensitive) as the SOLE entry returns every scope including
+            // entity-classified ones. Matches the old single-string behaviour, where only an
+            // exact (trimmed) "all" tripped this branch — "all,foo" fell through to the general
+            // per-token path below, same as it does here when the list has more than one entry.
+            // (No .Trim() needed here any more — NormalizeFilterList already trimmed every entry.)
+            if (scopes.Count == 1 && scopes[0].Equals("all", StringComparison.OrdinalIgnoreCase))
             {
                 var all = new List<string> { "local" };
                 all.AddRange(DiscoverTopics());
@@ -555,14 +568,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             }
 
             return scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .SelectMany(NormalizeScopeFilters)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
 
-        // Default (null): every discovered topic. There is no longer an "entity-classified"
-        // category to exclude — see the commit that deleted IsEntityScope.
+        // Default (null or empty): every discovered topic. There is no longer an
+        // "entity-classified" category to exclude — see the commit that deleted IsEntityScope.
         var ordered = new List<string> { "local" };
         ordered.AddRange(DiscoverTopics());
         return ordered.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -906,7 +918,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     /// <summary>
     /// Yields every persistent entry across all scopes as RAW deserialized sidecars — WITHOUT the
-    /// read-time forward-fill write-back that <see cref="LoadIndex"/>/<see cref="ListScoped(string?)"/>
+    /// read-time forward-fill write-back that <see cref="LoadIndex"/>/<see cref="ListScoped(IReadOnlyList{string}?)"/>
     /// perform as a side effect of loading. Each item carries the entry, its scope, and the primary
     /// store directory the sidecar lives in. Read-only; used by
     /// <see cref="Migration.AttributeMigration.MigrateStore"/> to measure and persist accurately.
@@ -917,7 +929,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         // though every scope now maps to exactly one v3 directory (no more shadowed legacy-flat-dir
         // target shared by two scopes to double-count).
         var yielded = new HashSet<(string Dir, string Name)>();
-        foreach (string scope in ResolveReadScopes("all"))
+        foreach (string scope in ResolveReadScopes(["all"]))
         {
             string primaryDir = GetStoreDirForScope(scope);
             var primary = LoadEntriesFromSidecarsRaw(primaryDir);
@@ -1867,19 +1879,29 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     // ── Listing & Search ─────────────────────────────────────────────────────
 
-    public List<ScopedArtifact> ListScoped(string? scopes = null)
+    /// <summary>
+    /// True when <paramref name="scopes"/> is null/empty (every scope, including ephemeral, is in
+    /// play — Task 9, D-4) or explicitly names "ephemeral" among its entries. Shared by
+    /// <see cref="ListScoped(IReadOnlyList{string}?)"/>, <see cref="AnyScoped"/>,
+    /// <see cref="ListScoped(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> and
+    /// <see cref="FilterToQueryScopes"/> — the one place that decides whether ephemeral memories
+    /// are in play for a given scope filter.
+    /// </summary>
+    private static bool IncludesEphemeral(IReadOnlyList<string>? scopes)
+    {
+        // Task 9 fix round 1 (F-2): normalize at entry so a null element (schema-valid JSON for
+        // string[] regardless of the non-nullable element annotation) cannot reach the bare
+        // .Trim() below and throw.
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+        return scopes is not { Count: > 0 }
+            || scopes.Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null)
     {
         var result = new List<ScopedArtifact>();
 
-        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
-        if (!includeEphemeral && scopes is not null)
-        {
-            includeEphemeral = scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
-        }
-
-        if (includeEphemeral)
+        if (IncludesEphemeral(scopes))
             result.AddRange(ListEphemeral());
 
         foreach (string scope in ResolveReadScopes(scopes))
@@ -1891,23 +1913,16 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// Lazy override of the interface default: walks the same source ListScoped(string?) does —
-    /// <see cref="ListEphemeral"/> then per-scope <see cref="LoadIndex"/> — but returns on the
-    /// first match instead of materializing a <see cref="List{T}"/> first. A scope after the match
-    /// is never loaded at all; the default (<c>ListScoped(scopes).Any(predicate)</c>) would load
-    /// every scope before testing any of them.
+    /// Lazy override of the interface default: walks the same source
+    /// <see cref="ListScoped(IReadOnlyList{string}?)"/> does — <see cref="ListEphemeral"/> then
+    /// per-scope <see cref="LoadIndex"/> — but returns on the first match instead of materializing
+    /// a <see cref="List{T}"/> first. A scope after the match is never loaded at all; the default
+    /// (<c>ListScoped(scopes).Any(predicate)</c>) would load every scope before testing any of
+    /// them.
     /// </summary>
-    public bool AnyScoped(string? scopes, Func<ScopedArtifact, bool> predicate)
+    public bool AnyScoped(IReadOnlyList<string>? scopes, Func<ScopedArtifact, bool> predicate)
     {
-        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
-        if (!includeEphemeral && scopes is not null)
-        {
-            includeEphemeral = scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
-        }
-
-        if (includeEphemeral && ListEphemeral().Any(predicate))
+        if (IncludesEphemeral(scopes) && ListEphemeral().Any(predicate))
             return true;
 
         foreach (string scope in ResolveReadScopes(scopes))
@@ -2047,21 +2062,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// Efficient override of the default interface method: filters at scope-resolution level
     /// rather than post-filtering, avoiding loading indices for excluded topics.
     /// </summary>
-    public List<ScopedArtifact> ListScoped(string? scopes, string? excludeTopics)
+    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
     {
-        if (string.IsNullOrWhiteSpace(excludeTopics))
+        // Task 9, D-4: an empty excludeTopics list behaves identically to null.
+        if (excludeTopics is not { Count: > 0 })
             return ListScoped(scopes);
 
         var result = new List<ScopedArtifact>();
 
-        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
-        if (!includeEphemeral && scopes is not null)
-        {
-            includeEphemeral = scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
-        }
-        if (includeEphemeral)
+        if (IncludesEphemeral(scopes))
             result.AddRange(ListEphemeral());
 
         foreach (string scope in ResolveReadScopes(scopes, excludeTopics))
@@ -2126,19 +2135,16 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to, so
     /// a wider or differently-scoped <see cref="SearchQuery.Candidates"/> cannot change a search's
     /// answer. A list narrower than the query's scopes is not corrected here — it still under-returns.
-    /// Mirrors <see cref="ListScoped(string?, string?)"/>'s scope resolution, including its rule
-    /// for when ephemeral memories are in play.
+    /// Mirrors <see cref="ListScoped(IReadOnlyList{string}?, IReadOnlyList{string}?)"/>'s scope
+    /// resolution, including its rule for when ephemeral memories are in play.
     /// </summary>
     private List<ScopedArtifact> FilterToQueryScopes(
-        IReadOnlyList<ScopedArtifact> candidates, string? scopes, string? excludeTopics)
+        IReadOnlyList<ScopedArtifact> candidates, IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
     {
         var allowed = new HashSet<string>(
             ResolveReadScopes(scopes, excludeTopics), StringComparer.OrdinalIgnoreCase);
 
-        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes)
-            || scopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                     .Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
-        if (includeEphemeral)
+        if (IncludesEphemeral(scopes))
             allowed.Add("ephemeral");
 
         var result = new List<ScopedArtifact>(candidates.Count);
@@ -2152,10 +2158,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// Efficient override of the default interface method: resolves scopes then excludes
     /// the specified topic scopes.
     /// </summary>
-    public IReadOnlyList<string> ResolveReadScopes(string? scopes, string? excludeTopics)
+    public IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
     {
         var resolved = ResolveReadScopes(scopes);
-        if (string.IsNullOrWhiteSpace(excludeTopics))
+        if (excludeTopics is not { Count: > 0 })
             return resolved;
         var excluded = IMemoryStore.BuildExcludedScopeSet(excludeTopics);
         return resolved.Where(s => !excluded.Contains(s)).ToArray();
@@ -2474,7 +2480,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         }
     }
 
-    public List<TopicInfo> GatherTopicInfos(string? scopes = null)
+    public List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null)
     {
         var topics = new List<TopicInfo>();
         foreach (string scope in ResolveReadScopes(scopes))

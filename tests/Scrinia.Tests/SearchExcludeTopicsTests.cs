@@ -79,7 +79,7 @@ public sealed class SearchExcludeTopicsTests
         try
         {
             string result = await new ScriniaMcpTools().MemorySearch(
-                query: "sentinel", limit: 2, excludeTopics: "plan");
+                query: "sentinel", limit: 2, excludeTopics: ["plan"]);
 
             var parsed = ResponseParser.Parse(result);
             string content = parsed.Content ?? "";

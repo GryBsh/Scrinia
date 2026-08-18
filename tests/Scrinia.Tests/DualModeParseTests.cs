@@ -522,8 +522,8 @@ public sealed class DualModeParseTests : IDisposable
     {
         // The device-name rule reaches the read path through the same constructor. NUL is
         // refused, so the filter matches nothing; the names that demonstrably work are not.
-        _store.ResolveReadScopes("nul").Should().BeEmpty();
-        _store.ResolveReadScopes("CON").Should().BeEquivalentTo(["local:CON"]);
+        _store.ResolveReadScopes(["nul"]).Should().BeEmpty();
+        _store.ResolveReadScopes(["CON"]).Should().BeEquivalentTo(["local:CON"]);
     }
 
     [Fact]
@@ -532,8 +532,8 @@ public sealed class DualModeParseTests : IDisposable
         // READ callers take the non-throwing form. An aliased scope can never name a stored
         // memory (ArtifactEntry has no scope field; DiscoverTopics re-derives scopes from on-disk
         // directory names), so "matches nothing" is the correct answer, not leniency.
-        _store.ResolveReadScopes("topic.").Should().BeEmpty();
-        _store.ResolveReadScopes("local:topic.").Should().BeEmpty();
+        _store.ResolveReadScopes(["topic."]).Should().BeEmpty();
+        _store.ResolveReadScopes(["local:topic."]).Should().BeEmpty();
     }
 
     [Fact]
@@ -542,10 +542,10 @@ public sealed class DualModeParseTests : IDisposable
         // The empty-topic and redundant-separator aliases are pinned at the constructor above,
         // but NormalizeScopeFilters is the one surface they were actually reachable from.
         // "local:" resolves to the memories ROOT, i.e. it aliased the bare "local" scope.
-        _store.ResolveReadScopes("local:").Should().BeEmpty();
+        _store.ResolveReadScopes(["local:"]).Should().BeEmpty();
 
         // "a//b" named the same directory chain as "a/b" under a different scope string.
-        _store.ResolveReadScopes("local:a//b").Should().BeEquivalentTo(["local:a/b"]);
+        _store.ResolveReadScopes(["local:a//b"]).Should().BeEquivalentTo(["local:a/b"]);
     }
 
     [Fact]
@@ -557,15 +557,15 @@ public sealed class DualModeParseTests : IDisposable
         var (storedScope, _) = _store.ParseQualifiedName("/a*b/x");
         storedScope.Should().Be("local:a_b");
 
-        IMemoryStore.ShouldExcludeScope(storedScope, "a*b").Should().BeTrue(
+        IMemoryStore.ShouldExcludeScope(storedScope, ["a*b"]).Should().BeTrue(
             because: "the exclusion must resolve to the same scope the write path produced");
 
         // The '/'-containing arm used to bypass the constructor entirely via string interpolation.
         var (deepScope, _) = _store.ParseQualifiedName("/goal/G-5/x");
-        IMemoryStore.ShouldExcludeScope(deepScope, "goal/G-5").Should().BeTrue();
+        IMemoryStore.ShouldExcludeScope(deepScope, ["goal/G-5"]).Should().BeTrue();
 
         // A topic that cannot be constructed excludes nothing rather than throwing.
-        IMemoryStore.ShouldExcludeScope(storedScope, "topic.").Should().BeFalse();
+        IMemoryStore.ShouldExcludeScope(storedScope, ["topic."]).Should().BeFalse();
     }
 
     [Fact]
@@ -574,8 +574,8 @@ public sealed class DualModeParseTests : IDisposable
         // This branch used to `return [s]` verbatim. That meant "local:a*b" became a scope string
         // no write could ever produce, and "LOCAL:api" reached ToStoreDir — whose prefix test is
         // Ordinal — as an unknown scope.
-        _store.ResolveReadScopes("local:a*b").Should().BeEquivalentTo(["local:a_b"]);
-        _store.ResolveReadScopes("LOCAL:api").Should().BeEquivalentTo(["local:api"]);
+        _store.ResolveReadScopes(["local:a*b"]).Should().BeEquivalentTo(["local:a_b"]);
+        _store.ResolveReadScopes(["LOCAL:api"]).Should().BeEquivalentTo(["local:api"]);
     }
 
     /// <summary>

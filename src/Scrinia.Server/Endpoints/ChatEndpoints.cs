@@ -17,11 +17,6 @@ public static class ChatEndpoints
         group.MapPost("/", async (string store, ChatRequest req, RequestContext ctx,
             ChatProviderCache providerCache, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
-            if (!ctx.HasPermission("chat") || !ctx.HasPermission("read") || !ctx.HasPermission("search"))
-                return Results.Json(
-                    new ErrorResponse("Permissions 'chat', 'read', and 'search' are required."),
-                    statusCode: 403);
-
             // ── Input validation (SEC-051) ──────────────────────────────────
             const int MaxMessages = 1000;
             const int MaxContentBytes = 1_048_576; // 1 MB per message
@@ -76,16 +71,18 @@ public static class ChatEndpoints
                     try { await writer.WriteAsync($"data: {errorJson}\n\n"); } catch { /* best-effort */ }
                 }
             });
-        });
+        }).RequirePermission(Permissions.Chat, Permissions.Read, Permissions.Search);
 
         // GET available providers (for UI picker)
-        group.MapGet("/providers", (RequestContext ctx) =>
+        // The IResult annotation is load-bearing, not decoration. With the permission guard
+        // inlined this lambda had two returns, so its inferred best common type was IResult.
+        // The guard's removal left one return (Results.Ok(...)), which would infer
+        // Ok<ChatProvidersResponse> and publish a typed 200 schema this route never advertised.
+        // Moving where the permission check lives must not move the OpenAPI document.
+        group.MapGet("/providers", IResult () =>
         {
-            if (!ctx.HasPermission("chat"))
-                return Results.Json(new ErrorResponse("Permission 'chat' required."), statusCode: 403);
-
             var available = chatOptions.GetAvailableProviders();
             return Results.Ok(new ChatProvidersResponse(available));
-        });
+        }).RequirePermission(Permissions.Chat);
     }
 }

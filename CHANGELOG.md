@@ -10,6 +10,98 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — MCP `search`, `list` and `facts` take `scopes`/`excludeTopics` as arrays
+
+- `search`, `list` and `facts` now take `scopes` and `excludeTopics` as string arrays instead of
+  comma-separated strings, matching `attributeFilter`'s existing map shape. A comma-separated
+  string is no longer accepted; callers must pass `["local", "api"]` rather than `"local,api"`.
+  An empty array behaves identically to omitting the field. This closes contradiction 6 of 6 in
+  the published-surface-coherence spec: the old comma encoding could not express a scope name
+  containing a comma. The CLI (`scri list`/`scri search`/`scri facts`) is unaffected and keeps its
+  comma-separated `--scopes`/`--exclude-topics` arguments — a deliberate divergence, since
+  command-line arguments are strings and repeated flags would be a worse CLI for no gain.
+
+### Changed (breaking) — REST `/search` and `/memories`'s `scopes`/`excludeTopics` are repeated query params / a JSON array
+
+- The REST `/search` endpoint (both GET and POST) now takes `scopes` and `excludeTopics` as
+  arrays instead of a comma-joined string: GET via repeated query parameters
+  (`?scopes=a&scopes=b`), POST via a JSON array in the request body. A comma-joined value in
+  either place is no longer split into multiple scopes. This is a second, independent breaking
+  wire change from the MCP `search`/`list`/`facts` conversion above — REST and MCP callers are
+  different audiences and this list covers both. The bound on the old single comma-joined string
+  (1KB total) is now a count bound (64 entries) plus a per-element length bound (1024 characters)
+  on each of `scopes` and `excludeTopics` independently.
+- The `/memories` listing endpoint's `scopes` query parameter now takes the same repeated-param
+  encoding and the same 64-entry/1024-character bound — a bound this route never had before. It
+  was originally left out of this conversion on the premise that only `/search` needed it; that
+  premise was wrong, because `IMemoryStore.ListScoped` already promises list semantics and
+  `/memories` re-joining its filter on commas broke that promise for every remote read (a
+  comma-named scope was reachable through every local caller and invisible through this endpoint).
+
+### Changed (breaking) — `Scrinia.Core.IMemoryStore`'s scope/excludeTopics members take lists, not strings
+
+- `IMemoryStore.ListScoped`, `AnyScoped`, `ResolveReadScopes`, `GatherTopicInfos`,
+  `ShouldExcludeScope`, `BuildExcludedScopeSet`, and `Search.SearchQuery.Scopes`/`.ExcludeTopics`
+  all changed from `string?`/`string` to `IReadOnlyList<string>?`/`IReadOnlyList<string>`. This is
+  source- and binary-breaking for any out-of-tree `IMemoryStore` implementation or plugin that
+  binds to these members directly — a third audience distinct from the MCP tool-schema and REST
+  wire-encoding entries above, since a plugin talks to the Core contract, not either wire. An
+  implementation must update its signatures to the list-typed shape to keep compiling against this
+  version.
+
+### Changed (breaking) — `restore` now places workspace context in `info:`, matching `guide`
+
+- `restore` now returns the workspace context in `info:` with a summary line in `content:`,
+  matching `guide`. Callers reading the sections out of `content:` must read `info:`.
+- `scri restore --hook` embeds this yaml verbatim into the `<scrinia-restored-memory>`
+  SessionStart payload, so the field move is visible to every agent at session start. The framing
+  text and the envelope are unchanged; only the field the sections sit under moves.
+
+### Changed (breaking) — MCP `list` and `reconcile` reject inputs they used to silently paper over
+
+- `list` now errors on an unrecognised `mode` (`INVALID_PARAMETER`, `unknown mode '...'. Use
+  'summary', 'full', or 'drift'.`) instead of silently falling through to the `summary` view. A
+  caller that sent a typo'd or stale mode string and relied on the quiet fallback now gets a
+  structured error instead of an unexpected listing. Explicitly passing `mode: null` or
+  `mode: ""` is a deliberate carve-out and still normalizes to `summary` — that is a caller
+  omitting the field over JSON-RPC, not naming an unrecognised one, and matches how `facts`
+  already treats its own `op` parameter.
+- `reconcile` now errors (`'choice' requires 'conflictId' — without one there is no conflict to
+  resolve, and the call would silently perform a read-only scan instead.`) when `choice` is
+  supplied without `conflictId`. It previously ran the same read-only scan `reconcile({})` runs —
+  which reports `action: "reconciled"` on every path, including "nothing found" — so a caller that
+  passed `choice` alone, expecting it to apply, was told a resolution had happened when nothing on
+  disk had changed.
+
+### Changed — `guide()` no longer truncates its own guide document; truncation advice fits the tool that gave it
+
+- `guide()` is now exempt from the response-size cap that every other tool's `content:` is subject
+  to. The embedded guide document had grown to 8046 characters against the 7992-character cap
+  (`MaxResponseChars`(8192) − yaml overhead(200)), so it was silently losing its last ~54
+  characters — mid-sentence, off the end of the "Workspace" section — on every call. Truncating a
+  build-time-fixed document protects nothing; the document is bounded by construction, not by a
+  caller's query, so it is enforced at test time instead (`GuideSizeTests`), not clipped at
+  response time.
+- When `search`, `recall` or `list` truncates, the `followUp` advice now names that tool's own
+  parameters (e.g. recall's `recall({ path, chunk: N })`) instead of the generic "narrow with
+  search, or recall a chunk" text, which was meaningless coming from a tool with no query to narrow
+  and no chunk to recall.
+
+### Changed — `/skill/` is readable, writable and deletable through one dispatcher
+
+- `forget({ path: '/skill/{name}' })` now actually deletes the file. It previously fell through
+  to the generic memory-forget path and answered `NOT_FOUND` for a skill `recall` had just
+  returned — a skill on disk could be read but never forgotten through the facade. The file is
+  archived under `.scrinia/skills/versions/` first, the same way `remember`/`SkillCreate` already
+  archives before overwriting.
+- Forgetting a **built-in** skill with no project-level override now returns its own
+  `INVALID_PARAMETER` error explaining that it ships with Scrinia and cannot be forgotten, with
+  `recall`/`remember` follow-ups — not `NOT_FOUND`, which would misdescribe a skill `recall` will
+  happily keep returning. Forgetting an override of a built-in deletes the override, reports that
+  the built-in resolves again, and leaves the built-in itself untouched.
+- `remember({ path: '/skill/...' })` now warns when `attributes` or `keywords` are also supplied,
+  since skill files are plain markdown on disk and neither parameter has any effect there.
+
 ### Changed — writing memories no longer re-reads the scope, and a memory's vectors replace in one locked write
 
 - **Writing a memory used to cost the whole scope.** `FileMemoryStore.Upsert`, `Remove` and

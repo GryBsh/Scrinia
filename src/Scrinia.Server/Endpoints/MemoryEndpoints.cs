@@ -19,24 +19,25 @@ public static class MemoryEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("api");
 
-        group.MapPost("/memories", RememberMemory);
-        group.MapGet("/memories", ListMemory);
-        group.MapGet("/memories/{name}", RecallMemory);
-        group.MapGet("/memories/{name}/entry", GetEntry);
+        group.MapPost("/memories", RememberMemory).RequirePermission(Permissions.Store);
+        group.MapGet("/memories", ListMemory).RequirePermission(Permissions.Search);
+        group.MapGet("/memories/{name}", RecallMemory).RequirePermission(Permissions.Read);
+        group.MapGet("/memories/{name}/entry", GetEntry).RequirePermission(Permissions.Read);
         // R-2: PatchEntry takes HttpRequest (it parses the body manually — see its own doc comment),
         // not a typed parameter, which otherwise strips the request body from the generated OpenAPI
         // document (a generated client would see a PATCH that accepts no body). .Accepts restores it.
-        group.MapPatch("/memories/{name}", PatchEntry).Accepts<MemoryEntry>("application/json");
-        group.MapDelete("/memories/{name}", ForgetMemory);
-        group.MapPost("/memories/{name}/append", AppendMemory);
-        group.MapPost("/memories/{name}/copy", CopyMemory);
+        group.MapPatch("/memories/{name}", PatchEntry).Accepts<MemoryEntry>("application/json")
+            .RequirePermission(Permissions.Store);
+        group.MapDelete("/memories/{name}", ForgetMemory).RequirePermission(Permissions.Forget);
+        group.MapPost("/memories/{name}/append", AppendMemory).RequirePermission(Permissions.Append);
+        group.MapPost("/memories/{name}/copy", CopyMemory).RequirePermission(Permissions.Copy);
         // {name} is the DESTINATION on this one — see CopyFromClient's doc comment.
-        group.MapPost("/memories/{name}/copy-from-client", CopyFromClient);
-        group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk);
-        group.MapGet("/search", SearchMemory);
-        group.MapPost("/search", SearchMemoryPost);
-        group.MapPost("/export", ExportTopics);
-        group.MapPost("/import", ImportBundle);
+        group.MapPost("/memories/{name}/copy-from-client", CopyFromClient).RequirePermission(Permissions.Copy);
+        group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk).RequirePermission(Permissions.Read);
+        group.MapGet("/search", SearchMemory).RequirePermission(Permissions.Search);
+        group.MapPost("/search", SearchMemoryPost).RequirePermission(Permissions.Search);
+        group.MapPost("/export", ExportTopics).RequirePermission(Permissions.Export);
+        group.MapPost("/import", ImportBundle).RequirePermission(Permissions.Import);
     }
 
     private const int MaxNameLength = 256;
@@ -129,7 +130,7 @@ public static class MemoryEndpoints
     /// unchanged from round 1.</summary>
     private const int MaxCarriedChunkKeywords = 25;
 
-    /// <summary>True when the caller may write to <paramref name="store"/> — i.e. the store is not
+    /// <summary>True when the caller may write to <c>store</c> — i.e. the store is not
     /// marked read-only by an SSO store_access claim. API keys default to read-write.</summary>
     internal static bool IsWritable(RequestContext ctx, string store) =>
         !string.Equals(ctx.GetStoreAccessLevel(store), "read-only", StringComparison.OrdinalIgnoreCase);
@@ -141,9 +142,6 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("store"))
-            return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -216,19 +214,28 @@ public static class MemoryEndpoints
     private const int DefaultListLimit = 200;
     private const int MaxListLimit = 1000;
 
+    /// <summary>Task 9 fix round 1, F-4: <c>scopes</c> is bound as repeated query parameters
+    /// (<c>?scopes=a&amp;scopes=b</c>), matching <c>/search</c>'s encoding (Task 9, D-2), rather
+    /// than the single comma-joined string this route used before. <c>IMemoryStore.ListScoped</c>
+    /// promises list semantics (Commit 1 of Task 9) and <c>FileMemoryStore</c> honoured it, but
+    /// this route re-joined the list on commas and the server split it back apart — so a scope
+    /// named "odd,name" was addressable through every local caller and invisible to every remote
+    /// one. <see cref="ValidateStringArrayBounds"/> is new here too: this route had never had a
+    /// bound on <c>scopes</c> before, so this is a net gain, not just parity with
+    /// <c>/search</c>.</summary>
     private static Task<IResult> ListMemory(
         string store,
         RequestContext ctx,
-        string? scopes = null,
+        string[]? scopes = null,
         int offset = 0,
         int limit = DefaultListLimit)
     {
-        if (!ctx.HasPermission("search"))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403));
-
         if (offset < 0) offset = 0;
         if (limit <= 0) limit = DefaultListLimit;
         if (limit > MaxListLimit) limit = MaxListLimit;
+
+        if (ValidateStringArrayBounds(scopes, 64, 1024, "scopes") is { } scopesBoundsError)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(scopesBoundsError)));
 
         // ListScoped materialises a full enumeration; capture the count once, then page from it.
         var items = ctx.Store!.ListScoped(scopes);
@@ -253,9 +260,6 @@ public static class MemoryEndpoints
         RequestContext ctx,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("read"))
-            return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
-
         string decoded = Uri.UnescapeDataString(name);
 
         // Caught around the call rather than pre-probed: ResolveArtifactAsync — which is what
@@ -313,14 +317,46 @@ public static class MemoryEndpoints
         return null;
     }
 
+    /// <summary>Task 9, D-5: the search filter's old bound was a single 1KB cap on the whole
+    /// comma-joined <c>scopes</c>/<c>excludeTopics</c> string. Converted to an array, that becomes
+    /// a COUNT bound (how many scope names) and a PER-ELEMENT length bound (how long one scope
+    /// name may be) — dropping either would let the total go unbounded again: a count-only bound
+    /// admits arbitrarily long individual entries, and a length-only bound admits arbitrarily many
+    /// short ones.
+    ///
+    /// <para><b>The numbers are a DELIBERATE loosening, not a preservation (Task 9 fix round 1,
+    /// F-7).</b> 64 entries x 1024 chars/entry accepts up to 64 KB total per field, against the old
+    /// single string's 1 KB ceiling — 64x. D-5 required "do not let the total go unbounded", which
+    /// this satisfies, but it never said "keep the same ceiling", and it would not have been
+    /// preservable anyway: the old 1 KB cap was already ambiguous once split across multiple scope
+    /// names (was it 1 KB total, or 1 KB per name?), so there was no single old number to carry
+    /// forward. 64 mirrors this file's existing <c>attributeFilter</c> key-count bound
+    /// (<c>ValidateAttributeBounds(attributeFilter, 64, 64, ...)</c>) and 1024 mirrors the old
+    /// single-string cap, now applied per element instead of to the whole request.</para>
+    ///
+    /// <para><b>Runs BEFORE <c>MemoryNaming.NormalizeFilterList</c>, deliberately (Task 9 fix
+    /// round 2).</b> A request of 65 blank entries 400s here even though every one of them would
+    /// normalize away to nothing. That is intentional: this is a REQUEST-SHAPE bound on what the
+    /// caller sent, not a bound on what survives normalization. Reordering to
+    /// normalize-then-bound would quietly raise the accepted request size — a caller could pad a
+    /// request with an unbounded number of blank entries around a small real filter and pay no
+    /// bounds cost for them, so the parsed-request size this bound exists to cap would no longer
+    /// be capped. Do not "fix" this into normalize-then-bound.</para></summary>
+    private static string? ValidateStringArrayBounds(
+        string[]? values, int maxCount, int maxElementLength, string fieldName)
+    {
+        if (values is { Length: int count } && count > maxCount)
+            return $"{fieldName} may not exceed {maxCount} entries.";
+        if (values is not null && values.Any(v => v is { Length: int len } && len > maxElementLength))
+            return $"{fieldName} entries may not exceed {maxElementLength} characters.";
+        return null;
+    }
+
     private static Task<IResult> GetEntry(
         string store,
         string name,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("read"))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403));
-
         string decoded = Uri.UnescapeDataString(name);
         if (!TryResolveName(ctx.Store!, decoded, out string scope, out string subject, out IResult? refusal))
             return Task.FromResult(refusal!);
@@ -406,9 +442,6 @@ public static class MemoryEndpoints
         HttpRequest request,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("store"))
-            return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -573,9 +606,6 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("forget"))
-            return Results.Json(new ErrorResponse("Permission 'forget' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -607,9 +637,6 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("append"))
-            return Results.Json(new ErrorResponse("Permission 'append' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -656,9 +683,6 @@ public static class MemoryEndpoints
         CopyRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("copy"))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
-
         if (!IsWritable(ctx, store))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
 
@@ -702,9 +726,6 @@ public static class MemoryEndpoints
         CopyFromClientRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("copy"))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
-
         if (!IsWritable(ctx, store))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
 
@@ -1034,9 +1055,6 @@ public static class MemoryEndpoints
         RequestContext ctx,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("read"))
-            return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
-
         string decoded = Uri.UnescapeDataString(name);
         string artifact;
         try
@@ -1065,15 +1083,19 @@ public static class MemoryEndpoints
         return Results.Ok(new ChunkResponse(content, i, totalChunks));
     }
 
+    /// <summary>Task 9, D-2: <c>scopes</c>/<c>excludeTopics</c> are repeated query parameters
+    /// (<c>?scopes=a&amp;scopes=b</c>), bound natively by ASP.NET Core's <c>string[]?</c> model
+    /// binding — not the old single comma-joined value, which could never express a scope name
+    /// containing a comma.</summary>
     private static Task<IResult> SearchMemory(
         string store,
         RequestContext ctx,
         PluginPipeline pipeline,
         CancellationToken ct,
         string? q = null,
-        string? scopes = null,
+        string[]? scopes = null,
         int limit = 20,
-        string? excludeTopics = null,
+        string[]? excludeTopics = null,
         string? pathPrefix = null)
         => RunSearch(ctx, pipeline, q, scopes, limit, excludeTopics, pathPrefix, null, ct);
 
@@ -1086,33 +1108,35 @@ public static class MemoryEndpoints
         => RunSearch(ctx, pipeline, req.Q, req.Scopes, req.Limit, req.ExcludeTopics, req.PathPrefix,
             req.AttributeFilter, ct);
 
-    /// <summary>The one search implementation behind both GET and POST. GET carries the plain-string
-    /// filters; POST additionally carries attributeFilter, which is a dictionary of arrays and does
-    /// not belong in a query string.</summary>
+    /// <summary>The one search implementation behind both GET and POST. GET carries the array-typed
+    /// filters via repeated query params; POST additionally carries attributeFilter, which is a
+    /// dictionary of arrays and does not belong in a query string.</summary>
     private static async Task<IResult> RunSearch(
         RequestContext ctx,
         PluginPipeline pipeline,
         string? q,
-        string? scopes,
+        string[]? scopes,
         int limit,
-        string? excludeTopics,
+        string[]? excludeTopics,
         string? pathPrefix,
         Dictionary<string, string[]>? attributeFilter,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("search"))
-            return Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403);
-
         if (string.IsNullOrWhiteSpace(q))
             return Results.BadRequest(new ErrorResponse("q parameter is required."));
 
-        // Input bounds validation
+        // Input bounds validation. Task 9, D-5: scopes/excludeTopics used to be a single string
+        // capped at 1KB total; converted to arrays that becomes a count bound plus a per-element
+        // length bound (ValidateStringArrayBounds) — dropping either would leave the total
+        // unbounded again. 64/1024 mirrors the attributeFilter bound below (64 entries) and the
+        // old single-string cap (1024 chars), now applied per element rather than to the whole
+        // request.
         if (q.Length > 10_240)
             return Results.BadRequest(new ErrorResponse("Query too long (max 10KB)."));
-        if (scopes is { Length: > 1024 })
-            return Results.BadRequest(new ErrorResponse("Scopes parameter too long (max 1KB)."));
-        if (excludeTopics is { Length: > 1024 })
-            return Results.BadRequest(new ErrorResponse("excludeTopics parameter too long (max 1KB)."));
+        if (ValidateStringArrayBounds(scopes, 64, 1024, "scopes") is { } scopesBoundsError)
+            return Results.BadRequest(new ErrorResponse(scopesBoundsError));
+        if (ValidateStringArrayBounds(excludeTopics, 64, 1024, "excludeTopics") is { } excludeBoundsError)
+            return Results.BadRequest(new ErrorResponse(excludeBoundsError));
         if (pathPrefix is { Length: > 1024 })
             return Results.BadRequest(new ErrorResponse("pathPrefix parameter too long (max 1KB)."));
         if (ValidateAttributeBounds(attributeFilter, 64, 64, "attributeFilter") is { } filterBoundsError)
@@ -1161,9 +1185,6 @@ public static class MemoryEndpoints
         ExportRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("export"))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'export' required."), statusCode: 403));
-
         if (req.Topics is null || req.Topics.Length == 0)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("topics is required.")));
 
@@ -1213,9 +1234,6 @@ public static class MemoryEndpoints
         [FromQuery] string[]? topics = null,
         bool overwrite = false)
     {
-        if (!ctx.HasPermission("import"))
-            return Results.Json(new ErrorResponse("Permission 'import' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 

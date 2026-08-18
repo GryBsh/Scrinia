@@ -174,7 +174,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // Null for a "topic" item — a topic is a scope label, not a memory, and has no real byte
         // count or creation time. Present for "entry" and "chunk" items.
         long? OriginalBytes = null, DateTimeOffset? CreatedAt = null);
-    internal sealed record SearchApiRequest(string Q, string? Scopes, int Limit, string? ExcludeTopics,
+    /// <summary>Mirrors <c>Scrinia.Server.Models.SearchRequest</c> — Task 9, D-2: Scopes/ExcludeTopics
+    /// are arrays on the wire, not comma-joined strings.</summary>
+    internal sealed record SearchApiRequest(string Q, string[]? Scopes, int Limit, string[]? ExcludeTopics,
         string? PathPrefix, Dictionary<string, string[]>? AttributeFilter);
     /// <summary>Mirrors <c>Scrinia.Server.Models.AppendRequest</c>. <c>Content</c> is a single
     /// string because an append writes exactly one chunk (<see cref="IMemoryStore.AppendAsync"/>);
@@ -419,7 +421,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// Proxies to the same listing endpoint <see cref="ListScoped(string?)"/> already uses,
+    /// Proxies to the same listing endpoint <see cref="ListScoped(IReadOnlyList{string}?)"/> already uses,
     /// filtered to <paramref name="scope"/>.
     ///
     /// <para><b>This is a blocking network round trip, deliberately — and for a scope with more
@@ -449,22 +451,30 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
         var result = new List<ArtifactEntry>();
-        foreach (var item in FetchAllPages(scope))
+        foreach (var item in FetchAllPages([scope]))
             result.Add(ToArtifactEntry(item));
         return result;
     }
 
     /// <summary>
     /// Every entry the server holds for <paramref name="scopes"/> — or across every scope when it
-    /// is null — collected page by page until the server's own reported <c>Total</c> is reached.
+    /// is null or empty — collected page by page until the server's own reported <c>Total</c> is
+    /// reached.
     ///
     /// <para>ONE paging loop for this type. <see cref="LoadIndex"/> and
-    /// <see cref="ListScoped(string?)"/> read the same listing endpoint, and while each owned its
+    /// <see cref="ListScoped(IReadOnlyList{string}?)"/> read the same listing endpoint, and while each owned its
     /// own request-building the two drifted: LoadIndex paged to exhaustion, ListScoped sent no
     /// limit at all and took the server's 200-row default as though it were the whole store. The
     /// comment on LoadIndex's loop described, precisely, the defect its sibling still had.</para>
+    ///
+    /// <para>Task 9 fix round 1, F-4: <c>scopes</c> is emitted as one repeated <c>&amp;scopes=</c>
+    /// query parameter per element — the same encoding <c>BuildSearchGet</c> uses for
+    /// <c>/search</c> — rather than a single comma-joined value. <c>IMemoryStore.ListScoped</c>
+    /// promises list semantics; before this fix <c>/memories</c> was the one place that promise was
+    /// broken silently: a scope named "odd,name" split back into two scopes server-side and matched
+    /// nothing, with no error to signal it.</para>
     /// </summary>
-    private List<MemoryEntry> FetchAllPages(string? scopes)
+    private List<MemoryEntry> FetchAllPages(IReadOnlyList<string>? scopes)
     {
         var collected = new List<MemoryEntry>();
         int offset = 0;
@@ -474,11 +484,14 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // no signal that more existed.
         const int pageSize = 1000;
 
+        // Built once — every page requests the identical scopes filter, only offset changes.
+        string scopesQuery = scopes is { Count: > 0 }
+            ? string.Concat(scopes.Select(s => $"&scopes={Uri.EscapeDataString(s)}"))
+            : "";
+
         while (true)
         {
-            string url = scopes is not null
-                ? $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scopes)}&offset={offset}&limit={pageSize}"
-                : $"{BaseUrl}/memories?offset={offset}&limit={pageSize}";
+            string url = $"{BaseUrl}/memories?offset={offset}&limit={pageSize}{scopesQuery}";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             using var resp = SendSync(req);
@@ -491,7 +504,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // than an opaque server fault.
             if (!resp.IsSuccessStatusCode)
                 throw new HttpRequestException(
-                    $"Remote store listing failed{(scopes is null ? "" : $" for scopes '{scopes}'")}: " +
+                    $"Remote store listing failed{(scopes is not { Count: > 0 } ? "" : $" for scopes '{string.Join(",", scopes)}'")}: " +
                     $"{(int)resp.StatusCode} {resp.StatusCode}.",
                     inner: null,
                     statusCode: resp.StatusCode);
@@ -626,29 +639,29 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // ── Listing & Search ────────────────────────────────────────────────────
 
-    public List<ScopedArtifact> ListScoped(string? scopes = null)
+    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null)
     {
+        // Task 9 fix round 1 (F-1/F-2/F-3): normalize at entry, the same rule FileMemoryStore
+        // applies at its own entry points. Without this a null element (schema-valid JSON for
+        // string[] regardless of the non-nullable element annotation) reached the bare .Trim()
+        // below and threw (F-2), and a blank entry survived into the comma-join a few lines down.
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+
         var result = new List<ScopedArtifact>();
 
-        // Include ephemeral
-        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
-        if (!includeEphemeral && scopes is not null)
-        {
-            includeEphemeral = scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
-        }
+        // Include ephemeral. Task 9, D-4: an empty scopes list means "no filter", identically to
+        // null — both fall through to true here, same as the old whitespace-string check did for
+        // null and "".
+        bool includeEphemeral = scopes is not { Count: > 0 }
+            || scopes.Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
         if (includeEphemeral)
             result.AddRange(ListEphemeral());
 
-        // The `scopes is not null` test here selects WHICH URL is built — filtered or unfiltered —
-        // rather than whether an empty filter parameter gets appended to one. That makes it a
-        // different question from the sibling check that was changed to a whitespace test, and the
-        // two are not an inconsistency to reconcile. An empty-but-non-null `scopes` produces
-        // `?scopes=`, which `FileMemoryStore.ResolveReadScopes` treats identically to an absent
-        // parameter (its `IsNullOrWhiteSpace` gate is false for both) — both fall through to the
-        // same default branch and return every discovered scope. Empty and null converge on the
-        // same server behaviour, so the client's distinction between them is harmless.
+        // Task 9 fix round 1 (F-4): `/memories` now takes repeated `scopes` params too, matching
+        // `/search` — passed straight through, already normalized above. This is what lets a
+        // caller filtering `list`/`facts` remotely by a comma-named scope actually reach it; the
+        // old comma-join here (and the matching split server-side) is exactly what F-4 found
+        // silently losing that filter for every remote read.
         foreach (var item in FetchAllPages(scopes))
         {
             // Recover the scope from the label the server reported. Task 13: this was a
@@ -677,7 +690,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// question and belongs to the F3 interface split.</para>
     /// </summary>
     private List<SearchResult> SearchRemote(
-        string query, string? scopes, int limit, string? excludeTopics,
+        string query, IReadOnlyList<string>? scopes, int limit, IReadOnlyList<string>? excludeTopics,
         string? pathPrefix, IReadOnlyDictionary<string, string[]>? attributeFilter)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -769,21 +782,31 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         CreatedAt: item.CreatedAt!.Value,
         ContentPreview: item.Description ?? "");
 
+    /// <summary>
+    /// Task 9, D-2: <c>scopes</c>/<c>excludeTopics</c> are repeated query parameters
+    /// (<c>?scopes=a&amp;scopes=b</c>) — ASP.NET Core's native binding for a <c>string[]?</c>
+    /// parameter — not a single comma-joined value. This is what lets a scope name containing a
+    /// comma survive the round trip: the old encoding could not distinguish one scope named
+    /// "a,b" from two scopes "a" and "b".
+    /// </summary>
     private HttpRequestMessage BuildSearchGet(
-        string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix)
+        string query, IReadOnlyList<string>? scopes, int limit, IReadOnlyList<string>? excludeTopics,
+        string? pathPrefix)
     {
         string url = $"{BaseUrl}/search?q={Uri.EscapeDataString(query)}&limit={limit}";
-        if (!string.IsNullOrWhiteSpace(scopes))
-            url += $"&scopes={Uri.EscapeDataString(scopes)}";
-        if (!string.IsNullOrWhiteSpace(excludeTopics))
-            url += $"&excludeTopics={Uri.EscapeDataString(excludeTopics)}";
+        if (scopes is { Count: > 0 })
+            foreach (string s in scopes)
+                url += $"&scopes={Uri.EscapeDataString(s)}";
+        if (excludeTopics is { Count: > 0 })
+            foreach (string t in excludeTopics)
+                url += $"&excludeTopics={Uri.EscapeDataString(t)}";
         if (!string.IsNullOrWhiteSpace(pathPrefix))
             url += $"&pathPrefix={Uri.EscapeDataString(pathPrefix)}";
         return new HttpRequestMessage(HttpMethod.Get, url);
     }
 
     private HttpRequestMessage BuildSearchPost(
-        string query, string? scopes, int limit, string? excludeTopics,
+        string query, IReadOnlyList<string>? scopes, int limit, IReadOnlyList<string>? excludeTopics,
         string? pathPrefix, IReadOnlyDictionary<string, string[]> attributeFilter)
     {
         // No comparer here: JSON serialization never consults a dictionary's comparer, and
@@ -792,8 +815,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // filter). Local mode tolerates that fine — SearchResultFilter.MatchesAttributes
         // lowercases each filter key as it iterates — so a comparer here only introduces a
         // local-crashes-vs-remote-works divergence for no benefit.
+        //
+        // Task 9, D-2: scopes/excludeTopics are a JSON array on the wire, mirroring the server's
+        // SearchRequest DTO exactly — a scope name containing a comma survives this path the same
+        // way it survives the GET path's repeated query params.
         var body = new SearchApiRequest(
-            query, scopes, limit, excludeTopics, pathPrefix,
+            query, scopes as string[] ?? scopes?.ToArray(), limit,
+            excludeTopics as string[] ?? excludeTopics?.ToArray(), pathPrefix,
             attributeFilter.ToDictionary(kv => kv.Key, kv => kv.Value));
         string json = JsonSerializer.Serialize(body, HttpStoreJsonContext.Default.SearchApiRequest);
         return new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/search")
@@ -1364,7 +1392,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             .ToArray();
     }
 
-    public List<TopicInfo> GatherTopicInfos(string? scopes = null)
+    public List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null)
     {
         // Gather from listing
         var items = ListScoped(scopes);
@@ -1388,15 +1416,20 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         return topics;
     }
 
-    public IReadOnlyList<string> ResolveReadScopes(string? scopes = null)
+    public IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null)
     {
-        if (!string.IsNullOrWhiteSpace(scopes))
-        {
-            return scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        }
+        // Task 9 fix round 2, H-1: this was the one remaining entry path that did not route
+        // through NormalizeFilterList — reachable via IMemoryStore's own two-arg default
+        // (IMemoryStore.cs) calling this single-arg member, since HttpMemoryStore does not
+        // override it. Without this, [""] took the filter branch unchanged (F-1 verbatim),
+        // [null] survived into a non-nullable IReadOnlyList<string> (a latent NRE for any
+        // caller), and [" api "] came back untrimmed (F-3 verbatim) — see ListScoped above,
+        // which already carries this same line and comment shape.
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+
+        // Task 9, D-4: an empty scopes list means "no filter", identically to null.
+        if (scopes is { Count: > 0 })
+            return scopes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
         var ordered = new List<string> { "local" };
         ordered.AddRange(DiscoverTopics());

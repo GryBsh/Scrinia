@@ -70,6 +70,74 @@ public static class MemoryNaming
     public static string CanonicalizeEphemeralAlias(string name) =>
         IsEphemeralAlias(name) ? "~" + name["/temp/".Length..] : name;
 
+    /// <summary>
+    /// Splits a legacy comma-separated filter string (e.g. a <c>scopes</c> or
+    /// <c>excludeTopics</c> argument) into an array, trimming each entry and dropping empty ones.
+    /// Returns null for null or whitespace-only input — the same "no filter" meaning null has
+    /// always carried on these parameters (Task 9, D-4: an empty result behaves as null too, so
+    /// callers should not special-case it). Returns a concrete <c>string[]?</c> rather than
+    /// <c>IReadOnlyList&lt;string&gt;?</c> so it can feed either shape directly: the Core
+    /// contract's list-typed members, and the MCP facade/CLI-internal handlers this task also
+    /// types as <c>string[]?</c> (D-1).
+    ///
+    /// <para>This is the one place that turns a comma string into a list; it does not construct
+    /// or validate scope names itself — each element still goes through the store's own
+    /// <c>NormalizeScopeFilters</c> or <see cref="TryBuildScopedTopicScope"/> downstream. Its
+    /// remaining callers are all in the CLI — four call sites: <c>ScriniaCommands.Memory.cs</c>'s
+    /// <c>List</c> (one call) and <c>Search</c> (two calls, one per parameter), plus
+    /// <c>ScriniaCommands.Facts.cs</c>'s <c>Facts</c> (one call) — which keeps comma-separated
+    /// arguments on purpose (Task 9, D-3 — command-line arguments are strings, and
+    /// forcing repeated flags would be a worse CLI for no gain — a scope name containing a comma is
+    /// therefore unaddressable from the CLI, and that is accepted). The REST <c>/memories</c>
+    /// listing endpoint used to be a second caller, on the
+    /// premise that only <c>/search</c>'s wire encoding converted to repeated params (Task 9, D-2)
+    /// — Task 9 fix round 1 (F-4) found that premise wrong: <c>IMemoryStore.ListScoped</c> already
+    /// promised list semantics, and re-joining on commas here just broke that promise for every
+    /// remote caller. <c>/memories</c> now binds <c>scopes</c> as repeated params directly, the
+    /// same as <c>/search</c>, and no longer calls this method.</para>
+    /// </summary>
+    public static string[]? SplitCommaSeparated(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>
+    /// THE ONE RULE for a <c>scopes</c>/<c>excludeTopics</c> filter list, regardless of which
+    /// surface it arrived through: drops every null and blank entry, trims what survives, and
+    /// returns null when nothing does (so "no filter" is always exactly one shape — null — never
+    /// null, <c>[]</c> and <c>[""]</c> as three cases a caller has to check separately).
+    ///
+    /// <para>Task 9 fix round 1 (F-1/F-2/F-3). Three symptoms shared one root cause: ASP.NET Core
+    /// binds an empty <c>?scopes=</c> query value to <c>string[] { "" }</c>, not an empty array
+    /// (F-1); JSON allows a <c>null</c> array element regardless of a non-nullable element
+    /// annotation, and that null used to reach a bare <c>.Trim()</c> a few frames downstream and
+    /// throw (F-2); and blank entries used to be dropped by the old comma-string split but not by
+    /// the array path, so <c>["", "api"]</c> silently added the local scope instead of resolving
+    /// like <c>["api"]</c> (F-3). Rather than guard each of those three call sites separately —
+    /// which would be the branch's own defect in miniature, rules hand-placed at N call sites — this
+    /// is the one place the rule lives; every construction and entry path below routes through
+    /// it.</para>
+    /// </summary>
+    public static IReadOnlyList<string>? NormalizeFilterList(IReadOnlyList<string>? values)
+    {
+        if (values is not { Count: > 0 })
+            return null;
+
+        List<string>? result = null;
+        foreach (string value in values)
+        {
+            // `value` is annotated non-null by IReadOnlyList<string>'s element type, but neither
+            // JSON deserialization nor ASP.NET Core's array model binding actually enforces that at
+            // runtime — a `null` element reaches here as a real null despite the annotation, which
+            // is exactly F-2. IsNullOrWhiteSpace is null-safe, so this both drops nulls and blanks
+            // in the same check.
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+            (result ??= new List<string>(values.Count)).Add(value.Trim());
+        }
+        return result;
+    }
+
     // ── Scope construction ───────────────────────────────────────────────────
     //
     // THE ONE WAY a "local:{topic}" scope string is constructed from caller input. Task 13

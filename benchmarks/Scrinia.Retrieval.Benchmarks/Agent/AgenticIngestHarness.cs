@@ -267,8 +267,8 @@ public sealed class AgenticIngestHarness
             limit = parsedLimit;
 
         TryGetString(root, "context", out string? context);
-        TryGetString(root, "scopes", out string? scopes);
-        TryGetString(root, "excludeTopics", out string? excludeTopics);
+        TryGetStringArray(root, "scopes", out string[]? scopes);
+        TryGetStringArray(root, "excludeTopics", out string[]? excludeTopics);
         TryGetString(root, "pathPrefix", out string? pathPrefix);
         TryGetAttributes(root, "attributeFilter", out var attributeFilter);
 

@@ -79,6 +79,13 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.NotSupported,
                 "Resolve merge conflicts in the workspace checkout, then retry there."));
 
+        if (conflictId is null && !string.IsNullOrWhiteSpace(choice))
+            return Task.FromResult(ResponseBuilder.Error(
+                "'choice' requires 'conflictId' — without one there is no conflict to resolve, "
+                + "and the call would silently perform a read-only scan instead.",
+                ErrorCodes.InvalidParameter,
+                "reconcile({ conflictId: '<path>', choice: 'ours' }) or reconcile({}) to scan"));
+
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
 
         return conflictId is not null
@@ -1174,13 +1181,32 @@ public sealed partial class ScriniaMcpTools
     internal async Task<McpResponse> Restore(CancellationToken cancellationToken)
     {
         var ctx = await BuildRestoreContextAsync(cancellationToken);
-        return ResponseBuilder.Success(string.Join("\n\n", ctx.ContentSections))
-            .WithAction("restored")
+        // ContentSections always has exactly one entry (the skills line, or the "nothing found"
+        // fallback) — see BuildRestoreContextAsync — so its count never varies and reporting it
+        // here would read as "Restored: 1 context section(s)" on a workspace where nothing was
+        // actually found. Report the counts that do vary instead, and special-case the empty
+        // state via the explicit HasStoredContext signal rather than string-matching the
+        // fallback text.
+        string summary = ctx.HasStoredContext
+            ? $"Restored workspace context: {ctx.FollowUpNames.Count} follow-up item{(ctx.FollowUpNames.Count == 1 ? "" : "s")}, " +
+              $"{ctx.Warnings.Count} warning{(ctx.Warnings.Count == 1 ? "" : "s")}. See info for details."
+            : "No stored workspace context yet. See info for details.";
+        return ApplyRestoreContext(
+            ResponseBuilder.Success(summary).WithAction("restored"),
+            ctx);
+    }
+
+    /// <summary>
+    /// Applies a restore context to a response so that guide and restore place the same
+    /// payload in the same fields. The two tools previously differed here, which meant the
+    /// skills list arrived under info: from one and content: from the other.
+    /// </summary>
+    private static McpResponse ApplyRestoreContext(McpResponse response, RestoreContext ctx) =>
+        response
             .WithActionNeeded(ctx.Warnings.ToArray())
-            .WithInfo(ctx.Info.ToArray())
+            .WithInfo([.. ctx.Info, .. ctx.ContentSections])
             .WithInstruction(ctx.Instruction)
             .WithFollowUp(ctx.FollowUpNames.ToArray());
-    }
 
     /// <summary>
     /// Build the workspace-context blocks that <see cref="Restore"/> serialises into a YAML
@@ -1319,13 +1345,17 @@ public sealed partial class ScriniaMcpTools
         }
         catch (FileNotFoundException) { /* no session log for today */ }
 
-        if (contentSections.Count == 0)
+        // Recorded before the fallback below is appended, so it is an explicit signal for "did
+        // any real section fire" rather than something a caller would have to infer by
+        // string-matching the fallback text out of ContentSections.
+        bool hasStoredContext = contentSections.Count > 0;
+        if (!hasStoredContext)
             contentSections.Add("No persistent agent context found yet. Use remember to start storing notes, patterns, and skills.");
 
         if (followUpNames.Count > 0)
             instruction = "Call recall for each item in followUp to load full context.";
 
-        return new RestoreContext(warnings, info, contentSections, followUpNames, instruction);
+        return new RestoreContext(warnings, info, contentSections, followUpNames, instruction, hasStoredContext);
     }
 }
 
@@ -1338,4 +1368,5 @@ internal sealed record RestoreContext(
     IReadOnlyList<string> Info,
     IReadOnlyList<string> ContentSections,
     IReadOnlyList<string> FollowUpNames,
-    string? Instruction);
+    string? Instruction,
+    bool HasStoredContext);

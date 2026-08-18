@@ -20,8 +20,8 @@ public sealed partial class ScriniaMcpTools
         [Description("profile: the target entity — 'key:value' or a bare value.")] string? entity = null,
         [Description("intersect: the entities (>=2) — each 'key:value' or a bare value.")] string[]? entities = null,
         [Description("entities: optional key filter, e.g. 'person'.")] string? key = null,
-        [Description("Optional comma-separated scope order to narrow to (same semantics as search).")] string? scopes = null,
-        [Description("Optional comma-separated topic names to exclude (same semantics as search).")] string? excludeTopics = null,
+        [Description("Optional scope order to narrow to (same semantics as search). An empty array behaves the same as omitting it.")] string[]? scopes = null,
+        [Description("Optional topic names to exclude (same semantics as search). An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         [Description("Max rows for the entities list / profile timeline (default 50).")] int limit = 50,
         CancellationToken cancellationToken = default)
         => (await FactsResponse(op, entity, entities, key, scopes, excludeTopics, limit, cancellationToken)).ToYaml();
@@ -37,8 +37,8 @@ public sealed partial class ScriniaMcpTools
         string? entity,
         string[]? entities,
         string? key,
-        string? scopes,
-        string? excludeTopics,
+        string[]? scopes,
+        string[]? excludeTopics,
         int limit,
         CancellationToken cancellationToken = default)
     {
@@ -75,11 +75,21 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>Cross-scope cached store when unfiltered; a scoped store built from the
-    /// scope+excludeTopics-filtered candidates otherwise (same derivation as the auto-surface path).</summary>
-    private static EntityFactStore SelectFactStore(IMemoryStore store, string? scopes, string? excludeTopics)
+    /// scope+excludeTopics-filtered candidates otherwise (same derivation as the auto-surface path).
+    /// Task 9, D-4: an empty scopes/excludeTopics array is "unfiltered", identically to null.</summary>
+    private static EntityFactStore SelectFactStore(IMemoryStore store, string[]? scopes, string[]? excludeTopics)
     {
-        if (string.IsNullOrWhiteSpace(scopes) && string.IsNullOrWhiteSpace(excludeTopics))
+        // Task 9 fix round 2, L-1: normalize BEFORE the gate, not after. The raw arrays can carry
+        // a caller-sent [""] or [null] that means "no filter" (Task 9, D-4/NormalizeFilterList),
+        // but gating on the raw array took the "filtered" branch for them anyway — re-deriving the
+        // whole fact store from a full ListScoped instead of using the cached cross-scope store.
+        // Correctness was never at stake (ListScoped normalizes its own inputs and would answer
+        // the same either way), only cost: rebuilding the entire store because a caller sent a
+        // blank filter is exactly the needless-repeated-read this project avoids elsewhere.
+        var normalizedScopes = MemoryNaming.NormalizeFilterList(scopes);
+        var normalizedExcludeTopics = MemoryNaming.NormalizeFilterList(excludeTopics);
+        if (normalizedScopes is not { Count: > 0 } && normalizedExcludeTopics is not { Count: > 0 })
             return store.GetEntityFactStore();
-        return EntityFactDerivation.BuildStore(store.ListScoped(scopes, excludeTopics));
+        return EntityFactDerivation.BuildStore(store.ListScoped(normalizedScopes, normalizedExcludeTopics));
     }
 }

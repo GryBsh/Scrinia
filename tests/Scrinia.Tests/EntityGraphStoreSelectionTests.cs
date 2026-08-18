@@ -59,7 +59,7 @@ public sealed class EntityGraphStoreSelectionTests : IDisposable
 
         var withBridge = contributor.Score(_store.GetEntityFactStore(), "alice");
         var excluded = contributor.Score(
-            EntityFactDerivation.BuildStore(_store.ListScoped(null, excludeTopics: "plan")), "alice");
+            EntityFactDerivation.BuildStore(_store.ListScoped(null, excludeTopics: ["plan"])), "alice");
 
         withBridge!.Should().ContainKey("local|d_bob");          // reached via the bridge
         (excluded is null || !excluded.ContainsKey("local|d_bob")).Should().BeTrue(); // bridge gone -> no lift

@@ -63,7 +63,7 @@ public class FactsToolTests
     {
         using var scope = new TestHelpers.StoreScope();
         Seed(MemoryStoreContext.Current!);
-        var yaml = await new ScriniaMcpTools().Facts("profile", entity: "person:jolene", excludeTopics: "plan");
+        var yaml = await new ScriniaMcpTools().Facts("profile", entity: "person:jolene", excludeTopics: ["plan"]);
         yaml.Should().Contain("mentions: 2"); // plan1 excluded
     }
 

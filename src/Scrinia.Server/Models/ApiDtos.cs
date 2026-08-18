@@ -111,12 +111,17 @@ public sealed record ChunkEntryDto(
 public sealed record ShowResponse(string Name, string[] Content, long OriginalBytes);
 
 /// <summary>Body of POST /search. Exists because attributeFilter is a dictionary of arrays and
-/// does not belong in a query string. Mirrors the GET parameters exactly otherwise.</summary>
+/// does not belong in a query string. Mirrors the GET parameters exactly otherwise.
+/// <para>Scopes/ExcludeTopics are arrays (Task 9, D-2) — a scope name containing a comma cannot
+/// survive a comma-joined string, so this is a breaking wire change distinct from the MCP
+/// facade's own array conversion. The GET route's <c>scopes</c>/<c>excludeTopics</c> query
+/// parameters take the same shape via ASP.NET Core's native <c>string[]?</c> binding
+/// (<c>?scopes=a&amp;scopes=b</c>), not a single comma-joined value.</para></summary>
 public sealed record SearchRequest(
     string Q,
-    string? Scopes = null,
+    string[]? Scopes = null,
     int Limit = 20,
-    string? ExcludeTopics = null,
+    string[]? ExcludeTopics = null,
     string? PathPrefix = null,
     Dictionary<string, string[]>? AttributeFilter = null);
 

@@ -753,7 +753,7 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     {
         await StoreAsync("keyword-probe-scoped", "probe body for scoped keywords", keywords: ["zebra"]);
 
-        var scoped = _remote.ListScoped("local").Single(sa => sa.Entry.Name == "keyword-probe-scoped");
+        var scoped = _remote.ListScoped(["local"]).Single(sa => sa.Entry.Name == "keyword-probe-scoped");
 
         scoped.Entry.Keywords.Should().NotBeNull(
             because: "ListScoped builds its own ArtifactEntry independently of LoadIndex, and must " +

@@ -765,7 +765,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["DI lifecycle notes"], "dotnet-di");
         await Tools().Remember(["local build tips"], "build-notes");
 
-        string result = (await Tools().Search("di", scopes: "local")).ToYaml();
+        string result = (await Tools().Search("di", scopes: ["local"])).ToYaml();
         ResponseParser.Parse(result).Content.Should().Contain("dotnet-di",
             because: "Search should search across local scope");
     }

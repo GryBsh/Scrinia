@@ -52,11 +52,18 @@ public static class McpPermissionFilter
     }
 
     private static readonly HashSet<string> WritePermissions =
-        new(StringComparer.OrdinalIgnoreCase) { "store", "append", "forget" };
+        new(StringComparer.OrdinalIgnoreCase) { Permissions.Store, Permissions.Append, Permissions.Forget };
 
     /// <summary>True when <paramref name="permission"/> authorizes a mutating operation.</summary>
     public static bool IsWritePermission(string? permission) =>
         permission is not null && WritePermissions.Contains(permission);
+
+    /// <summary>
+    /// Tools that are deliberately reachable without a permission. Listing them
+    /// explicitly is what lets an unrecognised name fail closed instead of sharing
+    /// a default arm with them.
+    /// </summary>
+    private static readonly string[] UngatedTools = ["guide", "restore"];
 
     /// <summary>
     /// Maps an MCP request to the permission it requires, or <c>null</c> when the request needs no
@@ -65,21 +72,61 @@ public static class McpPermissionFilter
     ///
     /// <para>The mutating tools <c>compact</c>/<c>link</c>/<c>reconcile</c> map
     /// to <c>store</c>: there is no finer REST permission for them, so they ride the write gate.</para>
+    ///
+    /// <para><c>null</c> is also returned for an unrecognised tool name — but that case is NOT
+    /// equivalent to <c>guide</c>/<c>restore</c> needing no permission. See
+    /// <see cref="HasExplicitDecision"/>, which is the question that tells the two apart; the
+    /// <see cref="Filter"/> denies on that question, not on this method's return value alone.</para>
     /// </summary>
     public static string? RequiredPermission(string method, string? toolName) => method switch
     {
         "tools/call" => toolName switch
         {
-            "search" or "list" or "facts" => "search",
-            "recall" => "read",
-            "remember" or "compact" or "link" or "reconcile" => "store",
-            "append" => "append",
-            "forget" => "forget",
-            _ => null, // guide, restore, or unknown → no gate (dispatch/handshake handled by SDK)
+            McpToolNames.Search or "list" or "facts" => Permissions.Search,
+            "recall" => Permissions.Read,
+            "remember" or "compact" or "link" or "reconcile" => Permissions.Store,
+            McpToolNames.Append => Permissions.Append,
+            McpToolNames.Forget => Permissions.Forget,
+            _ => null, // guide, restore, or unknown → no permission mapped (see HasExplicitDecision)
         },
-        "resources/read" => "read",
+        "resources/read" => Permissions.Read,
         _ => null, // initialize, tools/list, prompts/*, resources/list, notifications, …
     };
+
+    /// <summary>
+    /// True when this method/tool pair has a deliberate permission decision — either a
+    /// mapped permission or membership of <see cref="UngatedTools"/>.
+    ///
+    /// Deliberately a separate question from <see cref="RequiredPermission"/> returning
+    /// null. Null means "no permission needed", which is the right answer for `guide`
+    /// and the wrong answer for a tool nobody mapped; one value cannot carry both. The
+    /// filter denies when this returns false, so an unmapped tool fails closed without
+    /// inventing a sentinel permission string that a key might somehow be granted.
+    ///
+    /// <para>Returning <c>true</c> unconditionally for every non-<c>tools/call</c> method looks like
+    /// the same "unrecognised → ungated" hole one level up, but it is not: it is safe only because the
+    /// SDK's method-dispatch table is a closed set. <see cref="ModelContextProtocol.Protocol.RequestMethods"/>
+    /// enumerates every method the SDK will ever route to a handler, and an incoming JSON-RPC request
+    /// naming anything outside that set is rejected with <c>MethodNotFound</c> inside the SDK before
+    /// this filter's handler chain — let alone an application handler — ever runs. Every method in that
+    /// closed set beyond <c>tools/call</c> and <c>resources/read</c> is, on this server role, either
+    /// unregistered, an SDK-internal no-op (handshake/discovery/notifications), or read-only
+    /// (<c>prompts/*</c>, <c>resources/list</c>, <c>resources/templates/list</c> — this server registers
+    /// no prompts and no writable resources). If an SDK upgrade ever opens that dispatch table to
+    /// caller-supplied or dynamically-registered methods, this blanket <c>true</c> needs revisiting.
+    /// </para>
+    /// </summary>
+    public static bool HasExplicitDecision(string method, string? toolName)
+    {
+        if (method != "tools/call")
+            return true; // non-tool methods are decided by the outer switch
+
+        if (toolName is null)
+            return false;
+
+        return RequiredPermission(method, toolName) is not null
+            || UngatedTools.Contains(toolName, StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// The incoming-message filter. Inspects each JSON-RPC request, resolves the required permission,
@@ -94,6 +141,11 @@ public static class McpPermissionFilter
             string? toolName = req.Method == "tools/call"
                 ? (req.Params as JsonObject)?["name"]?.GetValue<string>()
                 : null;
+
+            if (!HasExplicitDecision(req.Method, toolName))
+                // Fail closed: an unrecognised tool is indistinguishable from one
+                // someone forgot to map, so it is denied rather than admitted.
+                throw new McpException("This operation is not available.");
 
             string? required = RequiredPermission(req.Method, toolName);
             if (required is not null)

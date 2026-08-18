@@ -38,7 +38,8 @@ public sealed partial class ScriniaMcpTools
                 {
                     string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
                     SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
-                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel);
+                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
+                        .WithTruncationAdvice(RecallTruncationAdvice);
                 }
             }
             // Fall through to NMP/2 resolution for legacy entries
@@ -89,7 +90,8 @@ public sealed partial class ScriniaMcpTools
         {
             string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
             SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
-            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel);
+            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel)
+                .WithTruncationAdvice(RecallTruncationAdvice);
         }
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
@@ -97,9 +99,11 @@ public sealed partial class ScriniaMcpTools
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
 
         if (chunkCount > 1)
-            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel);
+            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel)
+                .WithTruncationAdvice(RecallTruncationAdvice);
 
-        return ResponseBuilder.Success(decoded).WithAction(actionLabel);
+        return ResponseBuilder.Success(decoded).WithAction(actionLabel)
+            .WithTruncationAdvice(RecallTruncationAdvice);
     }
 
     // ── Persistent memory tools ───────────────────────────────────────────────
@@ -598,19 +602,38 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Returns a summary or full listing of persisted memories.</summary>
     internal Task<McpResponse> List(
-        [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
-                     "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. " +
+                     "Topic names filter to local topics (e.g. 'api' shows api topic entries). " +
+                     "An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("'summary' (default), 'full' for paginated table, 'drift' for code reference drift check.")] string mode = "summary",
         [Description("Starting index for full mode (0-based). Ignored in summary mode.")] int offset = 0,
         [Description("Maximum entries to return in full mode (default 50). Ignored in summary mode.")] int limit = 50,
-        [Description("Optional comma-separated topic names to exclude from results. " +
-                     "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude from results. " +
+                     "Use ['plan', 'task', 'project', 'learn'] to hide planning namespaces from knowledge listings. " +
+                     "An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
         // The whole store, not a narrowed one: only the drift branch is unconditionally local.
         // Summary mode, the empty-store early return, and full mode over entries without file
         // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
+
+        // A caller can send "mode": null over JSON-RPC, distinct from omitting the field.
+        // Pre-task behaviour treated null and empty identically to the "summary" default, and
+        // facts() normalises its op the same way ((op ?? string.Empty).Trim()) -- match that so
+        // list() does not newly disagree with the sibling it is meant to converge on.
+        if (string.IsNullOrWhiteSpace(mode))
+            mode = "summary";
+
+        if (!string.Equals(mode, "summary", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                $"unknown mode '{mode}'. Use 'summary', 'full', or 'drift'.",
+                ErrorCodes.InvalidParameter,
+                "list({ mode: 'full' })"));
+        }
 
         // Only this branch is refused: drift detection re-hashes files on disk, so it needs the
         // workspace. The guard sits here rather than at the method entry so a remote list() in
@@ -627,14 +650,17 @@ public sealed partial class ScriniaMcpTools
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
-            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed"));
+            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed")
+                .WithTruncationAdvice(ListTruncationAdvice));
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
 
         if (!string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed"));
+            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed")
+                .WithTruncationAdvice(ListTruncationAdvice));
 
-        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed"));
+        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed")
+            .WithTruncationAdvice(ListTruncationAdvice));
     }
 
     internal static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
@@ -855,11 +881,13 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Search memories across local and topic scopes using a query.</summary>
     internal async Task<McpResponse> Search(
         [Description("Search term matched against memory names and descriptions.")] string query,
-        [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
-                     "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. " +
+                     "Topic names filter to local topics (e.g. 'api' shows api topic entries). " +
+                     "An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("Maximum results to return.")] int limit = 20,
-        [Description("Optional comma-separated topic names to exclude from results. " +
-                     "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude from results. " +
+                     "Use ['plan', 'task', 'project', 'learn'] to hide planning namespaces from knowledge searches. " +
+                     "An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when the agent knows synonyms or related concepts.")] string? context = null,
         [Description("Optional path prefix to scope results, e.g. '/findings/'.")] string? pathPrefix = null,
         [Description("Optional attribute filter (map key→values); AND across keys, OR within a key's values.")] IReadOnlyDictionary<string, string[]>? attributeFilter = null,
@@ -884,10 +912,12 @@ public sealed partial class ScriniaMcpTools
         var matches = outcome.Matches;
 
         if (matches.Count == 0)
-            return ResponseBuilder.Success("No matching memories found.").WithAction("searched");
+            return ResponseBuilder.Success("No matching memories found.").WithAction("searched")
+                .WithTruncationAdvice(SearchTruncationAdvice);
 
         string body = SearchResultRenderer.FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
-        return ResponseBuilder.Success(body).WithAction("searched");
+        return ResponseBuilder.Success(body).WithAction("searched")
+            .WithTruncationAdvice(SearchTruncationAdvice);
     }
 
     /// <summary>Copies a memory artifact from one scope to another.</summary>
@@ -1276,7 +1306,8 @@ public sealed partial class ScriniaMcpTools
             string msg = okCount > 0
                 ? $"All {okCount} code references are current. No drift detected."
                 : "No memories have code references. Add a file attribute on remember (attributes: { file: ['path'] }) to track file dependencies.";
-            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed"));
+            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed")
+                .WithTruncationAdvice(ListTruncationAdvice));
         }
 
         string driftResponse = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
@@ -1285,7 +1316,8 @@ public sealed partial class ScriniaMcpTools
         if (driftCount > 0) driftWarnings.Add($"{driftCount} code reference(s) have drifted (files changed since stored).");
         if (missingCount > 0) driftWarnings.Add($"{missingCount} code reference(s) point to missing files.");
         return Task.FromResult(
-            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray()));
+            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray())
+                .WithTruncationAdvice(ListTruncationAdvice));
     }
 
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)

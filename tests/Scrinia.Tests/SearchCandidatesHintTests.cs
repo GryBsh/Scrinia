@@ -48,7 +48,7 @@ public class SearchCandidatesHintTests
 
         var results = store.SearchAll(new SearchQuery("needle")
         {
-            Scopes = "local:alpha",
+            Scopes = ["local:alpha"],
             Candidates = everything,
         });
 
@@ -69,7 +69,7 @@ public class SearchCandidatesHintTests
 
         var results = store.SearchAll(new SearchQuery("needle")
         {
-            ExcludeTopics = "beta",
+            ExcludeTopics = ["beta"],
             Candidates = store.ListScoped(null, null),
         });
 
@@ -90,14 +90,33 @@ public class SearchCandidatesHintTests
 
         var withHint = store.SearchAll(new SearchQuery("needle")
         {
-            Scopes = "local:alpha",
-            Candidates = store.ListScoped("local:alpha", null),
+            Scopes = ["local:alpha"],
+            Candidates = store.ListScoped(["local:alpha"], null),
         });
-        var withoutHint = store.SearchAll(new SearchQuery("needle") { Scopes = "local:alpha" });
+        var withoutHint = store.SearchAll(new SearchQuery("needle") { Scopes = ["local:alpha"] });
 
         Names(withHint).Should().Contain("alpha-note",
             because: "both runs are expected to return the in-scope memory — equivalence between two empty sets would prove nothing");
         Names(withHint).Should().BeEquivalentTo(Names(withoutHint),
             because: "the hint must be invisible in the results when the caller honoured it");
+    }
+
+    /// <summary>Task 9, D-4: SearchQuery.Scopes=[] must behave identically to Scopes=null — an
+    /// empty array is not a narrower filter, it is the same "every scope" answer null gives.</summary>
+    [Fact]
+    public void SearchAll_EmptyScopesAndExcludeTopics_BehaveIdenticallyToNull()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.LocalStore;
+
+        store.Upsert(Entry("alpha-note"), "local:alpha");
+        store.Upsert(Entry("beta-note"), "local:beta");
+
+        var withEmpty = store.SearchAll(new SearchQuery("needle") { Scopes = [], ExcludeTopics = [] });
+        var withNull = store.SearchAll(new SearchQuery("needle") { Scopes = null, ExcludeTopics = null });
+
+        Names(withEmpty).Should().Contain("alpha-note")
+            .And.Contain("beta-note", "an empty scopes/excludeTopics list must not narrow the result set");
+        Names(withEmpty).Should().BeEquivalentTo(Names(withNull));
     }
 }
