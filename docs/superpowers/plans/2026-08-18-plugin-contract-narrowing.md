@@ -33,9 +33,12 @@
 **Modified:**
 - `src/Scrinia.Core/IMemoryStore.cs` — four declarations move out; `: IPluginStore` added.
 - `src/Scrinia.Core/Embeddings/MemoryArtifactSource.cs:93` — parameter narrows.
+- `src/Scrinia.Core/Embeddings/MemoryVectorIndexer.cs:182` — parameter narrows. **This is the seventeenth file, and the one a pre-execution falsification pass caught missing.** Three sinks hand their `store` straight to `RemoveAsync` from inside `OnForgottenAsync`, so narrowing the sinks without narrowing this produces `CS1503` in three projects.
 - `src/Scrinia.Core/IMemoryEventSink.cs:10-12` — three method signatures narrow.
 - Seven production sinks and nine test doubles — parameter type only, except the two Core handlers.
 - `CHANGELOG.md`.
+
+**A note on how that seventeenth file was missed, because the same trap is still live.** This plan was written *specifically* to follow store-taking helpers — that is why Task 2 exists for `ReadForAppendAsync`. It followed that one and not `MemoryVectorIndexer.RemoveAsync`. Before executing any task, if you narrow a signature, grep for what the narrowed parameter is *passed to*, not only what members are called on it.
 
 ---
 
@@ -43,7 +46,7 @@
 
 **Files:**
 - Create: `src/Scrinia.Core/IPluginStore.cs`
-- Modify: `src/Scrinia.Core/IMemoryStore.cs` (lines `13`, `15`, `66`, `318`, and the interface declaration at `11`)
+- Modify: `src/Scrinia.Core/IMemoryStore.cs` (lines `13`, `15`, `66`, `318`, and the interface declaration at `10`)
 - Test: `tests/Scrinia.Tests/PluginStoreContractTests.cs`
 
 **Interfaces:**
@@ -69,6 +72,7 @@
 
 ```csharp
 // tests/Scrinia.Tests/PluginStoreContractTests.cs
+using FluentAssertions;
 using Scrinia.Core;
 
 namespace Scrinia.Tests;
@@ -149,7 +153,7 @@ public interface IPluginStore
 
 In `src/Scrinia.Core/IMemoryStore.cs`:
 
-Change the declaration at `:11` from `public interface IMemoryStore` to:
+Change the declaration at `:10` from `public interface IMemoryStore` to:
 
 ```csharp
 public interface IMemoryStore : IPluginStore
@@ -171,6 +175,22 @@ Add a one-line comment where the `// Naming` pair was, so the next reader is not
     string FormatQualifiedName(string scope, string subject);
     string SanitizeName(string name);
 ```
+
+- [ ] **Step 4a: Retarget the doc-comment crefs this move invalidates**
+
+Cref lookup does **not** walk base interfaces: after the move, `<see cref="IMemoryStore.ParseQualifiedName"/>` no longer resolves. This was proved empirically in a probe project — it yields `CS1574`.
+
+It does not break the build today, because no project sets `GenerateDocumentationFile`, so documentation mode is Parse rather than Diagnose and the baseline emits zero `CS1574`. But `TreatWarningsAsErrors` is on for the production projects among these, so the day doc generation is switched on, six of them become errors. Retargeting costs one line each now and defuses that.
+
+Retarget each to the interface that now declares the member (`IPluginStore.*`):
+
+- `src/Scrinia.Core/Embeddings/MemoryArtifactSource.cs:11`
+- `src/Scrinia.Core/Embeddings/MemoryVectorIndexer.cs:177`
+- `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs:977`, `:1015`, `:1019`
+- `src/Scrinia.Server/Services/PluginPipeline.cs:84`
+- the two in `tests/`
+
+Check each one's referenced member before editing — only crefs naming the four moved members need retargeting; ones naming `FormatQualifiedName`, `SanitizeName` or anything else still resolve against `IMemoryStore` and must be left alone.
 
 - [ ] **Step 5: Run the tests and verify they pass**
 
@@ -217,6 +237,7 @@ Its three call sites all pass an `IMemoryStore`, which upcasts implicitly, so th
 
 ```csharp
 // tests/Scrinia.Tests/PluginStoreOnlySinkTests.cs
+using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 
@@ -325,6 +346,7 @@ git commit -m "refactor(core): ReadForAppendAsync takes IPluginStore"
 **Files:**
 - Create: `src/Scrinia.Core/CoreSinkStore.cs`
 - Modify: `src/Scrinia.Core/IMemoryEventSink.cs:10-12`
+- Modify: `src/Scrinia.Core/Embeddings/MemoryVectorIndexer.cs:182` — `RemoveAsync`'s store parameter narrows (see Step 5a)
 - Modify (7 production sinks): `src/Scrinia.Core/CompositeEventSink.cs:7`, `src/Scrinia.Core/EntityTypingEventHandler.cs:16`, `src/Scrinia.Core/MaintenanceEventSink.cs:45`, `src/Scrinia/Services/CoreEmbeddingEventHandler.cs:17`, `src/Scrinia/Services/McpPluginHost.cs:21`, `src/Scrinia.Plugin.Embeddings/EmbeddingsPlugin.cs:25`, `src/Scrinia.Server/Services/BuiltInEmbeddingsService.cs:18`
 - Modify (9 test doubles): `tests/Scrinia.TestDoubles/SilentEventSink.cs:35`, `tests/Scrinia.Tests/CompositeEventSinkTests.cs:59` and `:73`, `tests/Scrinia.Tests/Embeddings/EmbeddingReindexerNamespacedScopeTests.cs:117`, `tests/Scrinia.Tests/Embeddings/EmbeddingReindexerTests.cs:216`, `tests/Scrinia.Tests/MemoryEventSinkContextInstallDefaultTests.cs:121` and `:136`, `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs:624`, `tests/Scrinia.Server.Tests/EventPipelineParityTests.cs:360`
 - Test: `tests/Scrinia.Tests/PluginStoreOnlySinkTests.cs` (extend), `tests/Scrinia.Tests/CoreSinkStoreTests.cs` (create)
@@ -346,6 +368,7 @@ Two handlers × three methods = **six cast sites**, which is why the cast and it
 
 ```csharp
 // tests/Scrinia.Tests/CoreSinkStoreTests.cs
+using FluentAssertions;
 using Scrinia.Core;
 
 namespace Scrinia.Tests;
@@ -466,9 +489,26 @@ internal static class CoreSinkStore
     Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct);
 ```
 
+- [ ] **Step 5a: Narrow `MemoryVectorIndexer.RemoveAsync` FIRST**
+
+Do this before touching the sinks, or Step 5 will not compile.
+
+```csharp
+// src/Scrinia.Core/Embeddings/MemoryVectorIndexer.cs:182
+    public async Task RemoveAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
+```
+
+Nothing in the body changes — it uses only `ParseQualifiedName`.
+
+**Why this is here.** Three sinks pass their `store` parameter straight into this method from inside `OnForgottenAsync`: `CoreEmbeddingEventHandler.cs:69`, `EmbeddingsPlugin.cs:375` (via `RemoveVectorsAsync`, the whole body of `OnForgottenAsync` at `:299`), and `BuiltInEmbeddingsService.cs:86`. Narrow the sinks without narrowing this and you get `CS1503` in three projects.
+
+The narrowing is safe for the method's one other caller: `BuiltInEmbeddingsService.cs:103` (`_indexer.RemoveAsync(ctx.Name, ctx.Store, ct)`, the REST hook path) passes an `IMemoryStore`, which upcasts implicitly. Verified — `ctx.Store` stays `IMemoryStore`; hook contexts are not being retyped.
+
 - [ ] **Step 5: Update the five sinks that need nothing more**
 
-`CompositeEventSink`, `CoreEmbeddingEventHandler`, `McpPluginHost`, `EmbeddingsPlugin`, `BuiltInEmbeddingsService`: change `IMemoryStore store` to `IPluginStore store` in the three method signatures. **No body changes.** `CompositeEventSink` forwards the parameter; the other four use only contract members or `ReadForAppendAsync`.
+`CompositeEventSink`, `CoreEmbeddingEventHandler`, `McpPluginHost`, `EmbeddingsPlugin`, `BuiltInEmbeddingsService`: change `IMemoryStore store` to `IPluginStore store` in the three method signatures.
+
+**No body changes** — but only because Step 5a already narrowed `RemoveAsync`. `CompositeEventSink` forwards the parameter; `McpPluginHost` uses only contract members; the other three reach the store through `ReadForAppendAsync` (Task 2) and `RemoveAsync` (Step 5a), both of which now take `IPluginStore`.
 
 `EmbeddingsPlugin.ReindexStoreAsync` and `BuiltInEmbeddingsService.ReindexStoreAsync` keep `IMemoryStore` — they are `IEmbeddingsAdmin`, not the sink path, and they call `ListScoped`. Do not touch them.
 
@@ -572,3 +612,13 @@ git commit -m "docs: record the sink contract break and supersede Part C"
 **One deliberate deviation from the spec's letter.** The spec describes the throw inline in each handler; this plan puts it in `CoreSinkStore` because the site count is six, not two. Same behaviour, one definition.
 
 **Not covered, deliberately.** The spec's "what this leaves on the table" section is context for a future branch, not work.
+
+## Falsification pass — findings applied before execution
+
+A falsifier checked every factual claim against the repo at `f2a251e`. Three were wrong; all three are fixed above. The rest — the member-usage tables, the 16-implementation inventory, the upcast claim at every named call site, `InternalsVisibleTo` for `CoreSinkStore`, `TestHelpers.StoreScope`, `CompositeEventSink`'s constructor, and the 2660-test baseline — were confirmed by reading real bytes and running the suite.
+
+1. **`MemoryVectorIndexer.RemoveAsync` was missed** — a seventeenth file. Three sinks pass their store into it from `OnForgottenAsync`, so Step 5's "no body changes" would have failed to compile in three projects. Fixed by Step 5a. **This is the same class of error that killed this plan's predecessor** — a store-taking helper invisible to a per-file member grep — made in a plan written specifically to avoid it. The generalised rule is now in the File Structure section: when you narrow a parameter, grep for what it is *passed to*, not only what is called on it.
+2. **All three new test files omitted `using FluentAssertions;`** — `tests/Scrinia.Tests/GlobalUsings.cs` is only `global using Xunit;`, so every `.Should()` would have been `CS1061`. Added.
+3. **`IMemoryStore` is declared at `:10`, not `:11`.** Corrected in Task 1's Files list and Step 4.
+
+One non-blocking observation was promoted to work: doc-comment crefs naming the moved members stop resolving, harmless today but a landmine behind `TreatWarningsAsErrors`. Now Step 4a.
