@@ -309,6 +309,22 @@ public static class MemoryEndpoints
         return null;
     }
 
+    /// <summary>Task 9, D-5: the search filter's old bound was a single 1KB cap on the whole
+    /// comma-joined <c>scopes</c>/<c>excludeTopics</c> string. Converted to an array, that becomes
+    /// a COUNT bound (how many scope names) and a PER-ELEMENT length bound (how long one scope
+    /// name may be) — dropping either would let the total go unbounded again: a count-only bound
+    /// admits arbitrarily long individual entries, and a length-only bound admits arbitrarily many
+    /// short ones.</summary>
+    private static string? ValidateStringArrayBounds(
+        string[]? values, int maxCount, int maxElementLength, string fieldName)
+    {
+        if (values is { Length: int count } && count > maxCount)
+            return $"{fieldName} may not exceed {maxCount} entries.";
+        if (values is not null && values.Any(v => v is { Length: int len } && len > maxElementLength))
+            return $"{fieldName} entries may not exceed {maxElementLength} characters.";
+        return null;
+    }
+
     private static Task<IResult> GetEntry(
         string store,
         string name,
@@ -1040,15 +1056,19 @@ public static class MemoryEndpoints
         return Results.Ok(new ChunkResponse(content, i, totalChunks));
     }
 
+    /// <summary>Task 9, D-2: <c>scopes</c>/<c>excludeTopics</c> are repeated query parameters
+    /// (<c>?scopes=a&amp;scopes=b</c>), bound natively by ASP.NET Core's <c>string[]?</c> model
+    /// binding — not the old single comma-joined value, which could never express a scope name
+    /// containing a comma.</summary>
     private static Task<IResult> SearchMemory(
         string store,
         RequestContext ctx,
         PluginPipeline pipeline,
         CancellationToken ct,
         string? q = null,
-        string? scopes = null,
+        string[]? scopes = null,
         int limit = 20,
-        string? excludeTopics = null,
+        string[]? excludeTopics = null,
         string? pathPrefix = null)
         => RunSearch(ctx, pipeline, q, scopes, limit, excludeTopics, pathPrefix, null, ct);
 
@@ -1061,16 +1081,16 @@ public static class MemoryEndpoints
         => RunSearch(ctx, pipeline, req.Q, req.Scopes, req.Limit, req.ExcludeTopics, req.PathPrefix,
             req.AttributeFilter, ct);
 
-    /// <summary>The one search implementation behind both GET and POST. GET carries the plain-string
-    /// filters; POST additionally carries attributeFilter, which is a dictionary of arrays and does
-    /// not belong in a query string.</summary>
+    /// <summary>The one search implementation behind both GET and POST. GET carries the array-typed
+    /// filters via repeated query params; POST additionally carries attributeFilter, which is a
+    /// dictionary of arrays and does not belong in a query string.</summary>
     private static async Task<IResult> RunSearch(
         RequestContext ctx,
         PluginPipeline pipeline,
         string? q,
-        string? scopes,
+        string[]? scopes,
         int limit,
-        string? excludeTopics,
+        string[]? excludeTopics,
         string? pathPrefix,
         Dictionary<string, string[]>? attributeFilter,
         CancellationToken ct)
@@ -1078,25 +1098,26 @@ public static class MemoryEndpoints
         if (string.IsNullOrWhiteSpace(q))
             return Results.BadRequest(new ErrorResponse("q parameter is required."));
 
-        // Input bounds validation
+        // Input bounds validation. Task 9, D-5: scopes/excludeTopics used to be a single string
+        // capped at 1KB total; converted to arrays that becomes a count bound plus a per-element
+        // length bound (ValidateStringArrayBounds) — dropping either would leave the total
+        // unbounded again. 64/1024 mirrors the attributeFilter bound below (64 entries) and the
+        // old single-string cap (1024 chars), now applied per element rather than to the whole
+        // request.
         if (q.Length > 10_240)
             return Results.BadRequest(new ErrorResponse("Query too long (max 10KB)."));
-        if (scopes is { Length: > 1024 })
-            return Results.BadRequest(new ErrorResponse("Scopes parameter too long (max 1KB)."));
-        if (excludeTopics is { Length: > 1024 })
-            return Results.BadRequest(new ErrorResponse("excludeTopics parameter too long (max 1KB)."));
+        if (ValidateStringArrayBounds(scopes, 64, 1024, "scopes") is { } scopesBoundsError)
+            return Results.BadRequest(new ErrorResponse(scopesBoundsError));
+        if (ValidateStringArrayBounds(excludeTopics, 64, 1024, "excludeTopics") is { } excludeBoundsError)
+            return Results.BadRequest(new ErrorResponse(excludeBoundsError));
         if (pathPrefix is { Length: > 1024 })
             return Results.BadRequest(new ErrorResponse("pathPrefix parameter too long (max 1KB)."));
         if (ValidateAttributeBounds(attributeFilter, 64, 64, "attributeFilter") is { } filterBoundsError)
             return Results.BadRequest(new ErrorResponse(filterBoundsError));
         limit = Math.Clamp(limit, 1, 1000);
 
-        // scopes/excludeTopics are still the GET/POST query-string-shaped strings here — Task 9's
-        // wire change (D-2: repeated query params for GET, a JSON array for POST) lands in the
-        // next commit. Split at this call site for now, matching PluginPipeline.SearchAsync's
-        // list-typed contract.
-        var results = await pipeline.SearchAsync(ctx.Store!, q, MemoryNaming.SplitCommaSeparated(scopes), limit,
-            MemoryNaming.SplitCommaSeparated(excludeTopics), pathPrefix, attributeFilter, ct);
+        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit,
+            excludeTopics, pathPrefix, attributeFilter, ct);
         var mapped = results.Select<SearchResult, SearchResultItem>(r => r switch
         {
             EntryResult er => new SearchResultItem(

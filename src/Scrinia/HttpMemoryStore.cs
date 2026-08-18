@@ -174,7 +174,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // Null for a "topic" item — a topic is a scope label, not a memory, and has no real byte
         // count or creation time. Present for "entry" and "chunk" items.
         long? OriginalBytes = null, DateTimeOffset? CreatedAt = null);
-    internal sealed record SearchApiRequest(string Q, string? Scopes, int Limit, string? ExcludeTopics,
+    /// <summary>Mirrors <c>Scrinia.Server.Models.SearchRequest</c> — Task 9, D-2: Scopes/ExcludeTopics
+    /// are arrays on the wire, not comma-joined strings.</summary>
+    internal sealed record SearchApiRequest(string Q, string[]? Scopes, int Limit, string[]? ExcludeTopics,
         string? PathPrefix, Dictionary<string, string[]>? AttributeFilter);
     /// <summary>Mirrors <c>Scrinia.Server.Models.AppendRequest</c>. <c>Content</c> is a single
     /// string because an append writes exactly one chunk (<see cref="IMemoryStore.AppendAsync"/>);
@@ -681,16 +683,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        // BuildSearchGet/BuildSearchPost still take the legacy comma-joined strings in this
-        // commit — Task 9's wire change (D-2: repeated query params for GET, a JSON array for
-        // POST) lands in the next commit. Joining here keeps this commit's behaviour identical
-        // end to end while the store-facing contract already speaks lists.
-        string? joinedScopes = scopes is { Count: > 0 } ? string.Join(",", scopes) : null;
-        string? joinedExcludeTopics = excludeTopics is { Count: > 0 } ? string.Join(",", excludeTopics) : null;
-
         using var request = attributeFilter is { Count: > 0 }
-            ? BuildSearchPost(query, joinedScopes, limit, joinedExcludeTopics, pathPrefix, attributeFilter)
-            : BuildSearchGet(query, joinedScopes, limit, joinedExcludeTopics, pathPrefix);
+            ? BuildSearchPost(query, scopes, limit, excludeTopics, pathPrefix, attributeFilter)
+            : BuildSearchGet(query, scopes, limit, excludeTopics, pathPrefix);
 
         using var resp = SendSync(request);
         if (!resp.IsSuccessStatusCode)
@@ -774,21 +769,31 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         CreatedAt: item.CreatedAt!.Value,
         ContentPreview: item.Description ?? "");
 
+    /// <summary>
+    /// Task 9, D-2: <c>scopes</c>/<c>excludeTopics</c> are repeated query parameters
+    /// (<c>?scopes=a&amp;scopes=b</c>) — ASP.NET Core's native binding for a <c>string[]?</c>
+    /// parameter — not a single comma-joined value. This is what lets a scope name containing a
+    /// comma survive the round trip: the old encoding could not distinguish one scope named
+    /// "a,b" from two scopes "a" and "b".
+    /// </summary>
     private HttpRequestMessage BuildSearchGet(
-        string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix)
+        string query, IReadOnlyList<string>? scopes, int limit, IReadOnlyList<string>? excludeTopics,
+        string? pathPrefix)
     {
         string url = $"{BaseUrl}/search?q={Uri.EscapeDataString(query)}&limit={limit}";
-        if (!string.IsNullOrWhiteSpace(scopes))
-            url += $"&scopes={Uri.EscapeDataString(scopes)}";
-        if (!string.IsNullOrWhiteSpace(excludeTopics))
-            url += $"&excludeTopics={Uri.EscapeDataString(excludeTopics)}";
+        if (scopes is { Count: > 0 })
+            foreach (string s in scopes)
+                url += $"&scopes={Uri.EscapeDataString(s)}";
+        if (excludeTopics is { Count: > 0 })
+            foreach (string t in excludeTopics)
+                url += $"&excludeTopics={Uri.EscapeDataString(t)}";
         if (!string.IsNullOrWhiteSpace(pathPrefix))
             url += $"&pathPrefix={Uri.EscapeDataString(pathPrefix)}";
         return new HttpRequestMessage(HttpMethod.Get, url);
     }
 
     private HttpRequestMessage BuildSearchPost(
-        string query, string? scopes, int limit, string? excludeTopics,
+        string query, IReadOnlyList<string>? scopes, int limit, IReadOnlyList<string>? excludeTopics,
         string? pathPrefix, IReadOnlyDictionary<string, string[]> attributeFilter)
     {
         // No comparer here: JSON serialization never consults a dictionary's comparer, and
@@ -797,8 +802,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // filter). Local mode tolerates that fine — SearchResultFilter.MatchesAttributes
         // lowercases each filter key as it iterates — so a comparer here only introduces a
         // local-crashes-vs-remote-works divergence for no benefit.
+        //
+        // Task 9, D-2: scopes/excludeTopics are a JSON array on the wire, mirroring the server's
+        // SearchRequest DTO exactly — a scope name containing a comma survives this path the same
+        // way it survives the GET path's repeated query params.
         var body = new SearchApiRequest(
-            query, scopes, limit, excludeTopics, pathPrefix,
+            query, scopes as string[] ?? scopes?.ToArray(), limit,
+            excludeTopics as string[] ?? excludeTopics?.ToArray(), pathPrefix,
             attributeFilter.ToDictionary(kv => kv.Key, kv => kv.Value));
         string json = JsonSerializer.Serialize(body, HttpStoreJsonContext.Default.SearchApiRequest);
         return new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/search")
