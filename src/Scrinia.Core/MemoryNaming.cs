@@ -82,13 +82,16 @@ public static class MemoryNaming
     ///
     /// <para>This is the one place that turns a comma string into a list; it does not construct
     /// or validate scope names itself — each element still goes through the store's own
-    /// <c>NormalizeScopeFilters</c> or <see cref="TryBuildScopedTopicScope"/> downstream. It
-    /// exists for two kinds of caller, both permanent: the CLI, which keeps comma-separated
-    /// arguments on purpose (Task 9, D-3 — command-line arguments are strings, and forcing
-    /// repeated flags would be a worse CLI for no gain — a scope name containing a comma is
-    /// therefore unaddressable from the CLI, and that is accepted), and the REST
-    /// <c>/memories</c> listing endpoint's <c>scopes</c> query parameter, which this task does
-    /// not convert to repeated params (only <c>/search</c> is — Task 9, D-2).</para>
+    /// <c>NormalizeScopeFilters</c> or <see cref="TryBuildScopedTopicScope"/> downstream. Its one
+    /// remaining caller is the CLI, which keeps comma-separated arguments on purpose (Task 9, D-3
+    /// — command-line arguments are strings, and forcing repeated flags would be a worse CLI for
+    /// no gain — a scope name containing a comma is therefore unaddressable from the CLI, and that
+    /// is accepted). The REST <c>/memories</c> listing endpoint used to be a second caller, on the
+    /// premise that only <c>/search</c>'s wire encoding converted to repeated params (Task 9, D-2)
+    /// — Task 9 fix round 1 (F-4) found that premise wrong: <c>IMemoryStore.ListScoped</c> already
+    /// promised list semantics, and re-joining on commas here just broke that promise for every
+    /// remote caller. <c>/memories</c> now binds <c>scopes</c> as repeated params directly, the
+    /// same as <c>/search</c>, and no longer calls this method.</para>
     /// </summary>
     public static string[]? SplitCommaSeparated(string? value) =>
         string.IsNullOrWhiteSpace(value)

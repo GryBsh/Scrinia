@@ -204,10 +204,17 @@ The `content` array controls chunking: a single element creates a single-chunk m
 ### List Memories
 
 ```
-GET /api/v1/stores/{store}/memories[?scopes=local,api]
+GET /api/v1/stores/{store}/memories[?scopes=local&scopes=api][?offset=0][&limit=200]
 ```
 
 **Permission:** `search`
+
+- `scopes` — optional repeated scope filter (`?scopes=a&scopes=b`), matching `/search`'s encoding
+  below. A plain `,` inside one value now names a scope containing a literal comma, not two
+  scopes — `?scopes=local,api` requests one scope named `local,api`, not `local` and `api`
+  separately. Bounded at 64 entries / 1024 characters each, the same as `/search`'s `scopes`.
+  Omitted or empty means every readable scope.
+- `offset` / `limit` — pagination; `limit` is clamped to `[1, 1000]`, default 200.
 
 **Response (200):**
 
@@ -384,16 +391,19 @@ a chunk entry's is always auto-generated:
 ### Search
 
 ```
-GET /api/v1/stores/{store}/search?q=authentication[&scopes=local,api][&limit=20][&excludeTopics=goal,task][&pathPrefix=/api/]
+GET /api/v1/stores/{store}/search?q=authentication[&scopes=local&scopes=api][&limit=20][&excludeTopics=goal&excludeTopics=task][&pathPrefix=/api/]
 ```
 
 **Permission:** `search`
 
 - `q` (required) — the search query.
-- `scopes` — optional comma-separated scope filter.
+- `scopes` — optional repeated scope filter (`?scopes=a&scopes=b`), ASP.NET Core's native binding
+  for a `string[]?` parameter. A plain `,` inside one value names a scope containing a literal
+  comma, not two scopes — `?scopes=local,api` requests one scope named `local,api`. Bounded at 64
+  entries / 1024 characters each. Omitted or empty means every readable scope.
 - `limit` — max results, clamped to `[1, 1000]`, default 20.
-- `excludeTopics` — optional comma-separated topic names to exclude from candidates and
-  results, applied before the top-K cut.
+- `excludeTopics` — optional repeated topic-name filter, same encoding as `scopes`, excluded from
+  candidates and results before the top-K cut. Same 64/1024 bound, independent of `scopes`'.
 - `pathPrefix` — optional case-insensitive prefix match on each result's qualified name,
   also applied before the top-K cut.
 
@@ -434,17 +444,19 @@ POST /api/v1/stores/{store}/search
 ```json
 {
   "q": "authentication",
-  "scopes": "local,api",
+  "scopes": ["local", "api"],
   "limit": 20,
-  "excludeTopics": "goal,task",
+  "excludeTopics": ["goal", "task"],
   "pathPrefix": "/api/",
   "attributeFilter": { "tag": ["priority"] }
 }
 ```
 
-`attributeFilter` matching is AND across keys, OR within each key's values,
-case-insensitive; it excludes topics, which carry no attributes. `attributeFilter` may
-not exceed 64 keys. Response shape is identical to `GET /search`.
+`scopes`/`excludeTopics` are JSON arrays here, mirroring the GET route's repeated query params —
+this is what lets either one express a scope or topic name containing a literal comma, which a
+comma-joined string could never distinguish from two names. `attributeFilter` matching is AND
+across keys, OR within each key's values, case-insensitive; it excludes topics, which carry no
+attributes. `attributeFilter` may not exceed 64 keys. Response shape is identical to `GET /search`.
 
 ### Export Topics
 
@@ -750,7 +762,7 @@ Map store names to filesystem paths. Empty string defaults to `{dataDir}/stores/
 | Memory name max length | 256 characters |
 | Per content element max | 5 MB |
 | Search query max length | 10 KB |
-| Search scopes param max length | 1 KB |
+| `scopes` / `excludeTopics` (search, `/memories`) | ≤64 entries, ≤1024 characters each |
 | Search limit range | 1–1000 (clamped) |
 
 ## Security Hardening

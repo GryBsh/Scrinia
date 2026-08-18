@@ -214,10 +214,19 @@ public static class MemoryEndpoints
     private const int DefaultListLimit = 200;
     private const int MaxListLimit = 1000;
 
+    /// <summary>Task 9 fix round 1, F-4: <c>scopes</c> is bound as repeated query parameters
+    /// (<c>?scopes=a&amp;scopes=b</c>), matching <c>/search</c>'s encoding (Task 9, D-2), rather
+    /// than the single comma-joined string this route used before. <c>IMemoryStore.ListScoped</c>
+    /// promises list semantics (Commit 1 of Task 9) and <c>FileMemoryStore</c> honoured it, but
+    /// this route re-joined the list on commas and the server split it back apart — so a scope
+    /// named "odd,name" was addressable through every local caller and invisible to every remote
+    /// one. <see cref="ValidateStringArrayBounds"/> is new here too: this route had never had a
+    /// bound on <c>scopes</c> before, so this is a net gain, not just parity with
+    /// <c>/search</c>.</summary>
     private static Task<IResult> ListMemory(
         string store,
         RequestContext ctx,
-        string? scopes = null,
+        string[]? scopes = null,
         int offset = 0,
         int limit = DefaultListLimit)
     {
@@ -225,12 +234,11 @@ public static class MemoryEndpoints
         if (limit <= 0) limit = DefaultListLimit;
         if (limit > MaxListLimit) limit = MaxListLimit;
 
-        // This endpoint's own `scopes` query parameter stays a single comma-joined string — Task 9
-        // (D-2) converts only `/search`'s wire encoding to repeated params/a JSON array, not
-        // `/memories`'s listing endpoint. Split at this call site into the list the Core contract
-        // now takes.
+        if (ValidateStringArrayBounds(scopes, 64, 1024, "scopes") is { } scopesBoundsError)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(scopesBoundsError)));
+
         // ListScoped materialises a full enumeration; capture the count once, then page from it.
-        var items = ctx.Store!.ListScoped(MemoryNaming.SplitCommaSeparated(scopes));
+        var items = ctx.Store!.ListScoped(scopes);
         var sourceList = items as List<ScopedArtifact> ?? items.ToList();
         int total = sourceList.Count;
 

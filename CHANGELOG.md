@@ -21,7 +21,7 @@ and all assembly attributes.
   comma-separated `--scopes`/`--exclude-topics` arguments — a deliberate divergence, since
   command-line arguments are strings and repeated flags would be a worse CLI for no gain.
 
-### Changed (breaking) — REST `/search`'s `scopes`/`excludeTopics` are repeated query params / a JSON array
+### Changed (breaking) — REST `/search` and `/memories`'s `scopes`/`excludeTopics` are repeated query params / a JSON array
 
 - The REST `/search` endpoint (both GET and POST) now takes `scopes` and `excludeTopics` as
   arrays instead of a comma-joined string: GET via repeated query parameters
@@ -30,8 +30,24 @@ and all assembly attributes.
   wire change from the MCP `search`/`list`/`facts` conversion above — REST and MCP callers are
   different audiences and this list covers both. The bound on the old single comma-joined string
   (1KB total) is now a count bound (64 entries) plus a per-element length bound (1024 characters)
-  on each of `scopes` and `excludeTopics` independently. The `/memories` listing endpoint's own
-  `scopes` query parameter is unaffected and stays a comma-separated string.
+  on each of `scopes` and `excludeTopics` independently.
+- The `/memories` listing endpoint's `scopes` query parameter now takes the same repeated-param
+  encoding and the same 64-entry/1024-character bound — a bound this route never had before. It
+  was originally left out of this conversion on the premise that only `/search` needed it; that
+  premise was wrong, because `IMemoryStore.ListScoped` already promises list semantics and
+  `/memories` re-joining its filter on commas broke that promise for every remote read (a
+  comma-named scope was reachable through every local caller and invisible through this endpoint).
+
+### Changed (breaking) — `Scrinia.Core.IMemoryStore`'s scope/excludeTopics members take lists, not strings
+
+- `IMemoryStore.ListScoped`, `AnyScoped`, `ResolveReadScopes`, `GatherTopicInfos`,
+  `ShouldExcludeScope`, `BuildExcludedScopeSet`, and `Search.SearchQuery.Scopes`/`.ExcludeTopics`
+  all changed from `string?`/`string` to `IReadOnlyList<string>?`/`IReadOnlyList<string>`. This is
+  source- and binary-breaking for any out-of-tree `IMemoryStore` implementation or plugin that
+  binds to these members directly — a third audience distinct from the MCP tool-schema and REST
+  wire-encoding entries above, since a plugin talks to the Core contract, not either wire. An
+  implementation must update its signatures to the list-typed shape to keep compiling against this
+  version.
 
 ### Changed (breaking) — `restore` now places workspace context in `info:`, matching `guide`
 

@@ -451,22 +451,30 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
         var result = new List<ArtifactEntry>();
-        foreach (var item in FetchAllPages(scope))
+        foreach (var item in FetchAllPages([scope]))
             result.Add(ToArtifactEntry(item));
         return result;
     }
 
     /// <summary>
     /// Every entry the server holds for <paramref name="scopes"/> — or across every scope when it
-    /// is null — collected page by page until the server's own reported <c>Total</c> is reached.
+    /// is null or empty — collected page by page until the server's own reported <c>Total</c> is
+    /// reached.
     ///
     /// <para>ONE paging loop for this type. <see cref="LoadIndex"/> and
     /// <see cref="ListScoped(IReadOnlyList{string}?)"/> read the same listing endpoint, and while each owned its
     /// own request-building the two drifted: LoadIndex paged to exhaustion, ListScoped sent no
     /// limit at all and took the server's 200-row default as though it were the whole store. The
     /// comment on LoadIndex's loop described, precisely, the defect its sibling still had.</para>
+    ///
+    /// <para>Task 9 fix round 1, F-4: <c>scopes</c> is emitted as one repeated <c>&amp;scopes=</c>
+    /// query parameter per element — the same encoding <c>BuildSearchGet</c> uses for
+    /// <c>/search</c> — rather than a single comma-joined value. <c>IMemoryStore.ListScoped</c>
+    /// promises list semantics; before this fix <c>/memories</c> was the one place that promise was
+    /// broken silently: a scope named "odd,name" split back into two scopes server-side and matched
+    /// nothing, with no error to signal it.</para>
     /// </summary>
-    private List<MemoryEntry> FetchAllPages(string? scopes)
+    private List<MemoryEntry> FetchAllPages(IReadOnlyList<string>? scopes)
     {
         var collected = new List<MemoryEntry>();
         int offset = 0;
@@ -476,11 +484,14 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // no signal that more existed.
         const int pageSize = 1000;
 
+        // Built once — every page requests the identical scopes filter, only offset changes.
+        string scopesQuery = scopes is { Count: > 0 }
+            ? string.Concat(scopes.Select(s => $"&scopes={Uri.EscapeDataString(s)}"))
+            : "";
+
         while (true)
         {
-            string url = scopes is not null
-                ? $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scopes)}&offset={offset}&limit={pageSize}"
-                : $"{BaseUrl}/memories?offset={offset}&limit={pageSize}";
+            string url = $"{BaseUrl}/memories?offset={offset}&limit={pageSize}{scopesQuery}";
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             using var resp = SendSync(req);
@@ -493,7 +504,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // than an opaque server fault.
             if (!resp.IsSuccessStatusCode)
                 throw new HttpRequestException(
-                    $"Remote store listing failed{(scopes is null ? "" : $" for scopes '{scopes}'")}: " +
+                    $"Remote store listing failed{(scopes is not { Count: > 0 } ? "" : $" for scopes '{string.Join(",", scopes)}'")}: " +
                     $"{(int)resp.StatusCode} {resp.StatusCode}.",
                     inner: null,
                     statusCode: resp.StatusCode);
@@ -646,16 +657,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         if (includeEphemeral)
             result.AddRange(ListEphemeral());
 
-        // The `/memories` LIST endpoint's own `scopes` query parameter is NOT part of Task 9's
-        // wire change (D-2 converts only `/search`'s GET and POST encodings to repeated params /
-        // a JSON array) — it stays a single comma-joined string, so FetchAllPages is unchanged and
-        // this is where the list this member now takes gets folded back into that legacy shape.
-        // A null or empty scopes list joins to null, producing the same unfiltered URL
-        // FetchAllPages(null) always has — the server treats a missing and an empty `scopes`
-        // parameter identically (both fall through to "every discovered scope"), so this is not a
-        // behaviour change from the old null/""-both-converge comment it replaces.
-        string? joinedScopes = scopes is { Count: > 0 } ? string.Join(",", scopes) : null;
-        foreach (var item in FetchAllPages(joinedScopes))
+        // Task 9 fix round 1 (F-4): `/memories` now takes repeated `scopes` params too, matching
+        // `/search` — passed straight through, already normalized above. This is what lets a
+        // caller filtering `list`/`facts` remotely by a comma-named scope actually reach it; the
+        // old comma-join here (and the matching split server-side) is exactly what F-4 found
+        // silently losing that filter for every remote read.
+        foreach (var item in FetchAllPages(scopes))
         {
             // Recover the scope from the label the server reported. Task 13: this was a
             // character-for-character re-implementation of MemoryNaming.ParseScopeLabel — the same
