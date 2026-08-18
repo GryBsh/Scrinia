@@ -179,9 +179,9 @@ public sealed class IndexCacheWritePathTests : IDisposable
 
         // Warm the cache before the update under test — see Cold_And_Warm_Caches_Agree for why
         // the two Upserts above never do this themselves (the first Upsert to a fresh store
-        // always lands in "leave absent", and nothing here reads in between), and why skipping
-        // this step would let TryUpdateEntry fall back to the cold sidecar scan on both the read
-        // and the write side, masking the warm-path logic under test entirely.
+        // always lands in "leave absent", and nothing here reads in between). TryUpdateEntry's
+        // READ is always disk-authoritative; what needs the cache present is its copy-on-write
+        // update, which is the logic this test pins.
         _store.LoadIndex("local").Should().HaveCount(2);
 
         // No Description property on ArtifactEntry — Uri is the second positional member.
@@ -212,11 +212,68 @@ public sealed class IndexCacheWritePathTests : IDisposable
         ok.Should().BeFalse();
         var names = AssertReadIsACacheHit(
             () => _store.LoadIndex("local").Select(x => x.Name).ToArray(),
-            because: "a missing-entry lookup must have been served from the already-warm cache "
-                   + "and must not have disturbed it — recreation of the lock file here would "
-                   + "mean this read cold-reloaded instead of proving the cache stayed warm and "
-                   + "intact");
+            because: "a missing-entry lookup resolves against the sidecars and must leave the "
+                   + "warm cache untouched — recreation of the lock file here would mean this "
+                   + "read cold-reloaded instead of proving the cache stayed warm and intact");
         names.Should().BeEquivalentTo(["a"]);
+    }
+
+    /// <summary>
+    /// <see cref="FileMemoryStore.TryUpdateEntry"/> claims atomic load-mutate-persist under a
+    /// single acquisition of the per-scope write lock — and that lock (<c>FileLock</c>,
+    /// <c>FileShare.None</c>) is a CROSS-PROCESS one, so the claim is about other processes, not
+    /// only other threads. The method does not merely read the entry: <c>mutate</c> and
+    /// <see cref="MemoryDerivation.ForMetadataUpdate"/> build the complete entry it writes back
+    /// FROM whatever the lookup returned, so a lookup answered from <c>_indexCache</c> — which
+    /// nothing invalidates across processes — persists a stale entry over the concurrent writer's,
+    /// reverting every field the mutation itself did not touch. Not hypothetical here: this
+    /// repository's own <c>.scrinia/memories/**/*.meta.json</c> are git-tracked, so a <c>git
+    /// pull</c> under a live <c>scri serve</c> produces exactly this state.
+    ///
+    /// <para>A second <see cref="FileMemoryStore"/> over the same workspace root is the faithful
+    /// stand-in for the second process: it has its own empty <c>_indexCache</c> and shares only
+    /// the filesystem, so what it leaves behind on disk is exactly what another process leaves
+    /// behind.</para>
+    /// </summary>
+    [Fact]
+    public void TryUpdateEntry_ReadsTheEntryFromDisk_NotFromACacheAnotherWriterHasStaled()
+    {
+        _store.Upsert(new ArtifactEntry("note", "uri-v1", 4, 1, DateTimeOffset.UtcNow), "local");
+
+        // Warm THIS store's cache with v1 — the state a long-lived `scri serve` is in.
+        _store.LoadIndex("local").Should().ContainSingle();
+
+        // The "other process" writes v2. Nothing tells _store about it.
+        using (var other = new FileMemoryStore(_root))
+            other.Upsert(new ArtifactEntry("note", "uri-v2", 99, 1, DateTimeOffset.UtcNow), "local");
+
+        // A metadata-only update of the kind MaintenanceEventSink and EntityTypingEventHandler
+        // perform: it touches Attributes and nothing else.
+        bool changed = _store.TryUpdateEntry("note", "local", e => e with
+        {
+            Attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["orphan"] = ["true"],
+            },
+        });
+        changed.Should().BeTrue();
+
+        using var reader = new FileMemoryStore(_root);
+        var persisted = reader.LoadIndex("local").Single(e => e.Name == "note");
+
+        persisted.Attributes.Should().ContainKey("orphan",
+            because: "the mutation itself must still have been applied and persisted");
+        persisted.Uri.Should().Be("uri-v2",
+            because: "TryUpdateEntry writes back a COMPLETE entry derived from what it read, so "
+                   + "reading a stale cached entry would republish the pre-pull Uri over the "
+                   + "other writer's — a silent revert of a field this mutation never touched");
+        persisted.OriginalBytes.Should().Be(99,
+            because: "same reason as Uri: every field the mutation leaves alone is copied from "
+                   + "the entry the lookup returned, so the lookup has to be disk-authoritative");
+
+        _store.LoadIndex("local").Single(e => e.Name == "note").Uri.Should().Be("uri-v2",
+            because: "the write also re-seats this store's own cached slot from the entry it just "
+                   + "persisted, so the stale copy does not survive the write that overwrote it");
     }
 
     [Fact]
@@ -233,20 +290,22 @@ public sealed class IndexCacheWritePathTests : IDisposable
     }
 
     /// <summary>
-    /// Fix-round guard (task-3 review): the warm-path `current` TryUpdateEntry reads is NOT
-    /// provably normalized the way the cold path's `LoadEntriesFromSidecars` output is — it comes
-    /// from whatever LoadIndexUnsafe last cached, and LoadIndexUnsafe only overwrites a slot with
-    /// its normalized form when AttributeMigration.MigratesTo reports a change. MigratesTo can
-    /// report NO change for an entry that already has non-null Attributes but ALSO still carries
-    /// separately-populated, divergent LegacyFields: NormalizeAttributesKey's coalesce
-    /// (`Attributes = Attributes ?? _legacyFields`) is then a no-op, so the before/after diff sees
-    /// nothing and the raw, LegacyFields-bearing entry is what gets cached. This is the "inert"
-    /// edge case documented at ArtifactEntry.cs:63-68 — inert there, but not once a warm
-    /// TryUpdateEntry can carry it straight into the cache via `mutate`'s and
-    /// ForMetadataUpdate's `with` expressions, neither of which clears LegacyFields.
+    /// A cached entry is NOT provably normalized: LoadIndexUnsafe only overwrites a slot with its
+    /// normalized form when AttributeMigration.MigratesTo reports a change, and MigratesTo reports
+    /// NO change for an entry that already has non-null Attributes but ALSO still carries
+    /// separately-populated, divergent LegacyFields — NormalizeAttributesKey's coalesce
+    /// (`Attributes = Attributes ?? _legacyFields`) is a no-op there, so the before/after diff sees
+    /// nothing and the raw, LegacyFields-bearing entry is what gets cached. That is the "inert"
+    /// edge case documented at ArtifactEntry.cs:63-68.
+    /// <para>This pins that a TryUpdateEntry against such a scope leaves the cache NORMALIZED
+    /// anyway. Both halves of the guarantee are exercised: the entry fed to <c>mutate</c> comes
+    /// off disk through LoadSidecar (a load seam) rather than out of the raw cached slot, and the
+    /// entry written back into the cache is normalized before it lands there. A cache holding a
+    /// LegacyFields-bearing entry while disk holds the normalized form is exactly the divergence
+    /// the load seam exists to prevent.</para>
     /// </summary>
     [Fact]
-    public void TryUpdateEntry_WarmPath_NormalizesTheCachedEntry_EvenWhenTheCachedSourceWasNot()
+    public void TryUpdateEntry_LeavesTheCacheNormalized_EvenWhenTheWarmSlotWasNot()
     {
         // Attributes already populated (so the coalesce below is a no-op) — this is what makes
         // MigratesTo see no change and leave LegacyFields in place on the cached slot.
@@ -284,8 +343,8 @@ public sealed class IndexCacheWritePathTests : IDisposable
                    + "here would mean this read cold-reloaded instead of exercising the warm "
                    + "cache-write logic under test");
         updated.LegacyFields.Should().BeNull(
-            because: "TryUpdateEntry's warm-path cache write must normalize the entry before "
-                   + "caching it, same as Upsert does — caching it raw would let a "
+            because: "TryUpdateEntry reads the entry back through a load seam and normalizes what "
+                   + "it caches, same as Upsert does — leaving it raw would let a "
                    + "LegacyFields-bearing entry sit in the cache diverging from disk (which "
                    + "WriteSidecarCore always normalizes before serializing), reproducing exactly "
                    + "the divergence the load seam exists to prevent");

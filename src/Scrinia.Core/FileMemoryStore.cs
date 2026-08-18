@@ -752,13 +752,22 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// THE load seam: every sidecar read in this type funnels through here. Owns the legacy
+    /// The load seam for a WHOLE SCOPE, and one of the two members that own the legacy
     /// "fields" → Attributes normalization rule (<see cref="ArtifactEntry.NormalizeAttributesKey"/>)
-    /// per the invariant at <c>ArtifactEntry.cs:67</c> — an entry never escapes this method with
-    /// data still sitting in <c>LegacyFields</c>. Callers must NOT re-apply the rule; that used to
-    /// be pasted around every call site (Upsert, Remove, TryUpdateEntry's two lookups) and one
-    /// missed copy would have silently hidden an entry's facets from search/filter/display for the
-    /// process lifetime. See Scrinia.Tests.Store.NormalizationSeamTests for the regression guard.
+    /// per the invariant at <c>ArtifactEntry.cs:67</c> — an entry never escapes here with data
+    /// still sitting in <c>LegacyFields</c>. <see cref="LoadSidecar"/> is the other, for a single
+    /// entry. Callers must NOT re-apply the rule; that used to be pasted around every call site
+    /// (Upsert, Remove, TryUpdateEntry's two lookups) and one missed copy would have silently
+    /// hidden an entry's facets from search/filter/display for the process lifetime. See
+    /// Scrinia.Tests.Store.NormalizationSeamTests for the regression guard.
+    ///
+    /// <para>Two callers deliberately bypass normalization and read
+    /// <see cref="LoadEntriesFromSidecarsRaw"/> directly — <see cref="LoadIndexUnsafe"/> and
+    /// <see cref="EnumerateRawForMigration"/> — because
+    /// <see cref="Migration.AttributeMigration.MigratesTo"/> has to still see
+    /// <see cref="ArtifactEntry.LegacyFields"/> populated to detect a sidecar that needs
+    /// rewriting. Each says so at its own call site. Nothing else reads a sidecar without
+    /// normalizing it.</para>
     /// </summary>
     private List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
     {
@@ -766,6 +775,53 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         for (int i = 0; i < entries.Count; i++)
             entries[i] = entries[i].NormalizeAttributesKey();
         return entries;
+    }
+
+    /// <summary>
+    /// The load seam for ONE sidecar, already located by <see cref="ResolveSidecarPath"/>.
+    /// Normalizes exactly as <see cref="LoadEntriesFromSidecars"/> does; returns null for a
+    /// missing, unreadable or corrupt file, matching that method's skip-corrupt behaviour.
+    /// </summary>
+    private static ArtifactEntry? LoadSidecar(string metaPath) =>
+        ReadSidecarRaw(metaPath)?.NormalizeAttributesKey();
+
+    /// <summary>
+    /// Locates the sidecar for <paramref name="sanitizedName"/> under <paramref name="storeDir"/>,
+    /// or returns null when the scope holds none. The exact-name probe is one stat and answers the
+    /// overwhelmingly common case; only a miss pays a directory enumeration.
+    ///
+    /// <para>RULING (remote-mode-leftovers, Task 2): the fallback scan matches
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> deliberately. <see cref="SanitizeName"/>
+    /// does not fold case, so on a case-sensitive filesystem an exact-name probe alone answers
+    /// "no such memory" for a sidecar differing only in casing — <c>forget("mixedcase")</c>
+    /// reporting not-found for a memory stored as "MixedCase", while every name match around it
+    /// (LoadIndex, TryUpdateEntry, the write paths) is case-insensitive. NTFS folds case itself by
+    /// default, so on an ordinary Windows volume the probe always succeeds and the fallback is
+    /// never entered; <c>CaseSensitiveFileStoreTests</c> uses a directory carrying NTFS's
+    /// per-directory case-sensitivity flag to exercise it, and SKIPS (never silently passes) on a
+    /// volume that cannot provide the flag.</para>
+    ///
+    /// <para>Tie-break, and it matters because <see cref="Remove"/> deletes what this returns: a
+    /// case-sensitive filesystem holding pre-branch data can have BOTH "Note.meta.json" and
+    /// "note.meta.json", and the fallback is only reached when the caller asked for neither
+    /// exactly. Directory enumeration order is not guaranteed — notably on ext4 — so candidates
+    /// are sorted ordinally and the first is taken, making the choice deterministic rather than
+    /// arbitrary. Ordinal sort puts uppercase first, so "Note.meta.json" wins. That is a coin toss
+    /// decided consistently, not a claim about which one is meant; the alternative considered was
+    /// refusing on ambiguity, rejected because it would make <c>forget()</c> fail with no name the
+    /// caller could give it instead.</para>
+    /// </summary>
+    private static string? ResolveSidecarPath(string storeDir, string sanitizedName)
+    {
+        string metaPath = Path.Combine(storeDir, sanitizedName + ".meta.json");
+        if (File.Exists(metaPath)) return metaPath;
+        if (!Directory.Exists(storeDir)) return null;
+
+        string wanted = Path.GetFileName(metaPath);
+        return Directory.EnumerateFiles(storeDir, "*.meta.json")
+            .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .FirstOrDefault();
     }
 
     /// <summary>
@@ -785,23 +841,34 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         var entries = new List<ArtifactEntry>();
         foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json"))
         {
-            try
-            {
-                // Retry the READ (only) on a transient lock: read-time forward-fill writes
-                // sidecars under LoadIndex's shared lock, so a concurrent reader can hit the
-                // File.Move replace window. Without the retry, that transient sharing violation
-                // would fall into the blanket "skip corrupt" catch below and silently drop the
-                // entry from this read. FileRetry retries transient IOExceptions and rethrows a
-                // permanently-stuck file (which then degrades to skip, as before). Deserialize
-                // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
-                string json = FileRetry.Run(() => File.ReadAllText(metaFile));
-                var entry = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
-                if (entry is not null)
-                    entries.Add(entry);
-            }
-            catch { /* skip corrupt sidecar */ }
+            var entry = ReadSidecarRaw(metaFile);
+            if (entry is not null)
+                entries.Add(entry);
         }
         return entries;
+    }
+
+    /// <summary>
+    /// One sidecar off disk, deserialized and NOT normalized. The single read rule shared by the
+    /// whole-scope load (<see cref="LoadEntriesFromSidecarsRaw"/>) and the single-entry one
+    /// (<see cref="LoadSidecar"/>), so the two cannot drift on retry or corruption handling.
+    /// Returns null for a missing, unreadable or corrupt file.
+    /// </summary>
+    private static ArtifactEntry? ReadSidecarRaw(string metaFile)
+    {
+        try
+        {
+            // Retry the READ (only) on a transient lock: read-time forward-fill writes
+            // sidecars under LoadIndex's shared lock, so a concurrent reader can hit the
+            // File.Move replace window. Without the retry, that transient sharing violation
+            // would fall into the blanket "skip corrupt" catch below and silently drop the
+            // entry from this read. FileRetry retries transient IOExceptions and rethrows a
+            // permanently-stuck file (which then degrades to skip, as before). Deserialize
+            // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
+            string json = FileRetry.Run(() => File.ReadAllText(metaFile));
+            return JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
+        }
+        catch { /* skip corrupt sidecar */ return null; }
     }
 
     /// <summary>
@@ -1158,51 +1225,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return WithExclusiveLock(scope, () =>
         {
             string storeDir = GetStoreDirForScope(scope);
-            string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
 
-            if (!File.Exists(metaPath))
-            {
-                // RULING (remote-mode-leftovers, Task 2): pinned by
-                // CaseSensitiveFileStoreTests.Remove_DeletesCaseMismatchedName in
-                // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
-                // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI
-                // leg. The test skips (never silently passes) on a volume that cannot provide the
-                // flag.
-                //
-                // SanitizeName does not fold case, so on a case-sensitive filesystem the exact-name
-                // probe above answers "no such memory" for a sidecar that differs only in casing —
-                // forget("mixedcase") reporting not-found for a memory stored as "MixedCase", while
-                // every name match around it (LoadIndex, TryUpdateEntry, the write paths) is
-                // case-insensitive. This scan restores the agreement. NTFS folds case itself by
-                // default, so on an ordinary Windows volume the probe above always succeeds and this
-                // branch is never entered — the guard test above uses a directory that opts out of
-                // that default, which is what exercises it.
-                //
-                // Kept as a fallback rather than replacing the probe: the exact-name hit is the
-                // overwhelmingly common case and costs one stat, where this costs a directory
-                // enumeration. Nothing about the found path changes.
-                //
-                // Tie-break, and it matters because this is a delete: a case-sensitive filesystem
-                // holding pre-branch data can have BOTH "Note.meta.json" and "note.meta.json", and
-                // this branch is only entered when the caller asked for neither exactly (an exact
-                // name would have hit the probe above). Directory enumeration order is not
-                // guaranteed — notably on ext4 — so the candidates are sorted ordinally and the
-                // first is taken, making the choice deterministic rather than arbitrary. Ordinal
-                // sort puts uppercase first, so "Note.meta.json" wins over "note.meta.json". That
-                // is a coin toss decided consistently, not a claim about which one is meant; the
-                // alternative considered was refusing on ambiguity, rejected because it would make
-                // forget() fail with no name the caller could give it instead.
-                string wanted = Path.GetFileName(metaPath);
-                string? actual = Directory.Exists(storeDir)
-                    ? Directory.EnumerateFiles(storeDir, "*.meta.json")
-                        .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
-                        .OrderBy(p => p, StringComparer.Ordinal)
-                        .FirstOrDefault()
-                    : null;
-                if (actual is null)
-                    return false;
-                metaPath = actual;
-            }
+            // Exact-name probe with a case-insensitive fallback scan — see ResolveSidecarPath for
+            // the ruling on why the fallback exists and how its tie-break is decided. Pinned by
+            // CaseSensitiveFileStoreTests.Remove_DeletesCaseMismatchedName.
+            string? metaPath = ResolveSidecarPath(storeDir, SanitizeName(name));
+            if (metaPath is null)
+                return false;
 
             // Delete the sidecar file
             File.Delete(metaPath);
@@ -1257,6 +1286,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// the async typing sink uses to write attribute promotions back — it fires NO event sinks.
     /// Resolves identity from the sidecars themselves (case-insensitively, like every other name
     /// match in this type) and reuses <see cref="Upsert"/>'s persist/invalidate tail.
+    ///
+    /// <para><b>The entry handed to <paramref name="mutate"/> comes off disk, inside the lock.</b>
+    /// That is what makes "load-mutate-persist" true across processes rather than only within one:
+    /// the lock <see cref="WithExclusiveLock"/> takes is a real cross-process file lock, and this
+    /// method writes back a COMPLETE entry derived from what it read, so a lookup served from
+    /// <c>_indexCache</c> — which nothing invalidates across processes — would silently roll back
+    /// another writer's edits to every field the mutation does not itself touch.</para>
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
@@ -1264,47 +1300,39 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         {
             string storeDir = GetStoreDirForScope(scope);
 
-            // RULING (remote-mode-leftovers, Task 2): the `File.Exists(SanitizeName(subject) +
-            // ".meta.json")` fast path that used to stand here is gone, deliberately.
+            // DISK-AUTHORITATIVE, and it has to be. This does not merely READ the entry: `mutate`
+            // and MemoryDerivation.ForMetadataUpdate below build the full entry that gets written
+            // back FROM it, so every field the mutation leaves alone (Uri, OriginalBytes,
+            // ChunkEntries, ContentPreview, TermFrequencies, ...) is copied from whatever this
+            // lookup returned. Serving it from `_indexCache` would therefore not just answer with
+            // stale data, it would PERSIST stale data over a concurrent writer's — and staleness
+            // here is not hypothetical: nothing invalidates _indexCache across processes (see
+            // LoadIndex's fast lane), and this repository's own `.scrinia/memories/**/*.meta.json`
+            // are git-tracked, so a `git pull` under a live `scri serve` is enough to make every
+            // warm entry in that scope stale. The cross-process lock this body runs under exists
+            // precisely to sequence this read against another process's write; reading in-memory
+            // state inside it throws away the only thing the lock is for.
             //
-            // What it did: SanitizeName does not fold case, so on a case-sensitive filesystem the
-            // gate answered "no such entry" for a subject whose sidecar differs only in casing, and
-            // TryUpdateEntry returned false for an entry that exists — without invoking mutate, so
-            // the caller could not tell it apart from a genuine miss. The lookup immediately below
-            // is already case-insensitive and is the authority; the gate was an optimization that
-            // could only ever disagree with it by being wrong.
+            // ONE sidecar read, not the whole scope. ResolveSidecarPath answers the identity
+            // question with a single stat on the common path (only a genuine miss pays a directory
+            // enumeration), and it carries the same case-insensitive fallback Remove uses, so
+            // "stored as MixedCase, looked up as mixedcase" resolves here as it does there —
+            // pinned by CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject,
+            // which runs against a directory carrying NTFS's per-directory case-sensitivity flag
+            // and SKIPS (never silently passes) where the flag cannot be obtained. This is O(1) in
+            // scope size, which is the property finding H5 is about; the warm-cache read that
+            // stood here briefly bought a list scan over a file read and paid for it with the
+            // guarantee above.
             //
-            // Pinned by CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject in
-            // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
-            // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI leg.
-            // The test skips (never silently passes) on a volume that cannot provide the flag. NTFS
-            // is case-insensitive by default, so on an ordinary Windows volume File.Exists would
-            // succeed for a case-mismatched subject either way and the removed gate would never have
-            // disagreed with the lookup below; the guard test's directory opts out of that default.
+            // "Entry genuinely missing -> false, and mutate never runs" is unchanged: a scope
+            // directory that does not exist, or holds no matching sidecar, yields null here.
+            // Pinned by TryUpdateEntryTests.MissingEntry_ReturnsFalse.
             //
-            // What is unchanged: "entry genuinely missing -> false, and mutate never runs".
-            // LoadEntriesFromSidecars returns [] for a directory that does not exist, so the
-            // `current is null` guard below answers that case exactly as the gate did. Pinned by
-            // MissingEntry_ReturnsFalse in the same file.
-            //
-            // What it cost, since the gate was not free: it was the only thing keeping a MISS from
-            // paying a full LoadEntriesFromSidecars scan, which a miss now always pays. Judged
-            // fine, and deliberately so — a hit already paid that identical scan (the lookup below
-            // is unchanged), and the sole production caller is EntityTypingEventHandler.PromoteAsync
-            // on a detached background task, one call per write event, never in a loop. Trading a
-            // correct answer for a stat on the rare path is the wrong way round.
-            // LoadEntriesFromSidecars is the load seam and normalizes legacy "fields" itself, so
-            // the mutator below always sees Attributes populated even on this cold lookup path,
-            // which (unlike LoadIndexUnsafe) has no AttributeMigration.MigratesTo forward-fill.
-            //
-            // Serve the lookup from the cache when the scope is warm; fall back to the sidecar
-            // scan when it is not. The scan's cost was accepted above on the grounds that a hit
-            // and a miss pay the same thing — still true, and unchanged for the cold case. This
-            // only avoids the cost when the answer is already in memory.
-            var current = (_indexCache.TryGetValue(scope, out var warmIndex)
-                    ? warmIndex.Entries
-                    : LoadEntriesFromSidecars(storeDir))
-                .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
+            // LoadSidecar is a load seam and normalizes legacy "fields" itself, so the mutator
+            // always sees Attributes populated — this path (unlike LoadIndexUnsafe) has no
+            // AttributeMigration.MigratesTo forward-fill of its own.
+            string? metaPath = ResolveSidecarPath(storeDir, SanitizeName(subject));
+            var current = metaPath is null ? null : LoadSidecar(metaPath);
             if (current is null) return false;
 
             var updated = mutate(current);
@@ -1321,20 +1349,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Copy-on-write cache update — see the matching comment in Upsert for why this must
             // install a NEW CachedIndex and must not re-read the scope's sidecars.
             //
-            // Cache the NORMALIZED entry, exactly as Upsert does at :1108, and for the same
-            // reason. `current` above is NOT provably normalized on the warm branch: it comes
-            // from `warmIndex.Entries`, i.e. whatever LoadIndexUnsafe last cached, and
-            // LoadIndexUnsafe only overwrites a slot with its normalized form when
-            // AttributeMigration.MigratesTo reports a change (:740-745). MigratesTo can report
-            // NO change for an entry that still carries LegacyFields: NormalizeAttributesKey's
-            // coalesce is `Attributes = Attributes ?? _legacyFields`, a no-op whenever Attributes
-            // is already non-null, so an entry with populated Attributes AND separately
-            // populated, divergent LegacyFields diffs as unchanged and is cached RAW, LegacyFields
-            // still set (see ArtifactEntry.cs:63-68's documented footgun — inert there, but not
-            // once it reaches here). `mutate`'s `with` expression and
-            // MemoryDerivation.ForMetadataUpdate's `with` expressions both carry that
-            // un-normalized state straight through to `updated`. Normalizing here closes it and
-            // keeps this write path consistent with Upsert's.
+            // Cache the NORMALIZED entry, exactly as Upsert's cache write does, and for the same
+            // reason: disk always gets the "attributes"-keyed form (WriteSidecarCore normalizes a
+            // local copy before serializing) and the cache must not diverge from it. `current` is
+            // normalized — LoadSidecar is a load seam — so on today's paths this only has to
+            // survive `mutate` handing back an entry it constructed with LegacyFields set. That is
+            // reachable through the public delegate, and normalizing costs nothing when there is
+            // nothing to normalize. Pinned by IndexCacheWritePathTests.
             var cacheEntry = updated.NormalizeAttributesKey();
             if (_indexCache.TryGetValue(scope, out var cachedIndex))
             {
