@@ -472,9 +472,19 @@ Scans**, below, for why that is safe.
 
 The class previously also carried `NameToPosition`, `Rebuild()` and `GetOrComputeCorpusStats()`.
 None had a reader anywhere in the repo, and `NameToPosition` was rebuilt on every cache write for
-nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted the position map —
-they reload the scope from sidecars via `LoadEntriesFromSidecars` and replace the `CachedIndex`
-outright — and corpus stats are computed directly by `WeightedAttributeScorer` on every search.
+nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted the position map,
+and as of 2026-08-17 neither reloads the scope from sidecars to update the cache either: each
+builds a new `Entries` list with the written entry's slot replaced (or appended, or omitted for a
+remove) and installs a new `CachedIndex` over it — a single write no longer costs a full directory
+enumeration plus one read-and-parse per existing entry. `TryUpdateEntry` does the same. When the
+scope isn't already cached, a write leaves it uncached rather than installing a partial one; the
+next read cold-loads the whole scope from sidecars. This is the same handed-out-by-reference
+aliasing invariant described above — swap the whole object, never mutate `Entries` in place — the
+write path now satisfies it more cheaply than before. See
+`docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md` for why the invariant matters
+and `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for the before/after
+cost of this change. Corpus stats are computed directly by `WeightedAttributeScorer` on every
+search.
 
 ### Artifact LRU Cache
 
@@ -500,9 +510,12 @@ cached `LoadIndex` takes no file lock.
 ### Concurrency
 
 - Per-scope `ReaderWriterLockSlim` for in-process index CRUD
-- Per-scope `CachedIndex` invalidated on write
+- Per-scope `CachedIndex` updated copy-on-write on write, not invalidated-then-rebuilt — see
+  **CachedIndex** above
 - `ConcurrentDictionary` for ephemeral store, scope locks, scope caches
-- Topic discovery cache with 2-second TTL
+- Topic discovery cache (`_cachedTopics`), no TTL — invalidated event-driven, and only on a
+  scope-lifecycle transition (a `local:`-scoped directory gaining its first sidecar or losing its
+  last), not on every write
 - Cross-process `FileLock` for filesystem-level coordination
 
 ### Keyword-Only Index Scans
