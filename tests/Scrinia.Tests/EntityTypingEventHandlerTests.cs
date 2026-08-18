@@ -188,6 +188,28 @@ public class EntityTypingEventHandlerTests
     /// otherwise this would still fail on a case-sensitive filesystem, where
     /// <c>FileMemoryStore.TryUpdateEntry</c>'s own <c>File.Exists</c> gate is case-sensitive.
     /// </summary>
+    [Fact]
+    public async Task Promotes_WhenTheStoredNameDiffersInCasingFromTheEvent()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.Store;
+        store.Upsert(new ArtifactEntry("known", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Attributes: new(StringComparer.OrdinalIgnoreCase) { ["thing"] = ["susie"] }), "local:findings");
+        store.Upsert(Mentioning("Note", "seraphim"), "local:findings");
+
+        var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
+        var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
+
+        // Lowercase subject; the entry is stored as "Note".
+        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+
+        var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "Note");
+        (reloaded.Attributes!.TryGetValue("mention", out var m) ? m : []).Should().NotContain("seraphim",
+            because: "the promotion must run even though the event's subject casing differs from " +
+                     "the stored entry's");
+        reloaded.Attributes!["thing"].Should().Contain("seraphim");
+    }
+
     /// <summary>
     /// Pins that <c>OnStoredAsync</c> actually widens through <see cref="CoreSinkStore.Require"/>
     /// rather than, say, a bare <c>(IMemoryStore)store</c> cast that would happen to compile and
@@ -209,28 +231,6 @@ public class EntityTypingEventHandlerTests
             .WithMessage("*EntityTypingEventHandler is a Core-internal event handler*",
                 because: "this is CoreSinkStore.Require's own message, naming the handler -- a raw " +
                          "cast mutation would throw InvalidCastException with no such text");
-    }
-
-    [Fact]
-    public async Task Promotes_WhenTheStoredNameDiffersInCasingFromTheEvent()
-    {
-        using var tmp = new TempWorkspace();
-        var store = tmp.Store;
-        store.Upsert(new ArtifactEntry("known", "uri", 1, 1, DateTimeOffset.UtcNow,
-            Attributes: new(StringComparer.OrdinalIgnoreCase) { ["thing"] = ["susie"] }), "local:findings");
-        store.Upsert(Mentioning("Note", "seraphim"), "local:findings");
-
-        var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
-        var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
-
-        // Lowercase subject; the entry is stored as "Note".
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
-
-        var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "Note");
-        (reloaded.Attributes!.TryGetValue("mention", out var m) ? m : []).Should().NotContain("seraphim",
-            because: "the promotion must run even though the event's subject casing differs from " +
-                     "the stored entry's");
-        reloaded.Attributes!["thing"].Should().Contain("seraphim");
     }
 }
 
