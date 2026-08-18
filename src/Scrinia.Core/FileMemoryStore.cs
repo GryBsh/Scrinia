@@ -1240,18 +1240,35 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // install a NEW CachedIndex and must not re-read the scope's sidecars.
             //
             // Match against the sidecar that was actually deleted, not necessarily the caller's
-            // raw `name`: the case-mismatch fallback above can resolve `name` to a differently
-            // -cased sidecar on a case-sensitive filesystem (see the RULING comment above).
-            // metaPath's file name IS the sanitized stem WriteSidecar used to write it, so
-            // compare against that directly instead of re-deriving it from the caller's argument.
+            // raw `name`: the case-mismatch fallback can resolve `name` to a differently-cased
+            // sidecar on a case-sensitive filesystem (see ResolveSidecarPath). metaPath's file
+            // name IS the sanitized stem WriteSidecar used to write it, so compare against that
+            // directly instead of re-deriving it from the caller's argument.
+            //
+            // FIRST MATCH ONLY, the same `!removed &&` guard Upsert's loop carries, and here it is
+            // load-bearing rather than defensive: exactly ONE file was deleted, so exactly one
+            // entry may leave the cache. A case-sensitive filesystem holding pre-branch data can
+            // carry both "Note.meta.json" and "note.meta.json" — the state the tie-break in
+            // ResolveSidecarPath exists for — and dropping every case-insensitive match would
+            // evict BOTH twins while deleting one file, leaving the survivor's sidecar on disk but
+            // invisible to LoadIndex/search/list for the rest of the process's life (nothing
+            // re-reads the scope on a write any more). Which of two twins the loop drops is not
+            // pinned down: the cache can be left showing the survivor under the deleted twin's
+            // casing until the next cold load. That is cosmetic — the entry count is right and the
+            // surviving sidecar stays reachable — where losing the survivor entirely is not.
             if (_indexCache.TryGetValue(scope, out var cachedIndex))
             {
                 string target = Path.GetFileName(metaPath)[..^".meta.json".Length];
                 var next = new List<ArtifactEntry>(cachedIndex.Entries.Count);
+                bool dropped = false;
                 foreach (var existing in cachedIndex.Entries)
                 {
-                    if (SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    if (!dropped
+                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        dropped = true;
                         continue;
+                    }
                     next.Add(existing);
                 }
                 _indexCache[scope] = new CachedIndex(next);
