@@ -19,24 +19,25 @@ public static class MemoryEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("api");
 
-        group.MapPost("/memories", RememberMemory);
-        group.MapGet("/memories", ListMemory);
-        group.MapGet("/memories/{name}", RecallMemory);
-        group.MapGet("/memories/{name}/entry", GetEntry);
+        group.MapPost("/memories", RememberMemory).RequirePermission(Permissions.Store);
+        group.MapGet("/memories", ListMemory).RequirePermission(Permissions.Search);
+        group.MapGet("/memories/{name}", RecallMemory).RequirePermission(Permissions.Read);
+        group.MapGet("/memories/{name}/entry", GetEntry).RequirePermission(Permissions.Read);
         // R-2: PatchEntry takes HttpRequest (it parses the body manually — see its own doc comment),
         // not a typed parameter, which otherwise strips the request body from the generated OpenAPI
         // document (a generated client would see a PATCH that accepts no body). .Accepts restores it.
-        group.MapPatch("/memories/{name}", PatchEntry).Accepts<MemoryEntry>("application/json");
-        group.MapDelete("/memories/{name}", ForgetMemory);
-        group.MapPost("/memories/{name}/append", AppendMemory);
-        group.MapPost("/memories/{name}/copy", CopyMemory);
+        group.MapPatch("/memories/{name}", PatchEntry).Accepts<MemoryEntry>("application/json")
+            .RequirePermission(Permissions.Store);
+        group.MapDelete("/memories/{name}", ForgetMemory).RequirePermission(Permissions.Forget);
+        group.MapPost("/memories/{name}/append", AppendMemory).RequirePermission(Permissions.Append);
+        group.MapPost("/memories/{name}/copy", CopyMemory).RequirePermission(Permissions.Copy);
         // {name} is the DESTINATION on this one — see CopyFromClient's doc comment.
-        group.MapPost("/memories/{name}/copy-from-client", CopyFromClient);
-        group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk);
-        group.MapGet("/search", SearchMemory);
-        group.MapPost("/search", SearchMemoryPost);
-        group.MapPost("/export", ExportTopics);
-        group.MapPost("/import", ImportBundle);
+        group.MapPost("/memories/{name}/copy-from-client", CopyFromClient).RequirePermission(Permissions.Copy);
+        group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk).RequirePermission(Permissions.Read);
+        group.MapGet("/search", SearchMemory).RequirePermission(Permissions.Search);
+        group.MapPost("/search", SearchMemoryPost).RequirePermission(Permissions.Search);
+        group.MapPost("/export", ExportTopics).RequirePermission(Permissions.Export);
+        group.MapPost("/import", ImportBundle).RequirePermission(Permissions.Import);
     }
 
     private const int MaxNameLength = 256;
@@ -141,9 +142,6 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission(Permissions.Store))
-            return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -223,9 +221,6 @@ public static class MemoryEndpoints
         int offset = 0,
         int limit = DefaultListLimit)
     {
-        if (!ctx.HasPermission(Permissions.Search))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403));
-
         if (offset < 0) offset = 0;
         if (limit <= 0) limit = DefaultListLimit;
         if (limit > MaxListLimit) limit = MaxListLimit;
@@ -253,9 +248,6 @@ public static class MemoryEndpoints
         RequestContext ctx,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission(Permissions.Read))
-            return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
-
         string decoded = Uri.UnescapeDataString(name);
 
         // Caught around the call rather than pre-probed: ResolveArtifactAsync — which is what
@@ -318,9 +310,6 @@ public static class MemoryEndpoints
         string name,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission(Permissions.Read))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403));
-
         string decoded = Uri.UnescapeDataString(name);
         if (!TryResolveName(ctx.Store!, decoded, out string scope, out string subject, out IResult? refusal))
             return Task.FromResult(refusal!);
@@ -406,9 +395,6 @@ public static class MemoryEndpoints
         HttpRequest request,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission(Permissions.Store))
-            return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -573,9 +559,6 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission(Permissions.Forget))
-            return Results.Json(new ErrorResponse("Permission 'forget' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -607,9 +590,6 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission(Permissions.Append))
-            return Results.Json(new ErrorResponse("Permission 'append' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
@@ -656,9 +636,6 @@ public static class MemoryEndpoints
         CopyRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission(Permissions.Copy))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
-
         if (!IsWritable(ctx, store))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
 
@@ -702,9 +679,6 @@ public static class MemoryEndpoints
         CopyFromClientRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission(Permissions.Copy))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
-
         if (!IsWritable(ctx, store))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
 
@@ -1034,9 +1008,6 @@ public static class MemoryEndpoints
         RequestContext ctx,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission(Permissions.Read))
-            return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
-
         string decoded = Uri.UnescapeDataString(name);
         string artifact;
         try
@@ -1100,9 +1071,6 @@ public static class MemoryEndpoints
         Dictionary<string, string[]>? attributeFilter,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission(Permissions.Search))
-            return Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403);
-
         if (string.IsNullOrWhiteSpace(q))
             return Results.BadRequest(new ErrorResponse("q parameter is required."));
 
@@ -1161,9 +1129,6 @@ public static class MemoryEndpoints
         ExportRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission(Permissions.Export))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'export' required."), statusCode: 403));
-
         if (req.Topics is null || req.Topics.Length == 0)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("topics is required.")));
 
@@ -1213,9 +1178,6 @@ public static class MemoryEndpoints
         [FromQuery] string[]? topics = null,
         bool overwrite = false)
     {
-        if (!ctx.HasPermission(Permissions.Import))
-            return Results.Json(new ErrorResponse("Permission 'import' required."), statusCode: 403);
-
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 

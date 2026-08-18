@@ -18,9 +18,11 @@ public static class EmbeddingsEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("api");
 
-        group.MapGet("/status", GetStatus);
-        group.MapGet("/settings", GetSettings);
-        group.MapPost("/reindex", Reindex);
+        group.MapGet("/status", GetStatus).RequirePermission(Permissions.Read);
+        group.MapGet("/settings", GetSettings).RequirePermission(Permissions.Read);
+        // A full re-embed of every memory in the store is unbounded work, so it gets its own
+        // permission rather than riding on 'store'.
+        group.MapPost("/reindex", Reindex).RequirePermission(Permissions.Reindex);
     }
 
     // The admin service is resolved from HttpContext.RequestServices rather than taken as a
@@ -28,11 +30,8 @@ public static class EmbeddingsEndpoints
     // loaded — and minimal-API parameter inference treats an unregistered complex type as a
     // body parameter, which MapGet rejects at endpoint-construction time. This is also what
     // the routes being replaced already did (Program.cs:548, :556, :564).
-    private static IResult GetStatus(HttpContext http, RequestContext ctx)
+    private static IResult GetStatus(HttpContext http)
     {
-        if (!ctx.HasPermission(Permissions.Read))
-            return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
-
         var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
         if (admin is null)
             return Results.Ok(new EmbeddingsStatusResponse("none", "", false, 0, 0.0, 0));
@@ -42,11 +41,8 @@ public static class EmbeddingsEndpoints
             admin.Dimensions, admin.SemanticWeight, admin.TotalVectorCount));
     }
 
-    private static IResult GetSettings(HttpContext http, RequestContext ctx)
+    private static IResult GetSettings(HttpContext http)
     {
-        if (!ctx.HasPermission(Permissions.Read))
-            return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
-
         var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
         if (admin is null)
             return Results.Ok(new EmbeddingsSettingsResponse("none", "", 0.0));
@@ -58,12 +54,6 @@ public static class EmbeddingsEndpoints
     private static async Task<IResult> Reindex(
         string store, HttpContext http, RequestContext ctx, CancellationToken ct)
     {
-        // A full re-embed of every memory in the store is unbounded work, so it gets its own
-        // permission rather than riding on 'store'. The hand-written gate matches the ~30 in
-        // MemoryEndpoints.cs; consolidating them all is finding M5, branch 6.
-        if (!ctx.HasPermission(Permissions.Reindex))
-            return Results.Json(new ErrorResponse("Permission 'reindex' required."), statusCode: 403);
-
         if (!MemoryEndpoints.IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 

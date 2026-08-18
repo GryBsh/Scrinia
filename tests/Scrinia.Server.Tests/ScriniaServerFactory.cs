@@ -67,6 +67,17 @@ public sealed class ScriniaServerFactory : WebApplicationFactory<Program>
         return client;
     }
 
+    /// <summary>A client whose key holds exactly <paramref name="permissions"/>. The
+    /// baked-in test key holds everything, which cannot express the all-but-one probe
+    /// the permission tests need.</summary>
+    public HttpClient CreateClientWithPermissions(params string[] permissions)
+    {
+        var keyStore = Services.GetRequiredService<ApiKeyStore>();
+        var (rawKey, _, _) = keyStore.CreateKey(
+            TestUserId, [PrimaryStore], permissions, label: "scoped");
+        return CreateClientWithKey(rawKey);
+    }
+
     /// <summary>
     /// Creates an API key for a specific store (for isolation tests).
     /// </summary>

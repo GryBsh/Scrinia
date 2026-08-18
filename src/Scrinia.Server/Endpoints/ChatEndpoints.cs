@@ -17,11 +17,6 @@ public static class ChatEndpoints
         group.MapPost("/", async (string store, ChatRequest req, RequestContext ctx,
             ChatProviderCache providerCache, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
-            if (!ctx.HasPermission(Permissions.Chat) || !ctx.HasPermission(Permissions.Read) || !ctx.HasPermission(Permissions.Search))
-                return Results.Json(
-                    new ErrorResponse("Permissions 'chat', 'read', and 'search' are required."),
-                    statusCode: 403);
-
             // ── Input validation (SEC-051) ──────────────────────────────────
             const int MaxMessages = 1000;
             const int MaxContentBytes = 1_048_576; // 1 MB per message
@@ -76,16 +71,13 @@ public static class ChatEndpoints
                     try { await writer.WriteAsync($"data: {errorJson}\n\n"); } catch { /* best-effort */ }
                 }
             });
-        });
+        }).RequirePermission(Permissions.Chat, Permissions.Read, Permissions.Search);
 
         // GET available providers (for UI picker)
-        group.MapGet("/providers", (RequestContext ctx) =>
+        group.MapGet("/providers", () =>
         {
-            if (!ctx.HasPermission(Permissions.Chat))
-                return Results.Json(new ErrorResponse("Permission 'chat' required."), statusCode: 403);
-
             var available = chatOptions.GetAvailableProviders();
             return Results.Ok(new ChatProvidersResponse(available));
-        });
+        }).RequirePermission(Permissions.Chat);
     }
 }
