@@ -175,6 +175,61 @@ REST write. `EventSinkOperationHook` enforces this by excluding any sink that is
 guarantee that holds across all three paths is: **a component registered as both a hook and a sink
 still fires exactly once.**
 
+### MCP Response Envelope and Truncation
+
+Every MCP tool returns a hand-built YAML envelope (`McpResponse`, `Scrinia.Mcp/McpResponse.cs`)
+with a fixed field set: `status`, `action`, `path`, `error`/`errorCode`, `instruction`,
+`actionNeeded`, `info`, `followUp`, and `content`. `ResponseBuilder.Success`/`Warning` are the only
+two factories that pass their `content` through `Truncate` (`McpResponse.cs:198`), which caps it at
+`MaxResponseChars`(8192) minus a 200-char YAML overhead allowance — 7992 chars. **Only `content:`
+is capped.** `actionNeeded:`, `info:` and `followUp:` have never been bounded by this mechanism;
+`ResponseBuilder.Error` doesn't route through `Truncate` at all.
+
+`guide()` is the one caller exempt from the cap (`ResponseBuilder.SuccessUntruncated`,
+`McpResponse.cs:124`; Task 10, T10-A). The embedded guide document is bounded by construction
+(fixed at build time, not shaped by a caller's query), and had grown past the cap — 8046 chars
+against a 7992-char budget — so truncation was silently dropping its last few dozen characters on
+the most-called tool on the surface. The document's size is instead pinned at test time
+(`tests/Scrinia.Tests/Mcp/GuideSizeTests.cs`), so "bounded by construction" stays a checked fact.
+When `search`, `recall` or `list` does truncate, the `followUp` remedy names that tool's own
+parameters (`ResponseBuilder.WithTruncationAdvice`) rather than a generic "narrow with search, or
+recall a chunk" line that made no sense coming from, say, `list`.
+
+**Decision (Task 10, T10-C): the uncapped `info`/`actionNeeded`/`followUp` fields are correct as
+they are — do not add a `WithInfo`-only cap.** Evidence, from Task 8's review: `restore`'s
+`followUp` was already unbounded (one entry per `/patterns/` index entry and per `/agent/*.md`
+file) before this branch touched it; nothing on the `info:`/`actionNeeded:`/`followUp:` path can
+report that it was cut, unlike `content:`'s `ContentTruncated` flag, so a cap on just one of these
+fields would silently drop data with no signal that anything was lost — strictly worse than the
+current unbounded state. If this is ever addressed, it belongs at the envelope level as one
+whole-response character budget with one truncation signal covering every field, not a second
+cap bolted onto `info:` alone.
+
+### Known Divergences Carried Forward
+
+Recorded here so neither is mistaken for an oversight or "fixed" without a deliberate decision:
+
+- **The address-surface reflection gate keys on parameter names.** The fixture that pins which MCP
+  tools take an address (`tests/Scrinia.Tests/Naming/AddressSurfaceCoverageTests.cs:76`) matches
+  `[McpServerTool]` methods by parameter name — `path`, `artifactOrName`, `nameOrUri`,
+  `destination`, `source` — not by any structural marker of "this parameter is an address". A
+  future tool taking an address under a different parameter name would slip past this gate
+  silently. Accepted at the time (Task 5): a `MemoryAddress` wrapper type was considered and
+  rejected, since three of the five address-taking parameters are not pure addresses (`recall`'s
+  `artifactOrName` also accepts inline NMP/2 text; `forget`'s `nameOrUri` also accepts `file://`
+  URIs), so wrapping them uniformly would misrepresent them. What actually pins the ephemeral-
+  alias rule is the behavioural round-trip tests per surface, not this reflection gate — the gate
+  only catches an added tool going completely unreviewed. Re-verified current as of Task 10.
+- **`HttpMemoryStore` never applies the topic-name-to-scope mapping `FileMemoryStore` does.**
+  `ResolveReadScopes(["t00"])` returns `["t00"]` verbatim on the remote store, where the local
+  store maps it to `["local:t00"]` (`FileMemoryStore`'s `NormalizeScopeFilters`). Pre-existing,
+  predates this branch. Documented rather than silently asserted away by
+  `PagedListingConformanceTests.ResolveReadScopes_FilteredByTopicName_StoresDeliberatelyDiverge`.
+  Candidate for a later branch — note that the local/remote conformance suite covered only the
+  *unfiltered* listing case until Task 9 added filtered-case coverage; every store-parity defect
+  found on this branch was in the filtered case, so the same may be true of divergences not yet
+  found.
+
 ## Further Reading
 
 - **[Core Architecture](core.md)** -- IMemoryStore, FileMemoryStore, NMP/2 encoding, search algorithms, models

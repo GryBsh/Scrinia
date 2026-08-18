@@ -57,6 +57,51 @@ and all assembly attributes.
   SessionStart payload, so the field move is visible to every agent at session start. The framing
   text and the envelope are unchanged; only the field the sections sit under moves.
 
+### Changed (breaking) — MCP `list` and `reconcile` reject inputs they used to silently paper over
+
+- `list` now errors on an unrecognised `mode` (`INVALID_PARAMETER`, `unknown mode '...'. Use
+  'summary', 'full', or 'drift'.`) instead of silently falling through to the `summary` view. A
+  caller that sent a typo'd or stale mode string and relied on the quiet fallback now gets a
+  structured error instead of an unexpected listing. Explicitly passing `mode: null` or
+  `mode: ""` is a deliberate carve-out and still normalizes to `summary` — that is a caller
+  omitting the field over JSON-RPC, not naming an unrecognised one, and matches how `facts`
+  already treats its own `op` parameter.
+- `reconcile` now errors (`'choice' requires 'conflictId' — without one there is no conflict to
+  resolve, and the call would silently perform a read-only scan instead.`) when `choice` is
+  supplied without `conflictId`. It previously ran the same read-only scan `reconcile({})` runs —
+  which reports `action: "reconciled"` on every path, including "nothing found" — so a caller that
+  passed `choice` alone, expecting it to apply, was told a resolution had happened when nothing on
+  disk had changed.
+
+### Changed — `guide()` no longer truncates its own guide document; truncation advice fits the tool that gave it
+
+- `guide()` is now exempt from the response-size cap that every other tool's `content:` is subject
+  to. The embedded guide document had grown to 8046 characters against the 7992-character cap
+  (`MaxResponseChars`(8192) − yaml overhead(200)), so it was silently losing its last ~54
+  characters — mid-sentence, off the end of the "Workspace" section — on every call. Truncating a
+  build-time-fixed document protects nothing; the document is bounded by construction, not by a
+  caller's query, so it is enforced at test time instead (`GuideSizeTests`), not clipped at
+  response time.
+- When `search`, `recall` or `list` truncates, the `followUp` advice now names that tool's own
+  parameters (e.g. recall's `recall({ path, chunk: N })`) instead of the generic "narrow with
+  search, or recall a chunk" text, which was meaningless coming from a tool with no query to narrow
+  and no chunk to recall.
+
+### Changed — `/skill/` is readable, writable and deletable through one dispatcher
+
+- `forget({ path: '/skill/{name}' })` now actually deletes the file. It previously fell through
+  to the generic memory-forget path and answered `NOT_FOUND` for a skill `recall` had just
+  returned — a skill on disk could be read but never forgotten through the facade. The file is
+  archived under `.scrinia/skills/versions/` first, the same way `remember`/`SkillCreate` already
+  archives before overwriting.
+- Forgetting a **built-in** skill with no project-level override now returns its own
+  `INVALID_PARAMETER` error explaining that it ships with Scrinia and cannot be forgotten, with
+  `recall`/`remember` follow-ups — not `NOT_FOUND`, which would misdescribe a skill `recall` will
+  happily keep returning. Forgetting an override of a built-in deletes the override, reports that
+  the built-in resolves again, and leaves the built-in itself untouched.
+- `remember({ path: '/skill/...' })` now warns when `attributes` or `keywords` are also supplied,
+  since skill files are plain markdown on disk and neither parameter has any effect there.
+
 ### Changed — writing memories no longer re-reads the scope, and a memory's vectors replace in one locked write
 
 - **Writing a memory used to cost the whole scope.** `FileMemoryStore.Upsert`, `Remove` and

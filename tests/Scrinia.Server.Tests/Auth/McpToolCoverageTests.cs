@@ -68,4 +68,31 @@ public class McpToolCoverageTests
         McpPermissionFilter.HasExplicitDecision("tools/call", null)
             .Should().BeFalse("a tools/call with no tool name must not be treated as an explicit ungating decision");
     }
+
+    /// <summary>
+    /// Task 10, T10-E. <c>EveryDeclaredTool_HasAnExplicitPermissionDecision</c> above only proves
+    /// every declared tool has SOME recorded decision — membership in
+    /// <c>McpPermissionFilter.UngatedTools</c> satisfies it exactly as well as a mapped permission
+    /// does, so it cannot tell a deliberate exemption from an accidental or malicious one. Since
+    /// Task 4 replaced the theory's own hard-coded copy of the ungated list with one derived from
+    /// the production array directly, adding a name to <c>UngatedTools</c> now requires no test
+    /// change at all — the exact escape-hatch-with-no-pin shape Task 3 closed for
+    /// <c>PermissionCheckedElsewhere</c> with a source-scan pin over its call sites. A single
+    /// <c>string[]</c> field has no call sites to scan; reflecting its value directly is the
+    /// equivalent pin for this shape. Falsify by adding a third name to <c>UngatedTools</c> and
+    /// re-running: this test is the one that fails.
+    /// </summary>
+    [Fact]
+    public void UngatedTools_IsExactlyGuideAndRestore()
+    {
+        var field = typeof(McpPermissionFilter).GetField("UngatedTools", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException(
+                "McpPermissionFilter.UngatedTools not found by reflection — has it been renamed or removed?");
+        var ungated = (string[])field.GetValue(null)!;
+
+        ungated.Should().BeEquivalentTo(["guide", "restore"],
+            "a tool named here is reachable with ANY permission set, including none — a new entry " +
+            "must be a deliberate, reviewed decision pinned by name, not a silent addition that " +
+            "still passes every other coverage test");
+    }
 }
