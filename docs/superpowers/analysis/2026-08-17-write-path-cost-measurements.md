@@ -187,10 +187,14 @@ branch's scope.
 used the default out-of-process toolchain (forced by an environmental collision unrelated to either
 side — see Methodology). This asymmetry applies to every row in this document, but its practical
 risk is not uniform, because the risk scales with how large the measured gap is relative to a
-plausible few-millisecond toolchain artifact. **Unambiguous, corroborated independently of
-toolchain by allocation:** `SequentialUpserts`/`MarginalUpsert` at N=1,000 and N=5,000, and
-`IndexOneMemory` at K=50 and K=200 — in each case the allocation delta is orders of magnitude and
-tracks the timing delta closely. **Corroborated by a toolchain-agnostic syscall count:**
+plausible few-millisecond toolchain artifact. **Unambiguous, though for two different reasons:**
+`SequentialUpserts`/`MarginalUpsert` at N=1,000 and N=5,000 are corroborated by an allocation delta
+that is itself orders of magnitude (roughly 844× and 4,114×) and tracks the timing delta;
+`IndexOneMemory` at K=50 and K=200 are corroborated instead by the absolute size of the timing gap
+itself (90 ms and 380 ms — far too large for a few-ms toolchain artifact to explain), with
+allocation there confirming only the direction and rough proportion of K-scaling (~4.6× and ~5.0×,
+well under the 25.4×/100× timing ratios) rather than tracking the timing ratio the way it does at
+N=1,000/5,000. **Corroborated by a toolchain-agnostic syscall count:**
 `IndexOneMemory` at K=1, where the ~parity claim rests on the file-operation-count probe rather than
 timing at all. **Timing-only, under the disclosed toolchain asymmetry, and should be read
 directionally rather than precisely:** `SequentialUpserts`/`MarginalUpsert` at N=100, and
