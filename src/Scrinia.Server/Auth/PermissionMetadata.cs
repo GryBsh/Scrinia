@@ -5,14 +5,23 @@ namespace Scrinia.Server.Auth;
 /// <summary>
 /// Endpoint metadata naming the permissions a caller must hold. Conjunctive: the
 /// caller needs all of them.
+///
+/// <para><b>Internal on purpose.</b> The startup coverage validator reads this metadata as proof
+/// that a route is guarded, but endpoint filters are not metadata, so the validator cannot
+/// cross-check that enforcement is actually attached. Confining construction to
+/// <see cref="PermissionEndpointExtensions.RequirePermission"/> — which attaches both in one
+/// call — is what makes the inference sound. A public constructor would let any caller declare
+/// a route guarded while gating nothing, which is exactly the unguarded-but-looks-guarded route
+/// this whole mechanism exists to make impossible. The validator lives in this assembly and the
+/// test project has InternalsVisibleTo, so nothing that needs to read it loses access.</para>
 /// </summary>
-public sealed record RequiredPermissionsMetadata(IReadOnlyList<string> Permissions);
+internal sealed record RequiredPermissionsMetadata(IReadOnlyList<string> Permissions);
 
 /// <summary>
 /// Marks an endpoint as deliberately ungated. Its presence is what distinguishes
 /// "no permission needed" from "someone forgot" — see PermissionCoverageValidator.
 /// </summary>
-public sealed record PublicEndpointMetadata;
+internal sealed record PublicEndpointMetadata;
 
 /// <summary>
 /// Marks an endpoint whose permission check genuinely happens somewhere the route
@@ -27,17 +36,19 @@ public sealed record PublicEndpointMetadata;
 /// <para>It is also an escape hatch, so it is pinned: a test asserts the exact set of
 /// endpoints using it. Adding a new one fails that test and forces the question.</para>
 /// </summary>
-public sealed record PermissionCheckedElsewhereMetadata(string Where);
+internal sealed record PermissionCheckedElsewhereMetadata(string Where);
 
 public static class PermissionEndpointExtensions
 {
     /// <summary>
     /// Declares the permissions this route requires. Conjunctive.
     ///
-    /// <para>Declaration and enforcement are attached together, in this one call, on purpose:
-    /// the coverage validator reads <see cref="RequiredPermissionsMetadata"/> as proof the
-    /// route is gated, so a route carrying the metadata without the filter would be a
-    /// declaration that gates nothing — and would read as covered.</para>
+    /// <para>Declaration and enforcement are attached together, in this one call, and this is the
+    /// only place either can be attached: <see cref="RequiredPermissionsMetadata"/> and
+    /// <see cref="PermissionEndpointFilter"/> are both internal, so no other assembly can produce
+    /// one without the other. The coverage validator reads the metadata as proof the route is
+    /// gated; a route carrying the metadata without the filter would be a declaration that gates
+    /// nothing and still reads as covered.</para>
     /// </summary>
     public static TBuilder RequirePermission<TBuilder>(this TBuilder builder, params string[] permissions)
         where TBuilder : IEndpointConventionBuilder

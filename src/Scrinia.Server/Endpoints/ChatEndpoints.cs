@@ -74,7 +74,12 @@ public static class ChatEndpoints
         }).RequirePermission(Permissions.Chat, Permissions.Read, Permissions.Search);
 
         // GET available providers (for UI picker)
-        group.MapGet("/providers", () =>
+        // The IResult annotation is load-bearing, not decoration. With the permission guard
+        // inlined this lambda had two returns, so its inferred best common type was IResult.
+        // The guard's removal left one return (Results.Ok(...)), which would infer
+        // Ok<ChatProvidersResponse> and publish a typed 200 schema this route never advertised.
+        // Moving where the permission check lives must not move the OpenAPI document.
+        group.MapGet("/providers", IResult () =>
         {
             var available = chatOptions.GetAvailableProviders();
             return Results.Ok(new ChatProvidersResponse(available));
