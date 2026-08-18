@@ -40,12 +40,12 @@ public sealed class SilentEventSink : IMemoryEventSink
 
     private SilentEventSink() { }
 
-    public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct) =>
+    public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct) =>
         Task.CompletedTask;
 
-    public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct) =>
+    public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct) =>
         Task.CompletedTask;
 
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct) =>
+    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
         Task.CompletedTask;
 }

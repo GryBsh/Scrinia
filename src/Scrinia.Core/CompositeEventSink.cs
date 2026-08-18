@@ -6,7 +6,7 @@ namespace Scrinia.Core;
 /// </summary>
 public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventSink
 {
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
     {
         foreach (var sink in sinks)
         {
@@ -15,7 +15,7 @@ public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventS
         }
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
     {
         foreach (var sink in sinks)
         {
@@ -24,7 +24,7 @@ public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventS
         }
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
         foreach (var sink in sinks)
         {

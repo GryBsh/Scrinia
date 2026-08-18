@@ -625,13 +625,13 @@ public sealed class ScriniaMcpToolsTests
     {
         public List<string> ReceivedQualifiedNames { get; } = [];
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, Scrinia.Core.IMemoryStore store, CancellationToken ct) =>
+        public Task OnStoredAsync(string qualifiedName, string[] content, Scrinia.Core.IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
 
-        public Task OnAppendedAsync(string qualifiedName, string content, Scrinia.Core.IMemoryStore store, CancellationToken ct) =>
+        public Task OnAppendedAsync(string qualifiedName, string content, Scrinia.Core.IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, Scrinia.Core.IMemoryStore store, CancellationToken ct)
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, Scrinia.Core.IPluginStore store, CancellationToken ct)
         {
             if (wasDeleted) ReceivedQualifiedNames.Add(qualifiedName);
             return Task.CompletedTask;

@@ -179,7 +179,7 @@ public sealed class MemoryVectorIndexer
     /// <c>IMemoryOperationHook.OnAfterForgetAsync</c> on the REST path with no surrounding
     /// try/catch, so a throw there would propagate into the forget request itself.
     /// </summary>
-    public async Task RemoveAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    public async Task RemoveAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
     {
         try
         {

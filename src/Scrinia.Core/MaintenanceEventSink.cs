@@ -54,12 +54,13 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
     /// value exists so the attribute has something to match in an <c>attributeFilter</c>.</summary>
     internal const string OrphanValue = "true";
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
     {
         try
         {
+            var full = CoreSinkStore.Require(store, nameof(MaintenanceEventSink));
             string joined = string.Join("\n", content);
-            await AutoLinkAndDetectOrphans(qualifiedName, joined, store);
+            await AutoLinkAndDetectOrphans(qualifiedName, joined, full);
         }
         catch (Exception ex)
         {
@@ -67,11 +68,12 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
     {
         try
         {
-            await AutoLinkAndDetectOrphans(qualifiedName, content, store);
+            var full = CoreSinkStore.Require(store, nameof(MaintenanceEventSink));
+            await AutoLinkAndDetectOrphans(qualifiedName, content, full);
         }
         catch (Exception ex)
         {
@@ -79,7 +81,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
     }
 
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask; // no-op for now
 
     /// <summary>True when the source entry still carries the pre-attribute <c>orphan</c> KEYWORD.

@@ -18,13 +18,19 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
 {
     private readonly EntityTypeClassifier _classifier = new(provider);
 
-    public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
-        => PromoteAsync(qualifiedName, store, ct);
+    public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+    {
+        var full = CoreSinkStore.Require(store, nameof(EntityTypingEventHandler));
+        return PromoteAsync(qualifiedName, full, ct);
+    }
 
-    public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
-        => PromoteAsync(qualifiedName, store, ct);
+    public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+    {
+        var full = CoreSinkStore.Require(store, nameof(EntityTypingEventHandler));
+        return PromoteAsync(qualifiedName, full, ct);
+    }
 
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask;
 
     private async Task PromoteAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)

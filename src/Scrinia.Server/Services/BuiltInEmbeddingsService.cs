@@ -73,13 +73,13 @@ public sealed class BuiltInEmbeddingsService :
 
     // ── IMemoryEventSink (MCP path) ─────────────────────────────────────────
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
         => await EmbedAndIndexAsync(qualifiedName, content, store, ct);
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
         => await ReembedFullMemoryAsync(qualifiedName, store, ct);
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
         if (!wasDeleted) return;
         // (qualifiedName, store) overload owns the parse inside its own try.
@@ -146,7 +146,7 @@ public sealed class BuiltInEmbeddingsService :
 
     // ── Internal ────────────────────────────────────────────────────────────
 
-    private async Task EmbedAndIndexAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    private async Task EmbedAndIndexAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
     {
         try
         {
@@ -166,7 +166,7 @@ public sealed class BuiltInEmbeddingsService :
     /// real content array. Re-read and index the whole thing, as the plugin already does
     /// (EmbeddingsPlugin.cs).
     /// </summary>
-    private async Task ReembedFullMemoryAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    private async Task ReembedFullMemoryAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
     {
         try
         {
