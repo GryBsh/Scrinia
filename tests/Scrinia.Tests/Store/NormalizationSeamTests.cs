@@ -109,8 +109,48 @@ public sealed class NormalizationSeamTests : IDisposable
     /// so it is the one production path where an un-normalized entry would reach a caller.
     /// Task 3 keeps that path; this test fails if the seam call is ever removed from under it.
     /// </summary>
+    /// <summary>
+    /// The third write path's cache write. <c>SaveIndex</c> hands the caller's list straight to
+    /// <c>_indexCache</c>, while <c>WriteSidecarCore</c> normalizes a local copy on its way to
+    /// disk — so without a normalize here, disk and cache disagree exactly as they would if
+    /// <c>Upsert</c>'s cache write skipped it. Reachable in production, not only through this
+    /// hand-built entry: <c>ImportTopicEntries</c> is the sole production caller and builds its
+    /// list from <c>LoadIndex(topicScope).ToList()</c>, which can itself hand back a
+    /// LegacyFields-bearing entry (LoadIndexUnsafe caches raw whenever MigratesTo reports no
+    /// change).
+    /// </summary>
     [Fact]
-    public void TryUpdateEntry_ColdPath_HandsTheMutatorANormalizedEntry()
+    public void SaveIndex_CachesTheNormalizedEntries_NotTheCallersRawLegacyFieldsList()
+    {
+        var legacyEntry = new ArtifactEntry("saved-legacy", "", 5, 1, DateTimeOffset.UtcNow)
+        {
+            LegacyFields = new Dictionary<string, string[]> { ["topic"] = ["delta"] }
+        };
+
+        _store.SaveIndex([legacyEntry], "local");
+
+        // SaveIndex installs the cache unconditionally, so this read is a cache hit and is
+        // therefore reading what SaveIndex cached rather than what a cold reload would rebuild.
+        string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
+        File.Delete(lockPath);
+
+        var saved = _store.LoadIndex("local").Single(e => e.Name == "saved-legacy");
+
+        File.Exists(lockPath).Should().BeFalse(
+            because: "SaveIndex caches the list it was given, so this read must be a cache hit — "
+                   + "a recreated lock file would mean it cold-reloaded and the assertions below "
+                   + "would be re-proving the load seam instead of SaveIndex's cache write");
+        saved.LegacyFields.Should().BeNull();
+        saved.Attributes.Should().NotBeNull(
+            because: "SaveIndex must cache the normalized entries — caching them raw leaves a "
+                   + "LegacyFields-bearing entry in the cache with Attributes == null while disk "
+                   + "holds the normalized form, hiding this entry's facets from "
+                   + "search/filter/display for the rest of the process lifetime");
+        saved.Attributes!["topic"].Should().BeEquivalentTo(["delta"]);
+    }
+
+    [Fact]
+    public void TryUpdateEntry_HandsTheMutatorANormalizedEntry()
     {
         _store.Upsert(new ArtifactEntry("legacy-b", "", 5, 1, DateTimeOffset.UtcNow), "local");
         string metaPath = FindSidecar("legacy-b");
@@ -118,8 +158,8 @@ public sealed class NormalizationSeamTests : IDisposable
         json = json.TrimEnd().TrimEnd('}') + ""","fields":{"topic":["gamma"]}}""";
         File.WriteAllText(metaPath, json);
 
-        // Fresh instance: TryUpdateEntry is the FIRST operation, so the scope is uncached and
-        // the lookup takes the sidecar-scan path.
+        // Fresh instance, so nothing is cached: TryUpdateEntry's lookup reads the sidecar off
+        // disk through LoadSidecar, which is where the seam has to fire.
         using var fresh = new FileMemoryStore(_root);
 
         Dictionary<string, string[]>? seenByMutator = null;
@@ -131,8 +171,9 @@ public sealed class NormalizationSeamTests : IDisposable
 
         ok.Should().BeTrue();
         seenByMutator.Should().NotBeNull(
-            because: "the cold lookup path has no MigratesTo forward-fill, so the load seam is "
-                   + "the only thing that folds the legacy \"fields\" key before a mutator sees it");
+            because: "TryUpdateEntry's lookup has no MigratesTo forward-fill of its own, so the "
+                   + "load seam is the only thing that folds the legacy \"fields\" key before a "
+                   + "mutator sees it");
         seenByMutator!["topic"].Should().BeEquivalentTo(["gamma"]);
     }
 

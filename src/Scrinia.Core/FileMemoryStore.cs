@@ -1098,6 +1098,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// from <see cref="LoadIndex"/>, can surface as an <see cref="InvalidOperationException"/> inside
     /// an unrelated concurrent enumerator. Pass a fresh or already-copied list (see
     /// <see cref="ImportTopicEntries"/> for the pattern).
+    /// <para>Ownership includes normalizing: the elements are replaced in place with their
+    /// <see cref="ArtifactEntry.NormalizeAttributesKey"/> form before anything reads them.</para>
     /// </summary>
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
@@ -1106,6 +1108,25 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
     {
+        // Normalize BEFORE anything else reads this list, because this list becomes the cache.
+        // WriteSidecarCore normalizes a LOCAL copy on its way to disk, so disk is always
+        // "attributes"-keyed; without this, the cache below would keep whatever the caller handed
+        // over. And a LegacyFields-bearing entry is exactly what a caller can hand over:
+        // LoadIndexUnsafe caches an entry RAW when AttributeMigration.MigratesTo reports no change
+        // (which it does whenever Attributes is already non-null, since NormalizeAttributesKey's
+        // coalesce is then a no-op — the footgun documented at ArtifactEntry.cs:63-68), and
+        // ImportTopicEntries — the only production caller of SaveIndex — builds its list from
+        // LoadIndex(topicScope).ToList(). Leaving it raw is the same cache-diverges-from-disk
+        // defect the load seam and Upsert's/TryUpdateEntry's cache writes exist to prevent, at the
+        // one write path that had not closed it.
+        //
+        // In place rather than into a copy: this method already takes ownership of the list per
+        // SaveIndex's contract, and the list is not yet reachable through _indexCache, so the
+        // never-mutate-a-published-list rule is not in play. No-op for an already-normalized or
+        // freshly-constructed entry.
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = entries[i].NormalizeAttributesKey();
+
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
