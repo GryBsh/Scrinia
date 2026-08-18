@@ -38,6 +38,23 @@ internal sealed record PublicEndpointMetadata;
 /// </summary>
 internal sealed record PermissionCheckedElsewhereMetadata(string Where);
 
+/// <summary>
+/// The reasons <see cref="PermissionCheckedElsewhereMetadata"/> is allowed to exist, named
+/// once. Program.cs passes these to PermissionCheckedElsewhere and the coverage validator
+/// matches on them, so the two cannot drift apart into a bypass nothing recognises.
+/// </summary>
+internal static class PermissionCheckedElsewhereReasons
+{
+    /// <summary>One HTTP route carrying every JSON-RPC operation; the permission is resolved
+    /// per call by <see cref="McpPermissionFilter"/>, which the route table cannot see.</summary>
+    internal const string McpPerJsonRpcCall = "McpPermissionFilter (per JSON-RPC method/tool)";
+
+    /// <summary>A group whose routes are mapped by plugins, whose permissions are therefore
+    /// not knowable here. The weaker of the two: nothing enforces that a plugin declares
+    /// anything, which is why routes carrying this reason are named in a boot-time warning.</summary>
+    internal const string PluginOwnDeclarations = "the plugin's own endpoint declarations";
+}
+
 public static class PermissionEndpointExtensions
 {
     /// <summary>
@@ -66,8 +83,16 @@ public static class PermissionEndpointExtensions
         return builder;
     }
 
-    /// <summary>Declares this route as deliberately reachable without a permission.</summary>
-    public static TBuilder PublicEndpoint<TBuilder>(this TBuilder builder)
+    /// <summary>
+    /// Declares this route as deliberately reachable without a permission.
+    ///
+    /// <para><b>Internal on purpose</b>, and for a stronger reason than RequirePermission is
+    /// public: this silences the coverage gate outright. RequirePermission at least attaches
+    /// enforcement alongside its declaration, so a caller who reaches for it gets a guarded
+    /// route. A caller who reaches for this gets an unguarded one, and the source scan that
+    /// pins the escape hatch only walks src/ — it would never see a use from outside.</para>
+    /// </summary>
+    internal static TBuilder PublicEndpoint<TBuilder>(this TBuilder builder)
         where TBuilder : IEndpointConventionBuilder
     {
         builder.WithMetadata(new PublicEndpointMetadata());
@@ -78,8 +103,11 @@ public static class PermissionEndpointExtensions
     /// Declares that this route's permission check happens outside the route table,
     /// naming where. See <see cref="PermissionCheckedElsewhereMetadata"/> — its use
     /// is pinned by test.
+    ///
+    /// <para><b>Internal on purpose</b>, for the same reason as PublicEndpoint: it silences
+    /// the coverage gate, and the pin that counts its uses cannot see outside src/.</para>
     /// </summary>
-    public static TBuilder PermissionCheckedElsewhere<TBuilder>(this TBuilder builder, string where)
+    internal static TBuilder PermissionCheckedElsewhere<TBuilder>(this TBuilder builder, string where)
         where TBuilder : IEndpointConventionBuilder
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(where);

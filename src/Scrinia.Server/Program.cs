@@ -577,7 +577,7 @@ app.MapChatEndpoints(app.Services.GetRequiredService<Scrinia.Server.Chat.ChatOpt
 var pluginGroup = app.MapGroup("/api/v1/plugins")
     .RequireAuthorization()
     .RequireRateLimiting("api")
-    .PermissionCheckedElsewhere("the plugin's own endpoint declarations");
+    .PermissionCheckedElsewhere(PermissionCheckedElsewhereReasons.PluginOwnDeclarations);
 foreach (var plugin in loadedPlugins)
     plugin.MapEndpoints(pluginGroup);
 
@@ -593,7 +593,7 @@ if (app.Environment.IsDevelopment() || app.Configuration.GetValue("Scrinia:Expos
 app.MapMcp("/mcp")
    .RequireAuthorization()
    .RequireRateLimiting("api")
-   .PermissionCheckedElsewhere("McpPermissionFilter (per JSON-RPC method/tool)");
+   .PermissionCheckedElsewhere(PermissionCheckedElsewhereReasons.McpPerJsonRpcCall);
 
 // SPA fallback — must be last so API routes take priority
 app.MapFallbackToFile("index.html");
@@ -603,11 +603,9 @@ app.MapFallbackToFile("index.html");
 // Runs after every Map* call, because it reads the fully populated route table, and before
 // the server accepts a request, because a route that authenticates without authorizing must
 // never be reachable. A failure here names the offending endpoint; fix the declaration.
-// Reads app.DataSources — the collection every Map* call above wrote into — rather than the
-// EndpointDataSource in DI. That one is a composite the routing middleware fills in when the
-// host starts, so it is still empty here and validating it would silently check nothing.
-PermissionCoverageValidator.Validate(
-    new CompositeEndpointDataSource(((IEndpointRouteBuilder)app).DataSources));
+// Which route table it reads is the extension's decision, not this call site's — see its
+// docs, one of the two plausible sources is empty here and checks nothing.
+app.ValidatePermissionCoverage();
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 

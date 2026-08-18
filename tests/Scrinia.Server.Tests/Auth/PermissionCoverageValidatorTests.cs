@@ -1,10 +1,12 @@
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 using Scrinia.Server.Auth;
 
@@ -148,6 +150,123 @@ public class PermissionCoverageValidatorTests
     }
 
     [Fact]
+    public void Rejects_ATypoInADeclarationShadowedByALaterOne()
+    {
+        // A group-level RequirePermission and a route-level one both attach their own
+        // enforcing filter, so both are live and both must be spell-checked. Reading only the
+        // effective declaration would let the shadowed one gate the route on a permission no
+        // key can ever hold, which is the exact failure this check exists to catch.
+        var source = SourceOf(Endpoint("GET /shadowed",
+            new AuthorizeAttribute(),
+            new RequiredPermissionsMetadata(["raed"]),
+            new RequiredPermissionsMetadata([Permissions.Read])));
+
+        var act = () => PermissionCoverageValidator.Validate(source);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*raed*");
+    }
+
+    [Fact]
+    public async Task ValidatePermissionCoverage_ThrowsForAnUndeclaredRoute_OnARealWebApplication()
+    {
+        // Pins WHICH route table the startup call reads. Every other test here hands Validate
+        // a source it built itself, so none of them notices if ValidatePermissionCoverage
+        // reads the EndpointDataSource in DI instead of app.DataSources — that composite is
+        // empty until the host starts, so the check would iterate nothing and pass. This is a
+        // real WebApplication carrying a real hole: it must throw.
+        await using var app = BuildApp(a => a.MapGet("/undeclared", () => Results.Ok())
+            .RequireAuthorization());
+
+        var act = app.ValidatePermissionCoverage;
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*/undeclared*");
+    }
+
+    [Fact]
+    public async Task ValidatePermissionCoverage_AcceptsTheSameRouteOnceItDeclares()
+    {
+        // The other half of the pin. Without it, a ValidatePermissionCoverage that threw
+        // unconditionally would satisfy the test above.
+        await using var app = BuildApp(a => a.MapGet("/undeclared", () => Results.Ok())
+            .RequireAuthorization().RequirePermission(Permissions.Read));
+
+        var act = app.ValidatePermissionCoverage;
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task ValidatePermissionCoverage_NamesThePluginRoutesItCouldNotCheck()
+    {
+        // The plugin group's bypass is a group convention: it silences the check for whatever
+        // a plugin maps into the group. The real thing is unobservable here — plugins load
+        // only when Vulkan is enabled — but the warning that compensates for it is not, and
+        // an unlogged warning would be no better than the silence it replaces.
+        var log = new List<string>();
+        await using var app = BuildApp(a =>
+        {
+            var group = a.MapGroup("/api/v1/plugins")
+                .RequireAuthorization()
+                .PermissionCheckedElsewhere(PermissionCheckedElsewhereReasons.PluginOwnDeclarations);
+            group.MapGet("/whatever", () => Results.Ok());
+        }, log);
+
+        app.ValidatePermissionCoverage();
+
+        log.Should().ContainSingle()
+            .Which.Should().Contain("/api/v1/plugins/whatever")
+            .And.Contain("not verified");
+    }
+
+    [Fact]
+    public async Task ValidatePermissionCoverage_SaysNothingWhenNoPluginMappedARoute()
+    {
+        // The default configuration. A warning on every boot about a group nobody populated
+        // is the kind of standing noise operators learn to scroll past.
+        var log = new List<string>();
+        await using var app = BuildApp(a => a.MapGroup("/api/v1/plugins")
+            .RequireAuthorization()
+            .PermissionCheckedElsewhere(PermissionCheckedElsewhereReasons.PluginOwnDeclarations), log);
+
+        app.ValidatePermissionCoverage();
+
+        log.Should().BeEmpty();
+    }
+
+    /// <summary>A throwaway application, never started. Warnings land in <paramref name="log"/>.</summary>
+    private static WebApplication BuildApp(Action<WebApplication> map, ICollection<string>? log = null)
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Logging.ClearProviders();
+        if (log is not null)
+            builder.Logging.AddProvider(new CapturingLoggerProvider(log));
+        builder.Services.AddAuthorization();
+
+        var app = builder.Build();
+        map(app);
+        return app;
+    }
+
+    private sealed class CapturingLoggerProvider(ICollection<string> log) : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(log);
+        public void Dispose() { }
+
+        private sealed class CapturingLogger(ICollection<string> log) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+                Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (IsEnabled(logLevel))
+                    log.Add(formatter(state, exception));
+            }
+        }
+    }
+
+    [Fact]
     public void TheRealRouteTable_PassesItsOwnGate()
     {
         // Program.cs runs this same check at startup, but over the route table as it stands
@@ -176,17 +295,20 @@ public class PermissionCoverageValidatorTests
         // Counted from source rather than from the live route table, because the live table
         // cannot see both of them: the plugin group is empty in the default configuration
         // (plugins load only when Vulkan is explicitly enabled), so its use contributes no
-        // endpoint. A third call site fails here and forces the question.
-        string serverRoot = TestPaths.RepoRoot("src", "Scrinia.Server");
+        // endpoint. A third call site fails here and forces the question. Scans all of src/,
+        // not just Scrinia.Server, so the pin does not depend on the method staying internal.
+        string sourceRoot = TestPaths.RepoRoot("src");
         var callSites = new List<string>();
 
-        foreach (string file in Directory.EnumerateFiles(serverRoot, "*.cs", SearchOption.AllDirectories))
+        foreach (string file in Directory.EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories))
         {
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") ||
                 file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
                 continue;
 
-            foreach (Match _ in Regex.Matches(File.ReadAllText(file), @"\.PermissionCheckedElsewhere\("))
+            // Requires a receiver before the dot, so prose mentioning the method — the
+            // validator's own failure message names it — is not counted as a use of it.
+            foreach (Match _ in Regex.Matches(File.ReadAllText(file), @"[\w)\]]\s*\.PermissionCheckedElsewhere\s*\("))
                 callSites.Add(Path.GetFileName(file));
         }
 
