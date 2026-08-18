@@ -52,7 +52,7 @@ public static class McpPermissionFilter
     }
 
     private static readonly HashSet<string> WritePermissions =
-        new(StringComparer.OrdinalIgnoreCase) { "store", "append", "forget" };
+        new(StringComparer.OrdinalIgnoreCase) { Permissions.Store, Permissions.Append, Permissions.Forget };
 
     /// <summary>True when <paramref name="permission"/> authorizes a mutating operation.</summary>
     public static bool IsWritePermission(string? permission) =>
@@ -70,14 +70,14 @@ public static class McpPermissionFilter
     {
         "tools/call" => toolName switch
         {
-            "search" or "list" or "facts" => "search",
-            "recall" => "read",
-            "remember" or "compact" or "link" or "reconcile" => "store",
-            "append" => "append",
-            "forget" => "forget",
+            McpToolNames.Search or "list" or "facts" => Permissions.Search,
+            "recall" => Permissions.Read,
+            "remember" or "compact" or "link" or "reconcile" => Permissions.Store,
+            McpToolNames.Append => Permissions.Append,
+            McpToolNames.Forget => Permissions.Forget,
             _ => null, // guide, restore, or unknown → no gate (dispatch/handshake handled by SDK)
         },
-        "resources/read" => "read",
+        "resources/read" => Permissions.Read,
         _ => null, // initialize, tools/list, prompts/*, resources/list, notifications, …
     };
 

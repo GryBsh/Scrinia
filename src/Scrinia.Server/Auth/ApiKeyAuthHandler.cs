@@ -38,7 +38,7 @@ public sealed class ApiKeyAuthHandler : AuthenticationHandler<ApiKeyOptions>
 
         var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, result.UserId) };
         foreach (var store in result.Stores)
-            claims.Add(new Claim("store", store));
+            claims.Add(new Claim(StoreSelectorKey.Name, store));
         foreach (var perm in result.Permissions)
             claims.Add(new Claim("permission", perm));
 

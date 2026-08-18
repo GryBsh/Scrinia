@@ -254,7 +254,7 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Health", policy =>
         policy.RequireClaim("permission", "health"))
     .AddPolicy("Chat", policy =>
-        policy.RequireClaim("permission", "chat"));
+        policy.RequireClaim("permission", Permissions.Chat));
 
 // CORS — restrictive by default; only explicitly configured origins are allowed
 builder.Services.AddCors(options =>
@@ -321,7 +321,7 @@ builder.Services
         options.ConfigureSessionOptions = (httpContext, serverOptions, ct) =>
         {
             // Resolve store from query param: /mcp?store=default
-            var storeName = httpContext.Request.Query["store"].FirstOrDefault() ?? "default";
+            var storeName = httpContext.Request.Query[StoreSelectorKey.Name].FirstOrDefault() ?? "default";
             var sm = httpContext.RequestServices.GetRequiredService<StoreManager>();
             if (!sm.StoreExists(storeName))
                 throw new InvalidOperationException($"Store '{storeName}' not found.");
@@ -381,8 +381,9 @@ if (!keyStore.HasAnyKeys())
         // any omission here is a permission an operator cannot reach at all — including 'reindex',
         // whose route (POST /api/v1/stores/{store}/embeddings/reindex) is the documented migration
         // step for a deployment that does not auto-reindex on startup.
-        ["read", "search", "store", "append", "forget", "copy",
-         "export", "import", "manage_keys", "manage_roles", "health", "chat", "reindex"], "bootstrap");
+        [Permissions.Read, Permissions.Search, Permissions.Store, Permissions.Append, Permissions.Forget,
+         Permissions.Copy, Permissions.Export, Permissions.Import, "manage_keys", "manage_roles", "health",
+         Permissions.Chat, Permissions.Reindex], "bootstrap");
 
     // Write bootstrap key to a file (read once, then delete)
     string keyFile = Path.Combine(dataDir, "BOOTSTRAP_KEY");
@@ -507,12 +508,12 @@ app.Use(async (context, next) =>
         {
             var reqCtx = context.RequestServices.GetRequiredService<RequestContext>();
             reqCtx.UserId = userId;
-            reqCtx.Stores = context.User.FindAll("store").Select(c => c.Value).ToArray();
+            reqCtx.Stores = context.User.FindAll(StoreSelectorKey.Name).Select(c => c.Value).ToArray();
             reqCtx.Permissions = context.User.FindAll("permission").Select(c => c.Value).ToArray();
             reqCtx.StoreAccessLevels = context.User.FindAll("store_access").Select(c => c.Value).ToArray();
 
             // Resolve {store} route parameter if present
-            if (context.Request.RouteValues.TryGetValue("store", out var storeValue) && storeValue is string storeName)
+            if (context.Request.RouteValues.TryGetValue(StoreSelectorKey.Name, out var storeValue) && storeValue is string storeName)
             {
                 var sm = context.RequestServices.GetRequiredService<StoreManager>();
                 if (!sm.StoreExists(storeName))

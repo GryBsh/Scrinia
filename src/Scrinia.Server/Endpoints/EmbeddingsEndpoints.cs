@@ -30,7 +30,7 @@ public static class EmbeddingsEndpoints
     // the routes being replaced already did (Program.cs:548, :556, :564).
     private static IResult GetStatus(HttpContext http, RequestContext ctx)
     {
-        if (!ctx.HasPermission("read"))
+        if (!ctx.HasPermission(Permissions.Read))
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
         var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
@@ -44,7 +44,7 @@ public static class EmbeddingsEndpoints
 
     private static IResult GetSettings(HttpContext http, RequestContext ctx)
     {
-        if (!ctx.HasPermission("read"))
+        if (!ctx.HasPermission(Permissions.Read))
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
         var admin = http.RequestServices.GetService<IEmbeddingsAdmin>();
@@ -61,7 +61,7 @@ public static class EmbeddingsEndpoints
         // A full re-embed of every memory in the store is unbounded work, so it gets its own
         // permission rather than riding on 'store'. The hand-written gate matches the ~30 in
         // MemoryEndpoints.cs; consolidating them all is finding M5, branch 6.
-        if (!ctx.HasPermission("reindex"))
+        if (!ctx.HasPermission(Permissions.Reindex))
             return Results.Json(new ErrorResponse("Permission 'reindex' required."), statusCode: 403);
 
         if (!MemoryEndpoints.IsWritable(ctx, store))

@@ -129,7 +129,7 @@ public static class MemoryEndpoints
     /// unchanged from round 1.</summary>
     private const int MaxCarriedChunkKeywords = 25;
 
-    /// <summary>True when the caller may write to <paramref name="store"/> — i.e. the store is not
+    /// <summary>True when the caller may write to <c>store</c> — i.e. the store is not
     /// marked read-only by an SSO store_access claim. API keys default to read-write.</summary>
     internal static bool IsWritable(RequestContext ctx, string store) =>
         !string.Equals(ctx.GetStoreAccessLevel(store), "read-only", StringComparison.OrdinalIgnoreCase);
@@ -141,7 +141,7 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("store"))
+        if (!ctx.HasPermission(Permissions.Store))
             return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
 
         if (!IsWritable(ctx, store))
@@ -223,7 +223,7 @@ public static class MemoryEndpoints
         int offset = 0,
         int limit = DefaultListLimit)
     {
-        if (!ctx.HasPermission("search"))
+        if (!ctx.HasPermission(Permissions.Search))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403));
 
         if (offset < 0) offset = 0;
@@ -253,7 +253,7 @@ public static class MemoryEndpoints
         RequestContext ctx,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("read"))
+        if (!ctx.HasPermission(Permissions.Read))
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
         string decoded = Uri.UnescapeDataString(name);
@@ -318,7 +318,7 @@ public static class MemoryEndpoints
         string name,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("read"))
+        if (!ctx.HasPermission(Permissions.Read))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403));
 
         string decoded = Uri.UnescapeDataString(name);
@@ -406,7 +406,7 @@ public static class MemoryEndpoints
         HttpRequest request,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("store"))
+        if (!ctx.HasPermission(Permissions.Store))
             return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
 
         if (!IsWritable(ctx, store))
@@ -573,7 +573,7 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("forget"))
+        if (!ctx.HasPermission(Permissions.Forget))
             return Results.Json(new ErrorResponse("Permission 'forget' required."), statusCode: 403);
 
         if (!IsWritable(ctx, store))
@@ -607,7 +607,7 @@ public static class MemoryEndpoints
         PluginPipeline pipeline,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("append"))
+        if (!ctx.HasPermission(Permissions.Append))
             return Results.Json(new ErrorResponse("Permission 'append' required."), statusCode: 403);
 
         if (!IsWritable(ctx, store))
@@ -656,7 +656,7 @@ public static class MemoryEndpoints
         CopyRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("copy"))
+        if (!ctx.HasPermission(Permissions.Copy))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
 
         if (!IsWritable(ctx, store))
@@ -702,7 +702,7 @@ public static class MemoryEndpoints
         CopyFromClientRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("copy"))
+        if (!ctx.HasPermission(Permissions.Copy))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
 
         if (!IsWritable(ctx, store))
@@ -1034,7 +1034,7 @@ public static class MemoryEndpoints
         RequestContext ctx,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("read"))
+        if (!ctx.HasPermission(Permissions.Read))
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
         string decoded = Uri.UnescapeDataString(name);
@@ -1100,7 +1100,7 @@ public static class MemoryEndpoints
         Dictionary<string, string[]>? attributeFilter,
         CancellationToken ct)
     {
-        if (!ctx.HasPermission("search"))
+        if (!ctx.HasPermission(Permissions.Search))
             return Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403);
 
         if (string.IsNullOrWhiteSpace(q))
@@ -1161,7 +1161,7 @@ public static class MemoryEndpoints
         ExportRequest req,
         RequestContext ctx)
     {
-        if (!ctx.HasPermission("export"))
+        if (!ctx.HasPermission(Permissions.Export))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'export' required."), statusCode: 403));
 
         if (req.Topics is null || req.Topics.Length == 0)
@@ -1213,7 +1213,7 @@ public static class MemoryEndpoints
         [FromQuery] string[]? topics = null,
         bool overwrite = false)
     {
-        if (!ctx.HasPermission("import"))
+        if (!ctx.HasPermission(Permissions.Import))
             return Results.Json(new ErrorResponse("Permission 'import' required."), statusCode: 403);
 
         if (!IsWritable(ctx, store))

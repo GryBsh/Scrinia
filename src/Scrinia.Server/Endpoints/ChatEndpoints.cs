@@ -17,7 +17,7 @@ public static class ChatEndpoints
         group.MapPost("/", async (string store, ChatRequest req, RequestContext ctx,
             ChatProviderCache providerCache, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
-            if (!ctx.HasPermission("chat") || !ctx.HasPermission("read") || !ctx.HasPermission("search"))
+            if (!ctx.HasPermission(Permissions.Chat) || !ctx.HasPermission(Permissions.Read) || !ctx.HasPermission(Permissions.Search))
                 return Results.Json(
                     new ErrorResponse("Permissions 'chat', 'read', and 'search' are required."),
                     statusCode: 403);
@@ -81,7 +81,7 @@ public static class ChatEndpoints
         // GET available providers (for UI picker)
         group.MapGet("/providers", (RequestContext ctx) =>
         {
-            if (!ctx.HasPermission("chat"))
+            if (!ctx.HasPermission(Permissions.Chat))
                 return Results.Json(new ErrorResponse("Permission 'chat' required."), statusCode: 403);
 
             var available = chatOptions.GetAvailableProviders();
