@@ -513,13 +513,15 @@ cached `LoadIndex` takes no file lock.
 - Per-scope `CachedIndex` updated copy-on-write on write, not invalidated-then-rebuilt — see
   **CachedIndex** above
 - `ConcurrentDictionary` for ephemeral store, scope locks, scope caches
-- Topic discovery cache (`_cachedTopics`), no TTL — invalidated event-driven, not on a timer.
-  `Upsert` and `Remove` clear it only on a scope-lifecycle transition (a `local:`-scoped directory
-  gaining its first sidecar or losing its last), not on every write. `TryUpdateEntry` does not
-  share that gate: it clears `_cachedTopics` unconditionally on every call against a `local:`
-  scope. That's harmless — `TryUpdateEntry` only ever fires against an entry that already exists,
-  so the topic list cannot actually change — but it still forces the next `DiscoverTopics` call to
-  rescan rather than hit the cache.
+- Topic discovery cache (`_cachedTopics`), no TTL — invalidated event-driven, not on a timer. All
+  three write paths follow the same rule: clear it only when the topic list can actually have
+  changed. `DiscoverTopics` lists a directory exactly when it holds at least one
+  `.nmp2`/`.meta.json`, so `Upsert` and `Remove` clear it only on a scope-lifecycle transition (a
+  `local:`-scoped directory gaining its first sidecar or losing its last), not on every write, and
+  `TryUpdateEntry` never clears it — it requires an existing sidecar and only ever adds or replaces
+  one, so the scope was and stays non-empty. (`SaveIndex` and `PersistMigratedEntry` still clear it
+  for any `local:` scope they touch: both can rewrite a scope's whole sidecar set, including
+  emptying it.)
 - Cross-process `FileLock` for filesystem-level coordination
 
 ### Keyword-Only Index Scans

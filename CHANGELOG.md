@@ -31,12 +31,13 @@ and all assembly attributes.
   `FileMemoryStore`'s internal `LoadEntriesFromSidecars` now applies it once, so no future read
   site can forget to.
 
-- **`Upsert`/`Remove` no longer clear the topic-discovery cache on every write.** Both now clear it
-  only on a scope-lifecycle transition — a scope directory gaining its first sidecar, or losing its
-  last — instead of on every single write into an already-populated scope. `TryUpdateEntry` is
-  unchanged: it still clears the topic cache on every call, which costs a rescan it doesn't need
-  (it only ever updates an existing entry, so the topic list can't actually change) but is
-  otherwise harmless.
+- **Writes no longer clear the topic-discovery cache when the topic list can't have changed.**
+  `Upsert` and `Remove` now clear it only on a scope-lifecycle transition — a scope directory
+  gaining its first sidecar, or losing its last — instead of on every single write into an
+  already-populated scope. `TryUpdateEntry` no longer clears it at all: it only ever updates an
+  existing entry, so the scope was and stays non-empty and the topic list cannot change. It used to
+  clear it on every call, and `MaintenanceEventSink` calls it up to three times per store event, so
+  that forced a full re-walk of the `memories/` tree on the next search or scope resolution.
 
 - **`MaintenanceEventSink`'s auto-link/orphan-detection pass no longer materializes the whole
   store to answer "does anything reference this memory?"** A new `IMemoryStore.AnyScoped(scopes,

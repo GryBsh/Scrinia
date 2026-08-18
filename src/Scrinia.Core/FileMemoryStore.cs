@@ -31,11 +31,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
 
-    // Topic discovery cache. Invalidated event-driven (set to null) by Upsert / SaveIndex
-    // when a topic-scope mutation occurs. No TTL — repeated DiscoverTopics calls between
-    // mutations are O(1) cache hits rather than re-scanning the topics directory tree.
-    // The earlier 2-second TTL drove a constant ~30 directory enumerations/minute on the
-    // search hot path even when nothing had changed.
+    // Topic discovery cache. Invalidated event-driven (set to null), never on a timer: SaveIndex
+    // and PersistMigratedEntry clear it for any "local:" scope they touch, while Upsert and
+    // Remove clear it only on a scope-lifecycle transition — a scope gaining its first sidecar or
+    // losing its last, which is exactly what DiscoverTopics keys off. TryUpdateEntry clears it
+    // never: it requires an existing sidecar and only ever adds or replaces one, so it cannot
+    // change the topic list. No TTL — repeated DiscoverTopics calls between mutations are O(1)
+    // cache hits rather than re-scanning the topics directory tree. The earlier 2-second TTL
+    // drove a constant ~30 directory enumerations/minute on the search hot path even when nothing
+    // had changed.
     private string[]? _cachedTopics;
 
     // Gate for the one-time v3 layout migration check — see MemoriesRoot below.
@@ -1419,8 +1423,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 _indexCache.TryRemove(scope, out _);
             }
 
-            if (scope.StartsWith("local:", StringComparison.Ordinal))
-                _cachedTopics = null;
+            // No _cachedTopics invalidation, and that is the same scope-lifecycle rule Upsert and
+            // Remove follow rather than an omission. DiscoverTopics lists a directory as a topic
+            // exactly when it holds at least one .nmp2 or .meta.json; a successful TryUpdateEntry
+            // requires an existing sidecar, so the scope was non-empty before this write, and this
+            // write only ever adds or replaces a sidecar — even a name-changing `mutate` leaves the
+            // original in place and writes a second one. The topic list therefore cannot change.
+            // Clearing it unconditionally cost the next ResolveReadScopes/search a full re-walk of
+            // the memories/ tree, 1-3 times per store event via MaintenanceEventSink — H5's own
+            // shape on the branch that removes H5.
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
 

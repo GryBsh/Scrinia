@@ -124,6 +124,35 @@ public sealed class TopicCacheInvalidationTests : IDisposable
     }
 
     /// <summary>
+    /// The third write path, held to the same rule. <c>TryUpdateEntry</c> used to clear
+    /// <c>_cachedTopics</c> unconditionally on every call against a <c>local:</c> scope — and
+    /// <c>MaintenanceEventSink</c> calls it 1-3 times per store event, so that was a full re-walk
+    /// of the memories/ tree per write, which is finding H5's own shape.
+    /// <para>It cannot change the topic list: <c>DiscoverTopics</c> lists a directory exactly when
+    /// it holds at least one <c>.nmp2</c>/<c>.meta.json</c>, a successful <c>TryUpdateEntry</c>
+    /// requires an existing sidecar, and the write only ever adds or replaces one — even a
+    /// name-changing <c>mutate</c> leaves the original sidecar in place and writes a second.
+    /// Diagnostic, not content-only, for the reason spelled out on
+    /// <see cref="AdditionalWritesIntoAnExistingTopic_DoNotInvalidateTheCache"/>.</para>
+    /// </summary>
+    [Fact]
+    public void UpdatingAnEntryInPlace_DoesNotInvalidateTheCache()
+    {
+        _store.Upsert(E("only"), "local:eta");
+        _store.DiscoverTopics().Should().Contain("local:eta"); // primes the cache
+
+        PlantPhantomTopicBehindTheStoresBack("local:theta");
+
+        _store.TryUpdateEntry("only", "local:eta", e => e with { Uri = "patched" })
+            .Should().BeTrue();
+
+        _store.DiscoverTopics().Should().NotContain("local:theta",
+            because: "an in-place metadata update cannot change which directories hold sidecars, "
+                   + "so it must not invalidate _cachedTopics — if it did, this call would rescan "
+                   + "the filesystem and pick up the topic planted directly on disk above");
+    }
+
+    /// <summary>
     /// Remove() deletes only the .meta.json sidecars, never the scope directory itself — so an
     /// emptied topic leaves an empty directory behind on disk. A later write into that same
     /// scope must still be treated as "new" for topic-discovery purposes: Directory.Exists
