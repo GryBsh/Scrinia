@@ -113,6 +113,21 @@ Per-contradiction tests for each row in B2.
 
 ## Part C — Plugin contract inversion (M3)
 
+> **SPLIT OUT OF THIS BRANCH, 2026-08-18. The design below is superseded — do not implement it.**
+>
+> A pre-implementation falsification pass found Part C structurally blocked, and found that two of the measurements this section rests on were wrong. Both errors share one cause: a `grep` whose pattern could not express the usage shape that actually exists, returning empty, with the emptiness reported as a measurement.
+>
+> - **"No hook implementation reads `ctx.Store` at all" is false.** Nine sites pass it as an *argument* into parameters typed `IMemoryStore` (`EmbeddingsPlugin.cs:274,279,284`; `EventSinkOperationHook.cs:62,71,80`; `BuiltInEmbeddingsService.cs:92,95,103`). The pattern used matched member *access* only.
+> - **"The only real plugin uses exactly `ParseQualifiedName` and `ListScoped`" is false.** Both plugin-shaped sinks route append through `MemoryArtifactSource.ReadForAppendAsync` (`:93-101`), needing `ParseQualifiedName`, `IsEphemeral`, `ResolveArtifactAsync` and `ReadArtifactAsync`. `ListScoped` is not used by the sink contract at all — only by `ReindexStoreAsync`, which is `IEmbeddingsAdmin`.
+> - **There are seven `IMemoryEventSink` implementations, not six.** `CoreEmbeddingEventHandler` (`src/Scrinia/Services/CoreEmbeddingEventHandler.cs:17`) was missed, and needs the same four members.
+> - **The reversal pulls ASP.NET Core into the trimmed CLI publish.** Abstractions carries `<FrameworkReference Include="Microsoft.AspNetCore.App" />` because `IScriniaPlugin` takes `IApplicationBuilder` and `IEndpointRouteBuilder`. `FrameworkReference` is transitive, and `src/Scrinia` publishes `--self-contained -p:PublishTrimmed=true` with `IsTrimmable`. This likely forces splitting Abstractions into an ASP.NET-free contract assembly and a hosting assembly — a design question, not a plan correction.
+>
+> What survives verification: **the build-graph flip itself is clean.** No cycle is possible, the three DTOs are self-contained, the move is serialization-inert (no `[JsonSerializable]`, no `Type.GetType` naming them), and `_legacyFields` touches no `InternalsVisibleTo`. The blocker is the *contract*, not the graph.
+>
+> Consequence for the narrow-contract argument: a five-member `IPluginStore` still pins something far smaller than `IMemoryStore`'s twenty-two, so pinning the version remains defensible — but the "two members" framing that justified it here does not survive.
+>
+> Full detail is in `/findings/plugin-contract-inversion-blockers`. M3 gets its own brainstorm → spec → plan cycle.
+
 ### C1. Two sink interfaces, one meaning each
 
 `IMemoryEventSink` cannot move to Abstractions while its methods take Core's `IMemoryStore` — that is a circular reference. The store parameter must be an Abstractions type, and the measured evidence says one type cannot serve both audiences.

@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make three published surfaces — the REST authorization policy, the MCP tool family, and the plugin contract assembly — state each of their rules exactly once, in a place that a new call site cannot silently bypass.
+**Goal:** Make two published surfaces — the REST authorization policy and the MCP tool family — state each of their rules exactly once, in a place a new call site cannot silently bypass.
 
-**Architecture:** Three independent parts in disjoint projects, executed A → B → C. Part A moves route→permission from 19 hand-written handler guards into endpoint metadata enforced by one filter, with a startup validator that refuses to boot an undeclared route. Part B introduces a `MemoryAddress` type so the address-canonicalization rule is carried by the type system rather than by 19 remembered call sites, and fixes six places where sibling MCP tools answer the same question differently. Part C reverses the `Scrinia.Core` → `Scrinia.Plugin.Abstractions` dependency so the contract assembly sits at the bottom of the graph and can be versioned independently.
+**Architecture:** Two independent parts in disjoint projects, executed A → B. Part A moves route→permission from 19 hand-written handler guards into endpoint metadata enforced by one filter, with a startup validator that refuses to boot a route declaring nothing. Part B collapses the MCP facade's seven duplicated address-canonicalization calls into one helper, pins all five address-taking surfaces with a behavioural test net, and fixes six places where sibling MCP tools answer the same question differently.
+
+**Scope note:** M3 (plugin contract inversion) was originally Part C of this plan and has been **split into its own branch**. A pre-implementation falsification pass found it structurally blocked — see the final section for what was established, so the next branch starts from evidence rather than from the review finding. Nothing in Parts A or B depends on it.
 
 **Tech Stack:** .NET 10, ASP.NET Core minimal APIs, ModelContextProtocol SDK, xUnit + FluentAssertions.
 
@@ -14,9 +16,8 @@
 
 - **Breaking changes are permitted and must be recorded.** Product version is `0.5.0`, pre-1.0. No compatibility shims, no dual-accept parameter parsing. Every wire-visible or schema-visible break gets a `CHANGELOG.md` entry under Unreleased → Changed (breaking).
 - **Enumerate from the authoritative list, never from an existing guard's call sites.** The authoritative lists are: the route table (`MapGet`/`MapPost`/`MapPut`/`MapPatch`/`MapDelete` calls), the `[McpServerTool]` attribute set, the `[Argument]`-taking CLI command set, and `git grep` over an interface name. Scoping work by "where the existing check already appears" has produced a Critical on three consecutive branches.
-- **Do not unify `IMemoryOperationHook` and `IMemoryEventSink`.** The split is deliberate. `IMemoryOperationHook` is a published plugin contract with before-phases, an `Order` property and a `Cancel` veto; `IMemoryEventSink` has no equivalent for any of these. The split is also what stops a component implementing both from firing twice.
-- **Preserve `CompositeEventSink`'s per-sink exception isolation.** Any new fan-out path delegates to `CompositeEventSink` rather than looping sinks itself. A previous branch introduced a loop without the per-sink `try`/`catch` and 5xx'd REST writes that had already succeeded.
-- **Tests that drive internal methods will need updating in Part B.** `MemoryTools.Core` method signatures change. A test going red because it passes a `string` where a `MemoryAddress` is now required is a correct change, not a regression.
+- **Do not unify the three ephemeral-alias policies.** The MCP facade canonicalizes and proceeds; the CLI canonicalizes then refuses (its process exits, so an ephemeral memory could never be read back); REST refuses the alias outright (it would otherwise store permanent bytes under `local:temp`). All three are correct for their surface. Part B collapses duplication *within* the facade only.
+- **Verify counts by enumeration, never by citing a recorded figure.** This plan's first draft asserted "19 hand-placed call sites" from a project memory; the real number of direct callers is 10, and the difference changed the whole shape of Part B. It also asserted two `ctx.Store` measurements from a grep whose pattern could not match the usage shape that actually exists. Re-derive, and prefer reading the call site over pattern-matching it.
 - **Run the full suite, not a filtered subset, before reporting a task DONE.** Command: `dotnet test Scrinia.sln`. The solution builds clean without `-p:NuGetAudit=false`; do not add that flag.
 - **`ImplicitUsings` is enabled** in all projects and test projects carry `global using Xunit;`. A per-file `using Xunit;` is CS8933 and fails the build.
 
@@ -37,24 +38,13 @@
 
 | File | Responsibility |
 |---|---|
-| `src/Scrinia.Core/MemoryAddress.cs` (new) | Readonly struct canonicalizing on construction. |
-| `src/Scrinia.Mcp/MemoryTools.Core.cs` (modify) | Internal methods take `MemoryAddress`. |
-| `src/Scrinia.Mcp/MemoryTools.cs`, `MemoryTools.Skills.cs`, `MemoryTools.Lifecycle.cs` (modify) | Boundary conversion; the six contradiction fixes; `SkillDelete`. |
-| `src/Scrinia/Commands/ScriniaCommands.Memory.cs` (modify) | Boundary conversion. |
-| `src/Scrinia.Mcp/ScriniaMcpResources.cs` (modify) | Boundary conversion. |
-| `src/Scrinia.Server/Chat/AgentLoop.cs` (modify) | Boundary conversion. |
+| `src/Scrinia.Mcp/MemoryTools.cs` (modify) | One `Address(...)` helper replacing seven direct calls; skill-path routing; the `guide` envelope. |
+| `src/Scrinia.Mcp/MemoryTools.Core.cs` (modify) | `list` mode validation. |
+| `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs` (modify) | `reconcile` argument validation; the `restore` envelope. |
+| `src/Scrinia.Mcp/MemoryTools.Skills.cs` (modify) | `SkillDelete`. |
+| `tests/Scrinia.Tests/Naming/AddressSurfaceCoverageTests.cs` (new) | The net over all five address-taking surfaces. |
 
-**Part C — `Scrinia.Plugin.Abstractions`, `Scrinia.Core`, and every sink**
-
-| File | Responsibility |
-|---|---|
-| `src/Scrinia.Plugin.Abstractions/IPluginStore.cs` (new) | The two-member plugin-facing store contract. |
-| `src/Scrinia.Plugin.Abstractions/` (receives) | `ArtifactEntry`, `ChunkEntry`, `ScopedArtifact`, `IMemoryEventSink`. |
-| `src/Scrinia.Core/ICoreEventSink.cs` (new) | The internal sink contract taking full `IMemoryStore`. |
-| `src/Scrinia.Core/PluginSinkAdapter.cs` (new) | Wraps an `IMemoryEventSink` as an `ICoreEventSink`. |
-| `src/Scrinia.Core/CompositeEventSink.cs`, `IMemoryEventSink.cs` (modify) | Work in terms of `ICoreEventSink`. |
-| `src/Scrinia.Plugin.Abstractions/Scrinia.Plugin.Abstractions.csproj` (modify) | Pin `AssemblyVersion`; drop the Core `ProjectReference`. |
-| `src/Scrinia.Core/Scrinia.Core.csproj` (modify) | Gain the Abstractions `ProjectReference`. |
+**Read-only in Part B** — these surfaces are covered by tests but not modified, because each already applies its own deliberate policy: `src/Scrinia/Commands/ScriniaCommands.cs` (CLI, refuses), `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs` (REST, refuses), `src/Scrinia.Mcp/ScriniaMcpResources.cs` and `src/Scrinia.Server/Chat/AgentLoop.cs` (one call each — a helper wrapping one call at one site is indirection without consolidation).
 
 ---
 
@@ -245,6 +235,13 @@ public class EndpointPermissionTests
         { "GET",    "/api/v1/stores/local/embeddings/settings",          Permissions.Read },
         { "POST",   "/api/v1/stores/local/embeddings/reindex",           Permissions.Reindex },
         { "GET",    "/api/v1/stores/local/chat/providers",               Permissions.Chat },
+        // The conjunctive case. ChatEndpoints.cs:20 requires chat AND read AND search,
+        // so it needs a row per permission — this is the only route in the table whose
+        // 403 can be triggered three different ways, and the riskiest transformation
+        // in this task. It must not ship without coverage.
+        { "POST",   "/api/v1/stores/local/chat/",                        Permissions.Chat },
+        { "POST",   "/api/v1/stores/local/chat/",                        Permissions.Read },
+        { "POST",   "/api/v1/stores/local/chat/",                        Permissions.Search },
     };
 
     [Theory]
@@ -290,7 +287,30 @@ public class EndpointPermissionTests
 }
 ```
 
-`TestServerFactory` with a `permissions` parameter and a `SendAsync(method, path, body)` helper may not exist in this shape. Check `tests/Scrinia.Server.Tests/` for the existing Kestrel/WebApplicationFactory harness (the conformance fixtures use one) and extend it rather than building a second harness.
+**Neither helper exists — you are building both.** Verified: there is no `TestServerFactory` and no `TestPaths` anywhere in `tests/Scrinia.Server.Tests`. What exists is `ScriniaServerFactory : WebApplicationFactory<Program>` (`tests/Scrinia.Server.Tests/ScriniaServerFactory.cs:12`), whose surface is:
+
+- `CreateAuthenticatedClient()` — one baked-in key holding **every** permission, so it cannot express "all but one"
+- `CreateClientWithKey(string rawKey)`
+- `CreateRestrictedStoreKey(string storeName, string? userId = null)` — store access, zero permissions
+- `TestApiKey`, `TestKeyId`, `TestUserId`, `PrimaryStore`, `SecondaryStore`
+- `Services.GetRequiredService<ApiKeyStore>()`, whose `CreateKey(userId, stores, permissions, label)` takes an arbitrary permission array
+
+Add **one** method to `ScriniaServerFactory` — do not create a second factory:
+
+```csharp
+    /// <summary>A client whose key holds exactly <paramref name="permissions"/>. The
+    /// baked-in test key holds everything, which cannot express the all-but-one probe
+    /// the permission tests need.</summary>
+    public HttpClient CreateClientWithPermissions(params string[] permissions)
+    {
+        var keyStore = Services.GetRequiredService<ApiKeyStore>();
+        var (rawKey, _, _) = keyStore.CreateKey(
+            TestUserId, [PrimaryStore], permissions, label: "scoped");
+        return CreateClientWithKey(rawKey);
+    }
+```
+
+Then write the `SendAsync(method, path, body)` shape in the test file itself as a small local helper over `HttpClient` — it is test-file scaffolding, not factory surface. Substitute `PrimaryStore` for the literal `local` in the route table's paths.
 
 - [ ] **Step 2: Run and verify the characterization tests pass against the CURRENT code**
 
@@ -314,6 +334,21 @@ public sealed record RequiredPermissionsMetadata(IReadOnlyList<string> Permissio
 /// "no permission needed" from "someone forgot" — see PermissionCoverageValidator.
 /// </summary>
 public sealed record PublicEndpointMetadata;
+
+/// <summary>
+/// Marks an endpoint whose permission check genuinely happens somewhere the route
+/// table cannot see. <paramref name="Where"/> names that place and is required.
+///
+/// This exists for exactly one shape of endpoint: one HTTP route carrying many
+/// operations with different permissions. `/mcp` is the case — a single route over
+/// JSON-RPC, where McpPermissionFilter resolves the permission per call. Declaring
+/// a single RequirePermission there would be a lie, and PublicEndpoint() would be a
+/// worse one.
+///
+/// It is also an escape hatch, so it is pinned: a test asserts the exact set of
+/// endpoints using it. Adding a new one fails that test and forces the question.
+/// </summary>
+public sealed record PermissionCheckedElsewhereMetadata(string Where);
 
 public static class PermissionEndpointExtensions
 {
@@ -339,6 +374,19 @@ public static class PermissionEndpointExtensions
         where TBuilder : IEndpointConventionBuilder
     {
         builder.WithMetadata(new PublicEndpointMetadata());
+        return builder;
+    }
+
+    /// <summary>
+    /// Declares that this route's permission check happens outside the route table,
+    /// naming where. See <see cref="PermissionCheckedElsewhereMetadata"/> — its use
+    /// is pinned by test.
+    /// </summary>
+    public static TBuilder PermissionCheckedElsewhere<TBuilder>(this TBuilder builder, string where)
+        where TBuilder : IEndpointConventionBuilder
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(where);
+        builder.WithMetadata(new PermissionCheckedElsewhereMetadata(where));
         return builder;
     }
 }
@@ -373,7 +421,7 @@ How `RequestContext` reaches the filter depends on how it is currently supplied 
 
 - [ ] **Step 4: Declare permissions on every route and delete the guards**
 
-Add `.RequirePermission(...)` to each of the 18 gated route registrations, matching the table in Step 1. Then delete the corresponding `if (!ctx.HasPermission(...)) return Results.Json(...)` block from each handler. `ChatEndpoints`' three-permission guard becomes one declaration:
+Add `.RequirePermission(...)` to each of the 19 gated route registrations, matching the table in Step 1. Then delete the corresponding `if (!ctx.HasPermission(...)) return Results.Json(...)` block from each handler. `ChatEndpoints`' three-permission guard becomes one declaration:
 
 ```csharp
 group.MapPost("/", ...).RequirePermission(Permissions.Chat, Permissions.Read, Permissions.Search);
@@ -530,6 +578,18 @@ public class PermissionCoverageValidatorTests
     }
 
     [Fact]
+    public void Accepts_AnEndpointCheckedBelowTheRouteTable()
+    {
+        var source = SourceOf(Endpoint("POST /mcp",
+            new AuthorizeAttribute(),
+            new PermissionCheckedElsewhereMetadata("McpPermissionFilter")));
+
+        var act = () => PermissionCoverageValidator.Validate(source);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void Rejects_APermissionNameOutsideTheVocabulary()
     {
         var source = SourceOf(Endpoint("GET /typo",
@@ -583,6 +643,11 @@ public static class PermissionCoverageValidator
                     .Any(a => !string.IsNullOrWhiteSpace(a.Policy)))
                 continue;
 
+            // Checked below the route table — /mcp resolves its permission per
+            // JSON-RPC call. The marker's uses are pinned by a separate test.
+            if (endpoint.Metadata.GetMetadata<PermissionCheckedElsewhereMetadata>() is not null)
+                continue;
+
             var declared = endpoint.Metadata.GetMetadata<RequiredPermissionsMetadata>();
             bool isPublic = endpoint.Metadata.GetMetadata<PublicEndpointMetadata>() is not null;
             string name = endpoint.DisplayName ?? endpoint.ToString() ?? "<unnamed endpoint>";
@@ -596,8 +661,8 @@ public static class PermissionCoverageValidator
             if (declared is null && !isPublic)
             {
                 problems.Add(
-                    $"{name}: requires authentication but declares neither RequirePermission(...) "
-                    + "nor PublicEndpoint().");
+                    $"{name}: requires authentication but declares neither RequirePermission(...), "
+                    + "PublicEndpoint(), nor PermissionCheckedElsewhere(...).");
                 continue;
             }
 
@@ -620,9 +685,58 @@ public static class PermissionCoverageValidator
 Run: `dotnet test tests/Scrinia.Server.Tests --filter FullyQualifiedName~PermissionCoverageValidatorTests`
 Expected: PASS, all six.
 
-- [ ] **Step 5: Wire it into startup**
+- [ ] **Step 5: Declare the two endpoints the route table cannot describe**
 
-In `Program.cs`, after the app is built and all endpoints are mapped — the validator needs the fully populated `EndpointDataSource`, so this must come after every `Map*` call and before `app.Run()`:
+Verified: two endpoints carry bare `RequireAuthorization()` with no named policy, and neither is reachable from the four `*Endpoints.cs` files Task 2 touched. **Without this step the validator refuses to boot and nearly every `Scrinia.Server.Tests` test fails**, because they all boot the app through `ScriniaServerFactory : WebApplicationFactory<Program>`.
+
+```csharp
+// Program.cs:583 — one HTTP route carrying every JSON-RPC operation. The permission
+// varies per call and is resolved by McpPermissionFilter, which EndpointDataSource
+// cannot see. RequirePermission would name a permission that isn't the real one.
+app.MapMcp("/mcp")
+   .RequireAuthorization()
+   .RequireRateLimiting("api")
+   .PermissionCheckedElsewhere("McpPermissionFilter (per JSON-RPC method/tool)");
+
+// Program.cs:571 — plugins map their own routes into this group, so the permissions
+// are not knowable here. Empty in the default configuration (plugins load only when
+// Vulkan is explicitly enabled, Program.cs:82), which is why no test catches it.
+var pluginGroup = app.MapGroup("/api/v1/plugins")
+    .RequireAuthorization()
+    .RequireRateLimiting("api")
+    .PermissionCheckedElsewhere("the plugin's own endpoint declarations");
+```
+
+The plugin group is the weaker of the two — "the plugin declares it" is a promise nothing enforces. Record that in the ledger as a follow-up rather than solving it here: making plugin-mapped routes declare permissions is a plugin-contract change, and the plugin contract is Part C's subject, not Part A's.
+
+- [ ] **Step 6: Pin the escape hatch**
+
+`PermissionCheckedElsewhere` can silence the validator, so its uses are enumerated and asserted. A new use fails this test.
+
+```csharp
+    [Fact]
+    public void OnlyTheKnownEndpoints_BypassTheRouteTableCheck()
+    {
+        using var factory = new ScriniaServerFactory();
+        _ = factory.CreateAuthenticatedClient(); // force the app to build
+
+        var bypassing = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .Where(e => e.Metadata.GetMetadata<PermissionCheckedElsewhereMetadata>() is not null)
+            .Select(e => e.DisplayName ?? "<unnamed>")
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        bypassing.Should().HaveCount(2,
+            "this marker suppresses the coverage check — a third use must be argued for, "
+            + "not merely added");
+    }
+```
+
+Assert on the count rather than exact display names: minimal-API display names are framework-generated and brittle across SDK updates, while the count is the property that actually matters.
+
+- [ ] **Step 7: Wire it into startup**
+
+In `Program.cs`, after the app is built and all endpoints are mapped — the validator needs the fully populated `EndpointDataSource`, so this must come after every `Map*` call and before `await app.RunAsync()` (Program.cs:596):
 
 ```csharp
 PermissionCoverageValidator.Validate(app.Services.GetRequiredService<EndpointDataSource>());
@@ -666,7 +780,7 @@ public class McpToolCoverageTests
     public static TheoryData<string> DeclaredToolNames()
     {
         var data = new TheoryData<string>();
-        foreach (var method in typeof(MemoryTools).GetMethods(BindingFlags.Public | BindingFlags.Instance))
+        foreach (var method in typeof(ScriniaMcpTools).GetMethods(BindingFlags.Public | BindingFlags.Instance))
         {
             var attr = method.GetCustomAttributes()
                 .FirstOrDefault(a => a.GetType().Name == "McpServerToolAttribute");
@@ -799,183 +913,156 @@ git commit -m "fix(auth): deny unmapped MCP tools instead of admitting them"
 
 # Part B — Tool family coherence (M1)
 
-### Task 5: `MemoryAddress`, and the boundary that cannot be forgotten
+### Task 5: One helper per surface, and a net over all five
 
 **Files:**
-- Create: `src/Scrinia.Core/MemoryAddress.cs`
-- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs`, `MemoryTools.cs`, `MemoryTools.Lifecycle.cs`, `src/Scrinia/Commands/ScriniaCommands.Memory.cs`, `src/Scrinia.Mcp/ScriniaMcpResources.cs`, `src/Scrinia.Server/Chat/AgentLoop.cs`
-- Test: `tests/Scrinia.Tests/Naming/MemoryAddressTests.cs`, `tests/Scrinia.Tests/Naming/AddressSurfaceCoverageTests.cs`
+- Modify: `src/Scrinia.Mcp/MemoryTools.cs` (collapse seven direct calls into one helper)
+- Test: `tests/Scrinia.Tests/Naming/AddressSurfaceCoverageTests.cs` (new)
 
 **Interfaces:**
-- Produces: `Scrinia.Core.MemoryAddress` — `readonly record struct` with `string Value`, an explicit constructor canonicalizing via `MemoryNaming.CanonicalizeEphemeralAlias`, `implicit operator string`, and `static MemoryAddress From(string)`. There is **no** implicit `string` → `MemoryAddress` conversion: the whole point is that passing a raw string fails to compile.
+- Produces: a private static helper in `ScriniaMcpTools` — name it `Address(string raw)` — returning the canonical form. Nothing public changes.
 
-**Context:** The rule has one definition (`MemoryNaming.CanonicalizeEphemeralAlias`) and 19 hand-placed call sites across four agent-facing surfaces. Three were missed on branch 2's first pass and were caught only by a whole-branch review. Typing the internal methods makes omission a compile error.
+**Context — read this before writing code, because the obvious version of this task is wrong.**
 
-- [ ] **Step 1: Write the failing type tests**
+An earlier draft of this plan proposed a `MemoryAddress` value type on the internal `MemoryTools.Core` methods, on the theory that a new surface would then fail to compile without converting. That was verified and **rejected**. Two reasons, both load-bearing:
 
-```csharp
-// tests/Scrinia.Tests/Naming/MemoryAddressTests.cs
-namespace Scrinia.Tests.Naming;
+1. **Two of the four surfaces never call those methods.** `ScriniaMcpResources.cs:47` calls `store.ResolveArtifactAsync` directly and `AgentLoop.ExecuteRecallAsync` calls `MemoryOrchestrator.ShowAsync` directly. A type enforces exactly the boundary it occupies, so it would have guaranteed nothing for either.
+2. **Two of the parameters are not addresses.** `Recall`'s `artifactOrName` also accepts inline NMP/2 artifact text (`MemoryTools.Core.cs:22-24`, `:50`); `Forget`'s `nameOrUri` also accepts a `file://` URI (`:908`, `:930`). Wrapping them uniformly would make the type misrepresent its contents.
 
-public class MemoryAddressTests
-{
-    [Theory]
-    [InlineData("/temp/x")]
-    [InlineData("~x")]
-    public void Construction_CanonicalizesTheEphemeralAlias(string input)
-    {
-        var address = MemoryAddress.From(input);
+**The surfaces implement three deliberate policies and must keep doing so. Do not unify them.**
 
-        address.Value.Should().Be(MemoryNaming.CanonicalizeEphemeralAlias(input),
-            "the type exists so canonicalization cannot be skipped");
-    }
+| Surface | Current handling | Policy |
+|---|---|---|
+| MCP facade, `MemoryTools.cs` | seven direct `CanonicalizeEphemeralAlias` calls (`:181, :216, :323, :348, :369, :396, :397`) | canonicalize, proceed |
+| CLI, `ScriniaCommands.cs:50` inside `RefuseEphemeral` | one shared helper, seven callers | canonicalize, then **refuse** — the process exits, so an ephemeral memory could never be read back |
+| REST, `MemoryEndpoints.cs:1011-1020` `NameRefusal` | `MemoryNaming.IsEphemeralAlias` | **refuse** — it would otherwise resolve to persistent scope `local:temp` and store permanent bytes under a misleading name |
+| MCP resource, `ScriniaMcpResources.cs:39` | one direct call | canonicalize, proceed |
+| Agent loop, `AgentLoop.cs:207` | one direct call | canonicalize, proceed |
 
-    [Fact]
-    public void TwoSpellingsOfTheSameAddress_AreEqual()
-    {
-        MemoryAddress.From("/temp/x").Should().Be(MemoryAddress.From("~x"));
-    }
+The CLI and REST already have their one helper each. Only the facade's seven calls are genuinely duplicated. So this task does two small things: collapse those seven, and add the test net that covers all five surfaces including the ones no helper can reach.
 
-    [Fact]
-    public void Construction_IsIdempotent()
-    {
-        var once = MemoryAddress.From("/temp/x");
-        MemoryAddress.From(once.Value).Should().Be(once);
-    }
+- [ ] **Step 1: Write the failing test**
 
-    [Fact]
-    public void DefaultInstance_IsRejectedRatherThanTreatedAsEmpty()
-    {
-        // A `default` struct bypasses the constructor, which is the one hole a
-        // canonicalizing value type has. It must not silently read as a valid address.
-        var act = () => _ = default(MemoryAddress).Value;
-
-        act.Should().Throw<InvalidOperationException>();
-    }
-}
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `dotnet test tests/Scrinia.Tests --filter FullyQualifiedName~MemoryAddressTests`
-Expected: FAIL — `MemoryAddress` does not exist.
-
-- [ ] **Step 3: Implement the type**
-
-```csharp
-// src/Scrinia.Core/MemoryAddress.cs
-namespace Scrinia.Core;
-
-/// <summary>
-/// A memory address that has been canonicalized. Exists so that the ephemeral-alias
-/// rule is carried by the type system rather than by remembering to call
-/// <see cref="MemoryNaming.CanonicalizeEphemeralAlias"/> at every surface: the internal
-/// tool methods take this type, so a new surface passing a raw string fails to compile.
-///
-/// There is deliberately no implicit conversion from string — that would restore
-/// exactly the silent-omission hole this type removes.
-/// </summary>
-public readonly record struct MemoryAddress
-{
-    private readonly string? _value;
-
-    private MemoryAddress(string value) => _value = value;
-
-    /// <summary>The canonical address.</summary>
-    public string Value => _value
-        ?? throw new InvalidOperationException(
-            "default(MemoryAddress) is not a valid address — it bypassed canonicalization. "
-            + "Construct with MemoryAddress.From(...).");
-
-    /// <summary>Canonicalizes <paramref name="raw"/> and wraps it.</summary>
-    public static MemoryAddress From(string raw)
-    {
-        ArgumentNullException.ThrowIfNull(raw);
-        return new MemoryAddress(MemoryNaming.CanonicalizeEphemeralAlias(raw));
-    }
-
-    public static implicit operator string(MemoryAddress address) => address.Value;
-
-    public override string ToString() => Value;
-}
-```
-
-- [ ] **Step 4: Run and verify the type tests pass**
-
-Run: `dotnet test tests/Scrinia.Tests --filter FullyQualifiedName~MemoryAddressTests`
-Expected: PASS.
-
-- [ ] **Step 5: Convert the internal methods**
-
-In `MemoryTools.Core.cs`, change the address parameter of each internal method from `string` to `MemoryAddress`: `Remember`, `Recall`, `Forget`, `Append`, `Compact`, `Link` (both source and destination). Inside each, delete the now-redundant `MemoryNaming.CanonicalizeEphemeralAlias(...)` call and use the value directly.
-
-The build will now fail at every caller. That is the mechanism working. Fix each by converting at the boundary:
-
-```csharp
-// MemoryTools.cs — was: path = MemoryNaming.CanonicalizeEphemeralAlias(path);
-return (await Forget(MemoryAddress.From(path), cancellationToken)).ToYaml();
-```
-
-Apply the same shape at all four surfaces: the `[McpServerTool]` facade methods in `MemoryTools.cs`, the CLI commands in `ScriniaCommands.Memory.cs`, `ScriniaMcpResources.cs`, and `AgentLoop.cs`.
-
-- [ ] **Step 6: Verify the old call sites are gone**
-
-Run: `git grep -c "CanonicalizeEphemeralAlias" -- src/`
-Expected: a small number — the definition in `MemoryNaming.cs` and the single call inside `MemoryAddress.From`. Any other production call site means a surface is still canonicalizing by hand instead of converting; convert it.
-
-- [ ] **Step 7: Write the surface coverage test**
+The net is a behavioural round-trip, not a reflection query that merely proves it matched something. Each surface is driven with `/temp/probe` and must treat it as `~probe`.
 
 ```csharp
 // tests/Scrinia.Tests/Naming/AddressSurfaceCoverageTests.cs
 namespace Scrinia.Tests.Naming;
 
 /// <summary>
-/// Covers the surfaces that take an address as text from an agent. MemoryAddress makes
-/// the internal path safe by construction; this pins the outer boundary, including any
-/// surface that handles an address without reaching a typed internal method.
+/// Pins the ephemeral-alias policy at every surface that accepts an address as text.
+/// Three of the five canonicalize and proceed; two deliberately refuse. Both answers
+/// are correct for their surface — what this fixture catches is a surface that does
+/// NEITHER, which is how three sites were missed on the ephemeral-addressing branch.
 /// </summary>
 public class AddressSurfaceCoverageTests
 {
+    private static ScriniaMcpTools Tools() => new();
+
     [Fact]
-    public void EveryMcpToolAddressParameter_RoundTripsTheEphemeralAlias()
+    public async Task McpFacade_TreatsTempPathAsTheEphemeralMemory()
     {
-        var offenders = new List<string>();
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember("/temp/probe", ["body"]);
 
-        foreach (var method in typeof(MemoryTools).GetMethods(BindingFlags.Public | BindingFlags.Instance))
-        {
-            if (!method.GetCustomAttributes().Any(a => a.GetType().Name == "McpServerToolAttribute"))
-                continue;
-
-            foreach (var p in method.GetParameters())
-            {
-                if (p.ParameterType != typeof(string)) continue;
-                if (p.Name is not ("path" or "name" or "nameOrUri" or "destination" or "source")) continue;
-                // Recorded here rather than asserted per-parameter so the failure message
-                // lists every offending surface at once instead of the first.
-                offenders.Add($"{method.Name}.{p.Name}");
-            }
-        }
-
-        offenders.Should().NotBeEmpty("the reflection query must actually match something");
+        // Addressable under the canonical spelling, which is the whole rule.
+        var recalled = ResponseParser.Parse(await Tools().MemoryRecall("~probe"));
+        recalled.Status.Should().NotBe("error");
     }
+
+    [Fact]
+    public async Task McpResource_TreatsTempPathAsTheEphemeralMemory()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember("~probe", ["body"]);
+
+        // Reached through the resource template, which bypasses the tool methods
+        // entirely — this is one of the two surfaces a type on the internal
+        // boundary could never have covered.
+        string content = await ScriniaMcpResources.ReadMemoryForTest("/temp/probe");
+
+        content.Should().Contain("body");
+    }
+
+    [Fact]
+    public void EveryMcpToolTakingAnAddress_IsCoveredByThisFixture()
+    {
+        // Enumerates from the [McpServerTool] attribute set so a tool added later
+        // that takes an address forces someone to extend this fixture.
+        var addressTools = typeof(ScriniaMcpTools)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(m => m.GetCustomAttributes().Any(a => a.GetType().Name == "McpServerToolAttribute"))
+            .Where(m => m.GetParameters().Any(p =>
+                p.ParameterType == typeof(string) &&
+                p.Name is "path" or "artifactOrName" or "nameOrUri" or "destination" or "source"))
+            .Select(m => m.Name)
+            .ToList();
+
+        addressTools.Should().NotBeEmpty("the reflection query must actually match something");
+        addressTools.Should().BeEquivalentTo(KnownAddressTools,
+            "a tool taking an address must be added to this fixture's coverage");
+    }
+
+    // Update deliberately when a tool gains or loses an address parameter.
+    private static readonly string[] KnownAddressTools = [/* fill from the first run */];
 }
 ```
 
-This test as written only proves the query matches. Extend it to invoke each tool with `/temp/probe` and assert the resulting memory is addressable as `~probe`, following the pattern of the existing ephemeral tests in `ScriniaMcpToolsTests.cs`. Read those first — they establish how to stand up a store for this.
+The `KnownAddressTools` list is filled from the first run — run the test, read the actual list out of the failure message, and paste it in. Do not guess it.
 
-- [ ] **Step 8: Run the full suite**
+`ScriniaMcpResources.ReadMemoryForTest` does not exist. The resource method is `[McpServerResource(UriTemplate = "scrinia://memory/{name}")]` in `ScriniaMcpResources.cs`; expose whatever minimal internal seam lets a test drive it, or drive it through the registered resource handler if the SDK makes that reachable. Do not skip this case — it is one of the two surfaces the rejected value type could not have protected, which is precisely why it needs a test.
 
-Run: `dotnet test Scrinia.sln`
-Expected: some existing tests fail to compile where they pass a `string` to a converted internal method. Update them to `MemoryAddress.From(...)`. `ScriniaMcpToolsTests.cs:1683` (`Append_TempPath_IsEphemeral_WhetherOrNotTheMemoryExists`) is a known one. This is expected and is not a store-layer regression.
+Add equivalent cases for the CLI (`RefuseEphemeral` refuses and names the canonical form) and REST (`NameRefusal` 400s on `/temp/`) **only if** no such test already exists — check first: `EphemeralAliasRefusalTests.cs` exists in `tests/Scrinia.Server.Tests/` and may already cover REST. Do not duplicate it; reference it from this fixture's doc comment instead.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 2: Run and verify each test fails for the right reason**
 
-```bash
-git add src/Scrinia.Core/MemoryAddress.cs src/Scrinia.Mcp src/Scrinia/Commands src/Scrinia.Server/Chat tests/Scrinia.Tests/Naming
-git commit -m "feat(naming): carry the address rule in a type, not at 19 call sites"
+Run: `dotnet test tests/Scrinia.Tests --filter FullyQualifiedName~AddressSurfaceCoverageTests`
+
+Expected: compile failure on `ReadMemoryForTest` and on the empty `KnownAddressTools`. Fix those, then confirm the round-trip tests **pass** — the behaviour they assert already exists today. This fixture is a net, not a red-green cycle; its value is that it fails when someone later adds a surface and forgets.
+
+- [ ] **Step 3: Prove the net can actually fail**
+
+Temporarily delete the `CanonicalizeEphemeralAlias` call at `MemoryTools.cs:181` and re-run. `McpFacade_TreatsTempPathAsTheEphemeralMemory` must fail. Restore it.
+
+Do the same for `ScriniaMcpResources.cs:39` against the resource test. Restore.
+
+A net that cannot be shown to fail is not a net. Record both observed failures in the task report.
+
+- [ ] **Step 4: Collapse the facade's seven calls**
+
+Add to `ScriniaMcpTools`:
+
+```csharp
+    /// <summary>
+    /// Canonicalizes an address arriving at the MCP facade. One helper rather than
+    /// seven repetitions of the same call — the CLI (RefuseEphemeral) and REST
+    /// (NameRefusal) already have theirs.
+    ///
+    /// The facade canonicalizes and proceeds; the CLI and REST deliberately REFUSE
+    /// instead, because their processes cannot serve an ephemeral memory back. Those
+    /// are three considered policies, not an inconsistency to unify.
+    /// </summary>
+    private static string Address(string raw) => MemoryNaming.CanonicalizeEphemeralAlias(raw);
 ```
 
----
+Replace all seven call sites with `Address(...)`. This is a rename, not a behaviour change.
+
+- [ ] **Step 5: Verify the count**
+
+Run: `git grep -c "CanonicalizeEphemeralAlias" -- src/`
+
+Expected: `MemoryNaming.cs` (the definition), `PathRouter.cs` (a comment), `ScriniaCommands.cs` (the CLI helper), `ScriniaMcpResources.cs`, `AgentLoop.cs`, and `MemoryTools.cs` at **1** rather than 7.
+
+The two single-call surfaces keep their direct call — a one-line helper wrapping a one-line call at one site is indirection without consolidation.
+
+- [ ] **Step 6: Run the full suite and commit**
+
+```bash
+dotnet test Scrinia.sln
+git add src/Scrinia.Mcp tests/Scrinia.Tests/Naming
+git commit -m "refactor(mcp): one address helper at the facade, and a net over all five surfaces"
+```
+
 
 ### Task 6: Unknown enum values and ignored arguments become errors
 
@@ -999,13 +1086,13 @@ public class ToolFamilyConsistencyTests
     [InlineData("verbose")]  // plausible but unsupported
     public async Task List_RejectsAnUnrecognisedMode(string mode)
     {
-        using var ws = TestWorkspace.Create();
-        var response = await ws.Tools.List(scopes: null, mode: mode, offset: 0, limit: 50,
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().List(scopes: null, mode: mode, offset: 0, limit: 50,
             excludeTopics: null, CancellationToken.None);
 
         response.Status.Should().Be("error",
             "falling through to summary reports success for a call that did something else");
-        response.Message.Should().Contain(mode);
+        response.Error.Should().Contain(mode);
     }
 
     [Theory]
@@ -1014,8 +1101,8 @@ public class ToolFamilyConsistencyTests
     [InlineData("drift")]
     public async Task List_StillAcceptsEveryDocumentedMode(string mode)
     {
-        using var ws = TestWorkspace.Create();
-        var response = await ws.Tools.List(scopes: null, mode: mode, offset: 0, limit: 50,
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().List(scopes: null, mode: mode, offset: 0, limit: 50,
             excludeTopics: null, CancellationToken.None);
 
         response.Status.Should().NotBe("error");
@@ -1024,8 +1111,8 @@ public class ToolFamilyConsistencyTests
     [Fact]
     public async Task Reconcile_RejectsAChoiceWithNoConflictId()
     {
-        using var ws = TestWorkspace.Create();
-        var response = await ws.Tools.Reconcile(conflictId: null, choice: "ours",
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().Reconcile(conflictId: null, choice: "ours",
             content: null, CancellationToken.None);
 
         response.Status.Should().Be("error",
@@ -1036,8 +1123,8 @@ public class ToolFamilyConsistencyTests
     [Fact]
     public async Task Reconcile_StillScansWhenNeitherArgumentIsGiven()
     {
-        using var ws = TestWorkspace.Create();
-        var response = await ws.Tools.Reconcile(conflictId: null, choice: null,
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().Reconcile(conflictId: null, choice: null,
             content: null, CancellationToken.None);
 
         response.Status.Should().NotBe("error");
@@ -1045,7 +1132,21 @@ public class ToolFamilyConsistencyTests
 }
 ```
 
-Check `tests/Scrinia.Tests/` for the existing workspace fixture — `TestWorkspace` is a placeholder for whatever the established helper is. Do not add a second fixture.
+**The `Scrinia.Tests` fixture pattern, verified — use exactly this, do not invent a wrapper.** Two cooperating pieces, used throughout `ScriniaMcpToolsTests.cs` and its siblings:
+
+```csharp
+    // Declared once per test class.
+    private static ScriniaMcpTools Tools() => new();
+
+    // Per test, wiring MemoryStoreContext.Current to a throwaway store.
+    using var scope = new TestHelpers.StoreScope();
+```
+
+`TestHelpers.StoreScope` is a nested `internal sealed class ... : IDisposable` (`tests/Scrinia.Tests/TestHelpers.cs:96`), so it is constructed with `new`, not called as a method.
+
+The **internal** methods (`List`, `Recall`, `Forget`, `Reconcile`, …) return `Task<McpResponse>`, so assert on `.Status` / `.Error` directly. The **facade** methods (`MemoryRemember`, `MemoryRecall`, …) return `Task<string>` of rendered YAML; parse those with `ResponseParser.Parse(yaml)` (`TestHelpers.cs:184`), which yields an `McpResponseAssert` exposing `.Status`, `.Content`, `.Info`, `.Error`, `.ActionNeeded` and `.FollowUp`.
+
+Note `McpResponse` has **no** `Message` property — the field carrying an error string is `Error` (`src/Scrinia.Mcp/McpResponse.cs:64`).
 
 - [ ] **Step 2: Run and verify the two rejection tests fail**
 
@@ -1123,40 +1224,40 @@ public class SkillPathRoutingTests
     [Fact]
     public async Task Forget_DeletesASkillThatRecallReturns()
     {
-        using var ws = TestWorkspace.Create();
-        await ws.Tools.Remember(MemoryAddress.From("/skill/temp-helper"),
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(MemoryAddress.From("/skill/temp-helper"),
             content: ["do the thing"], ct: CancellationToken.None);
 
-        var before = await ws.Tools.Recall(MemoryAddress.From("/skill/temp-helper"), CancellationToken.None);
+        var before = await Tools().Recall(MemoryAddress.From("/skill/temp-helper"), CancellationToken.None);
         before.Status.Should().NotBe("error");
 
-        var forget = await ws.Tools.Forget(MemoryAddress.From("/skill/temp-helper"), CancellationToken.None);
+        var forget = await Tools().Forget(MemoryAddress.From("/skill/temp-helper"), CancellationToken.None);
         forget.Status.Should().NotBe("error",
             "a namespace remember and recall both route must not answer NOT_FOUND on forget");
 
-        var after = await ws.Tools.Recall(MemoryAddress.From("/skill/temp-helper"), CancellationToken.None);
+        var after = await Tools().Recall(MemoryAddress.From("/skill/temp-helper"), CancellationToken.None);
         after.Status.Should().Be("error");
     }
 
     [Fact]
     public async Task Forget_OnABuiltInSkill_SaysSoRatherThanNotFound()
     {
-        using var ws = TestWorkspace.Create();
+        using var scope = new TestHelpers.StoreScope();
         string builtIn = BuiltInSkills.Keys.First();
 
-        var response = await ws.Tools.Forget(MemoryAddress.From($"/skill/{builtIn}"), CancellationToken.None);
+        var response = await Tools().Forget(MemoryAddress.From($"/skill/{builtIn}"), CancellationToken.None);
 
         response.Status.Should().Be("error");
-        response.Message.Should().Contain("built-in",
+        response.Error.Should().Contain("built-in",
             "NOT_FOUND is a false statement about a skill that demonstrably exists");
     }
 
     [Fact]
     public async Task Remember_OnASkillPath_WarnsThatAttributesAndKeywordsAreIgnored()
     {
-        using var ws = TestWorkspace.Create();
+        using var scope = new TestHelpers.StoreScope();
 
-        var response = await ws.Tools.Remember(
+        var response = await Tools().Remember(
             MemoryAddress.From("/skill/noted"),
             content: ["instructions"],
             attributes: new Dictionary<string, string[]> { ["topic"] = ["x"] },
@@ -1171,9 +1272,9 @@ public class SkillPathRoutingTests
     [Fact]
     public async Task Remember_OnASkillPath_WithoutThoseArguments_DoesNotWarn()
     {
-        using var ws = TestWorkspace.Create();
+        using var scope = new TestHelpers.StoreScope();
 
-        var response = await ws.Tools.Remember(MemoryAddress.From("/skill/quiet"),
+        var response = await Tools().Remember(MemoryAddress.From("/skill/quiet"),
             content: ["instructions"], ct: CancellationToken.None);
 
         response.ToYaml().Should().NotContain("ignored",
@@ -1233,7 +1334,7 @@ git commit -m "fix(mcp): make /skill/ readable, writable and deletable through o
 - Modify: `CHANGELOG.md`
 - Test: `tests/Scrinia.Tests/Mcp/RestoreEnvelopeTests.cs`
 
-**Context:** `guide` concatenates `ctx.ContentSections` into `info:` (`MemoryTools.cs:80`); `restore` returns the same sections as the `content:` body. The skills list therefore arrives under a different field depending on which tool produced it. **This is a breaking change to `restore`'s response shape.**
+**Context:** `guide` concatenates `ctx.ContentSections` into `info:` (`MemoryTools.cs:79`); `restore` returns the same sections as the `content:` body. The skills list therefore arrives under a different field depending on which tool produced it. **This is a breaking change to `restore`'s response shape.**
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1246,12 +1347,12 @@ public class RestoreEnvelopeTests
     [Fact]
     public async Task GuideAndRestore_PutTheRestoreContextInTheSameField()
     {
-        using var ws = TestWorkspace.Create();
-        await ws.Tools.Remember(MemoryAddress.From("/skill/probe"),
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(MemoryAddress.From("/skill/probe"),
             content: ["x"], ct: CancellationToken.None);
 
-        var guide = await ws.Tools.Guide(CancellationToken.None);
-        var restore = await ws.Tools.Restore(CancellationToken.None);
+        var guide = await Tools().Guide(CancellationToken.None);
+        var restore = await Tools().Restore(CancellationToken.None);
 
         // The skills list is the payload that visibly swapped fields.
         ExtractInfo(guide).Should().ContainMatch("*Skills available*");
@@ -1262,8 +1363,8 @@ public class RestoreEnvelopeTests
     [Fact]
     public async Task Guide_KeepsTheGuideDocumentAsItsContent()
     {
-        using var ws = TestWorkspace.Create();
-        var guide = await ws.Tools.Guide(CancellationToken.None);
+        using var scope = new TestHelpers.StoreScope();
+        var guide = await Tools().Guide(CancellationToken.None);
 
         // Guarded because the fix must not move the guide text out of content: in
         // the course of aligning the sections.
@@ -1273,8 +1374,8 @@ public class RestoreEnvelopeTests
     [Fact]
     public async Task Restore_ContentIsASummaryLine_NotTheSections()
     {
-        using var ws = TestWorkspace.Create();
-        var restore = await ws.Tools.Restore(CancellationToken.None);
+        using var scope = new TestHelpers.StoreScope();
+        var restore = await Tools().Restore(CancellationToken.None);
 
         ExtractContent(restore).Should().NotContain("Skills available");
     }
@@ -1349,7 +1450,7 @@ public class SearchParameterShapeTests
     [Fact]
     public void SearchTool_TakesScopesAndExcludeTopicsAsArrays()
     {
-        var search = typeof(MemoryTools).GetMethods()
+        var search = typeof(ScriniaMcpTools).GetMethods()
             .Single(m => m.GetCustomAttributes()
                 .Any(a => a.GetType().Name == "McpServerToolAttribute"
                           && (string?)a.GetType().GetProperty("Name")?.GetValue(a) == "search"));
@@ -1364,8 +1465,8 @@ public class SearchParameterShapeTests
     public async Task AScopeNameContainingAComma_IsAddressable()
     {
         // The concrete capability the comma-string encoding cannot express.
-        using var ws = TestWorkspace.Create();
-        var response = await ws.Tools.Search(query: "x", scopes: ["odd,name"],
+        using var scope = new TestHelpers.StoreScope();
+        var response = await Tools().Search(query: "x", scopes: ["odd,name"],
             excludeTopics: null, ct: CancellationToken.None);
 
         response.Status.Should().NotBe("error");
@@ -1400,367 +1501,29 @@ git commit -m "fix(mcp)!: scopes and excludeTopics are arrays, matching attribut
 
 ---
 
-# Part C — Plugin contract inversion (M3)
+# Closing out
 
-### Task 10: Reverse the project reference, move nothing
-
-**Files:**
-- Modify: `src/Scrinia.Plugin.Abstractions/Scrinia.Plugin.Abstractions.csproj`, `src/Scrinia.Core/Scrinia.Core.csproj`
-- Create: `src/Scrinia.Plugin.Abstractions/IPluginStore.cs`
-
-**Context:** A reversed `ProjectReference` is a build-graph change. It either works or fails at restore. Establishing that first means the type moves in Task 11 cannot be confused with a graph problem.
-
-This task will not compile on its own if anything in Abstractions references a Core type — and it does: `HookContexts.cs` opens with `using Scrinia.Core;`. So this task moves exactly the minimum needed to break the cycle, and nothing else.
-
-- [ ] **Step 1: Add `IPluginStore`**
-
-```csharp
-// src/Scrinia.Plugin.Abstractions/IPluginStore.cs
-namespace Scrinia.Plugin.Abstractions;
-
-/// <summary>
-/// The store surface handed to plugins. Deliberately minimal: it carries the two
-/// members the plugin-shaped sinks actually use, so that pinning this assembly's
-/// AssemblyVersion is a promise the codebase can keep. Grow it only when a real
-/// consumer needs a member — a wide contract here is the defect this split exists
-/// to remove, not a convenience.
-/// </summary>
-public interface IPluginStore
-{
-    (string Scope, string Subject) ParseQualifiedName(string qualifiedName);
-
-    List<ScopedArtifact> ListScoped(string? scopes = null);
-}
-```
-
-`ParseQualifiedName`'s exact return shape must be copied from `IMemoryStore`'s declaration — read it rather than assuming the tuple names above.
-
-- [ ] **Step 2: Move the DTOs `IPluginStore` exposes**
-
-`git mv` these from `src/Scrinia.Core/Models/` into `src/Scrinia.Plugin.Abstractions/`: `ArtifactEntry.cs`, `ChunkEntry.cs`, `ScopedArtifact.cs`. Change their namespace to `Scrinia.Plugin.Abstractions`.
-
-Every Core file referencing them will now fail. Rather than editing hundreds of files, add a global using in Core:
-
-```xml
-  <ItemGroup>
-    <Using Include="Scrinia.Plugin.Abstractions" />
-  </ItemGroup>
-```
-
-- [ ] **Step 3: Reverse the reference**
-
-Remove `<ProjectReference Include="..\Scrinia.Core\Scrinia.Core.csproj" />` from `Scrinia.Plugin.Abstractions.csproj`. Add `<ProjectReference Include="..\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj" />` to `Scrinia.Core.csproj`.
-
-`HookContexts.cs` still has `required IMemoryStore Store` and will not compile. Change those six members to `IPluginStore` now — measured: no implementation reads `ctx.Store`, so nothing downstream breaks.
-
-- [ ] **Step 4: Declare the inheritance**
-
-In `IMemoryStore.cs`, change the declaration to `public interface IMemoryStore : IPluginStore` and delete the two member declarations now inherited. Their doc comments move to `IPluginStore` rather than being lost.
-
-- [ ] **Step 5: Build and verify the graph**
-
-Run: `dotnet build Scrinia.sln`
-Expected: 0 errors. A cycle would surface here as NU1108 or a restore failure. If it does, stop and report — that is a structural finding, not a fix-it-locally problem.
-
-- [ ] **Step 6: Run the full suite and commit**
-
-```bash
-dotnet test Scrinia.sln
-git add -A src/Scrinia.Core src/Scrinia.Plugin.Abstractions
-git commit -m "refactor(plugins): put the contract assembly at the bottom of the graph"
-```
-
----
-
-### Task 11: Split the sink interface, and re-establish the exclusion rule
+### Task 10: Close the branch
 
 **Files:**
-- Move: `src/Scrinia.Core/IMemoryEventSink.cs` → `src/Scrinia.Plugin.Abstractions/IMemoryEventSink.cs` (interface only)
-- Create: `src/Scrinia.Core/ICoreEventSink.cs`, `src/Scrinia.Core/PluginSinkAdapter.cs`
-- Modify: `src/Scrinia.Core/CompositeEventSink.cs`, `MaintenanceEventSink.cs`, `EntityTypingEventHandler.cs`, `Embeddings/EmbeddingReindexer.cs`, `src/Scrinia/Services/McpPluginHost.cs`, `src/Scrinia.Server/Services/EventSinkOperationHook.cs`, `BuiltInEmbeddingsService.cs`, `src/Scrinia.Plugin.Embeddings/EmbeddingsPlugin.cs`
-- Test: `tests/Scrinia.Tests/Plugins/SinkBoundaryTests.cs`
-
-**Interfaces:**
-- Produces: `IMemoryEventSink` (Abstractions) taking `IPluginStore`; `ICoreEventSink` (Core) taking `IMemoryStore`; `PluginSinkAdapter : ICoreEventSink`.
-
-**Context — read before writing code.** `EventSinkOperationHook.cs:50` reads:
-
-```csharp
-_sinks = new CompositeEventSink([.. sinks.Where(s => s is not IMemoryOperationHook)]);
-```
-
-That filter stops a component implementing both `IMemoryEventSink` and `IMemoryOperationHook` from firing twice — `BuiltInEmbeddingsService` is exactly that, registered as both at `Program.cs:175-178`. It is a **type test on the sink instance**. Wrapping a plugin sink in `PluginSinkAdapter` makes the test inspect the *adapter*, which is not an `IMemoryOperationHook`, so a plugin implementing both would pass the filter and embed every write twice. **Filter before wrapping, never after.**
-
-Second: the recorded safety argument for that filter was "`Scrinia.Core.csproj` has no `ProjectReference`, so the two Core sinks cannot gain `IMemoryOperationHook`; residual risk is plugin-only." Task 10 added that reference. The argument no longer holds and the doc comment stating it must be corrected in this task.
-
-- [ ] **Step 1: Write the failing tests**
-
-```csharp
-// tests/Scrinia.Tests/Plugins/SinkBoundaryTests.cs
-namespace Scrinia.Tests.Plugins;
-
-public class SinkBoundaryTests
-{
-    private sealed class DualSink : IMemoryEventSink, IMemoryOperationHook
-    {
-        public int SinkCalls;
-        public int Order => 0;
-        public Task OnStoredAsync(string q, string[] c, IPluginStore s, CancellationToken ct)
-        { SinkCalls++; return Task.CompletedTask; }
-        // remaining members: no-ops
-    }
-
-    [Fact]
-    public void AdapterWrappedDualImplementer_IsStillExcluded()
-    {
-        // The regression this test exists for: the exclusion is a type test on the
-        // instance, and an adapter hides the wrapped type from it.
-        var dual = new DualSink();
-
-        var fired = EventSinkOperationHook.SelectSinks([dual]);
-
-        fired.Should().BeEmpty(
-            "a component registered as both hook and sink must fire once, via the hook path");
-    }
-
-    [Fact]
-    public void APlainPluginSink_IsAdaptedAndFires()
-    {
-        var plain = new PlainSink();
-
-        var fired = EventSinkOperationHook.SelectSinks([plain]);
-
-        fired.Should().HaveCount(1, "the exclusion must not swallow ordinary plugin sinks");
-    }
-
-    [Fact]
-    public async Task PluginSinkAdapter_PreservesPerSinkExceptionIsolation()
-    {
-        // CompositeEventSink's per-sink try/catch is load-bearing: a throwing sink
-        // must not abort later sinks or fail a write that already succeeded.
-        var throwing = new ThrowingSink();
-        var after = new PlainSink();
-        var composite = new CompositeEventSink([new PluginSinkAdapter(throwing), new PluginSinkAdapter(after)]);
-
-        var act = async () => await composite.OnStoredAsync("local:x", ["c"], FakeStore.Instance, default);
-
-        await act.Should().NotThrowAsync();
-        after.Fired.Should().BeTrue();
-    }
-}
-```
-
-`EventSinkOperationHook.SelectSinks` does not exist — extract the filtering expression at `:50` into an internal static method so it can be tested directly rather than only through a running server.
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `dotnet test tests/Scrinia.Tests --filter FullyQualifiedName~SinkBoundaryTests`
-Expected: FAIL to compile — the new types do not exist.
-
-- [ ] **Step 3: Split the interface**
-
-`IMemoryEventSink` moves to Abstractions with its three methods taking `IPluginStore`. `MemoryEventSinkContext`, `CompositeEventSink` and `InstallDefault` stay in Core and work in terms of a new `ICoreEventSink` with the same three methods taking `IMemoryStore`.
-
-- [ ] **Step 4: Assign every existing implementation to a side**
-
-Enumerate with `git grep -l "IMemoryEventSink" -- src/` and classify each — this is a required complete table, not a spot check. Expected assignment from the measured usage:
-
-| Implementation | Side | Why |
-|---|---|---|
-| `EmbeddingsPlugin` | `IMemoryEventSink` | Uses `ParseQualifiedName`, `ListScoped` only |
-| `BuiltInEmbeddingsService` | `IMemoryEventSink` | Same two members |
-| `EmbeddingReindexer` | `ICoreEventSink` | Core-internal |
-| `McpPluginHost` | `ICoreEventSink` | Needs `ReadArtifactAsync` |
-| `MaintenanceEventSink` | `ICoreEventSink` | Needs `AnyScoped`, `LoadIndex`, `TryUpdateEntry` |
-| `EntityTypingEventHandler` | `ICoreEventSink` | Needs `GetEntityFactStore` |
-
-A wrong assignment is a compile error, because the store parameter types differ.
-
-- [ ] **Step 5: Write the adapter, and filter before wrapping**
-
-```csharp
-// src/Scrinia.Core/PluginSinkAdapter.cs
-namespace Scrinia.Core;
-
-/// <summary>
-/// Presents a plugin's <see cref="IMemoryEventSink"/> as an <see cref="ICoreEventSink"/>
-/// so the fan-out stays a single ordered list. The conversion is a pass-through:
-/// IMemoryStore already satisfies IPluginStore.
-/// </summary>
-/// <remarks>
-/// CALLERS MUST APPLY ANY TYPE-BASED FILTERING TO THE WRAPPED SINK, NOT THE ADAPTER.
-/// EventSinkOperationHook excludes sinks that also implement IMemoryOperationHook so a
-/// dual-registered component fires once; that test inspects the instance, and this
-/// adapter is not an IMemoryOperationHook regardless of what it wraps.
-/// </remarks>
-public sealed class PluginSinkAdapter(IMemoryEventSink inner) : ICoreEventSink
-{
-    internal IMemoryEventSink Inner => inner;
-
-    public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct) =>
-        inner.OnStoredAsync(qualifiedName, content, store, ct);
-
-    // OnAppendedAsync, OnForgottenAsync: same shape
-}
-```
-
-In `EventSinkOperationHook`, extract and correct the selection:
-
-```csharp
-    internal static ICoreEventSink[] SelectSinks(IEnumerable<IMemoryEventSink> sinks) =>
-        [.. sinks.Where(s => s is not IMemoryOperationHook).Select(s => new PluginSinkAdapter(s))];
-```
-
-- [ ] **Step 6: Update every registration site**
-
-The split changes what `GetServices<IMemoryEventSink>()` returns — it now yields plugin-shaped sinks only. Every registration and resolution site must be visited. This is the complete list, enumerated with `git grep -n "AddSingleton<IMemoryEventSink>\|GetServices<IMemoryEventSink>\|InstallDefault" -- src/`; re-run it after the edits and expect no site to have been missed:
-
-| Site | Change |
-|---|---|
-| `Program.cs:101` — `MaintenanceEventSink` | Register as `ICoreEventSink` |
-| `Program.cs:107` — `new EventSinkOperationHook(GetServices<IMemoryEventSink>())` | Pass **both** collections; see below |
-| `Program.cs:173`, `:184` — `BuiltInEmbeddingsService` | Stays `IMemoryEventSink` |
-| `Program.cs:348` — per-request `[.. GetServices<IMemoryEventSink>()]` | Must resolve both and combine, or the CLI-parity sink set silently shrinks |
-| `EmbeddingsPlugin.cs:117` — `services.AddSingleton<IMemoryEventSink>(this)` | Stays |
-| `WorkspaceSetup.cs` — eight `InstallDefault` call sites (`:240, :400, :417, :426, :446, :463, :472, :528`) | `InstallDefault` takes `params ICoreEventSink[]`. `MaintenanceEventSink` and `McpPluginHost` are both `ICoreEventSink`, so most sites compile unchanged. Any site passing a plugin-shaped sink must wrap it: `new PluginSinkAdapter(sink)` |
-
-`EventSinkOperationHook` needs both kinds, and the exclusion applies to both — Task 10's reference reversal means a Core sink can now implement `IMemoryOperationHook` too:
-
-```csharp
-    internal static ICoreEventSink[] SelectSinks(
-        IEnumerable<IMemoryEventSink> pluginSinks,
-        IEnumerable<ICoreEventSink> coreSinks) =>
-    [
-        // Filter BEFORE wrapping: the exclusion is a type test on the instance, and
-        // PluginSinkAdapter is never an IMemoryOperationHook whatever it wraps.
-        .. pluginSinks.Where(s => s is not IMemoryOperationHook).Select(s => new PluginSinkAdapter(s)),
-        .. coreSinks.Where(s => s is not IMemoryOperationHook),
-    ];
-```
-
-`Program.cs:348` is the easiest of these to miss and the most consequential: it builds the per-request sink set for the server's MCP endpoint. Dropping the Core sinks there would silently disable ref-linking and orphan marking for every MCP write against the server, with no test failure unless one specifically drains `BackgroundWork` and asserts the side effect.
-
-- [ ] **Step 7: Correct the stale safety argument**
-
-`EventSinkOperationHook`'s doc comment records that Core sinks cannot gain `IMemoryOperationHook` because Core has no `ProjectReference`. Task 10 made that false. Replace it with the current position: Core now references Abstractions, so a Core sink *could* implement the hook interface; the filter therefore covers Core as well as plugins, and the `SelectSinks` test is what pins it.
-
-- [ ] **Step 8: Run and verify the tests pass, then the full suite**
-
-Run: `dotnet test Scrinia.sln`
-Expected: green. Pay attention to any REST/MCP parity test — those await `BackgroundWork.DrainAsync`, and a change in fan-out timing shows up there first. If ref-linking or orphan-marking assertions fail, suspect `Program.cs:348` before anything else.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add -A src tests
-git commit -m "refactor(plugins): split the sink contract by audience, not by convenience"
-```
-
----
-
-### Task 12: Pin the contract, prove it stands alone
-
-**Files:**
-- Modify: `src/Scrinia.Plugin.Abstractions/Scrinia.Plugin.Abstractions.csproj`
-- Create: `tests/Scrinia.Plugin.Abstractions.Tests/` (new project) with `ContractSelfSufficiencyTests.cs`
-- Modify: `Scrinia.sln`, `CHANGELOG.md`, `docs/architecture/overview.md`
-
-**Context:** The claim M3 exists to make true is "a third party can compile a plugin against `Scrinia.Plugin.Abstractions` alone." A test project that references only Abstractions turns that claim into a build-time fact.
-
-- [ ] **Step 1: Create the test project**
-
-A new xUnit project referencing **only** `Scrinia.Plugin.Abstractions` — no `Scrinia.Core`, no `Scrinia.Server`. Add it to `Scrinia.sln`. Per `Directory.Build.props`, a `.Tests` project opts out of `TreatWarningsAsErrors` automatically.
-
-- [ ] **Step 2: Write the self-sufficiency test**
-
-```csharp
-// tests/Scrinia.Plugin.Abstractions.Tests/ContractSelfSufficiencyTests.cs
-namespace Scrinia.Plugin.Abstractions.Tests;
-
-/// <summary>
-/// The assertion M3 exists to make true, pinned by a compilation boundary rather than
-/// by inspection: this project references Scrinia.Plugin.Abstractions and nothing else,
-/// so if the contract ever needs a Core type again, this file stops compiling.
-/// </summary>
-public class ContractSelfSufficiencyTests
-{
-    private sealed class ThirdPartySink : IMemoryEventSink
-    {
-        public Task OnStoredAsync(string q, string[] c, IPluginStore s, CancellationToken ct)
-            => Task.CompletedTask;
-        // remaining members: no-ops
-    }
-
-    [Fact]
-    public void APluginCanImplementTheContractWithoutReferencingCore()
-    {
-        IMemoryEventSink sink = new ThirdPartySink();
-        sink.Should().NotBeNull();
-    }
-
-    [Fact]
-    public void IPluginStore_StaysNarrow()
-    {
-        // A guard on the promise the pinned AssemblyVersion makes. Widening this is a
-        // deliberate act; it should require editing this number and thinking about it.
-        typeof(IPluginStore).GetMembers().Should().HaveCount(2);
-    }
-}
-```
-
-- [ ] **Step 3: Run and verify it compiles and passes**
-
-Run: `dotnet test tests/Scrinia.Plugin.Abstractions.Tests`
-Expected: PASS. A compile error here naming a Core type is the finding, not an obstacle to route around by adding a reference.
-
-- [ ] **Step 4: Pin the assembly version**
-
-```xml
-    <!--
-      The plugin contract's own version line. Deliberately NOT inherited from
-      Directory.Build.props: a routine product release must not rebind every
-      third-party plugin. Bump only when this assembly's surface changes, and
-      say so in CHANGELOG.
-    -->
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
-```
-
-- [ ] **Step 5: Verify the product version still flows everywhere else**
-
-Run: `dotnet build Scrinia.sln` then check the CLI banner reports `0.5.0`.
-Expected: unchanged. `AssemblyInformationalVersion` still comes from `Directory.Build.props`.
-
-- [ ] **Step 6: Document and commit**
-
-Update `docs/architecture/overview.md` where it describes the plugin contract, and add a `CHANGELOG.md` entry recording that `Scrinia.Plugin.Abstractions` now carries its own `AssemblyVersion` and that hook contexts hand plugins `IPluginStore` rather than `IMemoryStore` (breaking for any plugin that used the wider surface).
-
-```bash
-dotnet test Scrinia.sln
-git add -A
-git commit -m "feat(plugins)!: pin the contract assembly's version and prove it stands alone"
-```
-
----
-
-### Task 13: Close the branch
-
-**Files:**
-- Modify: `CHANGELOG.md`, `docs/architecture/overview.md`, `README.md` if it documents any changed tool parameter
+- Modify: `CHANGELOG.md`, `docs/architecture/overview.md`
 
 - [ ] **Step 1: Verify every break is recorded**
 
-Run: `git log --oneline main..HEAD | grep '!'`
-Cross-check each `!`-marked commit against `CHANGELOG.md`. Expected breaking entries: `restore` envelope, `search`/`list` array parameters, `IPluginStore` in hook contexts, pinned `AssemblyVersion`.
+Run: `git log --oneline main..HEAD`
+Cross-check each `!`-marked commit against `CHANGELOG.md`. Expected breaking entries: `restore`'s envelope, and `search`/`list` taking arrays.
 
-- [ ] **Step 2: Verify the three surfaces' claims**
-
-Run each and confirm:
+- [ ] **Step 2: Verify the two surface guarantees**
 
 ```bash
-git grep -n "HasPermission" -- src/Scrinia.Server/Endpoints/   # expect none, or documented exceptions
-git grep -c "CanonicalizeEphemeralAlias" -- src/                # expect definition + MemoryAddress.From only
-git grep -n "ProjectReference" -- src/Scrinia.Plugin.Abstractions/  # expect none
+git grep -n "HasPermission" -- src/Scrinia.Server/Endpoints/
 ```
+Expect only `KeyEndpoints.cs:52` — the privilege-escalation check on the request body, which is not route gating. Anything else is a guard the metadata migration missed.
+
+```bash
+git grep -c "CanonicalizeEphemeralAlias" -- src/
+```
+Expect `MemoryNaming.cs` (definition), `PathRouter.cs` (comment), `ScriniaCommands.cs` (CLI helper), `ScriniaMcpResources.cs`, `AgentLoop.cs`, and `MemoryTools.cs` at **1**.
 
 - [ ] **Step 3: Full suite**
 
@@ -1774,3 +1537,45 @@ git add -A
 git commit -m "docs: record branch 6's breaking changes and surface guarantees"
 ```
 
+---
+
+# Part C (M3) — split into its own branch
+
+Part C originally lived here and was removed after the pre-implementation
+falsification pass found it structurally blocked. **Do not implement M3 from this
+plan.** What was learned is recorded in the Scrinia memory
+`/findings/plugin-contract-inversion-blockers` and summarised here so the next
+branch starts from evidence rather than from the original review finding:
+
+1. **`IPluginStore` cannot be two members.** Both plugin-shaped sinks route append
+   through `MemoryArtifactSource.ReadForAppendAsync` (`:93-101`), which needs
+   `ParseQualifiedName`, `IsEphemeral`, `ResolveArtifactAsync` and
+   `ReadArtifactAsync`. `ListScoped` is not used by the sink contract at all — only
+   by `ReindexStoreAsync`, which is `IEmbeddingsAdmin`. A five-member interface
+   weakens, though does not destroy, the rationale for pinning the assembly version.
+
+2. **There are seven `IMemoryEventSink` implementations, not six.**
+   `CoreEmbeddingEventHandler` (`src/Scrinia/Services/CoreEmbeddingEventHandler.cs:17`)
+   was missed, and needs the same four members.
+
+3. **The reversal drags ASP.NET Core into the trimmed CLI publish.**
+   `Scrinia.Plugin.Abstractions` carries
+   `<FrameworkReference Include="Microsoft.AspNetCore.App" />` because
+   `IScriniaPlugin` takes `IApplicationBuilder` and `IEndpointRouteBuilder`.
+   `FrameworkReference` is transitive across `ProjectReference`, so making
+   `Scrinia.Core` depend on Abstractions puts the ASP.NET shared framework into
+   `src/Scrinia`, which publishes `--self-contained -p:PublishTrimmed=true` with
+   `IsTrimmable` (`publish.ps1:35`, `Scrinia.csproj:12`). This most likely means
+   splitting Abstractions into an ASP.NET-free contract assembly and a hosting
+   assembly — a design question, not a plan correction.
+
+4. **The build-graph flip itself is clean.** Verified: no cycle is possible, the
+   three DTOs are self-contained, no `[JsonSerializable]` or `Type.GetType` names
+   them so the move is serialization-inert, and `_legacyFields` touches no
+   `InternalsVisibleTo`. The blocker is the contract and the framework reference,
+   not the graph.
+
+5. **106 files outside `Scrinia.Core`** reference the three DTOs and would need
+   either `<Using Include="Scrinia.Plugin.Abstractions" />` in ~11 csprojs or 106
+   file edits. They all import `Scrinia.Core.Models`, which survives the move, so
+   there is no compiler hint — just CS0246 on the type name.
