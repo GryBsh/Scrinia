@@ -612,6 +612,16 @@ public sealed partial class ScriniaMcpTools
         // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
 
+        if (!string.Equals(mode, "summary", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                $"unknown mode '{mode}'. Use 'summary', 'full', or 'drift'.",
+                ErrorCodes.InvalidParameter,
+                "list({ mode: 'full' })"));
+        }
+
         // Only this branch is refused: drift detection re-hashes files on disk, so it needs the
         // workspace. The guard sits here rather than at the method entry so a remote list() in
         // any other mode still returns its listing.

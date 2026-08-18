@@ -79,6 +79,13 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.NotSupported,
                 "Resolve merge conflicts in the workspace checkout, then retry there."));
 
+        if (conflictId is null && !string.IsNullOrWhiteSpace(choice))
+            return Task.FromResult(ResponseBuilder.Error(
+                "'choice' requires 'conflictId' — without one there is no conflict to resolve, "
+                + "and the call would silently perform a read-only scan instead.",
+                ErrorCodes.InvalidParameter,
+                "reconcile({ conflictId: '<path>', choice: 'ours' }) or reconcile({}) to scan"));
+
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
 
         return conflictId is not null
