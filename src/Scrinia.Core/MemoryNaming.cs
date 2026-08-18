@@ -72,21 +72,25 @@ public static class MemoryNaming
 
     /// <summary>
     /// Splits a legacy comma-separated filter string (e.g. a <c>scopes</c> or
-    /// <c>excludeTopics</c> argument) into a list, trimming each entry and dropping empty ones.
+    /// <c>excludeTopics</c> argument) into an array, trimming each entry and dropping empty ones.
     /// Returns null for null or whitespace-only input — the same "no filter" meaning null has
     /// always carried on these parameters (Task 9, D-4: an empty result behaves as null too, so
-    /// callers should not special-case it).
+    /// callers should not special-case it). Returns a concrete <c>string[]?</c> rather than
+    /// <c>IReadOnlyList&lt;string&gt;?</c> so it can feed either shape directly: the Core
+    /// contract's list-typed members, and the MCP facade/CLI-internal handlers this task also
+    /// types as <c>string[]?</c> (D-1).
     ///
     /// <para>This is the one place that turns a comma string into a list; it does not construct
     /// or validate scope names itself — each element still goes through the store's own
     /// <c>NormalizeScopeFilters</c> or <see cref="TryBuildScopedTopicScope"/> downstream. It
-    /// exists for two kinds of caller: the CLI, which keeps comma-separated arguments on purpose
-    /// (Task 9, D-3 — command-line arguments are strings, and forcing repeated flags would be a
-    /// worse CLI for no gain), and the REST <c>/memories</c> listing endpoint's <c>scopes</c>
-    /// query parameter, which this task does not convert to repeated params (only <c>/search</c>
-    /// is — Task 9, D-2).</para>
+    /// exists for two kinds of caller, both permanent: the CLI, which keeps comma-separated
+    /// arguments on purpose (Task 9, D-3 — command-line arguments are strings, and forcing
+    /// repeated flags would be a worse CLI for no gain — a scope name containing a comma is
+    /// therefore unaddressable from the CLI, and that is accepted), and the REST
+    /// <c>/memories</c> listing endpoint's <c>scopes</c> query parameter, which this task does
+    /// not convert to repeated params (only <c>/search</c> is — Task 9, D-2).</para>
     /// </summary>
-    public static IReadOnlyList<string>? SplitCommaSeparated(string? value) =>
+    public static string[]? SplitCommaSeparated(string? value) =>
         string.IsNullOrWhiteSpace(value)
             ? null
             : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

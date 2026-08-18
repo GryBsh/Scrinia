@@ -237,9 +237,9 @@ public sealed partial class ScriniaMcpTools
     public async Task<string> MemorySearch(
         [Description("Search query string.")] string query,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when you know synonyms or related concepts the user didn't type.")] string? context = null,
-        [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'.")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("Maximum results to return (default 20). Rich-result format is verbose, so prefer 10 for broad exploratory queries.")] int limit = 20,
-        [Description("Optional comma-separated topic names to exclude from results.")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude from results. An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         [Description("Optional path prefix to scope results, e.g. '/findings/' or '/skill/'. Matches the qualified memory name.")] string? pathPrefix = null,
         [Description("Optional attribute filter — a map of key to values. Returns only memories whose attributes " +
                      "contain EVERY listed key; for a key with values, the memory must carry at least one of them. " +
@@ -260,11 +260,11 @@ public sealed partial class ScriniaMcpTools
         "List stored memories. mode 'summary' (default) shows scopes + top keywords and attributes; " +
         "'full' paginates the table; 'drift' surfaces memories whose file attributes have changed.")]
     public async Task<string> MemoryList(
-        [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'. Topic names filter to local topics.")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. Topic names filter to local topics. An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("'summary' (default), 'full' for a paginated table, 'drift' for a code-reference drift check.")] string mode = "summary",
         [Description("Starting index for full mode (0-based).")] int offset = 0,
         [Description("Maximum entries to return in full mode (default 50).")] int limit = 50,
-        [Description("Optional comma-separated topic names to exclude (e.g. 'plan,task,project,learn' to hide planning namespaces).")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude (e.g. ['plan', 'task', 'project', 'learn'] to hide planning namespaces). An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
         return (await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken)).ToYaml();

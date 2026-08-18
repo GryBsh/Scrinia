@@ -598,13 +598,15 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Returns a summary or full listing of persisted memories.</summary>
     internal Task<McpResponse> List(
-        [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
-                     "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. " +
+                     "Topic names filter to local topics (e.g. 'api' shows api topic entries). " +
+                     "An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("'summary' (default), 'full' for paginated table, 'drift' for code reference drift check.")] string mode = "summary",
         [Description("Starting index for full mode (0-based). Ignored in summary mode.")] int offset = 0,
         [Description("Maximum entries to return in full mode (default 50). Ignored in summary mode.")] int limit = 50,
-        [Description("Optional comma-separated topic names to exclude from results. " +
-                     "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude from results. " +
+                     "Use ['plan', 'task', 'project', 'learn'] to hide planning namespaces from knowledge listings. " +
+                     "An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
         // The whole store, not a narrowed one: only the drift branch is unconditionally local.
@@ -642,11 +644,7 @@ public sealed partial class ScriniaMcpTools
             return BuildDriftList(driftStore);
         }
 
-        // scopes/excludeTopics are still comma-strings here (Task 9 commit 3 converts this
-        // facade to string[]?); split at this call site for now, matching the Core contract
-        // this task already typed as a list.
-        List<ScopedArtifact> entries = store.ListScoped(
-            MemoryNaming.SplitCommaSeparated(scopes), MemoryNaming.SplitCommaSeparated(excludeTopics));
+        List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
             return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed"));
 
@@ -876,27 +874,26 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Search memories across local and topic scopes using a query.</summary>
     internal async Task<McpResponse> Search(
         [Description("Search term matched against memory names and descriptions.")] string query,
-        [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
-                     "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
+        [Description("Optional scope order, e.g. ['local', 'api', 'ephemeral']. " +
+                     "Topic names filter to local topics (e.g. 'api' shows api topic entries). " +
+                     "An empty array behaves the same as omitting it.")] string[]? scopes = null,
         [Description("Maximum results to return.")] int limit = 20,
-        [Description("Optional comma-separated topic names to exclude from results. " +
-                     "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
+        [Description("Optional topic names to exclude from results. " +
+                     "Use ['plan', 'task', 'project', 'learn'] to hide planning namespaces from knowledge searches. " +
+                     "An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when the agent knows synonyms or related concepts.")] string? context = null,
         [Description("Optional path prefix to scope results, e.g. '/findings/'.")] string? pathPrefix = null,
         [Description("Optional attribute filter (map key→values); AND across keys, OR within a key's values.")] IReadOnlyDictionary<string, string[]>? attributeFilter = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
-        // scopes/excludeTopics are still comma-strings here (Task 9 commit 3 converts this
-        // facade to string[]?); split at this call site for now, matching the Core contract
-        // this task already typed as a list.
         var outcome = await SearchPipeline.ExecuteAsync(
             store,
             new SearchQuery(query)
             {
-                Scopes = MemoryNaming.SplitCommaSeparated(scopes),
+                Scopes = scopes,
                 Limit = limit,
-                ExcludeTopics = MemoryNaming.SplitCommaSeparated(excludeTopics),
+                ExcludeTopics = excludeTopics,
                 PathPrefix = pathPrefix,
                 AttributeFilter = attributeFilter,
             },

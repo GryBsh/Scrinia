@@ -22,7 +22,9 @@ public partial class ScriniaCommands
 {
     /// <summary>List stored memories.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral).</param>
+    /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral). A scope
+    /// name containing a comma cannot be addressed this way; use the MCP `list` tool instead,
+    /// which takes scopes as a real array.</param>
     /// <param name="summary">Show summary (topics, keywords, stats) instead of full table.</param>
     /// <param name="offset">Starting index for paginated output (0-based).</param>
     /// <param name="limit">Maximum entries to show (0 = unlimited).</param>
@@ -213,10 +215,13 @@ public partial class ScriniaCommands
     /// <summary>Search memories.</summary>
     /// <param name="query">Search term to match against memory names and descriptions.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
+    /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral). A scope
+    /// name containing a comma cannot be addressed this way; use the MCP `search` tool instead,
+    /// which takes scopes as a real array.</param>
     /// <param name="limit">Maximum results to return.</param>
     /// <param name="context">Context terms appended to the query for scoring only — bridges vocabulary mismatches.</param>
-    /// <param name="excludeTopics">Comma-separated topic names to exclude from results.</param>
+    /// <param name="excludeTopics">Comma-separated topic names to exclude from results. A topic
+    /// name containing a comma cannot be addressed this way; use the MCP `search` tool instead.</param>
     /// <param name="pathPrefix">Path prefix to scope results, e.g. '/findings/'.</param>
     /// <param name="json">Output as JSON instead of a table.</param>
     public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null,

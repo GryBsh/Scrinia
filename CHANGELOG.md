@@ -10,6 +10,29 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — MCP `search`, `list` and `facts` take `scopes`/`excludeTopics` as arrays
+
+- `search`, `list` and `facts` now take `scopes` and `excludeTopics` as string arrays instead of
+  comma-separated strings, matching `attributeFilter`'s existing map shape. A comma-separated
+  string is no longer accepted; callers must pass `["local", "api"]` rather than `"local,api"`.
+  An empty array behaves identically to omitting the field. This closes contradiction 6 of 6 in
+  the published-surface-coherence spec: the old comma encoding could not express a scope name
+  containing a comma. The CLI (`scri list`/`scri search`/`scri facts`) is unaffected and keeps its
+  comma-separated `--scopes`/`--exclude-topics` arguments — a deliberate divergence, since
+  command-line arguments are strings and repeated flags would be a worse CLI for no gain.
+
+### Changed (breaking) — REST `/search`'s `scopes`/`excludeTopics` are repeated query params / a JSON array
+
+- The REST `/search` endpoint (both GET and POST) now takes `scopes` and `excludeTopics` as
+  arrays instead of a comma-joined string: GET via repeated query parameters
+  (`?scopes=a&scopes=b`), POST via a JSON array in the request body. A comma-joined value in
+  either place is no longer split into multiple scopes. This is a second, independent breaking
+  wire change from the MCP `search`/`list`/`facts` conversion above — REST and MCP callers are
+  different audiences and this list covers both. The bound on the old single comma-joined string
+  (1KB total) is now a count bound (64 entries) plus a per-element length bound (1024 characters)
+  on each of `scopes` and `excludeTopics` independently. The `/memories` listing endpoint's own
+  `scopes` query parameter is unaffected and stays a comma-separated string.
+
 ### Changed (breaking) — `restore` now places workspace context in `info:`, matching `guide`
 
 - `restore` now returns the workspace context in `info:` with a summary line in `content:`,
