@@ -97,6 +97,23 @@ public sealed partial class ScriniaMcpTools
     private const int MaxPathLength = 256;
     private const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
 
+    /// <summary>
+    /// Canonicalizes an address arriving at the MCP facade. One helper rather than seven
+    /// repetitions of the same call — the CLI (<c>ScriniaCommands.RefuseEphemeral</c>) and REST
+    /// (<c>MemoryEndpoints.NameRefusal</c>) already have theirs.
+    ///
+    /// <para>The facade canonicalizes and PROCEEDS; the CLI and REST deliberately REFUSE instead,
+    /// because their processes cannot serve an ephemeral memory back — the CLI exits immediately,
+    /// and REST sits below the surface where the alias would resolve to the persistent scope
+    /// <c>local:temp</c>. Those are three considered policies, not an inconsistency to unify.</para>
+    ///
+    /// <para>Scope is deliberately this class only. The two remaining single-call surfaces
+    /// (<c>ScriniaMcpResources</c> and <c>AgentLoop</c>) keep their direct call: a one-line helper
+    /// wrapping a one-line call at one site is indirection without consolidation. All five are
+    /// pinned behaviourally by <c>Scrinia.Tests.Naming.AddressSurfaceCoverageTests</c>.</para>
+    /// </summary>
+    private static string Address(string raw) => MemoryNaming.CanonicalizeEphemeralAlias(raw);
+
     [McpServerTool(Name = "remember"), Description(
         "Persist a memory at a path. content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
@@ -178,7 +195,7 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         McpResponse response = await Remember(content, path,
             keywords: keywords, attributes: attributes,
             actionLabel: "remembered", cancellationToken: cancellationToken);
@@ -213,7 +230,7 @@ public sealed partial class ScriniaMcpTools
                 "recall({ path: '...' })",
                 "list() to discover available paths").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
     }
 
@@ -320,7 +337,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "Split the append into multiple smaller append calls.").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         McpResponse response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
 
         // Same hint application as MemoryRemember: applied to the typed response before
@@ -345,7 +362,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "forget({ path: '...' })").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         return (await Forget(path, cancellationToken)).ToYaml();
     }
 
@@ -366,7 +383,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "compact({ path: '...', keepRecent: 3 })").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
+        path = Address(path);
         return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
     }
 
@@ -393,8 +410,8 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "link({ path: '...', destination: '...' })").ToYaml();
 
-        path = MemoryNaming.CanonicalizeEphemeralAlias(path);
-        destination = MemoryNaming.CanonicalizeEphemeralAlias(destination);
+        path = Address(path);
+        destination = Address(destination);
         return (await Link(path, destination, reason, cancellationToken)).ToYaml();
     }
 
