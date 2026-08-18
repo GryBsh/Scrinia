@@ -9,8 +9,17 @@ namespace Scrinia.Benchmarks;
 /// every Upsert called <c>LoadEntriesFromSidecars</c> to rebuild the scope's index cache: a full
 /// directory enumeration plus one file read and JSON parse per existing sidecar. Writing N
 /// memories sequentially therefore cost O(N^2) file reads. After, Upsert writes exactly one
-/// sidecar and rebuilds the in-memory cache copy-on-write from the list already held in memory —
-/// zero sidecar re-reads on any write.
+/// sidecar and never re-reads the scope.
+///
+/// <para><b>The two benchmarks exercise DIFFERENT post-fix branches, and it matters when reading
+/// their numbers.</b> Nothing calls <c>LoadIndex</c> during <see cref="SequentialUpserts"/>'s
+/// loop, and <c>Upsert</c> never populates an absent cache, so every iteration takes the
+/// leave-the-scope-uncached branch: its "after" number measures NOT rebuilding at all, and is
+/// evidence for the removal of the O(N) re-read, not for the copy-on-write update.
+/// <see cref="MarginalUpsert"/> is the one that exercises copy-on-write — its
+/// <see cref="IterationSetup"/> forces a <c>LoadIndex</c> first — and a copy-on-write update
+/// allocates a new list of the whole scope, so its ALLOCATION is O(scope size) even though its
+/// timing is flat. See the measurements document's Reading section.</para>
 ///
 /// <para>Both benchmarks run under <see cref="MonitoringInProcessConfig"/> — Monitoring strategy
 /// because each mutates real on-disk state (writes files under a temp scope) inside
@@ -54,6 +63,10 @@ public class WritePathBenchmarks
     /// the O(N^2) -> O(N) shape rather than asserting it: the "before" curve should scale with the
     /// square of Entries (dominated by the per-write directory re-read), the "after" curve should
     /// scale close to linearly (dominated by N sidecar writes, each independent of scope size).
+    /// <para>Nothing here reads the index, and Upsert does not populate an absent cache, so every
+    /// iteration takes the uncached branch — see the class remarks. That is deliberate (it is the
+    /// natural shape of bulk writing into a fresh scope) but it means this benchmark says nothing
+    /// about the copy-on-write update; <see cref="MarginalUpsert"/> is where that is measured.</para>
     /// </summary>
     [Benchmark]
     public void SequentialUpserts()
@@ -84,10 +97,12 @@ public class WritePathBenchmarks
         }
 
         // Force a load so the in-memory index cache is warm before the measured write. Upsert's
-        // copy-on-write path only fires when the scope is already cached (FileMemoryStore.cs, see
-        // the "Scope is not cached: invalidate only" branch); without this LoadIndex call the
-        // scope's cache could still be warm from the seeding loop above in practice, but this
-        // makes the precondition explicit and independent of that implementation detail.
+        // copy-on-write path only fires when the scope is already cached — its else branch is the
+        // one documented "When the scope is not cached, leave it absent rather than installing a
+        // cache holding only this entry; the next read cold-loads the whole scope." The seeding
+        // loop above does NOT warm it (Upsert never populates an absent cache), so without this
+        // LoadIndex call the measured write would take that else branch and this benchmark would
+        // measure the same thing SequentialUpserts already does.
         _marginalStore.LoadIndex("local");
 
         // Distinct name per invocation. Monitoring performs one invocation per iteration, so this

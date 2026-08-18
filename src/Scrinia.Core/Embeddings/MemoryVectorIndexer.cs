@@ -135,6 +135,12 @@ public sealed class MemoryVectorIndexer
         // expose). The on-disk append is narrower but not atomic — a crash mid-batch can still
         // leave this memory half-replaced on disk; if that happens, the next index pass rebuilds
         // it cleanly.
+        //
+        // A RETRY after a partial flush is a different failure and does not recover that way:
+        // FileRetry.RunAsync re-runs the whole write delegate, which reopens in FileMode.Append,
+        // so the retry's ops land after any torn fragment the first attempt left — and the op-log
+        // reader tolerates a torn record only at the tail, not in the middle. See
+        // VectorStore.ReplaceMemoryVectorsAsync's remarks; called out there, not fixed here.
         Func<Task> write = async () =>
         {
             var batch = new (int? ChunkIndex, float[] Vector)[plan.Count];

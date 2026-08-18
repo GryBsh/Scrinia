@@ -127,11 +127,33 @@ under the toolchain asymmetry described in Methodology (in-process "after" vs. o
 "before"). Fixed per-iteration overhead (process/JIT, `IterationSetup`'s directory creation) is a
 much larger fraction of a sub-second measurement than of a 25-minute one, so the 1.9× figure should
 not be treated as precisely as the 14.7× and ~90× figures next to it — only that "before" is worse,
-not by how much. `MarginalUpsert` tells the same story from the other side — the cost a user
-actually feels on one more write into an already-large scope grows with N *before* (14.8 ms →
-145 ms → 684 ms as N goes 100 → 1,000 → 5,000, consistent with "one write costs O(N)") and stays
-flat *after* (10.3 ms → 6.2 ms → 5.0 ms, consistent with O(1)). The N=100 `MarginalUpsert` row
-carries the same weakness twice over: it is the smallest absolute effect in the table (its
+not by how much.
+
+**What `SequentialUpserts`'s "after" number is evidence OF.** Nothing in that loop calls
+`LoadIndex`, and `Upsert` does not populate an absent cache, so every iteration takes the
+leave-the-scope-uncached branch. Its result therefore measures the removal of the O(N) sidecar
+re-read — writing one sidecar and nothing else — and says nothing about the copy-on-write update,
+which it never executes. `MarginalUpsert` is the only benchmark here that exercises copy-on-write.
+That does not weaken the headline: bulk writing into a fresh scope is the natural shape this
+benchmark models, and the O(N²) → O(N) claim is about the re-read, which is exactly what it
+isolates.
+
+`MarginalUpsert` tells the story from the other side, and its two columns say different things
+about what changed. Timing: the cost a user actually feels on one more write into an already-large
+scope grows with N *before* (14.8 ms → 145 ms → 684 ms as N goes 100 → 1,000 → 5,000, consistent
+with "one write costs O(N) file reads") and is flat *after* (10.3 ms → 6.2 ms → 5.0 ms). Allocation
+on the after side, however, does **not** stay flat: 38.56 KB → 157.8 KB → 690.9 KB across the same
+Ns, and it is a straight line — about 133 bytes per existing entry on top of a ~25 KB fixed cost,
+holding to within a byte across both steps. **So a warm write is still O(scope size), in
+allocation, and reading this row as "O(1)" from the timing alone was wrong.** The copy-on-write
+update builds a new list of the whole scope and calls `SanitizeName` — several intermediate strings
+— for every existing entry it copies. What the branch actually replaced is an O(N) sequence of
+*file reads and JSON parses* with an O(N) *in-memory list copy*: an enormous constant-factor win at
+every N measured (145 ms → 6.2 ms at N=1,000; 8.83 MB → 157.8 KB), not an asymptotic one for a warm
+scope. The asymptotic claim belongs to `SequentialUpserts`, where the per-write re-read is gone
+outright.
+
+The N=100 `MarginalUpsert` row carries the same weakness twice over: it is the smallest absolute effect in the table (its
 after-side error bar, ±27.9 ms, is larger than its own mean — JIT/GC/process noise dominates a
 signal that small) *and* it inherits the toolchain asymmetry with no allocation backstop of the
 kind that corroborates N=1,000/5,000 elsewhere. The direction is still correct (10.3 ms <
@@ -188,8 +210,11 @@ used the default out-of-process toolchain (forced by an environmental collision 
 side — see Methodology). This asymmetry applies to every row in this document, but its practical
 risk is not uniform, because the risk scales with how large the measured gap is relative to a
 plausible few-millisecond toolchain artifact. **Unambiguous, though for two different reasons:**
-`SequentialUpserts`/`MarginalUpsert` at N=1,000 and N=5,000 are corroborated by an allocation delta
-that is itself orders of magnitude (roughly 844× and 4,114×) and tracks the timing delta;
+`SequentialUpserts` at N=1,000 and N=5,000 is corroborated by an allocation delta
+that is itself orders of magnitude (roughly 844× and 4,212× — binary GB throughout; the 4,114×
+this previously read came from measuring the second ratio in decimal GB and the first in binary)
+and tracks the timing delta; the same is true of `MarginalUpsert`'s before-vs-after gap at fixed N,
+though not of its after-side curve across N, which grows — see Reading;
 `IndexOneMemory` at K=50 and K=200 are corroborated instead by the absolute size of the timing gap
 itself (90 ms and 380 ms — far too large for a few-ms toolchain artifact to explain), with
 allocation there confirming only the direction and rough proportion of K-scaling (~4.6× and ~5.0×,

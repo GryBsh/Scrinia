@@ -1303,14 +1303,17 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 _indexCache.TryRemove(scope, out _);
             }
 
-            // Invalidate topic discovery cache only when removing this entry emptied the
-            // scope. Without invalidating at all, DiscoverTopics would keep reporting a topic
-            // that has no remaining entries until the cache TTL eventually flushes — mirrors
-            // what SaveIndex/Upsert do at the corresponding write paths. Narrowed to fire only
-            // WHEN the scope is now empty: a removal that leaves other entries behind cannot
-            // change the topic list. Probe the filesystem rather than the cache — the cache
-            // may be absent, and DiscoverTopics answers from the filesystem, so the
-            // filesystem is the authority for this question.
+            // Invalidate topic discovery cache only when removing this entry emptied the scope.
+            // There is no TTL to fall back on — _cachedTopics is invalidated event-driven and
+            // nothing else clears it — so without invalidating here, DiscoverTopics would keep
+            // reporting a topic with no remaining entries for the rest of the process's life.
+            // This is the mirror image of Upsert's scope-lifecycle check (first sidecar gained
+            // there, last sidecar lost here); SaveIndex clears unconditionally instead, because it
+            // rewrites a scope's whole sidecar set and can empty it outright. Narrowed to fire
+            // only WHEN the scope is now empty: a removal that leaves other entries behind cannot
+            // change the topic list. Probe the filesystem rather than the cache — the cache may be
+            // absent, and DiscoverTopics answers from the filesystem, so the filesystem is the
+            // authority for this question.
             if (scope.StartsWith("local:", StringComparison.Ordinal)
                 && !Directory.EnumerateFiles(storeDir, "*.meta.json").Any())
                 _cachedTopics = null;

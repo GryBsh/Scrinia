@@ -363,13 +363,17 @@ URI rather than throwing.
 
 **Scope resolution:** `ResolveReadScopes(scopes)`
 
-**Default-bodied members (a store may override for efficiency):** `TryUpdateEntry` (non-atomic
-load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart — an
-unsynchronized load→mutate→store unless overridden; both real stores override it as a
+**Default-bodied members (a store may override for efficiency)** — six of them: `TryUpdateEntry`
+(non-atomic load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart
+— an unsynchronized load→mutate→store unless overridden; both real stores override it as a
 compare-and-swap retry loop instead, so a concurrent writer's change is re-applied to the newer
 entry rather than silently lost), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
-unless overridden), `ListScoped(scopes, excludeTopics)`, and `ResolveReadScopes(scopes,
-excludeTopics)` — the last two post-filter `ListScoped`/`ResolveReadScopes` by scope, which is
+unless overridden), `AnyScoped(scopes, predicate)` — "does any entry match?" without the caller
+materializing a listing to test; the default is `ListScoped(scopes).Any(predicate)`, which is
+correct but still builds the full listing first, and `FileMemoryStore` overrides it to enumerate
+scope by scope and return on the first match — `ListScoped(scopes, excludeTopics)`, and
+`ResolveReadScopes(scopes, excludeTopics)` — the last two post-filter
+`ListScoped`/`ResolveReadScopes` by scope, which is
 cheap and correct even unoverridden because scope exclusion is a set-membership check, not a
 top-K-sensitive filter the way `pathPrefix`/`attributeFilter` were. `FileMemoryStore` overrides
 both for efficient scope-level filtering. There is no `SearchAll(..., excludeTopics)` default
@@ -485,6 +489,23 @@ write path now satisfies it more cheaply than before. See
 and `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for the before/after
 cost of this change. Corpus stats are computed directly by `WeightedAttributeScorer` on every
 search.
+
+**A write is no longer a resync point, and that is a real behaviour change.** Nothing invalidates
+`_indexCache` across processes — it never did — but while every write invalidated the cache and
+rebuilt it from disk, each write was an accidental resync: out-of-band changes to a scope's
+sidecars surfaced in a long-lived process on its next write to that scope. Copy-on-write removes
+that, so out-of-band changes now stay invisible to a running process indefinitely. This matters
+here specifically because `.scrinia/memories/**/*.meta.json` are git-tracked in workspaces that
+version their memory, so `git pull`, `git merge` and `git checkout` all produce exactly this
+state — under a live `scri serve`, that process keeps serving the pre-pull index. The accepted
+cost of the optimisation; restart the process (or write from it to a scope it has not cached) to
+pick the changes up.
+
+One deliberate exception: `TryUpdateEntry` reads the entry it is about to mutate off disk, inside
+the per-scope cross-process lock, and re-seats that entry's cached slot from what it persisted.
+That is not an optimisation but a correctness requirement — it writes back a complete entry derived
+from what it read, so a stale read would republish stale fields over another process's write. It
+resyncs one entry, not the scope.
 
 ### Artifact LRU Cache
 

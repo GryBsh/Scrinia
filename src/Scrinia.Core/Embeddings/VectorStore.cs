@@ -265,6 +265,18 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// index pass rebuilds it cleanly, same as before this method existed). What improved over the
     /// loop is the width of that on-disk window — one open/close instead of up to K — not its
     /// existence.</para>
+    ///
+    /// <para><b>A retry after a partial flush is a different failure, and not recoverable the same
+    /// way.</b> <see cref="FileRetry.RunAsync"/> re-runs the WHOLE delegate below on a transient
+    /// <see cref="IOException"/>, and the delegate reopens the file in
+    /// <see cref="FileMode.Append"/> — so if the first attempt flushed part of a record before
+    /// failing, the retry writes its ops AFTER that torn fragment rather than over it.
+    /// <c>ReadEntryOps</c> tolerates a torn record only at the TAIL (its
+    /// <see cref="EndOfStreamException"/> catch stops the loop and keeps what it parsed); a torn
+    /// record in the MIDDLE desyncs the record loop and yields garbage entries rather than
+    /// truncating, and nothing detects that. This is called out rather than fixed: it predates
+    /// this method (the <see cref="UpsertAsync"/> loop had the same retry shape per op), and
+    /// narrowing the retry to something crash-safe is a separate change.</para>
     /// </summary>
     public async Task ReplaceMemoryVectorsAsync(
         string scope, string name, IReadOnlyList<(int? ChunkIndex, float[] Vector)> vectors, CancellationToken ct = default)
