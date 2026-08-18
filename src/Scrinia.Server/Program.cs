@@ -603,7 +603,11 @@ app.MapFallbackToFile("index.html");
 // Runs after every Map* call, because it reads the fully populated route table, and before
 // the server accepts a request, because a route that authenticates without authorizing must
 // never be reachable. A failure here names the offending endpoint; fix the declaration.
-PermissionCoverageValidator.Validate(app.Services.GetRequiredService<EndpointDataSource>());
+// Reads app.DataSources — the collection every Map* call above wrote into — rather than the
+// EndpointDataSource in DI. That one is a composite the routing middleware fills in when the
+// host starts, so it is still empty here and validating it would silently check nothing.
+PermissionCoverageValidator.Validate(
+    new CompositeEndpointDataSource(((IEndpointRouteBuilder)app).DataSources));
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 

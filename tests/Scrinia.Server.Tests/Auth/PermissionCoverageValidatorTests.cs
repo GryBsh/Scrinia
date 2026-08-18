@@ -148,6 +148,28 @@ public class PermissionCoverageValidatorTests
     }
 
     [Fact]
+    public void TheRealRouteTable_PassesItsOwnGate()
+    {
+        // Program.cs runs this same check at startup, but over the route table as it stands
+        // before the host starts. This runs it over the started application's table and
+        // asserts that table is not empty — the failure mode being guarded is a validator
+        // wired to a source that holds nothing, which boots happily while checking nothing.
+        using var factory = new ScriniaServerFactory();
+        _ = factory.CreateAuthenticatedClient(); // force the app to build
+
+        var live = factory.Services.GetRequiredService<EndpointDataSource>();
+
+        live.Endpoints.Should().NotBeEmpty();
+        live.Endpoints.Should().Contain(e =>
+            e.Metadata.GetMetadata<RequiredPermissionsMetadata>() != null,
+            "the memory routes declare permissions, so a table without one is the wrong table");
+
+        var act = () => PermissionCoverageValidator.Validate(live);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void OnlyTheKnownCallSites_BypassTheRouteTableCheck()
     {
         // PermissionCheckedElsewhere silences the coverage check, so its uses are pinned.
