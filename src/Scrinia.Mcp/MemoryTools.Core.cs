@@ -642,7 +642,11 @@ public sealed partial class ScriniaMcpTools
             return BuildDriftList(driftStore);
         }
 
-        List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
+        // scopes/excludeTopics are still comma-strings here (Task 9 commit 3 converts this
+        // facade to string[]?); split at this call site for now, matching the Core contract
+        // this task already typed as a list.
+        List<ScopedArtifact> entries = store.ListScoped(
+            MemoryNaming.SplitCommaSeparated(scopes), MemoryNaming.SplitCommaSeparated(excludeTopics));
         if (entries.Count == 0)
             return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed"));
 
@@ -883,13 +887,16 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
+        // scopes/excludeTopics are still comma-strings here (Task 9 commit 3 converts this
+        // facade to string[]?); split at this call site for now, matching the Core contract
+        // this task already typed as a list.
         var outcome = await SearchPipeline.ExecuteAsync(
             store,
             new SearchQuery(query)
             {
-                Scopes = scopes,
+                Scopes = MemoryNaming.SplitCommaSeparated(scopes),
                 Limit = limit,
-                ExcludeTopics = excludeTopics,
+                ExcludeTopics = MemoryNaming.SplitCommaSeparated(excludeTopics),
                 PathPrefix = pathPrefix,
                 AttributeFilter = attributeFilter,
             },

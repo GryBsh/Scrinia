@@ -58,7 +58,7 @@ public static class SearchPipeline
                 supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, ct);
             if (entityContributor is not null)
             {
-                var factStore = string.IsNullOrWhiteSpace(query.Scopes) && string.IsNullOrWhiteSpace(query.ExcludeTopics)
+                var factStore = query.Scopes is not { Count: > 0 } && query.ExcludeTopics is not { Count: > 0 }
                     ? store.GetEntityFactStore()                       // cached, no rebuild
                     : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
                 entityScores = entityContributor.Score(factStore, query: effectiveQuery);

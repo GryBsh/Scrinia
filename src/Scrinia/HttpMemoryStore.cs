@@ -419,7 +419,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// Proxies to the same listing endpoint <see cref="ListScoped(string?)"/> already uses,
+    /// Proxies to the same listing endpoint <see cref="ListScoped(IReadOnlyList{string}?)"/> already uses,
     /// filtered to <paramref name="scope"/>.
     ///
     /// <para><b>This is a blocking network round trip, deliberately — and for a scope with more
@@ -459,7 +459,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// is null — collected page by page until the server's own reported <c>Total</c> is reached.
     ///
     /// <para>ONE paging loop for this type. <see cref="LoadIndex"/> and
-    /// <see cref="ListScoped(string?)"/> read the same listing endpoint, and while each owned its
+    /// <see cref="ListScoped(IReadOnlyList{string}?)"/> read the same listing endpoint, and while each owned its
     /// own request-building the two drifted: LoadIndex paged to exhaustion, ListScoped sent no
     /// limit at all and took the server's 200-row default as though it were the whole store. The
     /// comment on LoadIndex's loop described, precisely, the defect its sibling still had.</para>
@@ -626,30 +626,28 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // ── Listing & Search ────────────────────────────────────────────────────
 
-    public List<ScopedArtifact> ListScoped(string? scopes = null)
+    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null)
     {
         var result = new List<ScopedArtifact>();
 
-        // Include ephemeral
-        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
-        if (!includeEphemeral && scopes is not null)
-        {
-            includeEphemeral = scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
-        }
+        // Include ephemeral. Task 9, D-4: an empty scopes list means "no filter", identically to
+        // null — both fall through to true here, same as the old whitespace-string check did for
+        // null and "".
+        bool includeEphemeral = scopes is not { Count: > 0 }
+            || scopes.Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
         if (includeEphemeral)
             result.AddRange(ListEphemeral());
 
-        // The `scopes is not null` test here selects WHICH URL is built — filtered or unfiltered —
-        // rather than whether an empty filter parameter gets appended to one. That makes it a
-        // different question from the sibling check that was changed to a whitespace test, and the
-        // two are not an inconsistency to reconcile. An empty-but-non-null `scopes` produces
-        // `?scopes=`, which `FileMemoryStore.ResolveReadScopes` treats identically to an absent
-        // parameter (its `IsNullOrWhiteSpace` gate is false for both) — both fall through to the
-        // same default branch and return every discovered scope. Empty and null converge on the
-        // same server behaviour, so the client's distinction between them is harmless.
-        foreach (var item in FetchAllPages(scopes))
+        // The `/memories` LIST endpoint's own `scopes` query parameter is NOT part of Task 9's
+        // wire change (D-2 converts only `/search`'s GET and POST encodings to repeated params /
+        // a JSON array) — it stays a single comma-joined string, so FetchAllPages is unchanged and
+        // this is where the list this member now takes gets folded back into that legacy shape.
+        // A null or empty scopes list joins to null, producing the same unfiltered URL
+        // FetchAllPages(null) always has — the server treats a missing and an empty `scopes`
+        // parameter identically (both fall through to "every discovered scope"), so this is not a
+        // behaviour change from the old null/""-both-converge comment it replaces.
+        string? joinedScopes = scopes is { Count: > 0 } ? string.Join(",", scopes) : null;
+        foreach (var item in FetchAllPages(joinedScopes))
         {
             // Recover the scope from the label the server reported. Task 13: this was a
             // character-for-character re-implementation of MemoryNaming.ParseScopeLabel — the same
@@ -677,15 +675,22 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// question and belongs to the F3 interface split.</para>
     /// </summary>
     private List<SearchResult> SearchRemote(
-        string query, string? scopes, int limit, string? excludeTopics,
+        string query, IReadOnlyList<string>? scopes, int limit, IReadOnlyList<string>? excludeTopics,
         string? pathPrefix, IReadOnlyDictionary<string, string[]>? attributeFilter)
     {
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
+        // BuildSearchGet/BuildSearchPost still take the legacy comma-joined strings in this
+        // commit — Task 9's wire change (D-2: repeated query params for GET, a JSON array for
+        // POST) lands in the next commit. Joining here keeps this commit's behaviour identical
+        // end to end while the store-facing contract already speaks lists.
+        string? joinedScopes = scopes is { Count: > 0 } ? string.Join(",", scopes) : null;
+        string? joinedExcludeTopics = excludeTopics is { Count: > 0 } ? string.Join(",", excludeTopics) : null;
+
         using var request = attributeFilter is { Count: > 0 }
-            ? BuildSearchPost(query, scopes, limit, excludeTopics, pathPrefix, attributeFilter)
-            : BuildSearchGet(query, scopes, limit, excludeTopics, pathPrefix);
+            ? BuildSearchPost(query, joinedScopes, limit, joinedExcludeTopics, pathPrefix, attributeFilter)
+            : BuildSearchGet(query, joinedScopes, limit, joinedExcludeTopics, pathPrefix);
 
         using var resp = SendSync(request);
         if (!resp.IsSuccessStatusCode)
@@ -1364,7 +1369,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             .ToArray();
     }
 
-    public List<TopicInfo> GatherTopicInfos(string? scopes = null)
+    public List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null)
     {
         // Gather from listing
         var items = ListScoped(scopes);
@@ -1388,15 +1393,11 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         return topics;
     }
 
-    public IReadOnlyList<string> ResolveReadScopes(string? scopes = null)
+    public IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null)
     {
-        if (!string.IsNullOrWhiteSpace(scopes))
-        {
-            return scopes
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        }
+        // Task 9, D-4: an empty scopes list means "no filter", identically to null.
+        if (scopes is { Count: > 0 })
+            return scopes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
         var ordered = new List<string> { "local" };
         ordered.AddRange(DiscoverTopics());

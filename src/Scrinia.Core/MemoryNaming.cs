@@ -70,6 +70,27 @@ public static class MemoryNaming
     public static string CanonicalizeEphemeralAlias(string name) =>
         IsEphemeralAlias(name) ? "~" + name["/temp/".Length..] : name;
 
+    /// <summary>
+    /// Splits a legacy comma-separated filter string (e.g. a <c>scopes</c> or
+    /// <c>excludeTopics</c> argument) into a list, trimming each entry and dropping empty ones.
+    /// Returns null for null or whitespace-only input — the same "no filter" meaning null has
+    /// always carried on these parameters (Task 9, D-4: an empty result behaves as null too, so
+    /// callers should not special-case it).
+    ///
+    /// <para>This is the one place that turns a comma string into a list; it does not construct
+    /// or validate scope names itself — each element still goes through the store's own
+    /// <c>NormalizeScopeFilters</c> or <see cref="TryBuildScopedTopicScope"/> downstream. It
+    /// exists for two kinds of caller: the CLI, which keeps comma-separated arguments on purpose
+    /// (Task 9, D-3 — command-line arguments are strings, and forcing repeated flags would be a
+    /// worse CLI for no gain), and the REST <c>/memories</c> listing endpoint's <c>scopes</c>
+    /// query parameter, which this task does not convert to repeated params (only <c>/search</c>
+    /// is — Task 9, D-2).</para>
+    /// </summary>
+    public static IReadOnlyList<string>? SplitCommaSeparated(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     // ── Scope construction ───────────────────────────────────────────────────
     //
     // THE ONE WAY a "local:{topic}" scope string is constructed from caller input. Task 13

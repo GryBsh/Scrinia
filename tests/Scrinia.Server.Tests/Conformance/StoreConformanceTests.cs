@@ -104,9 +104,9 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     public void ExcludeTopics_BothStores_ReturnSameEntries()
     {
         var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = "goal/G-1" }));
+            fx.Local.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = ["goal/G-1"] }));
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = "goal/G-1" }));
+            fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = ["goal/G-1"] }));
 
         remote.Should().BeEquivalentTo(local);
         local.Should().HaveCount(16);

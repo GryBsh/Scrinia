@@ -78,8 +78,13 @@ public sealed partial class ScriniaMcpTools
     /// scope+excludeTopics-filtered candidates otherwise (same derivation as the auto-surface path).</summary>
     private static EntityFactStore SelectFactStore(IMemoryStore store, string? scopes, string? excludeTopics)
     {
-        if (string.IsNullOrWhiteSpace(scopes) && string.IsNullOrWhiteSpace(excludeTopics))
+        // scopes/excludeTopics are still comma-strings here (Task 9 commit 3 converts the facade
+        // and this handler to string[]?); split at this call site for now, matching the Core
+        // contract this task already typed as a list.
+        var scopeList = MemoryNaming.SplitCommaSeparated(scopes);
+        var excludeList = MemoryNaming.SplitCommaSeparated(excludeTopics);
+        if (scopeList is not { Count: > 0 } && excludeList is not { Count: > 0 })
             return store.GetEntityFactStore();
-        return EntityFactDerivation.BuildStore(store.ListScoped(scopes, excludeTopics));
+        return EntityFactDerivation.BuildStore(store.ListScoped(scopeList, excludeList));
     }
 }

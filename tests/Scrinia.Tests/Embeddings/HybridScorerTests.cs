@@ -43,7 +43,7 @@ public class HybridScorerTests : IDisposable
         AddEntry("cats", "A document about cats");
         AddEntry("semantically-similar", "unrelated description xyz");
 
-        var resultsWithout = _store.SearchAll(new SearchQuery("cats") { Scopes = "local", Limit = 10 });
+        var resultsWithout = _store.SearchAll(new SearchQuery("cats") { Scopes = ["local"], Limit = 10 });
         resultsWithout.Should().HaveCountGreaterOrEqualTo(1);
         (resultsWithout[0] as EntryResult)!.Item.Entry.Name.Should().Be("cats");
 
@@ -54,7 +54,7 @@ public class HybridScorerTests : IDisposable
 
         var resultsWith = _store.SearchAll(new SearchQuery("cats")
         {
-            Scopes = "local",
+            Scopes = ["local"],
             Limit = 10,
             SupplementalScores = supplemental,
         });
@@ -67,10 +67,10 @@ public class HybridScorerTests : IDisposable
     {
         AddEntry("test-memory", "test description about testing");
 
-        var legacy = _store.SearchAll(new SearchQuery("test") { Scopes = "local", Limit = 10 });
+        var legacy = _store.SearchAll(new SearchQuery("test") { Scopes = ["local"], Limit = 10 });
         var withEmpty = _store.SearchAll(new SearchQuery("test")
         {
-            Scopes = "local",
+            Scopes = ["local"],
             Limit = 10,
             SupplementalScores = new Dictionary<string, double>(),
         });
@@ -94,7 +94,7 @@ public class HybridScorerTests : IDisposable
 
         var results = _store.SearchAll(new SearchQuery("completely-different-query")
         {
-            Scopes = "local",
+            Scopes = ["local"],
             Limit = 10,
             SupplementalScores = supplemental,
         });

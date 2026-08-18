@@ -119,7 +119,7 @@ public interface IMemoryStore
     /// <summary>
     /// The merged cross-scope <see cref="EntityFactStore"/> — a materialized view over every
     /// (key, value) entity pair across every scope. Default implementation rebuilds it fresh
-    /// from <see cref="ListScoped(string?)"/> on every call (adequate for in-memory/test stores).
+    /// from <see cref="ListScoped(IReadOnlyList{string}?)"/> on every call (adequate for in-memory/test stores).
     /// <para>
     /// FileMemoryStore overrides this with a cache-on-first-read, generation-invalidated build (a
     /// per-scope <c>facts.json</c> sidecar reused when its token matches, plus an in-memory merged
@@ -127,7 +127,7 @@ public interface IMemoryStore
     /// async typing sink (<c>EntityTypingEventHandler</c>) query the existing typed vocabulary
     /// without a bespoke full-store scan on every write event.
     /// </para>
-    /// <para>Correct for any store whose <see cref="ListScoped(string?)"/> honours its completeness
+    /// <para>Correct for any store whose <see cref="ListScoped(IReadOnlyList{string}?)"/> honours its completeness
     /// contract, and only for such a store: facts derived over a truncated listing are wrong, not
     /// partial.</para>
     /// </summary>
@@ -144,31 +144,31 @@ public interface IMemoryStore
     /// it is a wrong one, and it is silent — the caller sees a short list, not an error.</para>
     ///
     /// <para>This is the precondition every default implementation that reads through this member
-    /// rests on: <see cref="GetEntityFactStore"/>, <see cref="ListScoped(string?, string?)"/> and
-    /// (through <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(string?, string?)"/> are all
+    /// rests on: <see cref="GetEntityFactStore"/>, <see cref="ListScoped(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> and
+    /// (through <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> are all
     /// correct exactly insofar as this member is. <c>HttpMemoryStore.ListScoped</c> broke it by
     /// sending no <c>limit</c> against a server defaulting to 200 rows, and all three inherited
     /// the truncation — including the one that makes whole topic scopes disappear rather than
     /// merely lose entries. <c>PagedListingConformanceTests</c> is what holds this now.</para>
     /// </summary>
-    List<ScopedArtifact> ListScoped(string? scopes = null);
+    List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null);
 
     /// <summary>
     /// True if any entry in <paramref name="scopes"/> (or across every readable scope when null)
     /// matches <paramref name="predicate"/>. Answers a boolean without requiring the caller to
-    /// materialize the listing it would otherwise call <see cref="ListScoped(string?)"/> and
+    /// materialize the listing it would otherwise call <see cref="ListScoped(IReadOnlyList{string}?)"/> and
     /// <c>.Any(...)</c> over.
     ///
     /// <para>Default implementation is <c>ListScoped(scopes).Any(predicate)</c> — correct for any
     /// store, on the same precondition as <see cref="GetEntityFactStore"/> and the other
-    /// <see cref="ListScoped(string?)"/>-derived defaults: it is exactly as complete as that
+    /// <see cref="ListScoped(IReadOnlyList{string}?)"/>-derived defaults: it is exactly as complete as that
     /// listing is, no more and no less. It is not cheap: it still materializes the full listing
     /// before testing it. FileMemoryStore overrides this to enumerate lazily, scope by scope, and
     /// return on the first match — the reason this member exists rather than callers writing
     /// <c>ListScoped(scopes).Any(predicate)</c> themselves — but a store that has not overridden it
     /// still answers correctly, just without the short-circuit.</para>
     /// </summary>
-    bool AnyScoped(string? scopes, Func<ScopedArtifact, bool> predicate) =>
+    bool AnyScoped(IReadOnlyList<string>? scopes, Func<ScopedArtifact, bool> predicate) =>
         ListScoped(scopes).Any(predicate);
 
     /// <summary>
@@ -186,15 +186,16 @@ public interface IMemoryStore
 
     /// <summary>
     /// Lists memories, excluding entries from the specified topics.
-    /// Default implementation post-filters after calling <see cref="ListScoped(string?)"/>.
+    /// Default implementation post-filters after calling <see cref="ListScoped(IReadOnlyList{string}?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.
-    /// <para>Post-filtering is correct here only because <see cref="ListScoped(string?)"/> is
+    /// <para>Post-filtering is correct here only because <see cref="ListScoped(IReadOnlyList{string}?)"/> is
     /// complete; see its contract.</para>
     /// </summary>
-    /// <param name="scopes">Optional comma-separated scope filter.</param>
-    /// <param name="excludeTopics">Optional comma-separated topic names to exclude (e.g. "plan,task,project,learn").</param>
-    List<ScopedArtifact> ListScoped(string? scopes, string? excludeTopics)
-        => string.IsNullOrWhiteSpace(excludeTopics)
+    /// <param name="scopes">Optional scope filter. An empty list behaves identically to null (Task 9, D-4).</param>
+    /// <param name="excludeTopics">Optional topic names to exclude (e.g. ["plan", "task", "project", "learn"]).
+    /// An empty list behaves identically to null (Task 9, D-4).</param>
+    List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
+        => excludeTopics is not { Count: > 0 }
             ? ListScoped(scopes)
             : ListScoped(scopes)
                 .Where(e => !ShouldExcludeScope(e.Scope, excludeTopics))
@@ -202,16 +203,16 @@ public interface IMemoryStore
 
     /// <summary>
     /// Resolves read scopes, excluding the specified topic scopes.
-    /// Default implementation post-filters after calling <see cref="ResolveReadScopes(string?)"/>.
+    /// Default implementation post-filters after calling <see cref="ResolveReadScopes(IReadOnlyList{string}?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.
     /// <para>Correct for the same reason as its sibling, and with the same precondition: the
     /// underlying single-argument resolution must see every scope, which for a remote store means
     /// a complete listing.</para>
     /// </summary>
-    IReadOnlyList<string> ResolveReadScopes(string? scopes, string? excludeTopics)
+    IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
     {
         var resolved = ResolveReadScopes(scopes);
-        if (string.IsNullOrWhiteSpace(excludeTopics))
+        if (excludeTopics is not { Count: > 0 })
             return resolved;
         var excluded = BuildExcludedScopeSet(excludeTopics);
         return resolved.Where(s => !excluded.Contains(s)).ToList();
@@ -220,20 +221,21 @@ public interface IMemoryStore
     // Static helpers for scope exclusion
 
     /// <summary>
-    /// Returns true if the given scope should be excluded based on the excludeTopics string.
-    /// Case-insensitive. Topics are matched as "local:{topicName}".
+    /// Returns true if the given scope should be excluded based on the excludeTopics list.
+    /// Case-insensitive. Topics are matched as "local:{topicName}". An empty or null
+    /// <paramref name="excludeTopics"/> excludes nothing (Task 9, D-4).
     /// </summary>
-    static bool ShouldExcludeScope(string scope, string? excludeTopics)
+    static bool ShouldExcludeScope(string scope, IReadOnlyList<string>? excludeTopics)
     {
-        if (string.IsNullOrWhiteSpace(excludeTopics) || string.IsNullOrWhiteSpace(scope))
+        if (excludeTopics is not { Count: > 0 } || string.IsNullOrWhiteSpace(scope))
             return false;
         var excluded = BuildExcludedScopeSet(excludeTopics);
         return excluded.Contains(scope);
     }
 
-    /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics
-    /// string. Every entry goes through <see cref="MemoryNaming.TryBuildScopedTopicScope"/> — the
-    /// ONE scope constructor (Task 13).
+    /// <summary>Builds a HashSet of excluded scope names from an excludeTopics list. Every entry
+    /// goes through <see cref="MemoryNaming.TryBuildScopedTopicScope"/> — the ONE scope
+    /// constructor (Task 13).
     ///
     /// <para>This used to fork on whether the input contained a '/', interpolating
     /// <c>"local:{input}"</c> directly in that case and lower-casing only the other. The
@@ -241,11 +243,11 @@ public interface IMemoryStore
     /// this set is already <see cref="StringComparer.OrdinalIgnoreCase"/>. Being an exclusion
     /// FILTER, an unconstructable topic is dropped rather than throwing — it could not have named
     /// a stored scope, so it excludes nothing.</para></summary>
-    static HashSet<string> BuildExcludedScopeSet(string excludeTopics) =>
+    static HashSet<string> BuildExcludedScopeSet(IReadOnlyList<string> excludeTopics) =>
         new(
             excludeTopics
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(t => MemoryNaming.TryBuildScopedTopicScope(t, out string scope) ? scope : null)
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => MemoryNaming.TryBuildScopedTopicScope(t.Trim(), out string scope) ? scope : null)
                 .OfType<string>(),
             StringComparer.OrdinalIgnoreCase);
 
@@ -316,8 +318,8 @@ public interface IMemoryStore
 
     // Topic discovery
     string[] DiscoverTopics();
-    List<TopicInfo> GatherTopicInfos(string? scopes = null);
+    List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null);
 
     // Scope resolution
-    IReadOnlyList<string> ResolveReadScopes(string? scopes = null);
+    IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null);
 }

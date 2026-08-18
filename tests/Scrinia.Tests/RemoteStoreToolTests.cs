@@ -65,7 +65,7 @@ public sealed class RemoteStoreToolTests
 
     /// <summary>
     /// Serves the endpoints these tools reach remotely: <c>GET .../memories</c> (used by
-    /// <see cref="HttpMemoryStore.ListScoped(string?)"/>), <c>POST .../memories</c> (used by
+    /// <see cref="HttpMemoryStore.ListScoped(IReadOnlyList{string}?)"/>), <c>POST .../memories</c> (used by
     /// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, which throws
     /// <see cref="HttpRequestException"/> on any non-success status), the metadata pair
     /// <c>GET .../memories/{name}/entry</c> + <c>PATCH .../memories/{name}</c> that
@@ -373,7 +373,7 @@ public sealed class RemoteStoreToolTests
 
     /// <summary>
     /// A non-local store whose listing carries drift hashes.
-    /// <para><see cref="HttpMemoryStore.ListScoped(string?)"/> never populates
+    /// <para><see cref="HttpMemoryStore.ListScoped(IReadOnlyList{string}?)"/> never populates
     /// <c>FileHashes</c>, so the CLI's remote path cannot reach the drift column in
     /// <c>BuildFullList</c>. The server can: <c>Scrinia.Server/Program.cs</c> installs
     /// <c>MemoryStoreContext.Current = sm.GetStore(storeName)</c>, and <c>StoreManager.GetStore</c>
@@ -385,7 +385,7 @@ public sealed class RemoteStoreToolTests
     /// </summary>
     private sealed class HashCarryingNonLocalStore : FakeMemoryStore
     {
-        public override List<ScopedArtifact> ListScoped(string? scopes = null) =>
+        public override List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null) =>
         [
             new ScopedArtifact("local", new ArtifactEntry(
                 Name: "hashed",

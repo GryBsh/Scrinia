@@ -10,14 +10,16 @@ namespace Scrinia.Core.Search;
 /// </summary>
 public sealed record SearchQuery(string Query)
 {
-    /// <summary>Optional comma-separated scope filter. Null means every readable scope.</summary>
-    public string? Scopes { get; init; }
+    /// <summary>Optional scope filter. Null or empty means every readable scope (Task 9, D-4: an
+    /// empty list behaves identically to null).</summary>
+    public IReadOnlyList<string>? Scopes { get; init; }
 
     /// <summary>Maximum results to return.</summary>
     public int Limit { get; init; } = 20;
 
-    /// <summary>Optional comma-separated topic names to exclude, e.g. "plan,task".</summary>
-    public string? ExcludeTopics { get; init; }
+    /// <summary>Optional topic names to exclude, e.g. ["plan", "task"]. Null or empty excludes
+    /// nothing (Task 9, D-4).</summary>
+    public IReadOnlyList<string>? ExcludeTopics { get; init; }
 
     /// <summary>Case-insensitive prefix on the qualified label, e.g. "/findings/".</summary>
     public string? PathPrefix { get; init; }

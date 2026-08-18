@@ -225,8 +225,12 @@ public static class MemoryEndpoints
         if (limit <= 0) limit = DefaultListLimit;
         if (limit > MaxListLimit) limit = MaxListLimit;
 
+        // This endpoint's own `scopes` query parameter stays a single comma-joined string — Task 9
+        // (D-2) converts only `/search`'s wire encoding to repeated params/a JSON array, not
+        // `/memories`'s listing endpoint. Split at this call site into the list the Core contract
+        // now takes.
         // ListScoped materialises a full enumeration; capture the count once, then page from it.
-        var items = ctx.Store!.ListScoped(scopes);
+        var items = ctx.Store!.ListScoped(MemoryNaming.SplitCommaSeparated(scopes));
         var sourceList = items as List<ScopedArtifact> ?? items.ToList();
         int total = sourceList.Count;
 
@@ -1087,8 +1091,12 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse(filterBoundsError));
         limit = Math.Clamp(limit, 1, 1000);
 
-        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit,
-            excludeTopics, pathPrefix, attributeFilter, ct);
+        // scopes/excludeTopics are still the GET/POST query-string-shaped strings here — Task 9's
+        // wire change (D-2: repeated query params for GET, a JSON array for POST) lands in the
+        // next commit. Split at this call site for now, matching PluginPipeline.SearchAsync's
+        // list-typed contract.
+        var results = await pipeline.SearchAsync(ctx.Store!, q, MemoryNaming.SplitCommaSeparated(scopes), limit,
+            MemoryNaming.SplitCommaSeparated(excludeTopics), pathPrefix, attributeFilter, ct);
         var mapped = results.Select<SearchResult, SearchResultItem>(r => r switch
         {
             EntryResult er => new SearchResultItem(

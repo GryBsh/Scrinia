@@ -32,7 +32,7 @@ public class FakeMemoryStore : IMemoryStore
     public virtual IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
     public virtual void Upsert(ArtifactEntry entry, string scope = "local") { }
     public virtual bool Remove(string name, string scope = "local") => false;
-    public virtual List<ScopedArtifact> ListScoped(string? scopes = null) => [];
+    public virtual List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null) => [];
     public virtual IReadOnlyList<SearchResult> SearchAll(SearchQuery query) => [];
     public virtual void RememberEphemeral(string key, EphemeralEntry entry) { }
     public virtual bool ForgetEphemeral(string key) => false;
@@ -45,6 +45,6 @@ public class FakeMemoryStore : IMemoryStore
     public virtual Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
     public virtual bool DeleteArtifact(string subject, string scope) => false;
     public virtual string[] DiscoverTopics() => [];
-    public virtual List<TopicInfo> GatherTopicInfos(string? scopes = null) => [];
-    public virtual IReadOnlyList<string> ResolveReadScopes(string? scopes = null) => ["local"];
+    public virtual List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null) => [];
+    public virtual IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null) => ["local"];
 }

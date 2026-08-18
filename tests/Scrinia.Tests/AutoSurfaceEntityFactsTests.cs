@@ -75,7 +75,7 @@ public class AutoSurfaceEntityFactsTests
         store.Upsert(Note("hidden", ("person", ["jolene"])), "local:plan");
 
         var outcome = await SearchPipeline.ExecuteAsync(
-            store, new SearchQuery("jolene") { Limit = 20, ExcludeTopics = "plan" },
+            store, new SearchQuery("jolene") { Limit = 20, ExcludeTopics = ["plan"] },
             SearchContributorContext.Current, EntityGraphScoreContext.Current,
             context: null, surfaceEntityFacts: true, ct: default);
 

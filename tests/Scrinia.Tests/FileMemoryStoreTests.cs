@@ -1306,9 +1306,45 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void ResolveReadScopes_ExplicitFilter_ParsesCorrectly()
     {
-        var scopes = _store.ResolveReadScopes("local,dotnet");
+        var scopes = _store.ResolveReadScopes(["local", "dotnet"]);
         scopes.Should().Equal(["local", "local:dotnet"],
             because: "explicit scope filter must normalize bare topic names to the flat local-topic scope");
+    }
+
+    /// <summary>Task 9, D-4: an empty <c>scopes</c> list must behave identically to null — the same
+    /// trap Task 6's fix round hit with an explicit null/empty <c>mode</c>. A caller that sends
+    /// <c>[]</c> over JSON-RPC (as opposed to omitting the field) must not get a narrower answer
+    /// than one that sent nothing at all.</summary>
+    [Fact]
+    public void ResolveReadScopes_EmptyList_BehavesIdenticallyToNull()
+    {
+        _store.Upsert(new ArtifactEntry("a", "file:///a.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:findings");
+
+        _store.ResolveReadScopes([]).Should().BeEquivalentTo(_store.ResolveReadScopes(null),
+            because: "an empty scopes list is not a narrower filter than null — both mean every scope");
+    }
+
+    /// <summary>Task 9, D-4, the <c>ListScoped</c> sibling of the test above.</summary>
+    [Fact]
+    public void ListScoped_EmptyScopesList_BehavesIdenticallyToNull()
+    {
+        _store.Upsert(new ArtifactEntry("a", "file:///a.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:findings");
+
+        var withEmpty = _store.ListScoped([]).Select(sa => (sa.Scope, sa.Entry.Name)).ToList();
+        var withNull = _store.ListScoped(null).Select(sa => (sa.Scope, sa.Entry.Name)).ToList();
+        withEmpty.Should().BeEquivalentTo(withNull);
+    }
+
+    /// <summary>Task 9, D-4: an empty <c>excludeTopics</c> list must exclude nothing, identically
+    /// to null.</summary>
+    [Fact]
+    public void ListScoped_EmptyExcludeTopicsList_BehavesIdenticallyToNull()
+    {
+        _store.Upsert(new ArtifactEntry("a", "file:///a.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:findings");
+
+        var withEmpty = _store.ListScoped(null, []).Select(sa => (sa.Scope, sa.Entry.Name)).ToList();
+        var withNull = _store.ListScoped(null, null).Select(sa => (sa.Scope, sa.Entry.Name)).ToList();
+        withEmpty.Should().BeEquivalentTo(withNull);
     }
 
     [Fact]
