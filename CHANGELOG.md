@@ -40,7 +40,12 @@ and all assembly attributes.
 
 - **`MaintenanceEventSink`'s auto-link/orphan-detection pass no longer materializes the whole
   store to answer "does anything reference this memory?"** A new `IMemoryStore.AnyScoped(scopes,
-  predicate)` answers that as a lazy, short-circuiting scan instead.
+  predicate)` answers that without building the listing first. `FileMemoryStore` overrides it to
+  enumerate scope by scope and return on the first match; a store that hasn't overridden it (such
+  as `HttpMemoryStore`) inherits `ListScoped(scopes).Any(predicate)`, which is still correct but
+  materializes the listing exactly as before. The sink's second question — "does this entry still
+  carry the legacy `orphan` keyword?" — is about one named entry in one known scope, and now reads
+  that scope alone rather than scanning every scope in the store.
 
 - **A memory's vectors now replace in a single locked write.** `VectorStore.ReplaceMemoryVectorsAsync`
   collapses what was a `RemoveAsync` call followed by one `UpsertAsync` per vector into one lock
