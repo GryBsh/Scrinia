@@ -4,7 +4,7 @@ namespace Scrinia.Core.Embeddings;
 
 /// <summary>
 /// The single embed-and-index policy. Owns availability check, windowing, the per-memory chunk
-/// cap, batching, the vector-count guard, remove-then-upsert ordering, and (for detached
+/// cap, batching, the vector-count guard, the atomic-per-memory batch replace, and (for detached
 /// callers) write retry.
 ///
 /// <para><b>Retry is opt-in per call, not unconditional.</b> <see cref="IndexAsync"/> defaults
@@ -17,8 +17,8 @@ namespace Scrinia.Core.Embeddings;
 /// embed" to a caller like <see cref="EmbeddingReindexer.ReindexAsync"/> whose
 /// <c>catch (VectorStoreUnavailableException)</c> ladder depends on seeing the exception to
 /// count the memory as failed rather than skipped. With <c>retryOnUnavailable: false</c> the
-/// remove-then-upsert runs once, unwrapped, and lets that exception propagate to the caller's
-/// own catch ladder.</para>
+/// batch replace runs once, unwrapped, and lets that exception propagate to the caller's own
+/// catch ladder.</para>
 ///
 /// <para><b>The chunk model.</b> A memory's content array is its addressable unit: element
 /// index, 1-based, the same unit <c>ChunkEntry.ChunkIndex</c> and the REST contract use. Each
@@ -27,9 +27,10 @@ namespace Scrinia.Core.Embeddings;
 /// supplemental score key, which is what <see cref="VectorScoreProjection"/> guarantees.</para>
 ///
 /// <para><b>Why the stored chunk index is two-level.</b>
-/// <see cref="VectorStore.UpsertAsync"/> deduplicates on <c>(name, chunkIndex)</c>, so two
-/// windows of the same element sharing an index would silently collapse to whichever was
-/// written last. The stored index is therefore
+/// <see cref="VectorStore.ReplaceMemoryVectorsAsync"/> (like <see cref="VectorStore.UpsertAsync"/>)
+/// de-dupes on <c>(name, chunkIndex)</c>, last write wins, so two windows of the same element
+/// sharing an index would silently collapse to whichever was written last. The stored index is
+/// therefore
 /// <c>elementIndex * <see cref="ChunkIndexStride"/> + windowOrdinal</c>, and
 /// <see cref="ElementIndexOf"/> recovers the element by integer division.
 /// <see cref="EmbeddingOptions.MaxChunksPerMemory"/> caps total windows per memory well below
@@ -114,9 +115,9 @@ public sealed class MemoryVectorIndexer
 
         var vectors = await _provider.EmbedBatchAsync([.. plan.Select(p => p.Text)], ct);
 
-        // The guard must return BEFORE RemoveAsync. A provider returning the wrong count would
-        // otherwise wipe this memory's vectors and write nothing back, leaving it unsearchable
-        // with only a log line.
+        // The guard must return BEFORE the batch replace below. A provider returning the wrong
+        // count would otherwise wipe this memory's vectors and write nothing back, leaving it
+        // unsearchable with only a log line.
         if (vectors is null || vectors.Length != plan.Count)
         {
             if (vectors is not null)
@@ -127,14 +128,25 @@ public sealed class MemoryVectorIndexer
             return false;
         }
 
-        // Atomic per-memory replace: clearing first is what stops a shrunk memory keeping stale
-        // higher chunk indices. If the upsert loop is interrupted the next index pass rebuilds
-        // this memory cleanly.
+        // One locked file operation for the whole memory, not one per vector — the previous
+        // RemoveAsync-then-loop took 1 + K locks and up to P + 2K appends. The in-memory replace
+        // is now genuinely atomic (one reference swap under the scope lock; a concurrent
+        // GetVectors can no longer observe the old-removed/new-not-yet-added gap the loop could
+        // expose). The on-disk append is narrower but not atomic — a crash mid-batch can still
+        // leave this memory half-replaced on disk; if that happens, the next index pass rebuilds
+        // it cleanly.
+        //
+        // A RETRY after a partial flush is a different failure and does not recover that way:
+        // FileRetry.RunAsync re-runs the whole write delegate, which reopens in FileMode.Append,
+        // so the retry's ops land after any torn fragment the first attempt left — and the op-log
+        // reader tolerates a torn record only at the tail, not in the middle. See
+        // VectorStore.ReplaceMemoryVectorsAsync's remarks; called out there, not fixed here.
         Func<Task> write = async () =>
         {
-            await _store.RemoveAsync(scope, subject, ct);
+            var batch = new (int? ChunkIndex, float[] Vector)[plan.Count];
             for (int i = 0; i < plan.Count; i++)
-                await _store.UpsertAsync(scope, subject, plan[i].ChunkIndex, vectors[i], ct);
+                batch[i] = (plan[i].ChunkIndex, vectors[i]);
+            await _store.ReplaceMemoryVectorsAsync(scope, subject, batch, ct);
         };
 
         if (retryOnUnavailable)

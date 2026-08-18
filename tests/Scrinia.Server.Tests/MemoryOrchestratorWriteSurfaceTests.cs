@@ -179,6 +179,14 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["the original body"], "orch-rollback-target"));
 
+        // Task 2 (write-path cost): a write against a previously-uncached scope now leaves the
+        // index cache absent rather than eagerly rebuilding it, so the first store above does not
+        // warm "local"'s cache. Warm it explicitly so the re-store's own LoadIndex-based identity
+        // resolution is a cache hit and finds the entry via the in-memory list rather than a cold
+        // Directory.EnumerateFiles scan — which silently skips the sidecar path once it is replaced
+        // by a directory below, misresolving this as a brand-new memory instead of an existing one.
+        _store.LoadIndex("local").Should().ContainSingle();
+
         string storeDir = _store.GetStoreDirForScope("local");
         string sidecar = Path.Combine(storeDir, "orch-rollback-target.meta.json");
         File.Delete(sidecar);

@@ -363,13 +363,17 @@ URI rather than throwing.
 
 **Scope resolution:** `ResolveReadScopes(scopes)`
 
-**Default-bodied members (a store may override for efficiency):** `TryUpdateEntry` (non-atomic
-load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart — an
-unsynchronized load→mutate→store unless overridden; both real stores override it as a
+**Default-bodied members (a store may override for efficiency)** — six of them: `TryUpdateEntry`
+(non-atomic load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart
+— an unsynchronized load→mutate→store unless overridden; both real stores override it as a
 compare-and-swap retry loop instead, so a concurrent writer's change is re-applied to the newer
 entry rather than silently lost), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
-unless overridden), `ListScoped(scopes, excludeTopics)`, and `ResolveReadScopes(scopes,
-excludeTopics)` — the last two post-filter `ListScoped`/`ResolveReadScopes` by scope, which is
+unless overridden), `AnyScoped(scopes, predicate)` — "does any entry match?" without the caller
+materializing a listing to test; the default is `ListScoped(scopes).Any(predicate)`, which is
+correct but still builds the full listing first, and `FileMemoryStore` overrides it to enumerate
+scope by scope and return on the first match — `ListScoped(scopes, excludeTopics)`, and
+`ResolveReadScopes(scopes, excludeTopics)` — the last two post-filter
+`ListScoped`/`ResolveReadScopes` by scope, which is
 cheap and correct even unoverridden because scope exclusion is a set-membership check, not a
 top-K-sensitive filter the way `pathPrefix`/`attributeFilter` were. `FileMemoryStore` overrides
 both for efficient scope-level filtering. There is no `SearchAll(..., excludeTopics)` default
@@ -472,9 +476,38 @@ Scans**, below, for why that is safe.
 
 The class previously also carried `NameToPosition`, `Rebuild()` and `GetOrComputeCorpusStats()`.
 None had a reader anywhere in the repo, and `NameToPosition` was rebuilt on every cache write for
-nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted the position map —
-they reload the scope from sidecars via `LoadEntriesFromSidecars` and replace the `CachedIndex`
-outright — and corpus stats are computed directly by `WeightedAttributeScorer` on every search.
+nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted the position map,
+and as of 2026-08-17 neither reloads the scope from sidecars to update the cache either: each
+builds a new `Entries` list with the written entry's slot replaced (or appended, or omitted for a
+remove) and installs a new `CachedIndex` over it — a single write no longer costs a full directory
+enumeration plus one read-and-parse per existing entry. `TryUpdateEntry` updates the cache the same
+way; it does read one sidecar — the entry it is about to mutate, see below — but never the scope.
+When the scope isn't already cached, a write leaves it uncached rather than installing a partial
+one; the
+next read cold-loads the whole scope from sidecars. This is the same handed-out-by-reference
+aliasing invariant described above — swap the whole object, never mutate `Entries` in place — the
+write path now satisfies it more cheaply than before. See
+`docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md` for why the invariant matters
+and `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for the before/after
+cost of this change. Corpus stats are computed directly by `WeightedAttributeScorer` on every
+search.
+
+**A write is no longer a resync point, and that is a real behaviour change.** Nothing invalidates
+`_indexCache` across processes — it never did — but while every write invalidated the cache and
+rebuilt it from disk, each write was an accidental resync: out-of-band changes to a scope's
+sidecars surfaced in a long-lived process on its next write to that scope. Copy-on-write removes
+that, so out-of-band changes now stay invisible to a running process indefinitely. This matters
+here specifically because `.scrinia/memories/**/*.meta.json` are git-tracked in workspaces that
+version their memory, so `git pull`, `git merge` and `git checkout` all produce exactly this
+state — under a live `scri serve`, that process keeps serving the pre-pull index. The accepted
+cost of the optimisation; restart the process (or write from it to a scope it has not cached) to
+pick the changes up.
+
+One deliberate exception: `TryUpdateEntry` reads the entry it is about to mutate off disk, inside
+the per-scope cross-process lock, and re-seats that entry's cached slot from what it persisted.
+That is not an optimisation but a correctness requirement — it writes back a complete entry derived
+from what it read, so a stale read would republish stale fields over another process's write. It
+resyncs one entry, not the scope.
 
 ### Artifact LRU Cache
 
@@ -500,9 +533,18 @@ cached `LoadIndex` takes no file lock.
 ### Concurrency
 
 - Per-scope `ReaderWriterLockSlim` for in-process index CRUD
-- Per-scope `CachedIndex` invalidated on write
+- Per-scope `CachedIndex` updated copy-on-write on write, not invalidated-then-rebuilt — see
+  **CachedIndex** above
 - `ConcurrentDictionary` for ephemeral store, scope locks, scope caches
-- Topic discovery cache with 2-second TTL
+- Topic discovery cache (`_cachedTopics`), no TTL — invalidated event-driven, not on a timer. All
+  three write paths follow the same rule: clear it only when the topic list can actually have
+  changed. `DiscoverTopics` lists a directory exactly when it holds at least one
+  `.nmp2`/`.meta.json`, so `Upsert` and `Remove` clear it only on a scope-lifecycle transition (a
+  `local:`-scoped directory gaining its first sidecar or losing its last), not on every write, and
+  `TryUpdateEntry` never clears it — it requires an existing sidecar and only ever adds or replaces
+  one, so the scope was and stays non-empty. (`SaveIndex` and `PersistMigratedEntry` still clear it
+  for any `local:` scope they touch: both can rewrite a scope's whole sidecar set, including
+  emptying it.)
 - Cross-process `FileLock` for filesystem-level coordination
 
 ### Keyword-Only Index Scans

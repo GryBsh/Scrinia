@@ -377,6 +377,64 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             "an entry with an inbound ref FIELD (no legacy keyword) should not be flagged as orphan");
     }
 
+    /// <summary>
+    /// Task 5: orphan detection now answers "does anything reference me?" via
+    /// <see cref="IMemoryStore.AnyScoped"/> instead of materializing <c>ListScoped(null)</c> and
+    /// calling <c>.Any</c> on the result. <c>ListScoped(null)</c> is a CROSS-SCOPE listing, and
+    /// every other test in this file references the target from within the very same topic scope
+    /// ("/test/..."), so a bug that narrowed <c>AnyScoped</c>'s scan to a single scope (e.g. only
+    /// the referrer's own scope, or only "local") would still pass them. Referrer and target live
+    /// in different topic scopes here to make that failure mode observable.
+    /// </summary>
+    [Fact]
+    public async Task OrphanDetection_FindsInboundRefFromADifferentScope()
+    {
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Content in one topic scope."], "/crossscopetarget/entry");
+        await _tools.Remember(
+            ["References [[/crossscopetarget/entry]] from a different topic."],
+            "/crossscopereferrer/entry",
+            keywords: ["ref:/crossscopetarget/entry"]);
+
+        await _sink.OnStoredAsync(
+            "/crossscopetarget/entry",
+            ["Content in one topic scope."],
+            store,
+            CancellationToken.None);
+
+        var (scope, subject) = store.ParseQualifiedName("/crossscopetarget/entry");
+        var entry = store.LoadIndex(scope).First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
+            "the inbound ref lives in a different topic scope than the target — AnyScoped(null, ...) " +
+            "must still find it, the same way the materialized ListScoped(null).Any(...) it replaced did");
+    }
+
+    /// <summary>The other direction of the same scope-spanning check: with the cross-scope referrer
+    /// removed, an entry with genuinely no inbound refs anywhere in the store is still marked orphan
+    /// — proving the lazy scan does not stop early and under-report.</summary>
+    [Fact]
+    public async Task OrphanDetection_MarksOrphan_WhenNoOtherScopeReferencesIt()
+    {
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Nothing points at this, anywhere."], "/crossscopelonely/entry");
+        await _tools.Remember(["Unrelated content, no reference."], "/othertopic/unrelated");
+
+        await _sink.OnStoredAsync(
+            "/crossscopelonely/entry",
+            ["Nothing points at this, anywhere."],
+            store,
+            CancellationToken.None);
+
+        var (scope, subject) = store.ParseQualifiedName("/crossscopelonely/entry");
+        var entry = store.LoadIndex(scope).First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        entry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
+            "no entry in any scope references this one, so it must still be marked orphan");
+    }
+
     // ── The legacy keyword carrier ─────────────────────────────────────────────
 
     /// <summary>

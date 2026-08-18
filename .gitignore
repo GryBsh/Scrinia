@@ -58,6 +58,10 @@ benchmarks/Scrinia.Retrieval.Benchmarks/tools/kompress/model-cache/
 # project run locally. Per-machine, not source-controlled.
 BenchmarkDotNet.Artifacts/
 
+# scripts/run-write-path-benchmarks.ps1's --artifacts output. Per-machine benchmark run results,
+# not source-controlled — the analysis doc records the numbers that matter.
+/artifacts/
+
 **/.venv/
 
 docs/proposals/

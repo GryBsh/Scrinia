@@ -10,6 +10,71 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — writing memories no longer re-reads the scope, and a memory's vectors replace in one locked write
+
+- **Writing a memory used to cost the whole scope.** `FileMemoryStore.Upsert`, `Remove` and
+  `TryUpdateEntry` invalidated the per-scope index cache on every write and rebuilt it by reading
+  and JSON-deserializing every sidecar in the scope — so writing N memories into a scope cost
+  O(N²) file reads, and `TryUpdateEntry` paid that cost twice. They now update the cached index
+  copy-on-write instead: build a new entry list with just the written entry's slot replaced (or
+  appended, or omitted for a remove) and install a new cached index over it, reading no sidecar the
+  write did not have to touch anyway. A scope that isn't already cached is left uncached rather
+  than partially populated; the next read cold-loads it as before. This still honours the
+  long-standing rule that a cached index is only ever swapped, never mutated in place
+  (`docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md`) — the write path now
+  satisfies it far more cheaply. See
+  `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for measured before/after
+  timing and allocation.
+
+- **`TryUpdateEntry` reads the entry it mutates off disk, inside the per-scope lock.** It writes
+  back a *complete* entry derived from what it read, so serving that read from the in-memory index
+  cache would republish stale metadata over a concurrent writer's — reverting fields the mutation
+  never touched. Since `.scrinia/memories/**/*.meta.json` are git-tracked in workspaces that
+  version their memory, a `git pull` under a running `scri serve` was enough to produce that state.
+  It now costs one sidecar read, not the scope-wide re-read it used to pay, so the cost this
+  release removes stays removed.
+
+- **Out-of-band changes to a scope's sidecars no longer surface on that scope's next write.**
+  Invalidate-and-rebuild made every write an accidental resync point with the filesystem; with
+  copy-on-write there is none, so a `git pull`, `merge` or `checkout` stays invisible to a
+  long-lived process (restart it, or read a scope it hasn't cached). The accepted cost of the
+  change above, recorded in `docs/architecture/core.md`.
+
+- **Legacy `"fields"`→`Attributes` normalization moved into the sidecar load seam itself.** Four
+  call sites used to each wrap their own read with `.Select(e => e.NormalizeAttributesKey())`;
+  `FileMemoryStore`'s internal `LoadEntriesFromSidecars` now applies it once, so no future read
+  site can forget to.
+
+- **Writes no longer clear the topic-discovery cache when the topic list can't have changed.**
+  `Upsert` and `Remove` now clear it only on a scope-lifecycle transition — a scope directory
+  gaining its first sidecar, or losing its last — instead of on every single write into an
+  already-populated scope. `TryUpdateEntry` no longer clears it at all: it only ever updates an
+  existing entry, so the scope was and stays non-empty and the topic list cannot change. It used to
+  clear it on every call, and `MaintenanceEventSink` calls it once per memory the stored content
+  references plus once or twice for the orphan marker, so that forced a full re-walk of the
+  `memories/` tree on the next search or scope resolution, several times per store event.
+
+- **`MaintenanceEventSink`'s auto-link/orphan-detection pass no longer materializes the whole
+  store to answer "does anything reference this memory?"** A new `IMemoryStore.AnyScoped(scopes,
+  predicate)` answers that without building the listing first. `FileMemoryStore` overrides it to
+  enumerate scope by scope and return on the first match; a store that hasn't overridden it (such
+  as `HttpMemoryStore`) inherits `ListScoped(scopes).Any(predicate)`, which is still correct but
+  materializes the listing exactly as before. The sink's second question — "does this entry still
+  carry the legacy `orphan` keyword?" — is about one named entry in one known scope, and now reads
+  that scope alone rather than scanning every scope in the store.
+
+- **A memory's vectors now replace in a single locked write.** `VectorStore.ReplaceMemoryVectorsAsync`
+  collapses what was a `RemoveAsync` call followed by one `UpsertAsync` per vector into one lock
+  acquisition, one file probe and one batch of appends. The in-memory replace is now genuinely
+  atomic — the new vector list is swapped in under the scope lock in one step, so a concurrent
+  vector read can no longer observe a half-replaced memory. The on-disk write is not atomic: the
+  delete and add operations still share one open file whose writer can flush more than once for
+  anything but a small batch, so a crash mid-write can still leave a memory half-replaced on disk —
+  recoverable the same way it always was, by the next index rebuild. What improved is the width of
+  that window, not its existence. `UpsertAsync`/`RemoveAsync` are unchanged and remain in use by
+  their other callers. See the measurements doc above for before/after timing, allocation and
+  file-operation counts.
+
 ### Fixed — one embed-and-index policy, and the GPU plugin no longer degrades the search it improves
 
 - **Installing the Vulkan embeddings plugin used to make semantic recall on long memories
@@ -18,9 +83,10 @@ and all assembly attributes.
   overlapping windows, while the plugin never windowed at all — so a 40 KB memory became one
   mean-pooled vector, or the provider's context limit was exceeded and the memory silently got
   zero vectors. A new `MemoryVectorIndexer` in `Scrinia.Core.Embeddings` now owns windowing,
-  the per-memory chunk cap, batching, the vector-count guard, remove-then-upsert ordering and
-  write retry for every path. The plugin's reindex additionally never removed prior vectors,
-  so it orphaned stale chunks behind each refresh; it now removes first like everything else.
+  the per-memory chunk cap, batching, the vector-count guard, an atomic-in-memory per-memory
+  vector replace and write retry for every path. The plugin's reindex additionally never removed
+  prior vectors, so it orphaned stale chunks behind each refresh; it now removes first like
+  everything else.
 
 - **Chunk-level semantic scores never reached the ranker.** `ChunkEntry.ChunkIndex` is 1-based
   over content elements, and that is the key the search scorer probes — but the built-in path

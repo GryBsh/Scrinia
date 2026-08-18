@@ -73,6 +73,47 @@ public sealed class CaseSensitiveFileStoreTests : IDisposable
     }
 
     /// <summary>
+    /// A case-sensitive filesystem can hold BOTH "Note.meta.json" and "note.meta.json" — the state
+    /// <c>ResolveSidecarPath</c>'s ordinal tie-break exists to decide between. <c>Remove</c> deletes
+    /// exactly ONE of them, so exactly one entry may leave the index cache.
+    /// <para>Its copy-on-write loop originally <c>continue</c>d on every case-insensitive match and
+    /// so evicted both twins. Before the write path stopped re-reading the scope that was invisible
+    /// (the next write reloaded the survivor from disk); now nothing does, so the survivor's sidecar
+    /// sits on disk unreachable through <c>LoadIndex</c>/search/list for the rest of the process's
+    /// life. The assertion that matters is the WARM one — a cold store re-reads the directory and
+    /// would pass either way.</para>
+    /// </summary>
+    [SkippableFact]
+    public void Remove_WithACaseTwinPresent_DropsOnlyTheDeletedEntryFromTheCache()
+    {
+        Skip.If(_dir is null, "This host cannot provide a case-sensitive directory.");
+        using var store = new FileMemoryStore(_dir!.Path);
+
+        store.Upsert(new ArtifactEntry("Note", "uri-upper", 1, 1, DateTimeOffset.UtcNow));
+        store.Upsert(new ArtifactEntry("note", "uri-lower", 1, 1, DateTimeOffset.UtcNow));
+
+        // Warm the cache with BOTH twins. Writes against an uncached scope leave it uncached, so
+        // without this read the Remove below would take the leave-absent branch and the eviction
+        // loop under test would never run.
+        store.LoadIndex().Should().HaveCount(2,
+            because: "the setup only reproduces the scenario if the filesystem really kept two "
+                   + "separately-cased sidecars");
+
+        // Neither casing exactly: forces ResolveSidecarPath's fallback scan, which sorts the
+        // candidates ordinally and takes the first — uppercase, so "Note.meta.json".
+        store.Remove("NOTE").Should().BeTrue();
+
+        store.LoadIndex().Should().ContainSingle(
+            because: "one sidecar was deleted, so exactly one entry may leave the cache — "
+                   + "evicting both twins strands the survivor's sidecar on disk, invisible to "
+                   + "every reader for the process lifetime");
+
+        using var cold = new FileMemoryStore(_dir!.Path);
+        cold.LoadIndex().Should().ContainSingle(
+            because: "disk and the warm cache must agree on how many memories survived");
+    }
+
+    /// <summary>
     /// <see cref="FileMemoryStore.DeleteArtifact"/>'s fallback directory scan is the exact
     /// counterpart of Remove's, and was the half left case-sensitive while Remove was fixed: before
     /// this fallback matched case-insensitively, <c>forget("mixedcase")</c> against a memory stored

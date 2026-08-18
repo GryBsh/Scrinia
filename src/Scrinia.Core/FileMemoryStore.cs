@@ -31,11 +31,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
 
-    // Topic discovery cache. Invalidated event-driven (set to null) by Upsert / SaveIndex
-    // when a topic-scope mutation occurs. No TTL — repeated DiscoverTopics calls between
-    // mutations are O(1) cache hits rather than re-scanning the topics directory tree.
-    // The earlier 2-second TTL drove a constant ~30 directory enumerations/minute on the
-    // search hot path even when nothing had changed.
+    // Topic discovery cache. Invalidated event-driven (set to null), never on a timer: SaveIndex
+    // and PersistMigratedEntry clear it for any "local:" scope they touch, while Upsert and
+    // Remove clear it only on a scope-lifecycle transition — a scope gaining its first sidecar or
+    // losing its last, which is exactly what DiscoverTopics keys off. TryUpdateEntry clears it
+    // never: it requires an existing sidecar and only ever adds or replaces one, so it cannot
+    // change the topic list. No TTL — repeated DiscoverTopics calls between mutations are O(1)
+    // cache hits rather than re-scanning the topics directory tree. The earlier 2-second TTL
+    // drove a constant ~30 directory enumerations/minute on the search hot path even when nothing
+    // had changed.
     private string[]? _cachedTopics;
 
     // Gate for the one-time v3 layout migration check — see MemoriesRoot below.
@@ -617,9 +621,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         // hit already returns whatever this process last loaded, lock or no lock. Taking the
         // lock here bought a file handle open and close per call and no guarantee whatsoever.
         //
-        // The in-process read lock STAYS. Writes replace the cache under EnterWriteLock (:560),
-        // so dropping it here would newly open a same-process read-your-writes race — which is
-        // not the same as the cross-process staleness above, and is not ours to introduce.
+        // The in-process read lock STAYS. Writes replace the cache under the EnterWriteLock
+        // WithExclusiveLock takes, so dropping it here would newly open a same-process
+        // read-your-writes race — which is not the same as the cross-process staleness above, and
+        // is not ours to introduce.
         //
         // Skipping GetLockPath also skips its GetStoreDirForScope call — which is load-bearing
         // for the layout-migration latch. Safe because every path that populates _indexCache
@@ -629,11 +634,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         //
         // RULING (the-sweep, Task 1, G4): this EnterReadLock/ExitReadLock pair is deliberately
         // NOT pinned by a test, after a real attempt to write one — but it is not dead code, and
-        // the race :558-560 names is real and present-day, not a hypothetical future one. This
-        // ruling does not weaken that claim; it explains why nothing here can pin it.
+        // the race the paragraph above names is real and present-day, not a hypothetical future
+        // one. This ruling does not weaken that claim; it explains why nothing here can pin it.
         //
         // What it protects: every write runs inside WithExclusiveLock, which holds EnterWriteLock
-        // across the write's ENTIRE body — sidecar I/O, LoadEntriesFromSidecars, and the final
+        // across the write's ENTIRE body — sidecar I/O, the copy-on-write rebuild, and the final
         // `_indexCache[scope] = new CachedIndex(...)`. Because a reader takes EnterReadLock here,
         // a same-process reader on another thread blocks until that write finishes and therefore
         // always observes the post-write cache. Without this lock, the reader's lock-free
@@ -705,7 +710,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             return cached.Entries;
 
         string storeDir = GetStoreDirForScope(scope);
-        var entries = LoadEntriesFromSidecars(storeDir);
+        // RAW, not the normalizing seam: AttributeMigration.MigratesTo below needs to see an
+        // entry that still carries LegacyFields (if any) so its own NormalizeAttributesKey()
+        // call can detect a change and trigger the durable sidecar rewrite. Feeding it an
+        // already-normalized entry makes that diff a no-op — the in-memory result is still
+        // correct (MigratesTo's forward-fill is a superset of NormalizeAttributesKey, so
+        // `entries[i] = upgraded` below normalizes the cached slot either way), but the sidecar
+        // on disk would never get rewritten from "fields" to "attributes".
+        var entries = LoadEntriesFromSidecarsRaw(storeDir);
 
         // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
         // recognized-key keywords) into the attributes model (Fields/Keywords) so every
@@ -744,30 +756,124 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return entries;
     }
 
+    /// <summary>
+    /// The load seam for a WHOLE SCOPE, and one of the two members that own the legacy
+    /// "fields" → Attributes normalization rule (<see cref="ArtifactEntry.NormalizeAttributesKey"/>)
+    /// per the invariant at <c>ArtifactEntry.cs:67</c> — an entry never escapes here with data
+    /// still sitting in <c>LegacyFields</c>. <see cref="LoadSidecar"/> is the other, for a single
+    /// entry. Callers must NOT re-apply the rule; that used to be pasted around every call site
+    /// (Upsert, Remove, TryUpdateEntry's two lookups) and one missed copy would have silently
+    /// hidden an entry's facets from search/filter/display for the process lifetime. See
+    /// Scrinia.Tests.Store.NormalizationSeamTests for the regression guard.
+    ///
+    /// <para>Two callers deliberately bypass normalization and read
+    /// <see cref="LoadEntriesFromSidecarsRaw"/> directly — <see cref="LoadIndexUnsafe"/> and
+    /// <see cref="EnumerateRawForMigration"/> — because
+    /// <see cref="Migration.AttributeMigration.MigratesTo"/> has to still see
+    /// <see cref="ArtifactEntry.LegacyFields"/> populated to detect a sidecar that needs
+    /// rewriting. Each says so at its own call site. Nothing else reads a sidecar without
+    /// normalizing it.</para>
+    /// </summary>
     private List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
+    {
+        var entries = LoadEntriesFromSidecarsRaw(storeDir);
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = entries[i].NormalizeAttributesKey();
+        return entries;
+    }
+
+    /// <summary>
+    /// The load seam for ONE sidecar, already located by <see cref="ResolveSidecarPath"/>.
+    /// Normalizes exactly as <see cref="LoadEntriesFromSidecars"/> does; returns null for a
+    /// missing, unreadable or corrupt file, matching that method's skip-corrupt behaviour.
+    /// </summary>
+    private static ArtifactEntry? LoadSidecar(string metaPath) =>
+        ReadSidecarRaw(metaPath)?.NormalizeAttributesKey();
+
+    /// <summary>
+    /// Locates the sidecar for <paramref name="sanitizedName"/> under <paramref name="storeDir"/>,
+    /// or returns null when the scope holds none. The exact-name probe is one stat and answers the
+    /// overwhelmingly common case; only a miss pays a directory enumeration.
+    ///
+    /// <para>RULING (remote-mode-leftovers, Task 2): the fallback scan matches
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> deliberately. <see cref="SanitizeName"/>
+    /// does not fold case, so on a case-sensitive filesystem an exact-name probe alone answers
+    /// "no such memory" for a sidecar differing only in casing — <c>forget("mixedcase")</c>
+    /// reporting not-found for a memory stored as "MixedCase", while every name match around it
+    /// (LoadIndex, TryUpdateEntry, the write paths) is case-insensitive. NTFS folds case itself by
+    /// default, so on an ordinary Windows volume the probe always succeeds and the fallback is
+    /// never entered; <c>CaseSensitiveFileStoreTests</c> uses a directory carrying NTFS's
+    /// per-directory case-sensitivity flag to exercise it, and SKIPS (never silently passes) on a
+    /// volume that cannot provide the flag.</para>
+    ///
+    /// <para>Tie-break, and it matters because <see cref="Remove"/> deletes what this returns: a
+    /// case-sensitive filesystem holding pre-branch data can have BOTH "Note.meta.json" and
+    /// "note.meta.json", and the fallback is only reached when the caller asked for neither
+    /// exactly. Directory enumeration order is not guaranteed — notably on ext4 — so candidates
+    /// are sorted ordinally and the first is taken, making the choice deterministic rather than
+    /// arbitrary. Ordinal sort puts uppercase first, so "Note.meta.json" wins. That is a coin toss
+    /// decided consistently, not a claim about which one is meant; the alternative considered was
+    /// refusing on ambiguity, rejected because it would make <c>forget()</c> fail with no name the
+    /// caller could give it instead.</para>
+    /// </summary>
+    private static string? ResolveSidecarPath(string storeDir, string sanitizedName)
+    {
+        string metaPath = Path.Combine(storeDir, sanitizedName + ".meta.json");
+        if (File.Exists(metaPath)) return metaPath;
+        if (!Directory.Exists(storeDir)) return null;
+
+        string wanted = Path.GetFileName(metaPath);
+        return Directory.EnumerateFiles(storeDir, "*.meta.json")
+            .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// The actual disk read behind <see cref="LoadEntriesFromSidecars"/>, deliberately NOT
+    /// normalized. Kept separate for <see cref="EnumerateRawForMigration"/>, whose documented
+    /// contract is to hand <see cref="Migration.AttributeMigration.MigratesTo"/> genuinely raw
+    /// entries: <c>MigratesTo</c> calls <c>NormalizeAttributesKey()</c> itself as part of
+    /// detecting whether an entry still carries the legacy "fields" key, and needs
+    /// <see cref="ArtifactEntry.LegacyFields"/> to still be populated to do that. If this fed
+    /// pre-normalized entries instead, every legacy-"fields" sidecar would look already-migrated
+    /// and <c>scri migrate</c> would silently stop rewriting it on disk.
+    /// </summary>
+    private List<ArtifactEntry> LoadEntriesFromSidecarsRaw(string storeDir)
     {
         if (!Directory.Exists(storeDir)) return [];
 
         var entries = new List<ArtifactEntry>();
         foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json"))
         {
-            try
-            {
-                // Retry the READ (only) on a transient lock: read-time forward-fill writes
-                // sidecars under LoadIndex's shared lock, so a concurrent reader can hit the
-                // File.Move replace window. Without the retry, that transient sharing violation
-                // would fall into the blanket "skip corrupt" catch below and silently drop the
-                // entry from this read. FileRetry retries transient IOExceptions and rethrows a
-                // permanently-stuck file (which then degrades to skip, as before). Deserialize
-                // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
-                string json = FileRetry.Run(() => File.ReadAllText(metaFile));
-                var entry = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
-                if (entry is not null)
-                    entries.Add(entry);
-            }
-            catch { /* skip corrupt sidecar */ }
+            var entry = ReadSidecarRaw(metaFile);
+            if (entry is not null)
+                entries.Add(entry);
         }
         return entries;
+    }
+
+    /// <summary>
+    /// One sidecar off disk, deserialized and NOT normalized. The single read rule shared by the
+    /// whole-scope load (<see cref="LoadEntriesFromSidecarsRaw"/>) and the single-entry one
+    /// (<see cref="LoadSidecar"/>), so the two cannot drift on retry or corruption handling.
+    /// Returns null for a missing, unreadable or corrupt file.
+    /// </summary>
+    private static ArtifactEntry? ReadSidecarRaw(string metaFile)
+    {
+        try
+        {
+            // Retry the READ (only) on a transient lock: read-time forward-fill writes
+            // sidecars under LoadIndex's shared lock, so a concurrent reader can hit the
+            // File.Move replace window. Without the retry, that transient sharing violation
+            // would fall into the blanket "skip corrupt" catch below and silently drop the
+            // entry from this read. FileRetry retries transient IOExceptions and rethrows a
+            // permanently-stuck file (which then degrades to skip, as before). Deserialize
+            // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
+            string json = FileRetry.Run(() => File.ReadAllText(metaFile));
+            return JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
+        }
+        catch { /* skip corrupt sidecar */ return null; }
     }
 
     /// <summary>
@@ -814,7 +920,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         foreach (string scope in ResolveReadScopes("all"))
         {
             string primaryDir = GetStoreDirForScope(scope);
-            var primary = LoadEntriesFromSidecars(primaryDir);
+            var primary = LoadEntriesFromSidecarsRaw(primaryDir);
             if (primary.Count == 0)
                 primary = LoadEntriesFromLegacyIndex(primaryDir); // raw index.json fallback
             foreach (var entry in primary)
@@ -997,6 +1103,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// from <see cref="LoadIndex"/>, can surface as an <see cref="InvalidOperationException"/> inside
     /// an unrelated concurrent enumerator. Pass a fresh or already-copied list (see
     /// <see cref="ImportTopicEntries"/> for the pattern).
+    /// <para>Ownership includes normalizing: the elements are replaced in place with their
+    /// <see cref="ArtifactEntry.NormalizeAttributesKey"/> form before anything reads them.</para>
     /// </summary>
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
@@ -1005,6 +1113,25 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
     {
+        // Normalize BEFORE anything else reads this list, because this list becomes the cache.
+        // WriteSidecarCore normalizes a LOCAL copy on its way to disk, so disk is always
+        // "attributes"-keyed; without this, the cache below would keep whatever the caller handed
+        // over. And a LegacyFields-bearing entry is exactly what a caller can hand over:
+        // LoadIndexUnsafe caches an entry RAW when AttributeMigration.MigratesTo reports no change
+        // (which it does whenever Attributes is already non-null, since NormalizeAttributesKey's
+        // coalesce is then a no-op — the footgun documented at ArtifactEntry.cs:63-68), and
+        // ImportTopicEntries — the only production caller of SaveIndex — builds its list from
+        // LoadIndex(topicScope).ToList(). Leaving it raw is the same cache-diverges-from-disk
+        // defect the load seam and Upsert's/TryUpdateEntry's cache writes exist to prevent, at the
+        // one write path that had not closed it.
+        //
+        // In place rather than into a copy: this method already takes ownership of the list per
+        // SaveIndex's contract, and the list is not yet reachable through _indexCache, so the
+        // never-mutate-a-published-list rule is not in play. No-op for an already-normalized or
+        // freshly-constructed entry.
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = entries[i].NormalizeAttributesKey();
+
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
@@ -1037,21 +1164,82 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             string storeDir = GetStoreDirForScope(scope);
             Directory.CreateDirectory(storeDir);
 
+            // A scope counts as "new" for topic-discovery purposes when it currently holds no
+            // sidecars — covers both a directory that did not exist yet AND one left behind,
+            // empty, by a prior Remove that emptied it (Remove deletes only the .meta.json
+            // files, never the directory). Checked AFTER Directory.CreateDirectory just above
+            // (idempotent — adds no files) but BEFORE WriteSidecar below, whose job is exactly
+            // to add the first file.
+            //
+            // Deliberately NOT `!Directory.Exists(storeDir)` computed before CreateDirectory:
+            // WithExclusiveLock already ran EnsureMaterialized, which unconditionally creates
+            // storeDir before this body executes at all, so by the time this body runs the
+            // directory always exists regardless of whether THIS write is the scope's first —
+            // that check would never fire.
+            bool scopeWasEmpty = !Directory.EnumerateFiles(storeDir, "*.meta.json").Any();
+
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
-            // Invalidate cache and rebuild from sidecars. Coalesce each entry's legacy "fields"
-            // key here (in-memory only, no write-back) so a write-first session — an Upsert
-            // before any cold LoadIndex on this scope — never caches an entry with Attributes ==
-            // null while its data sits in LegacyFields; that would silently hide the entry's
-            // facets from search/filter/display for the rest of the process lifetime. Mirrors
-            // LoadIndexUnsafe's cold-path forward-fill.
-            _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
-            _indexCache[scope] = new CachedIndex(entries);
+            // Copy-on-write cache update. Never re-read the scope's sidecars here: that made a
+            // single write cost a full directory enumeration plus one read and JSON parse per
+            // entry, so writing N memories cost O(N^2) reads (finding H5).
+            //
+            // MUST install a NEW CachedIndex over a NEW list. LoadIndex hands Entries out BY
+            // REFERENCE, and that is safe only because every cache write replaces the whole
+            // object rather than mutating it — see
+            // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
+            //
+            // When the scope is not cached, leave it absent rather than installing a cache
+            // holding only this entry; the next read cold-loads the whole scope.
+            //
+            // ORDERING (decision, see task-2-report.md): replace-in-slot for an existing name,
+            // append for a new one — option (a), not a sort-both-paths scheme. The cold path
+            // (LoadEntriesFromSidecarsRaw) never sorts; it yields raw Directory.EnumerateFiles
+            // order, which .NET does not document as stable or alphabetical. No caller of
+            // LoadIndex/ListScoped/GatherTopicInfos/ListTopicArtifacts sorts or otherwise
+            // depends on a particular order for correctness — they consume whatever order
+            // arrives, which was already filesystem-arbitrary before this change. Appending a
+            // new entry (or replacing one in place) therefore cannot violate an ordering
+            // contract that never existed.
+            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            {
+                // Cache the NORMALIZED entry, not the caller's raw parameter. WriteSidecarCore
+                // calls entry.NormalizeAttributesKey() on a LOCAL copy before serializing, so disk
+                // always gets the "attributes"-keyed form — but that normalization never escaped
+                // back to this method. Caching `entry` unchanged would let a LegacyFields-bearing
+                // entry (still carrying data under the old "fields" key, Attributes == null) sit
+                // in the cache while disk holds the normalized form: exactly the divergence the
+                // load seam (LoadEntriesFromSidecars) exists to prevent, reintroduced on the write
+                // side. Idempotent no-op for an already-normalized or freshly-constructed entry.
+                var cacheEntry = entry.NormalizeAttributesKey();
+                string target = SanitizeName(cacheEntry.Name);
+                var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
+                bool replaced = false;
+                foreach (var existing in cachedIndex.Entries)
+                {
+                    if (!replaced
+                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        next.Add(cacheEntry);
+                        replaced = true;
+                        continue;
+                    }
+                    next.Add(existing);
+                }
+                if (!replaced) next.Add(cacheEntry);
+                _indexCache[scope] = new CachedIndex(next);
+            }
+            else
+            {
+                _indexCache.TryRemove(scope, out _);
+            }
 
-            // Invalidate topic discovery cache when saving a topic scope
-            if (scope.StartsWith("local:", StringComparison.Ordinal))
+            // Only a scope transitioning from empty (no sidecars) to non-empty changes the
+            // topic list; writing into an already-populated topic does not. Blanket
+            // invalidation here forced DiscoverTopics to re-enumerate directories on every
+            // write (finding H5).
+            if (scopeWasEmpty && scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
@@ -1063,67 +1251,72 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return WithExclusiveLock(scope, () =>
         {
             string storeDir = GetStoreDirForScope(scope);
-            string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
 
-            if (!File.Exists(metaPath))
-            {
-                // RULING (remote-mode-leftovers, Task 2): pinned by
-                // CaseSensitiveFileStoreTests.Remove_DeletesCaseMismatchedName in
-                // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
-                // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI
-                // leg. The test skips (never silently passes) on a volume that cannot provide the
-                // flag.
-                //
-                // SanitizeName does not fold case, so on a case-sensitive filesystem the exact-name
-                // probe above answers "no such memory" for a sidecar that differs only in casing —
-                // forget("mixedcase") reporting not-found for a memory stored as "MixedCase", while
-                // every name match around it (LoadIndex, TryUpdateEntry, the write paths) is
-                // case-insensitive. This scan restores the agreement. NTFS folds case itself by
-                // default, so on an ordinary Windows volume the probe above always succeeds and this
-                // branch is never entered — the guard test above uses a directory that opts out of
-                // that default, which is what exercises it.
-                //
-                // Kept as a fallback rather than replacing the probe: the exact-name hit is the
-                // overwhelmingly common case and costs one stat, where this costs a directory
-                // enumeration. Nothing about the found path changes.
-                //
-                // Tie-break, and it matters because this is a delete: a case-sensitive filesystem
-                // holding pre-branch data can have BOTH "Note.meta.json" and "note.meta.json", and
-                // this branch is only entered when the caller asked for neither exactly (an exact
-                // name would have hit the probe above). Directory enumeration order is not
-                // guaranteed — notably on ext4 — so the candidates are sorted ordinally and the
-                // first is taken, making the choice deterministic rather than arbitrary. Ordinal
-                // sort puts uppercase first, so "Note.meta.json" wins over "note.meta.json". That
-                // is a coin toss decided consistently, not a claim about which one is meant; the
-                // alternative considered was refusing on ambiguity, rejected because it would make
-                // forget() fail with no name the caller could give it instead.
-                string wanted = Path.GetFileName(metaPath);
-                string? actual = Directory.Exists(storeDir)
-                    ? Directory.EnumerateFiles(storeDir, "*.meta.json")
-                        .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
-                        .OrderBy(p => p, StringComparer.Ordinal)
-                        .FirstOrDefault()
-                    : null;
-                if (actual is null)
-                    return false;
-                metaPath = actual;
-            }
+            // Exact-name probe with a case-insensitive fallback scan — see ResolveSidecarPath for
+            // the ruling on why the fallback exists and how its tie-break is decided. Pinned by
+            // CaseSensitiveFileStoreTests.Remove_DeletesCaseMismatchedName.
+            string? metaPath = ResolveSidecarPath(storeDir, SanitizeName(name));
+            if (metaPath is null)
+                return false;
 
             // Delete the sidecar file
             File.Delete(metaPath);
 
-            // Invalidate cache and rebuild from remaining sidecars. Coalesce legacy "fields" here
-            // too, in-memory only — see the matching comment in Upsert for why a write-first
-            // Remove must not cache an un-coalesced entry.
-            _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
-            _indexCache[scope] = new CachedIndex(entries);
+            // Copy-on-write cache update — see the matching comment in Upsert for why this must
+            // install a NEW CachedIndex and must not re-read the scope's sidecars.
+            //
+            // Match against the sidecar that was actually deleted, not necessarily the caller's
+            // raw `name`: the case-mismatch fallback can resolve `name` to a differently-cased
+            // sidecar on a case-sensitive filesystem (see ResolveSidecarPath). metaPath's file
+            // name IS the sanitized stem WriteSidecar used to write it, so compare against that
+            // directly instead of re-deriving it from the caller's argument.
+            //
+            // FIRST MATCH ONLY, the same `!removed &&` guard Upsert's loop carries, and here it is
+            // load-bearing rather than defensive: exactly ONE file was deleted, so exactly one
+            // entry may leave the cache. A case-sensitive filesystem holding pre-branch data can
+            // carry both "Note.meta.json" and "note.meta.json" — the state the tie-break in
+            // ResolveSidecarPath exists for — and dropping every case-insensitive match would
+            // evict BOTH twins while deleting one file, leaving the survivor's sidecar on disk but
+            // invisible to LoadIndex/search/list for the rest of the process's life (nothing
+            // re-reads the scope on a write any more). Which of two twins the loop drops is not
+            // pinned down: the cache can be left showing the survivor under the deleted twin's
+            // casing until the next cold load. That is cosmetic — the entry count is right and the
+            // surviving sidecar stays reachable — where losing the survivor entirely is not.
+            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            {
+                string target = Path.GetFileName(metaPath)[..^".meta.json".Length];
+                var next = new List<ArtifactEntry>(cachedIndex.Entries.Count);
+                bool dropped = false;
+                foreach (var existing in cachedIndex.Entries)
+                {
+                    if (!dropped
+                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        dropped = true;
+                        continue;
+                    }
+                    next.Add(existing);
+                }
+                _indexCache[scope] = new CachedIndex(next);
+            }
+            else
+            {
+                _indexCache.TryRemove(scope, out _);
+            }
 
-            // Invalidate topic discovery cache when removing from a topic scope. Without
-            // this, DiscoverTopics keeps reporting a topic that has no remaining entries
-            // until the cache TTL eventually flushes — mirrors what SaveIndex/Upsert do
-            // at the corresponding write paths.
-            if (scope.StartsWith("local:", StringComparison.Ordinal))
+            // Invalidate topic discovery cache only when removing this entry emptied the scope.
+            // There is no TTL to fall back on — _cachedTopics is invalidated event-driven and
+            // nothing else clears it — so without invalidating here, DiscoverTopics would keep
+            // reporting a topic with no remaining entries for the rest of the process's life.
+            // This is the mirror image of Upsert's scope-lifecycle check (first sidecar gained
+            // there, last sidecar lost here); SaveIndex clears unconditionally instead, because it
+            // rewrites a scope's whole sidecar set and can empty it outright. Narrowed to fire
+            // only WHEN the scope is now empty: a removal that leaves other entries behind cannot
+            // change the topic list. Probe the filesystem rather than the cache — the cache may be
+            // absent, and DiscoverTopics answers from the filesystem, so the filesystem is the
+            // authority for this question.
+            if (scope.StartsWith("local:", StringComparison.Ordinal)
+                && !Directory.EnumerateFiles(storeDir, "*.meta.json").Any())
                 _cachedTopics = null;
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
@@ -1139,6 +1332,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// the async typing sink uses to write attribute promotions back — it fires NO event sinks.
     /// Resolves identity from the sidecars themselves (case-insensitively, like every other name
     /// match in this type) and reuses <see cref="Upsert"/>'s persist/invalidate tail.
+    ///
+    /// <para><b>The entry handed to <paramref name="mutate"/> comes off disk, inside the lock.</b>
+    /// That is what makes "load-mutate-persist" true across processes rather than only within one:
+    /// the lock <see cref="WithExclusiveLock"/> takes is a real cross-process file lock, and this
+    /// method writes back a COMPLETE entry derived from what it read, so a lookup served from
+    /// <c>_indexCache</c> — which nothing invalidates across processes — would silently roll back
+    /// another writer's edits to every field the mutation does not itself touch.</para>
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
@@ -1146,38 +1346,39 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         {
             string storeDir = GetStoreDirForScope(scope);
 
-            // RULING (remote-mode-leftovers, Task 2): the `File.Exists(SanitizeName(subject) +
-            // ".meta.json")` fast path that used to stand here is gone, deliberately.
+            // DISK-AUTHORITATIVE, and it has to be. This does not merely READ the entry: `mutate`
+            // and MemoryDerivation.ForMetadataUpdate below build the full entry that gets written
+            // back FROM it, so every field the mutation leaves alone (Uri, OriginalBytes,
+            // ChunkEntries, ContentPreview, TermFrequencies, ...) is copied from whatever this
+            // lookup returned. Serving it from `_indexCache` would therefore not just answer with
+            // stale data, it would PERSIST stale data over a concurrent writer's — and staleness
+            // here is not hypothetical: nothing invalidates _indexCache across processes (see
+            // LoadIndex's fast lane), and this repository's own `.scrinia/memories/**/*.meta.json`
+            // are git-tracked, so a `git pull` under a live `scri serve` is enough to make every
+            // warm entry in that scope stale. The cross-process lock this body runs under exists
+            // precisely to sequence this read against another process's write; reading in-memory
+            // state inside it throws away the only thing the lock is for.
             //
-            // What it did: SanitizeName does not fold case, so on a case-sensitive filesystem the
-            // gate answered "no such entry" for a subject whose sidecar differs only in casing, and
-            // TryUpdateEntry returned false for an entry that exists — without invoking mutate, so
-            // the caller could not tell it apart from a genuine miss. The lookup immediately below
-            // is already case-insensitive and is the authority; the gate was an optimization that
-            // could only ever disagree with it by being wrong.
+            // ONE sidecar read, not the whole scope. ResolveSidecarPath answers the identity
+            // question with a single stat on the common path (only a genuine miss pays a directory
+            // enumeration), and it carries the same case-insensitive fallback Remove uses, so
+            // "stored as MixedCase, looked up as mixedcase" resolves here as it does there —
+            // pinned by CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject,
+            // which runs against a directory carrying NTFS's per-directory case-sensitivity flag
+            // and SKIPS (never silently passes) where the flag cannot be obtained. This is O(1) in
+            // scope size, which is the property finding H5 is about; the warm-cache read that
+            // stood here briefly bought a list scan over a file read and paid for it with the
+            // guarantee above.
             //
-            // Pinned by CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject in
-            // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
-            // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI leg.
-            // The test skips (never silently passes) on a volume that cannot provide the flag. NTFS
-            // is case-insensitive by default, so on an ordinary Windows volume File.Exists would
-            // succeed for a case-mismatched subject either way and the removed gate would never have
-            // disagreed with the lookup below; the guard test's directory opts out of that default.
+            // "Entry genuinely missing -> false, and mutate never runs" is unchanged: a scope
+            // directory that does not exist, or holds no matching sidecar, yields null here.
+            // Pinned by TryUpdateEntryTests.MissingEntry_ReturnsFalse.
             //
-            // What is unchanged: "entry genuinely missing -> false, and mutate never runs".
-            // LoadEntriesFromSidecars returns [] for a directory that does not exist, so the
-            // `current is null` guard below answers that case exactly as the gate did. Pinned by
-            // MissingEntry_ReturnsFalse in the same file.
-            //
-            // What it cost, since the gate was not free: it was the only thing keeping a MISS from
-            // paying a full LoadEntriesFromSidecars scan, which a miss now always pays. Judged
-            // fine, and deliberately so — a hit already paid that identical scan (the lookup below
-            // is unchanged), and the sole production caller is EntityTypingEventHandler.PromoteAsync
-            // on a detached background task, one call per write event, never in a loop. Trading a
-            // correct answer for a stat on the rare path is the wrong way round.
-            var current = LoadEntriesFromSidecars(storeDir)
-                .Select(e => e.NormalizeAttributesKey())
-                .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
+            // LoadSidecar is a load seam and normalizes legacy "fields" itself, so the mutator
+            // always sees Attributes populated — this path (unlike LoadIndexUnsafe) has no
+            // AttributeMigration.MigratesTo forward-fill of its own.
+            string? metaPath = ResolveSidecarPath(storeDir, SanitizeName(subject));
+            var current = metaPath is null ? null : LoadSidecar(metaPath);
             if (current is null) return false;
 
             var updated = mutate(current);
@@ -1191,12 +1392,51 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
             WriteSidecar(updated, storeDir);
 
-            _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
-            _indexCache[scope] = new CachedIndex(entries);
+            // Copy-on-write cache update — see the matching comment in Upsert for why this must
+            // install a NEW CachedIndex and must not re-read the scope's sidecars.
+            //
+            // Cache the NORMALIZED entry, exactly as Upsert's cache write does, and for the same
+            // reason: disk always gets the "attributes"-keyed form (WriteSidecarCore normalizes a
+            // local copy before serializing) and the cache must not diverge from it. `current` is
+            // normalized — LoadSidecar is a load seam — so on today's paths this only has to
+            // survive `mutate` handing back an entry it constructed with LegacyFields set. That is
+            // reachable through the public delegate, and normalizing costs nothing when there is
+            // nothing to normalize. Pinned by IndexCacheWritePathTests.
+            var cacheEntry = updated.NormalizeAttributesKey();
+            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            {
+                string target = SanitizeName(cacheEntry.Name);
+                var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
+                bool replaced = false;
+                foreach (var existing in cachedIndex.Entries)
+                {
+                    if (!replaced
+                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        next.Add(cacheEntry);
+                        replaced = true;
+                        continue;
+                    }
+                    next.Add(existing);
+                }
+                if (!replaced) next.Add(cacheEntry);
+                _indexCache[scope] = new CachedIndex(next);
+            }
+            else
+            {
+                _indexCache.TryRemove(scope, out _);
+            }
 
-            if (scope.StartsWith("local:", StringComparison.Ordinal))
-                _cachedTopics = null;
+            // No _cachedTopics invalidation, and that is the same scope-lifecycle rule Upsert and
+            // Remove follow rather than an omission. DiscoverTopics lists a directory as a topic
+            // exactly when it holds at least one .nmp2 or .meta.json; a successful TryUpdateEntry
+            // requires an existing sidecar, so the scope was non-empty before this write, and this
+            // write only ever adds or replaces a sidecar — even a name-changing `mutate` leaves the
+            // original in place and writes a second one. The topic list therefore cannot change.
+            // Clearing it unconditionally cost the next ResolveReadScopes/search a full re-walk of
+            // the memories/ tree — repeatedly, since MaintenanceEventSink calls this once per
+            // memory the stored content references plus once or twice for the orphan marker, on
+            // every store event. H5's own shape, on the branch that removes H5.
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
 
@@ -1648,6 +1888,37 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 result.Add(new ScopedArtifact(scope, entry));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Lazy override of the interface default: walks the same source ListScoped(string?) does —
+    /// <see cref="ListEphemeral"/> then per-scope <see cref="LoadIndex"/> — but returns on the
+    /// first match instead of materializing a <see cref="List{T}"/> first. A scope after the match
+    /// is never loaded at all; the default (<c>ListScoped(scopes).Any(predicate)</c>) would load
+    /// every scope before testing any of them.
+    /// </summary>
+    public bool AnyScoped(string? scopes, Func<ScopedArtifact, bool> predicate)
+    {
+        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
+        if (!includeEphemeral && scopes is not null)
+        {
+            includeEphemeral = scopes
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (includeEphemeral && ListEphemeral().Any(predicate))
+            return true;
+
+        foreach (string scope in ResolveReadScopes(scopes))
+        {
+            foreach (var entry in LoadIndex(scope))
+            {
+                if (predicate(new ScopedArtifact(scope, entry)))
+                    return true;
+            }
+        }
+        return false;
     }
 
     // ── Entity Facts ─────────────────────────────────────────────────────────

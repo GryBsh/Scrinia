@@ -51,7 +51,7 @@ src/Scrinia.Core/Embeddings/              Built-in embeddings (zero native deps)
   VectorWriteRetry.cs                     Bounded retry for detached/event-sink writers
   VectorIndex.cs                          SIMD cosine similarity + flat-scan search
   MemoryVectorIndexer.cs                  The single embed-and-index policy (windowing, cap,
-                                           batching, count guard, remove-then-upsert, retry)
+                                           batching, count guard, atomic-in-memory replace, retry)
   VectorScoreProjection.cs                The single read-side key projection (element + memory keys)
   EmbeddingReindexer.cs                   Bulk reindex (in-process and sink-driven variants)
   ChunkedSignature.cs                     Composes the signature (provider|chunk config|layout)
@@ -222,6 +222,8 @@ public sealed class VectorStore : IDisposable, IVectorStore
     public IReadOnlyList<VectorEntry> GetVectors(string scope);
     public Task UpsertAsync(string scope, string name, int? chunkIndex, float[] vector, CancellationToken ct);
     public Task RemoveAsync(string scope, string name, CancellationToken ct);
+    public Task ReplaceMemoryVectorsAsync(
+        string scope, string name, IReadOnlyList<(int? ChunkIndex, float[] Vector)> vectors, CancellationToken ct);
     public int Count();
 
     public bool HasStaleQuarantines { get; }
@@ -232,6 +234,12 @@ public sealed class VectorStore : IDisposable, IVectorStore
 **Storage location:** `.scrinia/embeddings/{scope}/vectors.bin`
 
 Ephemeral scope vectors are stored in-memory only.
+
+`UpsertAsync`/`RemoveAsync` remain for their other callers (single-vector writes, and clearing a
+whole memory's vectors on `forget`). `ReplaceMemoryVectorsAsync` replaces every vector held for one
+memory as a single locked file operation and is what `MemoryVectorIndexer` uses for every
+store/append/reindex — see [Chunked Embeddings](#chunked-embeddings) below for its cost and
+atomicity shape.
 
 ### SVF3 Binary Format
 
@@ -293,8 +301,9 @@ log is still vector-reachable (it was silently lost to truncation, or to the pro
 limit, under the retired whole-document-vector layout).
 
 Windows are an implementation detail of the vector store: they never appear in a supplemental
-score key. **`VectorStore.UpsertAsync` deduplicates on `(name, chunkIndex)`**, so two windows of
-the same element could not share the element's own index without colliding — the stored chunk
+score key. **`VectorStore.ReplaceMemoryVectorsAsync` (like `UpsertAsync`) deduplicates on
+`(name, chunkIndex)`**, so two windows of the same element could not share the element's own index
+without colliding — the stored chunk
 index is therefore two-level, `elementIndex * ChunkIndexStride + windowOrdinal` (stride =
 `MemoryVectorIndexer.ChunkIndexStride` = 1000), and `MemoryVectorIndexer.ElementIndexOf` recovers
 the element by integer division. `EmbeddingOptions.MaxChunksPerMemory` is asserted well below the
@@ -335,12 +344,25 @@ the existing sidecar pipeline; note the cap counts windows across the whole cont
 every non-blank element contributes at least one, so it also bounds how many content elements
 can carry a vector), batching through `EmbedBatchAsync`, the vector-count guard (a provider
 returning the wrong vector count is treated as failure, not a partial write — the guard runs
-*before* `RemoveAsync` so a bad response can't wipe an existing memory's vectors and leave nothing
-in their place), remove-then-upsert ordering, and (for detached callers) write retry via
-`VectorWriteRetry`.
+*before* the batch replace below so a bad response can't wipe an existing memory's vectors and
+leave nothing in their place), and (for detached callers) write retry via `VectorWriteRetry`.
 
-The write itself is an atomic per-memory replace — `RemoveAsync(scope, subject)` first, then
-`UpsertAsync` per window — so a memory shrunk from 8 windows to 5 leaves no stale chunks 5–7.
+The write itself is one call to `VectorStore.ReplaceMemoryVectorsAsync`: a single locked file
+operation (one lock acquisition, one file probe, one batch of appends) that replaces every vector
+held for the memory, superseding what used to be a `RemoveAsync(scope, subject)` call followed by
+one `UpsertAsync` per window — one lock and one file open per vector instead of one for the whole
+memory. See `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for the
+measured before/after cost, including the file-operation-count evidence for the K-locks-collapsed-
+to-one claim. A memory shrunk from 8 windows to 5 leaves no stale chunks 5–7, exactly as the old
+remove-then-upsert sequence guaranteed.
+
+**How atomic this replace actually is.** The in-memory replace is atomic: the new vector list is
+built and swapped into place under the scope lock in one step, so a concurrent `GetVectors` can
+never observe an old-removed/new-not-yet-added gap. The on-disk append is *not* atomic — the
+deletes and adds still share one open file/writer whose buffer can flush more than once for
+anything but a small batch, so a crash mid-batch can still leave a memory half-replaced on disk,
+recoverable the same way it always was: the next index pass rebuilds it cleanly. What improved is
+the *width* of that on-disk window (one open/close instead of up to K), not its existence.
 
 This one policy replaces what used to be six divergent copies:
 
@@ -348,7 +370,8 @@ This one policy replaces what used to be six divergent copies:
   `BuiltInEmbeddingsService` (server, both `IMemoryEventSink` and `IMemoryOperationHook`) each
   construct a `MemoryVectorIndexer` and delegate to it. An append re-reads the memory's full
   current content and reindexes the whole thing — indexing only the appended fragment would
-  destroy the rest of the memory's vectors, since the replace is atomic.
+  destroy the rest of the memory's vectors, since the replace is a full replace, not a merge (see
+  above for how atomic it actually is).
 - **Bulk path** (`EmbeddingReindexer.ReindexAsync` / `BuiltInEmbeddingsService.ReindexStoreAsync`):
   same policy, iterating every persistent memory in the store, with `retryOnUnavailable: false` so
   a locked vector file fails fast per item instead of retrying for up to 42s per memory and
@@ -518,11 +541,12 @@ This means semantic search works out of the box with zero plugins installed. The
 In-process `IMemoryEventSink` that handles embed-and-index without a child process. It holds a
 `MemoryVectorIndexer` and delegates every operation to it rather than embedding directly:
 
-- **On store:** `MemoryVectorIndexer.IndexAsync` — windows every content element, upserts every
-  window's vector.
+- **On store:** `MemoryVectorIndexer.IndexAsync` — windows every content element and replaces the
+  memory's whole vector set in one batched write.
 - **On append:** re-reads the memory's full current content from its artifact and calls
   `IndexAsync` on the whole thing — indexing only the appended fragment would destroy the rest of
-  the memory's vectors, since `IndexAsync`'s replace is atomic.
+  the memory's vectors, since `IndexAsync` replaces (not merges) a memory's vector set; see
+  [Chunked Embeddings](#chunked-embeddings) above for how atomic that replace actually is.
 - **On forget:** `MemoryVectorIndexer.RemoveAsync` — removes all vectors for the memory from
   `VectorStore`.
 
@@ -540,7 +564,7 @@ The plugin exposes 5 MCP tools:
 
 | Tool | Parameters | Returns |
 |------|-----------|---------|
-| `index` | `scope`, `name`, `content` (the memory's full content array) | `{ ok: bool }` — **preferred.** Runs `MemoryVectorIndexer.IndexAsync` inside the plugin process, so windowing, the chunk cap, and remove-then-upsert ordering are the same policy every other path uses. |
+| `index` | `scope`, `name`, `content` (the memory's full content array) | `{ ok: bool }` — **preferred.** Runs `MemoryVectorIndexer.IndexAsync` inside the plugin process, so windowing, the chunk cap, and the atomic-in-memory batch replace are the same policy every other path uses. |
 | `status` | none | Provider type, availability, dimensions, vector count |
 | `search` | `query`, `scope`, `topK` | `Dictionary<string, double>` (name → similarity), via `VectorScoreProjection` |
 | `upsert` | `scope`, `name`, `chunkIndex?`, `text` | Success message — **legacy.** Still supported for a plugin process too old to expose `index`, but does not window: a long memory embeds as one mean-pooled vector. `McpPluginHost` logs a `[scrinia:warn]` once per connection when it falls back to this. |
@@ -637,9 +661,12 @@ Rebuild per the table under "LayoutRevision" above.
 `Scrinia.Tests` includes embedding tests in `Embeddings/`:
 - VectorStore: SVF1/SVF2/SVF3 format, upsert, remove (including the lazy-load-on-cold-scope fix),
   compaction, scope isolation
+- `VectorBatchReplaceTests`: `ReplaceMemoryVectorsAsync` is observationally identical to the old
+  `RemoveAsync`-then-`UpsertAsync`-loop it replaced, including for a repeated `ChunkIndex` in one
+  batch, an empty replacement plan, and a reload from disk
 - VectorIndex: SIMD cosine similarity, search ranking
-- MemoryVectorIndexer: windowing, the chunk cap, the vector-count guard ordering, remove-then-upsert,
-  the element/window stride encoding, retry behavior
+- MemoryVectorIndexer: windowing, the chunk cap, the vector-count guard ordering, the atomic batch
+  replace, the element/window stride encoding, retry behavior
 - VectorScoreProjection: element-key and memory-key aggregation, the legacy below-stride guard
 - HybridReranker: Score integration with BM25
 - BertTokenizer: WordPiece tokenization, TokenizeRaw, VocabSize (skipped without vocab file)

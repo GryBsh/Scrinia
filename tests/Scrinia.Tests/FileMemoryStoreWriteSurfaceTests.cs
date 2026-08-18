@@ -230,6 +230,14 @@ public class FileMemoryStoreWriteSurfaceTests
         using var tmp = new TempWorkspace();
         await tmp.Store.StoreAsync(new MemoryWrite("target", "local", ["the original body"]));
 
+        // Task 2 (write-path cost): a write against a previously-uncached scope now leaves the
+        // index cache absent rather than eagerly rebuilding it, so the store above does not warm
+        // "local"'s cache. Warm it explicitly so the re-store's own LoadIndex-based identity
+        // resolution is a cache hit and finds the entry via the in-memory list rather than a cold
+        // Directory.EnumerateFiles scan — which silently skips the sidecar path once it is replaced
+        // by a directory below, misresolving this as a brand-new memory instead of an existing one.
+        tmp.Store.LoadIndex("local").Should().ContainSingle();
+
         string storeDir = tmp.Store.GetStoreDirForScope("local");
         string sidecar = Path.Combine(storeDir, "target.meta.json");
         File.Delete(sidecar);

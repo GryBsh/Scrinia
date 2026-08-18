@@ -54,12 +54,13 @@ public interface IMemoryStore
 
     // Neither StoreAsync nor AppendAsync has a default implementation, deliberately: every store
     // implements both, so a store added later cannot silently inherit a derivation that is wrong
-    // for it. This is a rule about DERIVATION, not a policy for the whole interface — five members
-    // below do carry defaults, and carry them correctly. Three of the five read through ListScoped
+    // for it. This is a rule about DERIVATION, not a policy for the whole interface — six members
+    // below do carry defaults, and carry them correctly. Four of the six read through ListScoped
     // and are safe because of its completeness contract: GetEntityFactStore, ListScoped(scopes,
-    // excludeTopics), and ResolveReadScopes(scopes, excludeTopics). The other two, TryUpdateEntry
-    // and TryUpdateEphemeral, do not read through it at all — they go via LoadIndex and
-    // GetEphemeral respectively — and are safe for their own reasons, documented on each.
+    // excludeTopics), ResolveReadScopes(scopes, excludeTopics), and AnyScoped(scopes, predicate).
+    // The other two, TryUpdateEntry and TryUpdateEphemeral, do not read through it at all — they
+    // go via LoadIndex and GetEphemeral respectively — and are safe for their own reasons,
+    // documented on each.
 
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
@@ -99,9 +100,8 @@ public interface IMemoryStore
     /// <para>Name matching is case-insensitive here — <c>SanitizeName</c> does not fold case, so an
     /// ordinal comparison silently reported "not found" for an entry stored under a different
     /// casing. Every implementation now agrees, on every filesystem: this default,
-    /// <c>FileMemoryStore.TryUpdateEntry</c> (which resolves identity from the sidecars themselves,
-    /// with no <c>File.Exists</c> gate in front of it), <c>FileMemoryStore.Remove</c> (whose
-    /// exact-name probe falls back to a case-insensitive sidecar scan), and
+    /// <c>FileMemoryStore.TryUpdateEntry</c> and <c>FileMemoryStore.Remove</c> (which share one
+    /// resolver: an exact-name probe falling back to a case-insensitive sidecar scan), and
     /// <c>HttpMemoryStore.TryUpdateEntry</c>. No case-sensitive gate remains on any of these
     /// paths.</para>
     /// </summary>
@@ -152,6 +152,24 @@ public interface IMemoryStore
     /// merely lose entries. <c>PagedListingConformanceTests</c> is what holds this now.</para>
     /// </summary>
     List<ScopedArtifact> ListScoped(string? scopes = null);
+
+    /// <summary>
+    /// True if any entry in <paramref name="scopes"/> (or across every readable scope when null)
+    /// matches <paramref name="predicate"/>. Answers a boolean without requiring the caller to
+    /// materialize the listing it would otherwise call <see cref="ListScoped(string?)"/> and
+    /// <c>.Any(...)</c> over.
+    ///
+    /// <para>Default implementation is <c>ListScoped(scopes).Any(predicate)</c> — correct for any
+    /// store, on the same precondition as <see cref="GetEntityFactStore"/> and the other
+    /// <see cref="ListScoped(string?)"/>-derived defaults: it is exactly as complete as that
+    /// listing is, no more and no less. It is not cheap: it still materializes the full listing
+    /// before testing it. FileMemoryStore overrides this to enumerate lazily, scope by scope, and
+    /// return on the first match — the reason this member exists rather than callers writing
+    /// <c>ListScoped(scopes).Any(predicate)</c> themselves — but a store that has not overridden it
+    /// still answers correctly, just without the short-circuit.</para>
+    /// </summary>
+    bool AnyScoped(string? scopes, Func<ScopedArtifact, bool> predicate) =>
+        ListScoped(scopes).Any(predicate);
 
     /// <summary>
     /// The one search member. Takes a <see cref="SearchQuery"/> and has no default implementation

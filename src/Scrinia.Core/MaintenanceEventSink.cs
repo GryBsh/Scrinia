@@ -82,17 +82,25 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
     public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
         => Task.CompletedTask; // no-op for now
 
-    /// <summary>True when the source entry, as seen in the listing already fetched for inbound-ref
-    /// detection, still carries the pre-attribute <c>orphan</c> KEYWORD. A cheap gate so a store
-    /// with no legacy entries never pays a round trip to discover it has nothing to clean up; the
-    /// write that follows re-checks against its own freshly-read entry.</summary>
-    private static bool CarriesLegacyOrphanKeyword(
-        IMemoryStore store, IEnumerable<ScopedArtifact> allEntries, string scope, string subject) =>
-        allEntries.Any(sa =>
-            string.Equals(sa.Scope, scope, StringComparison.OrdinalIgnoreCase)
-            && store.SanitizeName(sa.Entry.Name)
+    /// <summary>True when the source entry still carries the pre-attribute <c>orphan</c> KEYWORD.
+    ///
+    /// <para>Reads the ONE scope that can hold the answer. This is a question about a named entry
+    /// in a known scope, so <see cref="IMemoryStore.LoadIndex"/> answers it at one-scope cost —
+    /// normally a warm-cache hit on a <c>FileMemoryStore</c>, and one scope's paged listing rather
+    /// than the whole store's on an <c>HttpMemoryStore</c>. It previously ran
+    /// <see cref="IMemoryStore.AnyScoped"/> over every scope with a predicate that then filtered
+    /// back down to this one scope and name. <c>AnyScoped</c> short-circuits on a MATCH, so the
+    /// no-legacy-entries case — the one every migrated workspace is in, and the one the old
+    /// comment here claimed was cheap — was precisely the case that always scanned the entire
+    /// store to completion.</para>
+    ///
+    /// <para>The write that follows re-checks against its own freshly-read entry, so this is a
+    /// gate, not the correctness condition.</para></summary>
+    private static bool CarriesLegacyOrphanKeyword(IMemoryStore store, string scope, string subject) =>
+        store.LoadIndex(scope).Any(entry =>
+            store.SanitizeName(entry.Name)
                 .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase)
-            && sa.Entry.Keywords?.Any(k => k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase)) == true);
+            && entry.Keywords?.Any(k => k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase)) == true);
 
     private static Task AutoLinkAndDetectOrphans(string qualifiedName, string content, IMemoryStore store)
     {
@@ -145,9 +153,15 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
             // Computed before the update rather than after a separate LoadIndex: neither this nor
             // the qualified name needs the source entry itself, and TryUpdateEntry below reads the
-            // entry once, atomically, instead of the old racy load → mutate → Upsert.
-            var allEntries = store.ListScoped(null);
-            bool hasInboundRefs = allEntries.Any(sa =>
+            // entry once, atomically, instead of the old racy load → mutate → Upsert. AnyScoped
+            // instead of ListScoped(null).Any(...): this genuinely is a whole-store question, and
+            // on a store that overrides AnyScoped it is a lazy scan stopping at the first matching
+            // referrer rather than a materialized listing of every entry. Only FileMemoryStore
+            // overrides it; HttpMemoryStore inherits the interface default, which is
+            // ListScoped(scopes).Any(predicate) — correct, but no cheaper than the ListScoped(null)
+            // that stood here, since its ListScoped pages the whole store over the network. See
+            // IMemoryStore.AnyScoped, which states that qualification.
+            bool hasInboundRefs = store.AnyScoped(null, sa =>
                 (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
                 || (sa.Entry.Attributes is not null
                     && sa.Entry.Attributes.TryGetValue("ref", out var refs)
@@ -207,13 +221,28 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // stale "orphan" keyword scores above a genuine attribute-era orphan on a bare "orphan"
             // query — an entry with demonstrable inbound refs outranking the real ones.
             //
-            // Gated on the listing already in hand rather than on a speculative TryUpdateEntry: the
-            // read above is the source entry's own row, so a store with no legacy entries never
-            // pays a round trip for this. The callback re-checks against the freshly-read entry, so
-            // the gate is an optimization and not the correctness condition.
+            // Gated on hasInboundRefs, not on a listing shared with the check above. The two
+            // questions are not the same shape: "does ANYTHING reference this memory?" spans the
+            // store, while "does THIS entry carry the legacy keyword?" is about one entry in one
+            // known scope, so CarriesLegacyOrphanKeyword reads that scope alone instead of
+            // re-walking everything. The hasInboundRefs gate means a store with no inbound refs —
+            // the common case — never asks the second question at all.
+            //
+            // Cost, honestly, per backend. On a FileMemoryStore the whole-store pass short-circuits
+            // and the scope read is a warm-cache hit, so this is strictly cheaper than the single
+            // ListScoped(null) it replaced. On an HttpMemoryStore the whole-store pass costs the
+            // same full paged listing that ListScoped(null) did, and when the gate opens the scope
+            // read adds one more listing of that scope — so a remote store pays slightly more than
+            // before on the has-inbound-refs path. Accepted rather than papered over: the gate is
+            // what keeps every OTHER store event from attempting a write, and the alternative
+            // (dropping it and letting the callback decline) trades that for a lock acquisition
+            // and an entry round trip on every such event.
+            //
+            // The callback re-checks against the freshly-read entry, so the gate is an
+            // optimization and not the correctness condition.
             bool keywordWriteAttempted = false;
             bool keywordWritePersisted = true;
-            if (hasInboundRefs && CarriesLegacyOrphanKeyword(store, allEntries, sourceScope, sourceSubject))
+            if (hasInboundRefs && CarriesLegacyOrphanKeyword(store, sourceScope, sourceSubject))
             {
                 keywordWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
                 {

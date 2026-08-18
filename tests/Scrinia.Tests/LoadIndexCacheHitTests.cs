@@ -25,14 +25,21 @@ public class LoadIndexCacheHitTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.LocalStore;
 
-        // Upsert both writes the sidecar and leaves the scope's cache populated (see
-        // FileMemoryStore.Upsert — named, not cited by line, for the reason the class comment
-        // above gives), so the very next LoadIndex is a cache hit.
         store.Upsert(Entry("warm"), "local");
+
+        // Task 2 (write-path cost): Upsert now updates the cache copy-on-write instead of
+        // rebuilding it, and — per that change's "never populate a partial cache" rule — a write
+        // against a scope that was NOT already cached leaves the cache absent rather than warming
+        // it. This is the first write to "local", so the scope is still uncached at this point.
+        // Warm it explicitly with one LoadIndex call, so the read this test actually measures
+        // below is a genuine cache hit.
+        store.LoadIndex("local").Should().ContainSingle();
+
         string lockPath = Path.Combine(store.GetStoreDirForScope("local"), ".lock");
         File.Exists(lockPath).Should().BeTrue(
-            because: "precondition: Upsert must have created the lock file, or its absence below "
-                   + "proves nothing — File.Delete on a missing file is a silent no-op");
+            because: "precondition: the warming LoadIndex call above must have created the lock "
+                   + "file, or its absence below proves nothing — File.Delete on a missing file is "
+                   + "a silent no-op");
         File.Delete(lockPath);
 
         store.LoadIndex("local").Should().ContainSingle("the cache still answers the read");
