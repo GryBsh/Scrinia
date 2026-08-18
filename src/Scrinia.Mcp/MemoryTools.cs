@@ -76,14 +76,9 @@ public sealed partial class ScriniaMcpTools
         // available skills, and followUp pointers without a separate restore call —
         // closes the most common utilization failure mode (read guide, forget to restore).
         var ctx = await BuildRestoreContextAsync(cancellationToken);
-        var combinedInfo = ctx.Info.Concat(ctx.ContentSections).ToArray();
-        return ResponseBuilder.Success(guideContent)
-            .WithAction("guide")
-            .WithActionNeeded(ctx.Warnings.ToArray())
-            .WithInfo(combinedInfo)
-            .WithInstruction(ctx.Instruction)
-            .WithFollowUp(ctx.FollowUpNames.ToArray())
-            .ToYaml();
+        return ApplyRestoreContext(
+            ResponseBuilder.Success(guideContent).WithAction("guide"),
+            ctx).ToYaml();
     }
 
     // ── Per-verb memory tools ────────────────────────────────────────────────

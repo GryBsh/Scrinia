@@ -10,6 +10,14 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — `restore` now places workspace context in `info:`, matching `guide`
+
+- `restore` now returns the workspace context in `info:` with a summary line in `content:`,
+  matching `guide`. Callers reading the sections out of `content:` must read `info:`.
+- `scri restore --hook` embeds this yaml verbatim into the `<scrinia-restored-memory>`
+  SessionStart payload, so the field move is visible to every agent at session start. The framing
+  text and the envelope are unchanged; only the field the sections sit under moves.
+
 ### Changed — writing memories no longer re-reads the scope, and a memory's vectors replace in one locked write
 
 - **Writing a memory used to cost the whole scope.** `FileMemoryStore.Upsert`, `Remove` and

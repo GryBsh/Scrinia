@@ -1181,13 +1181,25 @@ public sealed partial class ScriniaMcpTools
     internal async Task<McpResponse> Restore(CancellationToken cancellationToken)
     {
         var ctx = await BuildRestoreContextAsync(cancellationToken);
-        return ResponseBuilder.Success(string.Join("\n\n", ctx.ContentSections))
-            .WithAction("restored")
+        string summary = $"Restored: {ctx.ContentSections.Count} context section(s), " +
+            $"{ctx.FollowUpNames.Count} follow-up item(s), {ctx.Warnings.Count} warning(s). " +
+            "See info for details.";
+        return ApplyRestoreContext(
+            ResponseBuilder.Success(summary).WithAction("restored"),
+            ctx);
+    }
+
+    /// <summary>
+    /// Applies a restore context to a response so that guide and restore place the same
+    /// payload in the same fields. The two tools previously differed here, which meant the
+    /// skills list arrived under info: from one and content: from the other.
+    /// </summary>
+    private static McpResponse ApplyRestoreContext(McpResponse response, RestoreContext ctx) =>
+        response
             .WithActionNeeded(ctx.Warnings.ToArray())
-            .WithInfo(ctx.Info.ToArray())
+            .WithInfo([.. ctx.Info, .. ctx.ContentSections])
             .WithInstruction(ctx.Instruction)
             .WithFollowUp(ctx.FollowUpNames.ToArray());
-    }
 
     /// <summary>
     /// Build the workspace-context blocks that <see cref="Restore"/> serialises into a YAML
