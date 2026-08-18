@@ -168,7 +168,7 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         // Skill-path routing: '/skill/{name}' → SkillCreate.
-        var skillRoute = TryRouteSkillRemember(path, content, cancellationToken);
+        var skillRoute = TryRouteSkillRemember(path, content, attributes, keywords, cancellationToken);
         if (skillRoute is not null) return (await skillRoute).ToYaml();
 
         if (content is null || content.Length == 0)
@@ -350,12 +350,20 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "forget"), Description(
-        "Delete a memory by path. " +
-        "Example: forget({ path: '/temp/scratch' }).")]
+        "Delete a memory by path. A '/skill/{name}' path deletes the stored skill file; a built-in " +
+        "skill is not a file here and cannot be deleted, so forget says so rather than reporting " +
+        "NOT_FOUND. " +
+        "Example: forget({ path: '/temp/scratch' }), or forget({ path: '/skill/qa' }) to drop a " +
+        "stored skill.")]
     public async Task<string> MemoryForget(
-        [Description("Memory path (e.g. '/findings/SEC-001', '~scratch') or a file:// URI.")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch') or a file:// URI.")] string path,
         CancellationToken cancellationToken = default)
     {
+        // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and
+        // remember, so the three tools agree about who owns the namespace.
+        var skillRoute = TryRouteSkillForget(path, cancellationToken);
+        if (skillRoute is not null) return (await skillRoute).ToYaml();
+
         if (string.IsNullOrWhiteSpace(path))
             return ResponseBuilder.Error(
                 "forget requires 'path'.",
@@ -442,8 +450,8 @@ public sealed partial class ScriniaMcpTools
     // ── Skill-path routing ────────────────────────────────────────────────────
     //
     // Skills are conceptually memory at a reserved path — we route /skill/{name}
-    // requests to SkillLoad / SkillCreate inside recall and remember
-    // rather than exposing a separate skill_* tool surface. The routing key is
+    // requests to SkillLoad / SkillCreate / SkillDelete inside recall, remember and
+    // forget rather than exposing a separate skill_* tool surface. The routing key is
     // `path`, so a dedicated tool wouldn't reduce ambiguity — it would just
     // create a second surface the agent has to choose between.
 
@@ -462,8 +470,18 @@ public sealed partial class ScriniaMcpTools
     /// <summary>
     /// Routes a remember call to <see cref="SkillCreate"/> when the path is under
     /// /skill/. Returns null when the call should fall through to normal remember.
+    /// <para>Takes <paramref name="attributes"/> and <paramref name="keywords"/> only so it can
+    /// report that it did not use them. A skill is markdown instructions on disk, not an indexed
+    /// memory, so there is nowhere for facets to live — but remember's schema spends two kilobytes
+    /// telling the caller what they do, and dropping them under a plain success reads as if they
+    /// were stored.</para>
     /// </summary>
-    private static Task<McpResponse>? TryRouteSkillRemember(string? path, string[]? content, CancellationToken ct)
+    private static Task<McpResponse>? TryRouteSkillRemember(
+        string? path,
+        string[]? content,
+        Dictionary<string, string[]>? attributes,
+        string[]? keywords,
+        CancellationToken ct)
     {
         if (!TryParseSkillPath(path, out string? skillName))
             return null;
@@ -480,12 +498,60 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/your-name-here', content: [...] })"));
 
-        return SkillCreate(
+        var create = SkillCreate(
             name: skillName,
             scaffold: "custom",
             instructions: string.Join("\n\n", content),
             tools: null,
             ct);
+
+        // Conditional on purpose. A notice attached to every skill write is noise the caller
+        // learns to skip, which costs more than saying nothing.
+        var unused = new List<string>();
+        if (attributes is { Count: > 0 }) unused.Add("attributes");
+        if (keywords is { Length: > 0 }) unused.Add("keywords");
+        return unused.Count == 0 ? create : ReportUnusedSkillArgs(create, unused);
+    }
+
+    /// <summary>
+    /// Appends a note naming the remember arguments that a /skill/ write had no place to put.
+    /// No-op on an error response — an error already carries its own recovery text.
+    /// </summary>
+    private static async Task<McpResponse> ReportUnusedSkillArgs(
+        Task<McpResponse> create, List<string> unused)
+    {
+        McpResponse response = await create;
+        if (response.IsError) return response;
+
+        string names = string.Join(" and ", unused);
+        bool one = unused.Count == 1;
+        string verb = one ? "does" : "do";
+        return response.WithInfo([
+            .. response.Info ?? [],
+            $"{names} {verb} not apply to a skill and {(one ? "was" : "were")} not "
+            + "stored. A skill is markdown instructions on disk, not an indexed memory, so it has "
+            + "nowhere to hold facets. Put anything that must be searchable in the skill text, or "
+            + "store it as a memory at a path outside /skill/.",
+        ]);
+    }
+
+    /// <summary>
+    /// Routes a forget call to <see cref="SkillDelete"/> when the path is under
+    /// /skill/. Returns null when the call should fall through to normal forget.
+    /// </summary>
+    private static Task<McpResponse>? TryRouteSkillForget(string? path, CancellationToken ct)
+    {
+        if (!TryParseSkillPath(path, out string? skillName))
+            return null;
+
+        if (string.IsNullOrWhiteSpace(skillName))
+            return Task.FromResult(ResponseBuilder.Error(
+                "forget on a /skill/... path requires a skill name in the path.",
+                ErrorCodes.InvalidParameter,
+                "forget({ path: '/skill/the-one-to-delete' })",
+                "recall({ path: '/skill/' }) to list available skills"));
+
+        return SkillDelete(skillName, ct);
     }
 
     /// <summary>
