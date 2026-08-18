@@ -120,28 +120,28 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
 
     private sealed class RecordingSink(string name, List<string> order) : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
         {
             order.Add(name);
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 
     private sealed class NoOpSink : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 }

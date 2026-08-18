@@ -974,7 +974,7 @@ public static class MemoryEndpoints
     /// 400 that says why it cannot be.
     ///
     /// <para><b>Why every handler that resolves a name needs this.</b> Task 13 routed
-    /// <see cref="IMemoryStore.ParseQualifiedName"/>'s multi-segment branch through
+    /// <see cref="IPluginStore.ParseQualifiedName"/>'s multi-segment branch through
     /// <c>MemoryNaming.BuildScopedTopicScope</c>, which REFUSES a topic segment that substitution
     /// cannot repair — a trailing dot or space, a bare <c>"."</c>, <c>NUL</c>, a segment that
     /// sanitizes to nothing. Before that, the scope was interpolated from the raw segments and the
@@ -1012,11 +1012,11 @@ public static class MemoryEndpoints
     /// documents at length: those calls write, and an <see cref="ArgumentException"/> raised after
     /// the artifact has landed would 400 with "malformed name" over a write that half-happened.
     /// Running the resolver alone, before any side effect, keeps the refusal attributable to
-    /// exactly the thing it names. <see cref="IMemoryStore.ParseQualifiedName"/> is pure, so the
+    /// exactly the thing it names. <see cref="IPluginStore.ParseQualifiedName"/> is pure, so the
     /// second call the operation itself makes costs nothing but string work.</para>
     ///
     /// <para>An ephemeral <c>~name</c> is skipped because every operation behind this check tests
-    /// <see cref="IMemoryStore.IsEphemeral"/> FIRST and routes it without parsing
+    /// <see cref="IPluginStore.IsEphemeral"/> FIRST and routes it without parsing
     /// (<c>MemoryOrchestrator.Resolve</c>, <c>MemoryOrchestrator.ForgetAsync</c>,
     /// <c>FileMemoryStore.CopyMemory</c>) — probing one here would refuse a name the operation
     /// accepts. It is skipped rather than merely harmless: <c>ParseQualifiedName("~x")</c> happens

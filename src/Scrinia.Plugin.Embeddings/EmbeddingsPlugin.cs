@@ -286,17 +286,17 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     // -- IMemoryEventSink (MCP path) --
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
     {
         await EmbedAndIndexAsync(qualifiedName, content, store, ct);
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
     {
         await ReembedFullMemoryAsync(qualifiedName, store, ct);
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
         await RemoveVectorsAsync(qualifiedName, wasDeleted, store, ct);
     }
@@ -304,7 +304,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     // -- Shared internal --
 
     private async Task EmbedAndIndexAsync(
-        string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+        string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
     {
         try
         {
@@ -332,7 +332,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// (<see cref="OnAfterAppendAsync"/>) and MCP (<see cref="OnAppendedAsync"/>) append paths, and
     /// mirrored by <c>BuiltInEmbeddingsService.ReembedFullMemoryAsync</c>.
     /// </summary>
-    private async Task ReembedFullMemoryAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    private async Task ReembedFullMemoryAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
     {
         try
         {
@@ -359,7 +359,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
     }
 
-    private async Task RemoveVectorsAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    private async Task RemoveVectorsAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
         if (!wasDeleted) return;
 

@@ -60,25 +60,25 @@ public sealed class CompositeEventSinkTests
     {
         public int StoredCount, AppendedCount, ForgottenCount;
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
         { StoredCount++; return Task.CompletedTask; }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
         { AppendedCount++; return Task.CompletedTask; }
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
         { ForgottenCount++; return Task.CompletedTask; }
     }
 
     private sealed class ThrowingSink : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("boom");
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("boom");
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("boom");
     }
 }

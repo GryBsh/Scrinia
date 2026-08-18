@@ -73,6 +73,22 @@ and all assembly attributes.
   passed `choice` alone, expecting it to apply, was told a resolution had happened when nothing on
   disk had changed.
 
+### Changed (breaking) — `IMemoryEventSink` receives `IPluginStore`, not `IMemoryStore`
+
+- `IMemoryEventSink.OnStoredAsync`, `OnAppendedAsync` and `OnForgottenAsync` now take
+  `Scrinia.Core.IPluginStore` — `ParseQualifiedName`, `IsEphemeral`, `ResolveArtifactAsync`,
+  `ReadArtifactAsync` — instead of the full `IMemoryStore`. Source-breaking for any out-of-tree
+  sink implementation; the fix is a parameter type change. A sink needing more can cast to
+  `IMemoryStore`, which every concrete store still implements.
+- `MemoryArtifactSource.ReadForAppendAsync` and `MemoryVectorIndexer.RemoveAsync(qualifiedName,
+  store, ct)` now take `IPluginStore` instead of `IMemoryStore`. Narrowing a
+  parameter to its base interface is contravariant widening: a caller already holding an
+  `IMemoryStore` still satisfies the new parameter type with no source change. What changes is
+  binary: a precompiled caller assembly requires recompilation to link against the new signature,
+  or will fail at runtime with `MissingMethodException`.
+- `IMemoryStore` now derives from `IPluginStore`. No change is required of store implementations:
+  the four members moved to the base interface and are inherited back.
+
 ### Changed — `guide()` no longer truncates its own guide document; truncation advice fits the tool that gave it
 
 - `guide()` is now exempt from the response-size cap that every other tool's `content:` is subject

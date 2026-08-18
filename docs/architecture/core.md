@@ -626,14 +626,17 @@ Dispatch via `SearchContributorContext`:
 
 ### IMemoryEventSink
 
-Plugin hook for reacting to store/append/forget events:
+Plugin hook for reacting to store/append/forget events. Takes `IPluginStore`, not the full
+`IMemoryStore` — the four-member surface (`ParseQualifiedName`, `IsEphemeral`,
+`ResolveArtifactAsync`, `ReadArtifactAsync`) is what the sink path actually uses; a sink needing
+more can cast to `IMemoryStore`, which every concrete store still implements:
 
 ```csharp
 public interface IMemoryEventSink
 {
-    Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct);
-    Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct);
-    Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct);
+    Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct);
+    Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct);
+    Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct);
 }
 ```
 

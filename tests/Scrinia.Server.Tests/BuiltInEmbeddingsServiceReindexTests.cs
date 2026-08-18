@@ -17,7 +17,7 @@ namespace Scrinia.Server.Tests;
 /// <see cref="IMemoryStore.FormatQualifiedName"/> intentionally strips the "memory/"/"entity/"
 /// namespace prefix for human-friendly display (a v1 "topic:subject" scope like
 /// "local:memory/api" displays as "/api/subject"). Re-parsing that display string via
-/// <see cref="IMemoryStore.ParseQualifiedName"/> reconstructs a scope MISSING the namespace
+/// <see cref="IPluginStore.ParseQualifiedName"/> reconstructs a scope MISSING the namespace
 /// prefix, so <c>ResolveArtifactAsync</c> can't find the artifact on disk and the memory is
 /// silently skipped (caught, logged, and dropped from the reindex count) for every ordinary
 /// named-topic memory. This is wired into production via <c>Program.cs</c>.

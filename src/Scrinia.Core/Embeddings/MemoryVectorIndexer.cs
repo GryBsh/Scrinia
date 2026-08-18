@@ -174,12 +174,12 @@ public sealed class MemoryVectorIndexer
     /// <summary>
     /// Parses <paramref name="qualifiedName"/> and drops every vector held for the resulting
     /// (scope, subject). Owns the parse inside its own try so a throw from
-    /// <see cref="IMemoryStore.ParseQualifiedName"/> cannot escape into a caller with no guard
+    /// <see cref="IPluginStore.ParseQualifiedName"/> cannot escape into a caller with no guard
     /// of its own — e.g. <c>PluginPipeline.ForgetAsync</c> awaits
     /// <c>IMemoryOperationHook.OnAfterForgetAsync</c> on the REST path with no surrounding
     /// try/catch, so a throw there would propagate into the forget request itself.
     /// </summary>
-    public async Task RemoveAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    public async Task RemoveAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
     {
         try
         {

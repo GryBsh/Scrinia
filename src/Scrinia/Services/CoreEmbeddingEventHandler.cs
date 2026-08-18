@@ -26,12 +26,12 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         _indexer = new MemoryVectorIndexer(provider, store, logger, options);
     }
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore memoryStore, CancellationToken ct)
+    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore memoryStore, CancellationToken ct)
     {
         await EmbedAndIndexAsync(qualifiedName, content, memoryStore, ct);
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore memoryStore, CancellationToken ct)
+    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore memoryStore, CancellationToken ct)
     {
         // An append mutates the memory. Indexing only the appended fragment would be wrong twice
         // over: the indexer replaces a memory's vectors atomically, so the rest of the memory
@@ -59,7 +59,7 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         }
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore memoryStore, CancellationToken ct)
+    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore memoryStore, CancellationToken ct)
     {
         if (!wasDeleted) return;
 
@@ -70,7 +70,7 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
     }
 
     private async Task EmbedAndIndexAsync(
-        string qualifiedName, string[] content, IMemoryStore memoryStore, CancellationToken ct)
+        string qualifiedName, string[] content, IPluginStore memoryStore, CancellationToken ct)
     {
         try
         {

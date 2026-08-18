@@ -201,7 +201,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     // ── IMemoryEventSink ─────────────────────────────────────────────────
 
     public async Task OnStoredAsync(string qualifiedName, string[] content,
-        IMemoryStore store, CancellationToken ct)
+        IPluginStore store, CancellationToken ct)
     {
         // Restored the early return in front of ParseQualifiedName: a plugin advertising only
         // `remove` has neither flag set, and must not pay for a parse (which throws on a
@@ -251,7 +251,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     }
 
     public async Task OnAppendedAsync(string qualifiedName, string content,
-        IMemoryStore store, CancellationToken ct)
+        IPluginStore store, CancellationToken ct)
     {
         // See OnStoredAsync — same early-return-before-parse fix, same reason.
         if (_degraded || (!_hasIndex && !_hasUpsert)) return;
@@ -293,7 +293,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     }
 
     public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted,
-        IMemoryStore store, CancellationToken ct)
+        IPluginStore store, CancellationToken ct)
     {
         if (!wasDeleted || _degraded || !_hasRemove) return;
 

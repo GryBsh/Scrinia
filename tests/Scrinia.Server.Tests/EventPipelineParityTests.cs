@@ -363,16 +363,16 @@ public sealed class DoubleFireSpy : IMemoryEventSink, IMemoryOperationHook
 
     public int StoreInvocationCount => Volatile.Read(ref _storeInvocationCount);
 
-    public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
     {
         Interlocked.Increment(ref _storeInvocationCount);
         return Task.CompletedTask;
     }
 
-    public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+    public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask;
 
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask;
 
     public Task OnAfterStoreAsync(AfterStoreContext context, CancellationToken ct = default)

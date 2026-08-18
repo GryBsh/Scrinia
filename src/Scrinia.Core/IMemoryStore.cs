@@ -7,12 +7,10 @@ namespace Scrinia.Core;
 /// Abstraction over persistent and ephemeral memory storage.
 /// Seam for Phase 2: local (filesystem) vs remote (HTTP) implementations.
 /// </summary>
-public interface IMemoryStore
+public interface IMemoryStore : IPluginStore
 {
-    // Naming
-    (string Scope, string Subject) ParseQualifiedName(string name);
+    // Naming — ParseQualifiedName and IsEphemeral moved to IPluginStore (inherited).
     string FormatQualifiedName(string scope, string subject);
-    bool IsEphemeral(string name);
     string SanitizeName(string name);
 
     // ── The write surface: raw input in, derived entry out ───────────────────
@@ -62,8 +60,7 @@ public interface IMemoryStore
     // go via LoadIndex and GetEphemeral respectively — and are safe for their own reasons,
     // documented on each.
 
-    // CRUD
-    Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
+    // CRUD — ResolveArtifactAsync moved to IPluginStore (inherited).
 
     /// <summary>
     /// The scope's index entries. <b>The returned list may be a live view of the store's internal
@@ -311,11 +308,10 @@ public interface IMemoryStore
     // Naming / addressing
     string ArtifactUri(string name, string scope = "local");
 
-    // Artifact file I/O
+    // Artifact file I/O — ReadArtifactAsync moved to IPluginStore (inherited).
     /// <summary>Writes the artifact text for <paramref name="subject"/>.</summary>
     Task WriteArtifactAsync(string subject, string scope, string artifactText,
         CancellationToken ct = default);
-    Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default);
     bool DeleteArtifact(string subject, string scope);
 
     // Topic discovery
