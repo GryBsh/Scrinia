@@ -109,4 +109,36 @@ public sealed class MemoriesListScopeCommaRoundTripTests : IAsyncLifetime
             "string[]? binding), so a single \"odd,name\" value names ONE scope literally, not two");
         resp.Memories[0].Name.Should().Be("probe");
     }
+
+    /// <summary>H-3 (fix round 2). The three tests above all pass a SINGLE-element scopes list, so
+    /// a client-side re-join back to a comma string (reverting <c>FetchAllPages</c>'s per-element
+    /// <c>&amp;scopes=</c> encoding to a single <c>&amp;scopes={Join(",", scopes)}</c> value)
+    /// produces a byte-identical request for any of them — they pin the SERVER half of F-4 and none
+    /// of the CLIENT half. A multi-element list is the only shape that tells the two encodings
+    /// apart: re-joined, <c>["odd,name", "api"]</c> becomes the single query value
+    /// "odd,name,api", which resolves to one scope named literally "odd,name,api" — matching
+    /// neither of the two real scopes — while <c>["odd", "name"]</c> re-joins to "odd,name", which
+    /// DOES match the real "odd,name" scope, fabricating a result from two tokens that separately
+    /// name nothing.</summary>
+    [Fact]
+    public async Task ListScoped_MultipleScopesIncludingACommaNamedOne_SelectsExactlyThoseScopes()
+    {
+        await SeedTwoMemoriesAsync();
+        var apiSeed = await _client.PostAsJsonAsync(
+            $"/api/v1/stores/{_factory.PrimaryStore}/memories",
+            new StoreRequest(["api content"], "/api/api-probe"));
+        apiSeed.EnsureSuccessStatusCode();
+
+        var both = _remote.ListScoped(["odd,name", "api"]);
+        both.Select(r => r.Entry.Name).Should().BeEquivalentTo(["probe", "api-probe"],
+            "a multi-element filter naming a comma-containing scope and a plain one must select " +
+            "both scopes literally, not collapse into a single re-joined value that matches " +
+            "neither real scope");
+
+        var neither = _remote.ListScoped(["odd", "name"]);
+        neither.Should().BeEmpty(
+            "\"odd\" and \"name\" alone name no real scope — they exist only as a re-join " +
+            "artifact of the single scope \"odd,name\"; a correct multi-element request must not " +
+            "fabricate a match from them");
+    }
 }

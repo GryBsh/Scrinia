@@ -332,7 +332,16 @@ public static class MemoryEndpoints
     /// names (was it 1 KB total, or 1 KB per name?), so there was no single old number to carry
     /// forward. 64 mirrors this file's existing <c>attributeFilter</c> key-count bound
     /// (<c>ValidateAttributeBounds(attributeFilter, 64, 64, ...)</c>) and 1024 mirrors the old
-    /// single-string cap, now applied per element instead of to the whole request.</para></summary>
+    /// single-string cap, now applied per element instead of to the whole request.</para>
+    ///
+    /// <para><b>Runs BEFORE <c>MemoryNaming.NormalizeFilterList</c>, deliberately (Task 9 fix
+    /// round 2).</b> A request of 65 blank entries 400s here even though every one of them would
+    /// normalize away to nothing. That is intentional: this is a REQUEST-SHAPE bound on what the
+    /// caller sent, not a bound on what survives normalization. Reordering to
+    /// normalize-then-bound would quietly raise the accepted request size — a caller could pad a
+    /// request with an unbounded number of blank entries around a small real filter and pay no
+    /// bounds cost for them, so the parsed-request size this bound exists to cap would no longer
+    /// be capped. Do not "fix" this into normalize-then-bound.</para></summary>
     private static string? ValidateStringArrayBounds(
         string[]? values, int maxCount, int maxElementLength, string fieldName)
     {

@@ -1418,6 +1418,15 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     public IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null)
     {
+        // Task 9 fix round 2, H-1: this was the one remaining entry path that did not route
+        // through NormalizeFilterList — reachable via IMemoryStore's own two-arg default
+        // (IMemoryStore.cs) calling this single-arg member, since HttpMemoryStore does not
+        // override it. Without this, [""] took the filter branch unchanged (F-1 verbatim),
+        // [null] survived into a non-nullable IReadOnlyList<string> (a latent NRE for any
+        // caller), and [" api "] came back untrimmed (F-3 verbatim) — see ListScoped above,
+        // which already carries this same line and comment shape.
+        scopes = MemoryNaming.NormalizeFilterList(scopes);
+
         // Task 9, D-4: an empty scopes list means "no filter", identically to null.
         if (scopes is { Count: > 0 })
             return scopes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();

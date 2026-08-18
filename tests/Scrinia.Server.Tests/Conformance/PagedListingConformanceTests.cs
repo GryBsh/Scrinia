@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Server.Tests.Conformance;
@@ -55,6 +56,48 @@ public sealed class PagedListingConformanceTests(PagedListingConformanceFixture 
         fx.Remote.ResolveReadScopes(null).Should()
             .BeEquivalentTo(fx.Local.ResolveReadScopes(null),
                 because: "the set of readable scopes decides what every later read can see");
+    }
+
+    /// <summary>H-1 (fix round 2). The sibling above only ever exercised the unfiltered branch —
+    /// every parity defect found on this branch has been in the FILTERED case, and this suite had
+    /// no test for it. Before this fix, <c>HttpMemoryStore.ResolveReadScopes</c> was the one entry
+    /// path that never called <see cref="MemoryNaming.NormalizeFilterList"/>: a blank/null/
+    /// whitespace-padded filter reached <c>.Distinct(...).ToArray()</c> unchanged.
+    ///
+    /// <para>Deliberately filters by <c>"local"</c>, not a topic name: both stores resolve a bare
+    /// <c>"local"</c> filter identically (neither applies any mapping to it), so this isolates
+    /// H-1's normalization fix from the separate, pre-existing divergence documented on the test
+    /// below — <c>HttpMemoryStore</c> never applies <c>FileMemoryStore</c>'s topic-name to
+    /// <c>"local:{topic}"</c> mapping, so a topic-named filter answers differently on the two
+    /// stores regardless of H-1. That gap predates this branch and is out of scope for it.</para>
+    /// </summary>
+    [Fact]
+    public void ResolveReadScopes_Filtered_BothStores_Agree()
+    {
+        IReadOnlyList<string?> filter = [" local ", "", null];
+
+        fx.Remote.ResolveReadScopes(filter!).Should()
+            .BeEquivalentTo(fx.Local.ResolveReadScopes(filter!),
+                because: "a blank/null/whitespace-padded filter must normalize identically on " +
+                         "both stores, the same guarantee ResolveReadScopes(null) already gets " +
+                         "above — without it, Http returned the three raw entries unchanged " +
+                         "while File normalized down to [\"local\"]");
+    }
+
+    /// <summary>Documents, rather than silently asserting away, the pre-existing topic-name
+    /// divergence H-1's fix does not touch: <c>HttpMemoryStore.ResolveReadScopes</c> returns a
+    /// topic-named filter verbatim, while <c>FileMemoryStore.ResolveReadScopes</c> maps it through
+    /// <c>NormalizeScopeFilters</c> to its internal <c>"local:{topic}"</c> scope string. This
+    /// predates this branch; it is recorded here so a future normalization change does not
+    /// accidentally "fix" it into false parity without that being a deliberate decision.</summary>
+    [Fact]
+    public void ResolveReadScopes_FilteredByTopicName_StoresDeliberatelyDiverge()
+    {
+        fx.Remote.ResolveReadScopes(["t00"]).Should().BeEquivalentTo(["t00"],
+            because: "HttpMemoryStore returns the filter token verbatim, unmapped");
+
+        fx.Local.ResolveReadScopes(["t00"]).Should().BeEquivalentTo(["local:t00"],
+            because: "FileMemoryStore maps a bare topic name through NormalizeScopeFilters");
     }
 
     [Fact]

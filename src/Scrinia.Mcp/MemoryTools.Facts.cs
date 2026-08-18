@@ -79,8 +79,17 @@ public sealed partial class ScriniaMcpTools
     /// Task 9, D-4: an empty scopes/excludeTopics array is "unfiltered", identically to null.</summary>
     private static EntityFactStore SelectFactStore(IMemoryStore store, string[]? scopes, string[]? excludeTopics)
     {
-        if (scopes is not { Length: > 0 } && excludeTopics is not { Length: > 0 })
+        // Task 9 fix round 2, L-1: normalize BEFORE the gate, not after. The raw arrays can carry
+        // a caller-sent [""] or [null] that means "no filter" (Task 9, D-4/NormalizeFilterList),
+        // but gating on the raw array took the "filtered" branch for them anyway — re-deriving the
+        // whole fact store from a full ListScoped instead of using the cached cross-scope store.
+        // Correctness was never at stake (ListScoped normalizes its own inputs and would answer
+        // the same either way), only cost: rebuilding the entire store because a caller sent a
+        // blank filter is exactly the needless-repeated-read this project avoids elsewhere.
+        var normalizedScopes = MemoryNaming.NormalizeFilterList(scopes);
+        var normalizedExcludeTopics = MemoryNaming.NormalizeFilterList(excludeTopics);
+        if (normalizedScopes is not { Count: > 0 } && normalizedExcludeTopics is not { Count: > 0 })
             return store.GetEntityFactStore();
-        return EntityFactDerivation.BuildStore(store.ListScoped(scopes, excludeTopics));
+        return EntityFactDerivation.BuildStore(store.ListScoped(normalizedScopes, normalizedExcludeTopics));
     }
 }

@@ -204,7 +204,7 @@ The `content` array controls chunking: a single element creates a single-chunk m
 ### List Memories
 
 ```
-GET /api/v1/stores/{store}/memories[?scopes=local&scopes=api][?offset=0][&limit=200]
+GET /api/v1/stores/{store}/memories[?scopes=local&scopes=api][&offset=0][&limit=200]
 ```
 
 **Permission:** `search`
