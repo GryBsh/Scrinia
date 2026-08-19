@@ -132,4 +132,45 @@ public sealed class BundleLegacyKeysTests
 
         act.Should().NotThrow();
     }
+
+    [Fact]
+    public void EveryEntryInAMultiEntryIndex_IsNormalizedIndependently()
+    {
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(
+                new JsonObject { ["name"] = "first", ["description"] = "old text" },
+                new JsonObject { ["name"] = "second", ["tags"] = new JsonArray("alpha", "beta") },
+                new JsonObject { ["name"] = "third", ["contentPreview"] = "already modern" })
+        };
+
+        BundleLegacyKeys.NormalizeIndex(index);
+
+        var entries = index["entries"]!.AsArray();
+
+        entries[0]!["contentPreview"]!.GetValue<string>().Should().Be("old text");
+        entries[0]!["description"].Should().BeNull();
+
+        var tag = entries[1]!["attributes"]![KnownAttributes.TagKey]!.AsArray();
+        tag.Select(t => t!.GetValue<string>()).Should().Equal("alpha", "beta");
+        entries[1]!["tags"].Should().BeNull();
+
+        entries[2]!["contentPreview"]!.GetValue<string>().Should().Be("already modern");
+        entries[2]!["attributes"].Should().BeNull();
+    }
+
+    [Fact]
+    public void MixedTags_KeepOnlyTheNonBlankOnes_InOrder()
+    {
+        var index = IndexWith(new JsonObject
+        {
+            ["name"] = "a",
+            ["tags"] = new JsonArray("", "alpha", "  ", "beta"),
+        });
+
+        BundleLegacyKeys.NormalizeIndex(index);
+
+        var tag = index["entries"]![0]!["attributes"]![KnownAttributes.TagKey]!.AsArray();
+        tag.Select(t => t!.GetValue<string>()).Should().Equal("alpha", "beta");
+    }
 }
