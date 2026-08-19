@@ -614,31 +614,16 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
-    /// Resolves a plugin executable name from env var -> config file -> default. A
-    /// colon-separated key (e.g. "plugins:embeddings") is accepted in two environment forms:
-    /// single-underscore (e.g. "PLUGINS_EMBEDDINGS"), which is the historically documented one
-    /// and keeps priority, and the .NET-standard double-underscore form (e.g.
-    /// "PLUGINS__EMBEDDINGS"), which the server accepts natively through
-    /// WebApplication.CreateBuilder's environment provider.
+    /// Resolves a plugin executable name, falling back to <paramref name="defaultName"/>.
+    ///
+    /// <para>The resolution order — both environment forms, then the workspace config file —
+    /// lives in <see cref="GetConfigValue"/> and is not repeated here. This method used to carry
+    /// its own copy, and when the double-underscore lookup was repaired the fix had to be applied
+    /// to both; a rule with two homes is the shape that let the broken form ship documented in the
+    /// first place.</para>
     /// </summary>
-    internal static string GetPluginName(string key, string defaultName)
-    {
-        // 1. Environment variable, single-underscore form (highest priority)
-        string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
-        string? value = Environment.GetEnvironmentVariable(envKey);
-        if (value is not null) return value;
-
-        // 2. Environment variable, .NET-standard double-underscore form
-        envKey = key.Replace(":", "__").ToUpperInvariant();
-        value = Environment.GetEnvironmentVariable(envKey);
-        if (value is not null) return value;
-
-        // 3. Config file
-        value = WorkspaceConfig.GetValue(Root, key);
-        if (value is not null) return value;
-
-        return defaultName;
-    }
+    internal static string GetPluginName(string key, string defaultName) =>
+        GetConfigValue(key) ?? defaultName;
 
     /// <summary>
     /// Reads config from environment variables, then falls back to the workspace config file.

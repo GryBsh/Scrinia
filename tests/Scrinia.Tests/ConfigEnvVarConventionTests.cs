@@ -71,6 +71,46 @@ public sealed class ConfigEnvVarConventionTests : IDisposable
             because: "single-underscore is the historically documented form and keeps priority, so " +
                      "adding the double form cannot change an existing installation's behaviour");
     }
+
+    // ── GetPluginName delegates rather than repeating the lookup ─────────────
+
+    private const string PluginKey = "plugins:embeddings";
+    private const string PluginSingleForm = "PLUGINS_EMBEDDINGS";
+    private const string PluginDoubleForm = "PLUGINS__EMBEDDINGS";
+
+    /// <summary>
+    /// GetPluginName used to carry its own copy of the environment-then-config lookup, so when the
+    /// double-underscore form was repaired the fix had to be applied twice. It now delegates to
+    /// GetConfigValue. These two tests are what would fail if someone re-inlined the lookup and got
+    /// one of the two forms wrong — the exact way the broken form came to be documented.
+    /// </summary>
+    [Fact]
+    public void GetPluginName_ResolvesBothEnvironmentForms()
+    {
+        try
+        {
+            Environment.SetEnvironmentVariable(PluginDoubleForm, "plugin-from-double");
+            WorkspaceSetup.GetPluginName(PluginKey, "fallback").Should().Be("plugin-from-double");
+
+            Environment.SetEnvironmentVariable(PluginSingleForm, "plugin-from-single");
+            WorkspaceSetup.GetPluginName(PluginKey, "fallback").Should().Be("plugin-from-single",
+                because: "single-underscore keeps priority here too, not only in GetConfigValue");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(PluginSingleForm, null);
+            Environment.SetEnvironmentVariable(PluginDoubleForm, null);
+        }
+    }
+
+    [Fact]
+    public void GetPluginName_FallsBackToTheDefaultWhenNothingIsSet()
+    {
+        // The isolated empty root means the config file cannot answer either, so this exercises
+        // the one behaviour GetPluginName adds over GetConfigValue.
+        WorkspaceSetup.GetPluginName(PluginKey, "scri-plugin-embeddings")
+            .Should().Be("scri-plugin-embeddings");
+    }
 }
 
 /// <summary>Environment variables are process-wide, so these tests must not run beside anything
