@@ -256,6 +256,77 @@ public sealed class MigrationTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The `--json` branch is deliberately ONE emission placed after the migration runs, so that
+    /// the nothing-to-migrate, dry-run and migrated outcomes cannot report different shapes. That
+    /// property is only real if every outcome is covered: with just the dry-run and error tests, an
+    /// early return added to any other branch leaves `--json` silently emitting nothing while still
+    /// exiting 0. This test and the one below close the two uncovered outcomes.
+    ///
+    /// <para>Nothing-to-migrate is the common case in practice — most stores are already v3 — so a
+    /// consumer scripting against `scri migrate --json` hits this path more than any other.</para>
+    /// </summary>
+    [Fact]
+    public async Task Migrate_Json_NothingToMigrate_StillEmitsTheEnvelope()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_cli_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        // .scrinia/ exists (so the command does not take its missing-store error path) but holds
+        // nothing in the legacy layout, which is what "already v3" looks like on disk.
+        Directory.CreateDirectory(Path.Combine(root, ".scrinia", "memories"));
+        try
+        {
+            var (exit, json) = await RunMigrateJson(new ScriniaCommands(), root);
+
+            exit.Should().Be(0);
+            json.Should().NotBeEmpty(
+                because: "--json must emit its envelope for every outcome, including this one");
+
+            using var doc = JsonDocument.Parse(json);
+            var el = doc.RootElement;
+            el.GetProperty("ran").GetBoolean().Should().BeFalse();
+            el.GetProperty("moved").GetInt32().Should().Be(0);
+            el.GetProperty("conflicts").GetInt32().Should().Be(0);
+            el.GetProperty("dryRun").GetBoolean().Should().BeFalse();
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>The remaining uncovered outcome: a real migration that moves a file. Distinct from
+    /// the dry-run test in that <c>ran</c> is true and the files have actually moved, so a JSON
+    /// branch that reported a dry run's numbers for a real migration would fail here.</summary>
+    [Fact]
+    public async Task Migrate_Json_RealMigration_ReportsRanAndMoved()
+    {
+        string root = CreateLegacyWorkspaceRoot();
+        try
+        {
+            var (exit, json) = await RunMigrateJson(new ScriniaCommands(), root);
+
+            exit.Should().Be(0);
+            json.Should().NotBeEmpty();
+
+            using var doc = JsonDocument.Parse(json);
+            var el = doc.RootElement;
+            el.GetProperty("ran").GetBoolean().Should().BeTrue();
+            el.GetProperty("moved").GetInt32().Should().Be(1);
+            el.GetProperty("dryRun").GetBoolean().Should().BeFalse();
+            el.GetProperty("backupSkipped").GetBoolean().Should().BeFalse();
+
+            // The reported outcome must match the disk, not merely be internally consistent.
+            Directory.Exists(Path.Combine(root, ".scrinia", "memories")).Should().BeTrue();
+            Directory.EnumerateDirectories(root, ".scrinia-backup-*").Should().NotBeEmpty(
+                because: "a real migration backs up by default, and the envelope says it was not skipped");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     //  ATTRIBUTES MIGRATION COMMAND (`scri migrate_attributes` —
     //  Scrinia.Commands.ScriniaCommands.MigrateAttributes)
