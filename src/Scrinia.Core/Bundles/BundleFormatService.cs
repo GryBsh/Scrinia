@@ -334,6 +334,12 @@ public static class BundleFormatService
                     //     coverage for THIS call in particular — left in the filter regardless,
                     //     since a defensive catch that never fires costs nothing and a future change
                     //     to the shared method's allocation order should not silently lose it.
+                    //   - ArgumentOutOfRangeException: a forged `##PAD:{n}` footer with a NEGATIVE
+                    //     value makes Nmp2Strategy compute compressedLen > buffer length and slice
+                    //     past the end (Nmp2Strategy.cs:178-181, :306). Reachable down both
+                    //     branches of DecodeAllChunksVerified. This was removed in an earlier round
+                    //     as "unreachable" — true of DecodeChunk's own index bounds, false of this
+                    //     route, which is why the reason is recorded here rather than the verdict.
                     string[]? chunks;
                     try
                     {
@@ -348,7 +354,8 @@ public static class BundleFormatService
                         chunks = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
                     }
                     catch (Exception ex) when (ex is FormatException or InvalidDataException
-                        or InvalidOperationException or OverflowException)
+                        or InvalidOperationException or OverflowException
+                        or ArgumentOutOfRangeException)
                     {
                         chunks = null;
                     }

@@ -558,6 +558,74 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     }
 
     [Fact]
+    public void AnArtifactWithANegativePadFooter_RoutesThroughTheSameTolerance()
+    {
+        // Nmp2Strategy parses the ##PAD:{n} footer with a bare int.TryParse, which accepts a
+        // negative sign (Nmp2Strategy.cs:246-247, :306-308). A negative pad makes
+        // `compressedLen = padded.Length - pad` EXCEED padded.Length; the `compressedLen <= 0`
+        // guard only catches the low side, so slicing `padded[..compressedLen]` throws
+        // ArgumentOutOfRangeException (Nmp2Strategy.cs:177-181). This pins the ROUTING for that
+        // failure mode specifically — a REAL NMP/2 artifact, tampered only in its footer, so this
+        // fails for the reason under test and not for some unrelated malformed-header reason a
+        // hand-forged artifact could accidentally trigger instead.
+        string realArtifact = Nmp2ChunkedEncoder.Encode("some real content for the negative pad test");
+        realArtifact.Should().Contain("##PAD:0",
+            "a freshly encoded artifact always emits pad 0 — if this ever changes, the " +
+            "string-replace below silently stops tampering anything");
+        string tampered = realArtifact.Replace("##PAD:0", "##PAD:-999999");
+
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "negative-pad",
+                ["originalBytes"] = 40,
+                ["chunkCount"] = 1,
+            }),
+        };
+
+        // ImportHandBuiltBundle always encodes its own content, so it cannot inject a tampered
+        // footer; write the zip by hand instead, same shape as the other tolerance tests above.
+        string zipPath = Path.Combine(_tempDir, $"negative-pad-{Guid.NewGuid():N}.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            var indexEntry = zip.CreateEntry("topics/negative-pad-topic/index.json");
+            using (var writer = new StreamWriter(indexEntry.Open()))
+                writer.Write(index.ToJsonString());
+
+            var artifactEntry = zip.CreateEntry("topics/negative-pad-topic/negative-pad.nmp2");
+            using (var writer = new StreamWriter(artifactEntry.Open()))
+                writer.Write(tampered);
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using (var writer = new StreamWriter(manifest.Open()))
+                writer.Write(new JsonObject
+                {
+                    ["version"] = 1,
+                    ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                    ["topics"] = new JsonArray("negative-pad-topic"),
+                    ["totalEntries"] = 1,
+                }.ToJsonString());
+        }
+
+        (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) result;
+        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+            result = BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+
+        result.EntryCount.Should().Be(1,
+            "a negative-pad footer tripping ArgumentOutOfRangeException must not abort the whole import");
+
+        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("negative-pad-topic"))
+            .Single(e => e.Name == "negative-pad");
+
+        imported.Keywords.Should().BeNull(
+            "a tampered footer that throws ArgumentOutOfRangeException is just another " +
+            "undecodable artifact from this method's point of view — same tolerance, same outcome");
+    }
+
+    [Fact]
     public void DerivationDoesNotFabricateADriftBaselineFromThisMachinesFiles()
     {
         var index = new JsonObject
