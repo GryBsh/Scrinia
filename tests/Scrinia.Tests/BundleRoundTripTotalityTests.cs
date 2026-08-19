@@ -494,6 +494,70 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     }
 
     [Fact]
+    public void AnArtifactDeclaringMoreChunksThanTheBoundAllows_RoutesThroughTheSameTolerance()
+    {
+        // The bound itself (DecodeAllChunksVerified rejecting a declared chunk count above
+        // Nmp2Strategy.MaxChunkCount) is already pinned by
+        // Nmp2ChunkedEncoderTests.DecodeAllChunksVerified_MultiChunk_DeclaredCountExceedsMaxChunkCount_Throws
+        // — not duplicated here. What THIS test pins is the ROUTING: hostile bundle input that
+        // trips that bound must degrade gracefully through import's tolerance (Keywords stays
+        // null, the import still succeeds) rather than let the InvalidDataException escape and
+        // abort the whole import, or hang. Forged-header shape mirrors that existing test exactly.
+        string forged = $"NMP/2 1B CRC32:00000000 BR+B64 C:{Nmp2Strategy.MaxChunkCount + 1}\nNMP/END";
+
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "over-bound",
+                ["originalBytes"] = 40,
+                ["chunkCount"] = 1,
+            }),
+        };
+
+        // ImportHandBuiltBundle always encodes its content via Nmp2ChunkedEncoder, so it cannot
+        // produce a forged header; write the zip by hand instead, same shape as the undecodable
+        // test above.
+        string zipPath = Path.Combine(_tempDir, $"over-bound-{Guid.NewGuid():N}.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            var indexEntry = zip.CreateEntry("topics/over-bound-topic/index.json");
+            using (var writer = new StreamWriter(indexEntry.Open()))
+                writer.Write(index.ToJsonString());
+
+            var artifactEntry = zip.CreateEntry("topics/over-bound-topic/over-bound.nmp2");
+            using (var writer = new StreamWriter(artifactEntry.Open()))
+                writer.Write(forged);
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using (var writer = new StreamWriter(manifest.Open()))
+                writer.Write(new JsonObject
+                {
+                    ["version"] = 1,
+                    ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                    ["topics"] = new JsonArray("over-bound-topic"),
+                    ["totalEntries"] = 1,
+                }.ToJsonString());
+        }
+
+        (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) result;
+        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+            result = BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+
+        result.EntryCount.Should().Be(1,
+            "hostile input tripping the chunk-count bound must not abort the whole import");
+
+        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("over-bound-topic"))
+            .Single(e => e.Name == "over-bound");
+
+        imported.Keywords.Should().BeNull(
+            "a forged over-limit chunk count is just another undecodable artifact from this " +
+            "method's point of view — same tolerance, same outcome");
+    }
+
+    [Fact]
     public void DerivationDoesNotFabricateADriftBaselineFromThisMachinesFiles()
     {
         var index = new JsonObject
