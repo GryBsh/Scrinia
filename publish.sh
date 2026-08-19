@@ -155,11 +155,11 @@ for rid in "${RIDS[@]}"; do
 
         if [ "${RIDSCOPES[$i]}" = "host" ] && [ "$rid" != "$HOST_RID" ]; then
             if [ "$HOST_RID_SUPPORTED" = true ]; then
-                echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and cross-OS native compilation" >&2
-                echo "         is unsupported. Build on $rid, or use --platform=$HOST_RID." >&2
+                echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and native compilation cannot" >&2
+                echo "         cross OS or CPU architecture. Build on $rid, or use --platform=$HOST_RID." >&2
             else
-                echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and cross-OS native compilation" >&2
-                echo "         is unsupported, and this host ($(uname -s)/$(uname -m)) is not one this" >&2
+                echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and native compilation cannot" >&2
+                echo "         cross OS or CPU architecture, and this host ($(uname -s)/$(uname -m)) is not one this" >&2
                 echo "         script publishes for. Supported: ${ALL_RIDS[*]}." >&2
             fi
             continue

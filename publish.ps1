@@ -100,13 +100,19 @@ foreach ($rid in $Rids) {
         if ($p.rids -eq 'host' -and $rid -ne $HostRid) {
             if ($HostRidSupported) {
                 [Console]::Error.WriteLine(
-                    "  [skip] $($p.id) for ${rid}: it is NativeAOT and cross-OS native compilation is " +
-                    "unsupported. Build on $rid, or use -Platform $HostRid.")
+                    "  [skip] $($p.id) for ${rid}: it is NativeAOT and native compilation cannot cross " +
+                    "OS or CPU architecture. Build on $rid, or use -Platform $HostRid.")
             } else {
+                # The platform's own identification of itself, not $HostOs/$HostArch — those are
+                # the NORMALIZED values, and on a host this script cannot map one of them is
+                # empty, which is how this line came to print "(/x64)". publish.sh prints
+                # `uname -s`/`uname -m` here for the same reason.
+                $rawOs = [Runtime.InteropServices.RuntimeInformation]::OSDescription
+                $rawArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
                 [Console]::Error.WriteLine(
-                    "  [skip] $($p.id) for ${rid}: it is NativeAOT and cross-OS native compilation is " +
-                    "unsupported, and this host ($HostOs/$HostArch) is not one this script publishes " +
-                    "for. Supported: $($AllRids -join ' ').")
+                    "  [skip] $($p.id) for ${rid}: it is NativeAOT and native compilation cannot " +
+                    "cross OS or CPU architecture, and this host ($rawOs/$rawArch) is not one this " +
+                    "script publishes for. Supported: $($AllRids -join ' ').")
             }
             continue
         }
