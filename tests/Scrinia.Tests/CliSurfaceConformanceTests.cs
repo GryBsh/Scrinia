@@ -80,8 +80,9 @@ public sealed class CliSurfaceConformanceTests
                 p.HasDefaultValue.Should().BeTrue(
                     because: $"{owner.Name}.{method.Name}'s --{p.Name} must be optional");
                 p.DefaultValue.Should().Be(false,
-                    because: $"{owner.Name}.{method.Name}'s --{p.Name} defaults to true, so the flag " +
-                             "cannot be turned on by naming it — the family's flags are opt-in");
+                    because: $"{owner.Name}.{method.Name}'s --{p.Name} defaults to true, which makes it " +
+                             "an option no user can ever turn off — ConsoleAppFramework binds a bool as " +
+                             "a bare presence flag and accepts no value syntax for it");
             }
         }
     }

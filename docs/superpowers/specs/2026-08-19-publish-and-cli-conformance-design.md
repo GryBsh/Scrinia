@@ -26,7 +26,7 @@ Three were the user's, recorded here because each foreclosed a cheaper option:
 
 ## Corrections to the review
 
-The review's findings were re-verified against the tree at `main`. Six statements need amending, and the design depends on the amended versions. C-5 and C-6 were found by a falsification pass over an earlier draft of this spec, and each overturned something the draft asserted.
+The review's findings were re-verified against the tree at `main`. Seven statements need amending, and the design depends on the amended versions. C-5 and C-6 were found by a falsification pass over an earlier draft of this spec, and each overturned something the draft asserted.
 
 **C-1. L2's exit-code claim is overstated.** The review says "several commands return 0 unconditionally regardless of outcome." All 23 command entrypoints were enumerated and inspected. The only genuine always-zero command is `hint`, and it is *correct*: a `UserPromptSubmit` hook that exits non-zero can fail the user's prompt. `migrate` and `migrate_attributes` also end in an unconditional `return Task.FromResult(0)`, but each has a real failure path above it (`Migrate` returns 1 for a missing `.scrinia/`; `MigrateAttributes` throws for a non-file-backed store). `facts` routes through `EmitMcpResult`, which returns non-zero on error. `BundleCommands` is a pure forwarder to implementations that do return non-zero. So this item becomes: document `hint`'s deliberate always-zero at the return, and pin *the ability to fail* mechanically rather than auditing prose.
 
@@ -53,6 +53,18 @@ Two consequences, both of which change this design:
 - **`m.Scope`**, interpolated at `:96` with no escaping at all.
 
 The consolidation argument is unchanged — a hand-rolled escaper beside a source-generated context is the defect shape — but the spec must not claim the escaper is broken for cases where it is not.
+
+**C-7. `scri migrate`'s backup flag was not merely inverted — it was unreachable.** The review calls this an inconsistency ("inverts the backup flag"). Measured against the built CLI, ConsoleAppFramework binds a `bool` parameter as a bare presence flag and accepts no value syntax for it at all:
+
+```
+scri migrate --skip-backup            -> accepted
+scri migrate --skip-backup=false      -> Argument '--skip-backup=false' is not recognized.
+scri migrate --skip-backup false      -> Argument 'false' is not recognized.
+```
+
+A parameter declared `bool backup = true` therefore has no off switch in any syntax. Before this branch, `docs/cli-reference.md` documented `scri migrate [--backup=true|false]` — a form the parser rejects — so every `scri migrate` run wrote a backup and no user could decline it.
+
+Two consequences. The CHANGELOG entry is a bug fix, not a rename: `--skip-backup` is the first way to actually skip the backup, and the previously documented `--backup=false` never worked. And the conformance rule "every bool option defaults to false" is a correctness rule rather than a style preference — a default-`true` bool is an option that cannot be exercised — which is how its failure message is now worded.
 
 ## Section 1 — the publish manifest (M2)
 
