@@ -621,7 +621,18 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
                 new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["alpha"] = 1 }),
         ],
         FileHashes: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["src/x.cs"] = "deadbeef" },
-        Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { ["topic"] = ["retrieval"] },
+        // Attributes["file"] MUST mirror FileHashes.Keys. That is a store invariant, not a
+        // stylistic choice: MemoryDerivation.ForStore derives FileHashes from the `file`
+        // attribute, and AttributeMigration.Forward re-derives the attribute from the hash keys
+        // on every cold LoadIndex (AttributeMigration.cs:71, called from FileMemoryStore.cs:757).
+        // A probe carrying FileHashes without the matching attribute is a state the store's write
+        // path cannot produce, and export's own cold load would add the key — making the round
+        // trip look lossy when it is the FIXTURE that was impossible.
+        Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["topic"] = ["retrieval"],
+            ["file"] = ["src/x.cs"],
+        },
         AgentKeywords: ["alpha"]);
 
     /// <summary>Seeds one entry, exports it to a zip, imports it into a fresh scope, reads it back.</summary>
