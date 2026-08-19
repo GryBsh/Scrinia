@@ -79,6 +79,18 @@ if [ ! -f "$MANIFEST" ]; then
     exit 1
 fi
 
+# Pinned exactly, in order: this script reads columns POSITIONALLY below, so a reordered or
+# renamed header would silently misassign every field to the wrong variable without either
+# script raising an error. publish.ps1 pins the identical line — the two readers of one
+# source of truth must agree about what the file means.
+EXPECTED_HEADER=$'id\tproject\tcondition\tprofile\toutput\trids'
+ACTUAL_HEADER="$(head -n 1 "$MANIFEST")"
+ACTUAL_HEADER="${ACTUAL_HEADER%$'\r'}"
+if [ "$ACTUAL_HEADER" != "$EXPECTED_HEADER" ]; then
+    echo "Error: manifest header must be exactly 'id<TAB>project<TAB>condition<TAB>profile<TAB>output<TAB>rids' — found '$ACTUAL_HEADER'" >&2
+    exit 1
+fi
+
 IDS=(); PROJECTS=(); CONDITIONS=(); PROFILES=(); OUTPUTS=(); RIDSCOPES=()
 # The `|| [ -n "$m_id" ]` keeps the last row when the file has no trailing newline: `read`
 # returns non-zero at EOF-without-newline having already filled the variables, so the plain
@@ -105,6 +117,17 @@ while IFS=$'\t' read -r m_id m_project m_condition m_profile m_output m_rids m_e
     case "$m_profile" in
         trimmed|plain) ;;
         *) echo "Error: unknown profile '$m_profile' for $m_id" >&2; exit 1 ;;
+    esac
+    # condition and rids gate which projects/RIDs actually build — an unrecognised value here
+    # used to be silently misread rather than rejected (a `with_embeddings` typo shipped the
+    # embeddings plugin in EVERY build; `rids=hostt` silently degraded to `all`).
+    case "$m_condition" in
+        always|with-embeddings) ;;
+        *) echo "Error: unknown condition '$m_condition' for $m_id" >&2; exit 1 ;;
+    esac
+    case "$m_rids" in
+        all|host) ;;
+        *) echo "Error: unknown rids scope '$m_rids' for $m_id" >&2; exit 1 ;;
     esac
     IDS+=("$m_id"); PROJECTS+=("$m_project"); CONDITIONS+=("$m_condition")
     PROFILES+=("$m_profile"); OUTPUTS+=("$m_output"); RIDSCOPES+=("$m_rids")

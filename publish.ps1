@@ -48,6 +48,32 @@ $HostRidSupported = $AllRids -contains $HostRid
 # The manifest is the one source of truth for what ships. publish.sh reads the same file.
 $Manifest = Join-Path $PSScriptRoot 'publish.projects.tsv'
 if (-not (Test-Path $Manifest)) { throw "Manifest not found at $Manifest" }
+
+$ManifestLines = @(Get-Content -Path $Manifest)
+if ($ManifestLines.Count -eq 0) { throw "Manifest $Manifest is empty" }
+
+# Pinned exactly, in order: publish.sh reads columns POSITIONALLY, so a reordered or renamed
+# header would silently misassign every field there without either script raising an error.
+# -cne is a case-sensitive comparison — plain -ne is case-insensitive in PowerShell and would
+# accept a header bash rejects. publish.sh pins the identical line — the two readers of one
+# source of truth must agree about what the file means.
+$ExpectedHeader = "id`tproject`tcondition`tprofile`toutput`trids"
+if ($ManifestLines[0] -cne $ExpectedHeader) {
+    throw "Manifest header must be exactly 'id<TAB>project<TAB>condition<TAB>profile<TAB>output<TAB>rids' — found '$($ManifestLines[0])'"
+}
+
+# Import-Csv cannot see a field beyond the header's column count — it silently drops extras
+# rather than erroring the way publish.sh's positional `read` does. Validated against the raw
+# line, before Import-Csv ever runs, so a 7-column row is rejected here instead of quietly
+# publishing with its last field dropped.
+foreach ($line in $ManifestLines | Select-Object -Skip 1) {
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { continue }
+    $fieldCount = @($line -split "`t").Count
+    if ($fieldCount -ne 6) {
+        throw "Manifest row has $fieldCount tab-separated columns, expected 6: '$line'"
+    }
+}
+
 # Filters blank and #-prefixed rows exactly as publish.sh does. The two readers of one source
 # of truth must agree about what the file means.
 $Projects = @(Import-Csv -Path $Manifest -Delimiter "`t" |
@@ -55,9 +81,18 @@ $Projects = @(Import-Csv -Path $Manifest -Delimiter "`t" |
 if ($Projects.Count -eq 0) { throw "Manifest $Manifest lists no projects" }
 # Validated here, once, at read time — not deep inside the publish loop — so a bad row is
 # caught before any artifact has been published for any RID, rather than mid-run.
+#
+# -cnotin, not -notin: PowerShell's membership operators are case-insensitive by default, so
+# plain -notin would silently ACCEPT 'output=Rid' where publish.sh's `case` rejects it. Every
+# comparison against a manifest value here and in the publish loop below uses the
+# case-sensitive form for the same reason — condition and rids gate which projects/RIDs
+# actually build, so a value degrading past validation used to ship the embeddings plugin in
+# EVERY build (a `with_embeddings` typo) or silently fall back to `all` RIDs (`rids=hostt`).
 foreach ($p in $Projects) {
-    if ($p.output -notin @('rid', 'plugin')) { throw "Unknown output kind '$($p.output)' for $($p.id)" }
-    if ($p.profile -notin @('trimmed', 'plain')) { throw "Unknown profile '$($p.profile)' for $($p.id)" }
+    if ($p.output -cnotin @('rid', 'plugin')) { throw "Unknown output kind '$($p.output)' for $($p.id)" }
+    if ($p.profile -cnotin @('trimmed', 'plain')) { throw "Unknown profile '$($p.profile)' for $($p.id)" }
+    if ($p.condition -cnotin @('always', 'with-embeddings')) { throw "Unknown condition '$($p.condition)' for $($p.id)" }
+    if ($p.rids -cnotin @('all', 'host')) { throw "Unknown rids scope '$($p.rids)' for $($p.id)" }
 }
 
 # Overwrites the published native DLLs with the Vulkan-compiled variants. Single-file publish
@@ -95,9 +130,11 @@ foreach ($rid in $Rids) {
     $ridDir = if ($SinglePlatform) { $OutputDir } else { "$OutputDir/$rid" }
 
     foreach ($p in $Projects) {
-        if ($p.condition -eq 'with-embeddings' -and -not $WithEmbeddings) { continue }
+        # -ceq: case-sensitive. Plain -eq is case-insensitive in PowerShell, so 'With-Embeddings'
+        # or 'Host' would silently match here where publish.sh's bash `[ = ]` would not.
+        if ($p.condition -ceq 'with-embeddings' -and -not $WithEmbeddings) { continue }
 
-        if ($p.rids -eq 'host' -and $rid -ne $HostRid) {
+        if ($p.rids -ceq 'host' -and $rid -ne $HostRid) {
             if ($HostRidSupported) {
                 [Console]::Error.WriteLine(
                     "  [skip] $($p.id) for ${rid}: it is NativeAOT and native compilation cannot cross " +
@@ -117,14 +154,16 @@ foreach ($rid in $Rids) {
             continue
         }
 
-        $outDir = switch ($p.output) {
+        # -CaseSensitive: a bare `switch` matches case-insensitively in PowerShell, so
+        # 'output=Rid' would silently take the 'rid' branch instead of falling to default.
+        $outDir = switch -CaseSensitive ($p.output) {
             'rid'    { $ridDir }
             'plugin' { "$ridDir/plugins/$($p.id)" }
             default  { throw "Unknown output kind '$($p.output)' for $($p.id)" }
         }
 
         Write-Host "Publishing $($p.id) for $rid ..."
-        switch ($p.profile) {
+        switch -CaseSensitive ($p.profile) {
             'trimmed' {
                 # Trim-analysis warnings are gated as errors so a regression silently dropping a
                 # member via reflection cannot ship. If a trim warning fires, fix the root cause —
@@ -152,7 +191,7 @@ foreach ($rid in $Rids) {
         }
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $($p.id) / $rid" }
 
-        if ($p.output -eq 'plugin') { Set-VulkanNatives -Rid $rid -Dest $outDir }
+        if ($p.output -ceq 'plugin') { Set-VulkanNatives -Rid $rid -Dest $outDir }
         Write-Host "  -> $outDir"
     }
 }
