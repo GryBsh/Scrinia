@@ -230,6 +230,107 @@ public sealed class PublishManifestTests
         }
     }
 
+    /// <summary>
+    /// The six manifest columns, in the order both scripts must agree on. publish.sh reads them
+    /// POSITIONALLY (<c>IFS=$'\t' read -r m_id m_project ...</c>); publish.ps1 reads them by
+    /// column NAME (<c>Import-Csv</c>). A reordered header keeps publish.ps1 correct while
+    /// silently misassigning every field for publish.sh — neither script errored on this before
+    /// both scripts started pinning the header line themselves.
+    /// </summary>
+    private static readonly string[] ExpectedHeaderColumns =
+        ["id", "project", "condition", "profile", "output", "rids"];
+
+    [Fact]
+    public void ManifestHeader_IsExactlyTheExpectedColumnsInOrder()
+    {
+        string headerLine = File.ReadAllLines(ManifestPath).SkipWhile(l => l.StartsWith('#')).First();
+        headerLine.Split('\t').Should().Equal(ExpectedHeaderColumns,
+            because: "publish.sh reads manifest columns POSITIONALLY — a reordered or renamed " +
+                     "header would silently misassign every field to the wrong variable there " +
+                     "while publish.ps1 (which reads by column name) kept working, and neither " +
+                     "script would raise an error");
+    }
+
+    [Fact]
+    public void EveryManifestRow_HasExactlySixTabSeparatedFields()
+    {
+        using var scope = new AssertionScope();
+        foreach (string line in File.ReadAllLines(ManifestPath).SkipWhile(l => l.StartsWith('#')).Skip(1))
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
+            line.Split('\t').Should().HaveCount(6,
+                because: $"Import-Csv cannot see a field beyond the header's column count — it " +
+                         $"silently drops an extra one rather than erroring the way publish.sh's " +
+                         $"positional `read` does: '{line}'");
+        }
+    }
+
+    /// <summary>The documented vocabulary for each gating column, matched case-sensitively:
+    /// PowerShell's plain <c>-eq</c>/<c>-in</c>/<c>switch</c> are all case-INSENSITIVE, so
+    /// <c>output=Rid</c> or <c>rids=Host</c> would silently pass validation there while bash's
+    /// <c>case</c> statement (case-sensitive by default) rejects them — the exact divergence that
+    /// let a manifest typo ship the embeddings plugin in every build.</summary>
+    private static readonly Dictionary<string, string[]> ManifestVocabulary = new(StringComparer.Ordinal)
+    {
+        ["condition"] = ["always", "with-embeddings"],
+        ["profile"] = ["trimmed", "plain"],
+        ["output"] = ["rid", "plugin"],
+        ["rids"] = ["all", "host"],
+    };
+
+    [Fact]
+    public void EveryManifestValue_IsWithinTheDocumentedVocabulary_CaseSensitive()
+    {
+        var rows = ReadManifest();
+        rows.Should().NotBeEmpty();
+
+        using var scope = new AssertionScope();
+        foreach (var row in rows)
+        {
+            ManifestVocabulary["condition"].Contains(row.Condition, StringComparer.Ordinal).Should().BeTrue(
+                because: $"'{row.Condition}' for '{row.Id}' is not a recognised condition — an " +
+                         "unrecognised value here (e.g. a 'with_embeddings' typo) used to make both " +
+                         "scripts silently ship the embeddings plugin in EVERY build, condition or not");
+            ManifestVocabulary["profile"].Contains(row.Profile, StringComparer.Ordinal).Should().BeTrue(
+                because: $"'{row.Profile}' for '{row.Id}' is not a recognised profile — an unrecognised " +
+                         "value here must be rejected at read time, not fall through to an undefined " +
+                         "publish shape");
+            ManifestVocabulary["output"].Contains(row.Output, StringComparer.Ordinal).Should().BeTrue(
+                because: $"'{row.Output}' for '{row.Id}' is not a recognised output kind — " +
+                         "PowerShell's plain -notin would silently ACCEPT a wrong-case value like " +
+                         "'Rid' here where bash's case statement rejects it");
+            ManifestVocabulary["rids"].Contains(row.Rids, StringComparer.Ordinal).Should().BeTrue(
+                because: $"'{row.Rids}' for '{row.Id}' is not a recognised rids scope — an " +
+                         "unrecognised value here (e.g. 'rids=hostt') used to silently degrade to " +
+                         "'all' and attempt a cross-OS NativeAOT publish, aborting the whole run");
+        }
+    }
+
+    [Fact]
+    public void BothScripts_ContainEveryVocabularyLiteralTheManifestActuallyUses()
+    {
+        var rows = ReadManifest();
+        var usedValues = rows
+            .SelectMany(r => new[] { r.Condition, r.Profile, r.Output, r.Rids })
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        usedValues.Should().NotBeEmpty();
+
+        using var scope = new AssertionScope();
+        foreach (string script in new[] { "publish.sh", "publish.ps1" })
+        {
+            string text = File.ReadAllText(RepoPaths.Combine(script));
+            foreach (string value in usedValues)
+            {
+                text.Should().Contain(value,
+                    because: $"{script} must recognise manifest value '{value}' — teaching only one " +
+                             "script a new vocabulary literal (e.g. adding output=bundle to the " +
+                             "manifest and updating only one script's vocabulary list) would let that " +
+                             "script silently mis-handle every row using it");
+            }
+        }
+    }
+
     [Fact]
     public void VulkanBackendVersion_MatchesThePackageReference()
     {

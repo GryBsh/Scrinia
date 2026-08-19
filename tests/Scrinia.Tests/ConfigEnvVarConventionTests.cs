@@ -113,9 +113,19 @@ public sealed class ConfigEnvVarConventionTests : IDisposable
     }
 }
 
-/// <summary>Environment variables are process-wide, so these tests must not run beside anything
-/// else that reads Scrinia config. Same shape as Nmp2DecodeCapCollection and the three other
-/// serialised collections in this project.</summary>
+/// <summary>An xUnit collection only serialises test CLASSES that are members of the SAME
+/// collection — this one has exactly one member (<see cref="ConfigEnvVarConventionTests"/>
+/// itself), so <c>DisableParallelization</c> here only stops that class's own tests from
+/// interleaving with each other. It does NOT stop a class in a different collection (e.g.
+/// <c>GlobalWorkspaceConfigCollection</c>, which runs in parallel with this one) from running
+/// concurrently alongside it.
+///
+/// <para>That gap is real for half of what this class touches: the single/double-underscore env
+/// vars it sets (<c>SCRINIA_EMBEDDINGS_PROVIDER</c>, <c>SCRINIA__EMBEDDINGS__PROVIDER</c>,
+/// <c>PLUGINS_EMBEDDINGS</c>, <c>PLUGINS__EMBEDDINGS</c>) are process-wide — a concurrent test
+/// elsewhere that reads Scrinia config could observe them mid-run. The other half genuinely is
+/// safe: <c>WorkspaceSetup.OverrideRoot</c> is <c>AsyncLocal</c>, so a concurrent collection's
+/// override cannot leak into this one's, or vice versa.</para></summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class EnvVarConventionCollection
 {

@@ -1,7 +1,9 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using FluentAssertions.Execution;
 using Scrinia.Commands;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
@@ -30,11 +32,52 @@ public sealed class CliSurfaceConformanceTests
     /// its absence must mean "off". An entry here would be a switch a user cannot turn on.</summary>
     private static readonly HashSet<string> DefaultTrueBoolExemptions = new(StringComparer.Ordinal);
 
+    // { typeof(ScriniaCommands), typeof(BundleCommands) } is hardcoded here rather than derived
+    // at runtime — ConsoleAppFramework's app object exposes no public list of what was registered
+    // onto it, and Program.cs is a top-level statements file with no entry point to invoke short
+    // of running the CLI. Entrypoints_CoverEveryTypeProgramCsRegisters() below closes the gap this
+    // would otherwise leave: it parses Program.cs's `app.Add<T>()` calls from source and asserts
+    // that set equals this one, so a third registered command class goes red there instead of
+    // silently passing every rule in this file uncovered.
     private static IEnumerable<(Type Owner, MethodInfo Method)> Entrypoints() =>
         new[] { typeof(ScriniaCommands), typeof(BundleCommands) }
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                 .Where(m => m.ReturnType == typeof(int) || m.ReturnType == typeof(Task<int>))
                 .Select(m => (t, m)));
+
+    /// <summary>Every command type registered onto the ConsoleAppFramework app in Program.cs via
+    /// <c>app.Add&lt;T&gt;()</c>, parsed from source. Mirrors the pattern
+    /// PublishManifestTests.ReleaseWorkflowProjects/SolutionProjectPaths already use for
+    /// release.yml/Scrinia.sln: the authoritative list is a file on disk, not something reflection
+    /// over a running process can see here.</summary>
+    private static HashSet<string> RegisteredCommandTypeNames()
+    {
+        string programCs = File.ReadAllText(RepoPaths.Combine("src", "Scrinia", "Program.cs"));
+        return Regex.Matches(programCs, @"app\.Add<(\w+)>")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public void Entrypoints_CoverEveryTypeProgramCsRegisters()
+    {
+        var registered = RegisteredCommandTypeNames();
+        registered.Should().NotBeEmpty(because: "the regex must actually find Program.cs's app.Add<T>() calls");
+
+        var covered = new[] { typeof(ScriniaCommands), typeof(BundleCommands) }
+            .Select(t => t.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Registering a third command class in Program.cs (app.Add<SomeNewCommands>()) makes this
+        // go red instead of leaving that class checked by no rule in this file: Entrypoints_AreFound's
+        // exact HaveCount(23) only catches a class being DROPPED from the two known types, it
+        // cannot see one ADDED alongside them.
+        registered.Should().BeEquivalentTo(covered,
+            because: "every command class Program.cs registers with app.Add<T>() must also be in " +
+                     "the { typeof(ScriniaCommands), typeof(BundleCommands) } list Entrypoints() " +
+                     "reflects over — otherwise a newly registered command class is covered by none " +
+                     "of the rules in this file");
+    }
 
     [Fact]
     public void Entrypoints_AreFound()
@@ -79,10 +122,26 @@ public sealed class CliSurfaceConformanceTests
                 if (p.ParameterType != typeof(bool) && p.ParameterType != typeof(bool?)) continue;
                 p.HasDefaultValue.Should().BeTrue(
                     because: $"{owner.Name}.{method.Name}'s --{p.Name} must be optional");
-                p.DefaultValue.Should().Be(false,
-                    because: $"{owner.Name}.{method.Name}'s --{p.Name} defaults to true, which makes it " +
-                             "an option no user can ever turn off — ConsoleAppFramework binds a bool as " +
-                             "a bare presence flag and accepts no value syntax for it");
+                // `bool?` may default to null OR false: the rule's intent is "absence means off",
+                // and for a tri-state flag (null/true/false, e.g. distinguishing "not specified"
+                // from an explicit "off") absence IS null, not false — a plain `bool` has no third
+                // state to represent that with, so it must default to exactly false. `true` stays
+                // forbidden for both: it would make the option one no user can ever turn off,
+                // since ConsoleAppFramework binds a bool as a bare presence flag and accepts no
+                // value syntax for it.
+                if (p.ParameterType == typeof(bool?))
+                {
+                    (p.DefaultValue is null or false).Should().BeTrue(
+                        because: $"{owner.Name}.{method.Name}'s --{p.Name} defaults to true, which " +
+                                 "makes it an option no user can ever turn off");
+                }
+                else
+                {
+                    p.DefaultValue.Should().Be(false,
+                        because: $"{owner.Name}.{method.Name}'s --{p.Name} defaults to true, which makes " +
+                                 "it an option no user can ever turn off — ConsoleAppFramework binds a " +
+                                 "bool as a bare presence flag and accepts no value syntax for it");
+                }
             }
         }
     }
