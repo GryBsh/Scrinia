@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Models;
-using Scrinia.Core.Search;
 
 namespace Scrinia.Core.Bundles;
 
@@ -213,7 +212,21 @@ public static class BundleFormatService
 
             BundleLegacyKeys.NormalizeIndex(indexObject);
 
-            var index = indexObject.Deserialize(BundleJsonContext.Default.BundleIndex);
+            BundleIndex? index;
+            try
+            {
+                index = indexObject.Deserialize(BundleJsonContext.Default.BundleIndex);
+            }
+            catch (JsonException ex)
+            {
+                // The hand-parse this replaced silently rewrote an unparseable createdAt to "now"
+                // and skipped malformed attribute values. Both are now refused rather than
+                // guessed — quietly inventing a timestamp is the same defect this branch removes.
+                // Converting to InvalidOperationException keeps the contract this method
+                // documents (:125) true, and names the topic so the bad entry is findable.
+                throw new InvalidOperationException(
+                    $"Invalid bundle — topic '{topic}' has an unreadable index: {ex.Message}", ex);
+            }
             if (index?.Entries is not { Count: > 0 })
                 continue;
 
@@ -223,8 +236,12 @@ public static class BundleFormatService
             foreach (var deserialized in index.Entries)
             {
                 // A nameless entry is unaddressable. The parse this replaced threw for a missing
-                // "name" key and skipped a null one; skipping both is strictly kinder and loses
-                // nothing, since neither could be stored.
+                // "name" key and skipped a null one, but it DID accept and store an empty-string
+                // name (JsonElement.GetString() on "" returns "", which is neither null nor
+                // thrown). IsNullOrEmpty now refuses that case too — an entry with no name could
+                // never be found again by anything that looks entries up by Name, so storing one
+                // was never actually useful; refusing it here is still an improvement, not a
+                // silent behavior change with a cost.
                 if (string.IsNullOrEmpty(deserialized.Name))
                     continue;
 

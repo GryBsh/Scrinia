@@ -2544,8 +2544,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
             // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the memory
             // as it was, and overwriting it reset every memory's creation date on every restore
-            // (design review finding M4). A bundle carrying no timestamp deserializes to
-            // default(DateTimeOffset), which is the only case that still gets "now".
+            // (design review finding M4). A bundle carrying no "createdAt" key deserializes to
+            // default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that specific value is
+            // the only one rewritten to "now" here. Any OTHER unparseable createdAt is refused
+            // earlier, in ImportTopicsFromZip's deserialize (InvalidOperationException) — this is
+            // not a general malformed-timestamp fallback, only the default a missing key produces.
             var updatedEntry = entry with
             {
                 Uri = ArtifactUri(entry.Name, topicScope),
