@@ -180,6 +180,16 @@ public static class BundleFormatService
         int importedEntries = 0;
         var importedTopicNames = new List<string>();
 
+        // BUILD PASS — parse and validate every topic before writing any of them. The malformed-
+        // index InvalidOperationException below used to live inside the write loop, which meant a
+        // bundle with a good topic A followed by a malformed topic B wrote A to the store and only
+        // THEN told the caller the bundle was invalid — leaving a half-imported store, the exact
+        // failure mode the up-front scope-name validation loop above exists to rule out (":156" —
+        // "validate EVERY manifest topic before writing anything ... refuse cleanly ... before any
+        // side effect"). Fixed here by the same rule: nothing in this loop calls
+        // ImportTopicEntries. Parsed results are collected and written only in the pass below.
+        var toWrite = new List<(string TopicScope, string Topic, List<ArtifactEntry> Entries, Dictionary<string, string> ArtifactContents)>();
+
         foreach (string topic in topicsToImport)
         {
             // Task 13: import is a WRITE path, so an unconstructable topic throws rather than
@@ -207,23 +217,28 @@ public static class BundleFormatService
             // silently dropped the rest on every backup restore (design review finding M4).
             // Legacy keys are migrated first, in one bounded pass that knows about exactly two
             // of them — see BundleLegacyKeys for why they do not live on the entry itself.
-            if (JsonNode.Parse(indexJson) is not JsonObject indexObject)
-                continue;
-
-            BundleLegacyKeys.NormalizeIndex(indexObject);
-
+            //
+            // JsonNode.Parse AND Deserialize both sit inside this one try: the hand-parse this
+            // replaced silently rewrote an unparseable createdAt to "now" and skipped malformed
+            // attribute values, and both are now refused rather than guessed — quietly inventing
+            // a timestamp is the same defect this branch removes. Covering Parse too (not just
+            // Deserialize) closes the whole class of "this topic's index.json is unreadable" —
+            // structurally invalid JSON text, not only a validly-shaped value this type rejects —
+            // rather than the one path a narrower catch would have named. Converting to
+            // InvalidOperationException keeps the contract this method documents (:125) true, and
+            // names the topic so the bad entry is findable.
             BundleIndex? index;
             try
             {
+                if (JsonNode.Parse(indexJson) is not JsonObject indexObject)
+                    continue;
+
+                BundleLegacyKeys.NormalizeIndex(indexObject);
+
                 index = indexObject.Deserialize(BundleJsonContext.Default.BundleIndex);
             }
             catch (JsonException ex)
             {
-                // The hand-parse this replaced silently rewrote an unparseable createdAt to "now"
-                // and skipped malformed attribute values. Both are now refused rather than
-                // guessed — quietly inventing a timestamp is the same defect this branch removes.
-                // Converting to InvalidOperationException keeps the contract this method
-                // documents (:125) true, and names the topic so the bad entry is findable.
                 throw new InvalidOperationException(
                     $"Invalid bundle — topic '{topic}' has an unreadable index: {ex.Message}", ex);
             }
@@ -271,12 +286,20 @@ public static class BundleFormatService
             }
 
             if (entries.Count > 0)
-            {
-                store.ImportTopicEntries(topicScope, entries, artifactContents, overwrite);
-                importedTopics++;
-                importedEntries += entries.Count;
-                importedTopicNames.Add(topic);
-            }
+                toWrite.Add((topicScope, topic, entries, artifactContents));
+        }
+
+        // WRITE PASS — nothing above this point has touched the store, so every throw in the
+        // build pass above happens before any side effect. Holding every topic's entries and
+        // artifact text in memory here is acceptable and consistent with the rest of this file,
+        // which already reads whole artifacts into memory during export; this is not a streaming
+        // path and should not become one.
+        foreach (var (topicScope, topic, entries, artifactContents) in toWrite)
+        {
+            store.ImportTopicEntries(topicScope, entries, artifactContents, overwrite);
+            importedTopics++;
+            importedEntries += entries.Count;
+            importedTopicNames.Add(topic);
         }
 
         // Import disk-based file entities (v2 bundles; v1 bundles skip this)

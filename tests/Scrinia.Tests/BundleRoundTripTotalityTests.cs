@@ -297,6 +297,71 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             .Which.Should().NotBeOfType<JsonException>();
     }
 
+    [Fact]
+    public void AMalformedLaterTopic_DoesNotLeaveAnEarlierValidTopicHalfImported()
+    {
+        // THE FINDING (fix round 2): converting the malformed-index JsonException into
+        // InvalidOperationException from INSIDE the per-topic write loop meant
+        // store.ImportTopicEntries had already run for every topic before the bad one by the time
+        // the throw fired. A bundle with a good topic A followed by a malformed topic B wrote A
+        // to the store and only THEN told the caller the whole bundle was invalid — exactly the
+        // half-import this method's own up-front topic-name validation loop exists to rule out
+        // (":156" — "validate EVERY manifest topic before writing anything ... before any side
+        // effect"). ImportTopicsFromZip now parses and validates every topic (the build pass)
+        // before writing any of them (the write pass), so this asserts BOTH halves: the throw
+        // still fires, AND — the half the earlier round's fix did not cover — topic A was never
+        // written at all.
+        var goodIndex = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "good-entry",
+                ["originalBytes"] = 11,
+                ["chunkCount"] = 1,
+            }),
+        };
+        var badIndex = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "bad-entry",
+                ["originalBytes"] = 11,
+                ["chunkCount"] = 1,
+                ["createdAt"] = "not-a-date",
+            }),
+        };
+
+        string zipPath = Path.Combine(_tempDir, $"two-topic-{Guid.NewGuid():N}.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            WriteHandBuiltTopic(zip, "topic-a", goodIndex, "hello world");
+            WriteHandBuiltTopic(zip, "topic-b", badIndex, "hello world");
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using var writer = new StreamWriter(manifest.Open());
+            writer.Write(new JsonObject
+            {
+                ["version"] = 1,
+                ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                ["topics"] = new JsonArray("topic-a", "topic-b"),
+                ["totalEntries"] = 2,
+            }.ToJsonString());
+        }
+
+        Action act = () =>
+        {
+            using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+        };
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*topic-b*");
+
+        _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("topic-a")).Should().BeEmpty(
+            "a malformed LATER topic must not leave an earlier, valid topic half-imported");
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -412,5 +477,22 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
         return _store.LoadIndex(MemoryNaming.BuildScopedTopicScope(topic))
             .Single(e => e.Name.Equals(entryName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Writes one topic's index.json and its single artifact into an ALREADY-OPEN zip
+    /// archive, without touching the manifest. <see cref="ImportHandBuiltBundle"/> only supports a
+    /// single topic per bundle; this is the multi-topic building block for tests that need more
+    /// than one topic in the same bundle.</summary>
+    private void WriteHandBuiltTopic(ZipArchive zip, string topic, JsonObject index, string content)
+    {
+        string entryName = index["entries"]![0]!["name"]!.GetValue<string>();
+
+        var indexEntry = zip.CreateEntry($"topics/{topic}/index.json");
+        using (var writer = new StreamWriter(indexEntry.Open()))
+            writer.Write(index.ToJsonString());
+
+        var artifactEntry = zip.CreateEntry($"topics/{topic}/{_store.SanitizeName(entryName)}.nmp2");
+        using (var writer = new StreamWriter(artifactEntry.Open()))
+            writer.Write(Nmp2ChunkedEncoder.Encode(content));
     }
 }
