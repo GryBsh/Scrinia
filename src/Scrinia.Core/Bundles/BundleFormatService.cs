@@ -260,7 +260,14 @@ public static class BundleFormatService
             try
             {
                 if (JsonNode.Parse(indexJson) is not JsonObject indexObject)
-                    continue;
+                    // A syntactically valid but non-object index root ([], 42, "x", null) is an
+                    // unreadable index, not an empty one. Skipping it would silently drop the
+                    // whole topic while other topics still imported — a silent partial restore,
+                    // and the pre-branch code threw here (JsonElement.TryGetProperty throws on a
+                    // non-object). Refuse it like any other unreadable index, before any write.
+                    throw new InvalidOperationException(
+                        $"Invalid bundle — topic '{topic}' has an unreadable index: " +
+                        "the index root is not a JSON object.");
 
                 BundleLegacyKeys.NormalizeIndex(indexObject);
 

@@ -2178,8 +2178,9 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   backup restore silently lost `Keywords`, `TermFrequencies`, `UpdatedAt`, `FileHashes` and
   `AgentKeywords`. `AgentKeywords` was the unrecoverable one — the curated-vs-auto keyword
   distinction cannot be reconstructed after the fact. Import now deserializes through the same
-  context that serializes, so the round trip is total over `ArtifactEntry`'s members by
-  construction — it is not a promise to tolerate arbitrary malformed bundle JSON, see below.
+  context that serializes, so every member the bundle recorded comes back — except `Uri`, which
+  the store recomputes for the importing machine because the exporter's value would be wrong
+  there. This is not a promise to tolerate arbitrary malformed bundle JSON, see below.
 - **Restoring a backup no longer resets every memory's creation date.** `CreatedAt` was parsed
   from the bundle and then overwritten with the import time. Both `CreatedAt` and `UpdatedAt`
   are now preserved; a bundle carrying no timestamp still gets one at import.
@@ -2197,9 +2198,14 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   every topic before it and only then report the bundle as invalid, leaving the store
   half-imported. Every topic is now parsed and validated before any of them are written, so a
   malformed topic is refused — naming the topic, in the message — with nothing from that bundle
-  written to the store. An artifact's content that fails to decode is a narrower case and is
-  unaffected by this: it degrades that one entry to "no derived keywords" rather than aborting
-  the import.
+  written to the store.
+- An `index.json` that parses as syntactically valid JSON but is not an object at its root
+  (`[]`, `42`, `"x"`, `null`) used to be silently skipped, dropping that whole topic while every
+  other topic in the bundle still imported — a silent partial restore, and a regression from the
+  pre-branch behavior, which threw on exactly this shape. It is now refused the same way any
+  other unreadable index is, naming the topic, before anything is written. An artifact's content
+  that fails to decode is a narrower case and is unaffected by either fix: it degrades that one
+  entry to "no derived keywords" rather than aborting the import.
 
 ### Changed (breaking) — a memory restored from a bundle now carries the metadata the bundle recorded
 

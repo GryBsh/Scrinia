@@ -377,6 +377,62 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             "a malformed LATER topic must not leave an earlier, valid topic half-imported");
     }
 
+    [Fact]
+    public void ANonObjectIndexRoot_ThrowsInvalidOperationException_NamingTheTopic_AndDoesNotHalfImport()
+    {
+        // Review round 1 on Task 5 (post-close): `JsonNode.Parse(indexJson) is not JsonObject`
+        // is also true of syntactically VALID JSON that parses to something other than an object
+        // — "[]", "42", "\"x\"", "null" all satisfy it without ever reaching the JsonException
+        // catch below. The code used to `continue` in that case, which silently dropped the whole
+        // topic while every OTHER topic in the bundle still imported: a silent partial restore,
+        // and a regression from the pre-branch behavior (JsonElement.TryGetProperty threw on a
+        // non-object root). This pins topic-a not being written when topic-b's index.json is "[]",
+        // and the throw naming topic-b.
+        var goodIndex = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "good-entry",
+                ["originalBytes"] = 11,
+                ["chunkCount"] = 1,
+            }),
+        };
+
+        string zipPath = Path.Combine(_tempDir, $"non-object-root-{Guid.NewGuid():N}.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            WriteHandBuiltTopic(zip, "topic-a", goodIndex, "hello world");
+
+            var badIndexEntry = zip.CreateEntry("topics/topic-b/index.json");
+            using (var writer = new StreamWriter(badIndexEntry.Open()))
+                writer.Write("[]");
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using var writer2 = new StreamWriter(manifest.Open());
+            writer2.Write(new JsonObject
+            {
+                ["version"] = 1,
+                ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                ["topics"] = new JsonArray("topic-a", "topic-b"),
+                ["totalEntries"] = 1,
+            }.ToJsonString());
+        }
+
+        Action act = () =>
+        {
+            using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+        };
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*topic-b*");
+
+        _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("topic-a")).Should().BeEmpty(
+            "a non-object index root for a LATER topic must not leave an earlier, valid topic " +
+            "half-imported");
+    }
+
     // ── Derivation ───────────────────────────────────────────────────────────
 
     [Fact]
