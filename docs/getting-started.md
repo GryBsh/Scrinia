@@ -48,7 +48,7 @@ scri setup
 For optional Vulkan GPU acceleration:
 
 ```powershell
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
 ### Docker (Server)

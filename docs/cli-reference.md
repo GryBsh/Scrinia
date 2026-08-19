@@ -586,7 +586,7 @@ Downloads `model.safetensors` (~22MB) and `vocab.txt` to `{exeDir}/models/m2v-Mi
 GPU-accelerated embeddings via LLamaSharp with Vulkan backend. Requires the plugin to be installed:
 
 ```bash
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
 When the Vulkan plugin is installed, it automatically overrides the built-in Model2Vec provider.

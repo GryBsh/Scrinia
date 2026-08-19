@@ -1,0 +1,3 @@
+# Read by publish.sh with a tab-splitting `read`. A CRLF checkout would leave a carriage
+# return on the last field of every row and silently corrupt the `output` column.
+publish.projects.tsv text eol=lf
