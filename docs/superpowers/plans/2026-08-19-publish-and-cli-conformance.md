@@ -25,32 +25,43 @@
 
 **Files:**
 - Create: `publish.projects.tsv`
+- Create: `.gitattributes` (does not exist yet)
 - Modify: `publish.sh` (whole file)
 - Modify: `publish.ps1` (whole file)
-- Modify: `.gitattributes`
+- Modify: `README.md:118`
+- Modify: `docs/getting-started.md:51`
+- Modify: `docs/cli-reference.md:589`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `publish.projects.tsv` with the header `id`, `project`, `condition`, `profile`, `output`, tab-separated. Task 2's pin test reads it. The switch is `--with-embeddings` in bash and `-WithEmbeddings` in PowerShell.
+- Produces: `publish.projects.tsv` with the header `id`, `project`, `condition`, `profile`, `output`, `rids`, tab-separated. Task 2's pin test reads it and expects **six** columns. The switch is `--with-embeddings` in bash and `-WithEmbeddings` in PowerShell.
+
+**Two constraints on the text you write, both load-bearing for Task 2:**
+
+1. **Neither script may contain the literal string `.csproj` anywhere — including comments.** Task 2's pin is a plain substring check, deliberately, and a comment naming a project file is exactly the mutation that proves the pin works. Where a comment needs to refer to a project, say "the Scrinia.Plugin.Embeddings project file".
+2. The manifest has six columns, not five. `rids` is separate from `condition` because they are orthogonal axes — one is a user's switch, the other is what the toolchain can do.
 
 - [ ] **Step 1: Create the manifest**
 
-Create `publish.projects.tsv`. **The separator is a literal TAB character**, not spaces — the readers split on tab.
+Create `publish.projects.tsv`. **The separator is a literal TAB character**, not spaces — the readers split on tab. Ensure the file ends with a trailing newline.
 
 ```
-id	project	condition	profile	output
-scri	src/Scrinia/Scrinia.csproj	always	trimmed	rid
-scri-merge	src/Scrinia.Merge/Scrinia.Merge.csproj	always	plain	rid
-scri-plugin-embeddings	src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj	with-embeddings	plain	plugin
+id	project	condition	profile	output	rids
+scri	src/Scrinia/Scrinia.csproj	always	trimmed	rid	all
+scri-merge	src/Scrinia.Merge/Scrinia.Merge.csproj	always	plain	rid	host
+scri-plugin-embeddings	src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj	with-embeddings	plain	plugin	all
 ```
 
-Verify the file really contains tabs:
+`scri-merge` is `rids=host` because `Scrinia.Merge` sets `PublishAot=true` and NativeAOT cannot cross-compile between operating systems. Measured on Windows: `dotnet publish src/Scrinia.Merge/... --runtime linux-x64` prints `error : Cross-OS native compilation is not supported.`, **exits 1**, and writes nothing. Under `set -euo pipefail` that would abort the whole `publish.sh` run, so adding this row without the `host` guard would be a regression, not a fix.
+
+Verify the file really contains tabs and ends with a newline:
 
 ```bash
 grep -cP '\t' publish.projects.tsv
+tail -c 1 publish.projects.tsv | od -c | head -1
 ```
 
-Expected: `4` (header plus three rows).
+Expected: `4` (header plus three rows), and the last byte is `\n`.
 
 - [ ] **Step 2: Pin the manifest's line endings**
 
@@ -76,10 +87,20 @@ PLATFORM=""
 ALL_RIDS=("win-x64" "linux-x64" "osx-arm64")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="$SCRIPT_DIR/publish.projects.tsv"
-# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in
-# src/Scrinia.Plugin.Embeddings/Scrinia.Plugin.Embeddings.csproj by a test — a drift here makes
-# the overwrite path below not exist, which used to be a silent skip.
+# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in the
+# Scrinia.Plugin.Embeddings project file by a test — a drift here makes the overwrite path
+# below not exist, which used to be a silent skip.
 VULKAN_BACKEND_VERSION="0.25.0"
+
+# Projects marked rids=host in the manifest are published only for this machine's own RID.
+# Scrinia.Merge is NativeAOT, and cross-OS native compilation is unsupported: a foreign-RID
+# publish exits 1 and writes nothing, which under `set -e` would abort this whole script.
+case "$(uname -s)" in
+    Linux*)               HOST_RID="linux-x64" ;;
+    Darwin*)              if [ "$(uname -m)" = "arm64" ]; then HOST_RID="osx-arm64"; else HOST_RID="osx-x64"; fi ;;
+    MINGW*|MSYS*|CYGWIN*) HOST_RID="win-x64" ;;
+    *)                    HOST_RID="" ;;
+esac
 
 # Parse arguments
 for arg in "$@"; do
@@ -122,15 +143,18 @@ if [ ! -f "$MANIFEST" ]; then
     exit 1
 fi
 
-IDS=(); PROJECTS=(); CONDITIONS=(); PROFILES=(); OUTPUTS=()
-while IFS=$'\t' read -r m_id m_project m_condition m_profile m_output; do
+IDS=(); PROJECTS=(); CONDITIONS=(); PROFILES=(); OUTPUTS=(); RIDSCOPES=()
+# The `|| [ -n "$m_id" ]` keeps the last row when the file has no trailing newline: `read`
+# returns non-zero at EOF-without-newline having already filled the variables, so the plain
+# form would silently drop it.
+while IFS=$'\t' read -r m_id m_project m_condition m_profile m_output m_rids || [ -n "$m_id" ]; do
     # Strip a trailing CR: .gitattributes pins this file to LF, but a user whose git
     # configuration ignores it would otherwise get a corrupted final column.
-    m_output="${m_output%$'\r'}"
+    m_rids="${m_rids%$'\r'}"
     if [ -z "$m_id" ]; then continue; fi
     case "$m_id" in \#*) continue ;; esac
     IDS+=("$m_id"); PROJECTS+=("$m_project"); CONDITIONS+=("$m_condition")
-    PROFILES+=("$m_profile"); OUTPUTS+=("$m_output")
+    PROFILES+=("$m_profile"); OUTPUTS+=("$m_output"); RIDSCOPES+=("$m_rids")
 done < <(tail -n +2 "$MANIFEST")
 
 if [ "${#IDS[@]}" -eq 0 ]; then
@@ -173,6 +197,12 @@ for rid in "${RIDS[@]}"; do
             continue
         fi
 
+        if [ "${RIDSCOPES[$i]}" = "host" ] && [ "$rid" != "$HOST_RID" ]; then
+            echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and cross-OS native compilation" >&2
+            echo "         is unsupported. Build on $rid, or use --platform=$HOST_RID." >&2
+            continue
+        fi
+
         case "${OUTPUTS[$i]}" in
             rid)    out_dir="$rid_dir" ;;
             plugin) out_dir="$rid_dir/plugins/${IDS[$i]}" ;;
@@ -199,8 +229,8 @@ for rid in "${RIDS[@]}"; do
                     --output "$out_dir"
                 ;;
             plain)
-                # Single-file + self-contained + native bundling is configured in the .csproj.
-                # Only --runtime is needed here for RID selection.
+                # Single-file + self-contained + native bundling is configured in the project
+                # file. Only --runtime is needed here for RID selection.
                 dotnet publish "${PROJECTS[$i]}" \
                     --runtime "$rid" \
                     --configuration Release \
@@ -256,15 +286,29 @@ $Rids = if ($Platform) { @($Platform) } else { @('win-x64', 'linux-x64', 'osx-ar
 # When a single platform is specified, output directly into OutputDir (no RID subdirectory).
 $SinglePlatform = [bool]$Platform
 
-# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in
-# src/Scrinia.Plugin.Embeddings/Scrinia.Plugin.Embeddings.csproj by a test — a drift here makes
-# the overwrite path below not exist, which used to be a silent skip.
+# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in the
+# Scrinia.Plugin.Embeddings project file by a test — a drift here makes the overwrite path
+# below not exist, which used to be a silent skip.
 $VulkanBackendVersion = '0.25.0'
+
+# Projects marked rids=host in the manifest are published only for this machine's own RID.
+# Scrinia.Merge is NativeAOT, and cross-OS native compilation is unsupported: a foreign-RID
+# publish exits 1 and writes nothing.
+$HostRid = if ($IsWindows) { 'win-x64' }
+          elseif ($IsLinux) { 'linux-x64' }
+          elseif ($IsMacOS) {
+              if ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq 'Arm64')
+                  { 'osx-arm64' } else { 'osx-x64' }
+          }
+          else { '' }
 
 # The manifest is the one source of truth for what ships. publish.sh reads the same file.
 $Manifest = Join-Path $PSScriptRoot 'publish.projects.tsv'
 if (-not (Test-Path $Manifest)) { throw "Manifest not found at $Manifest" }
-$Projects = @(Import-Csv -Path $Manifest -Delimiter "`t")
+# Filters blank and #-prefixed rows exactly as publish.sh does. The two readers of one source
+# of truth must agree about what the file means.
+$Projects = @(Import-Csv -Path $Manifest -Delimiter "`t" |
+    Where-Object { $_.id -and -not $_.id.StartsWith('#') })
 if ($Projects.Count -eq 0) { throw "Manifest $Manifest lists no projects" }
 
 # Overwrites the published native DLLs with the Vulkan-compiled variants. Single-file publish
@@ -278,7 +322,9 @@ function Set-VulkanNatives {
            else { $null }
 
     if (-not $pkg) {
-        Write-Warning "  no Vulkan backend package exists for $Rid; shipping the CPU backend."
+        # [Console]::Error, not Write-Warning: publish.sh writes these to stderr, and the two
+        # scripts are meant to be an equivalent pair. Write-Warning uses the warning stream.
+        [Console]::Error.WriteLine("  [warn] no Vulkan backend package exists for $Rid; shipping the CPU backend.")
         return
     }
 
@@ -287,7 +333,7 @@ function Set-VulkanNatives {
         Copy-Item "$src/*" $Dest -Force
         Write-Host '    Overwrote root native DLLs with Vulkan variants'
     } else {
-        Write-Warning "  Vulkan natives not found at $src; shipping the CPU backend."
+        [Console]::Error.WriteLine("  [warn] Vulkan natives not found at $src; shipping the CPU backend.")
     }
 }
 
@@ -298,6 +344,13 @@ foreach ($rid in $Rids) {
 
     foreach ($p in $Projects) {
         if ($p.condition -eq 'with-embeddings' -and -not $WithEmbeddings) { continue }
+
+        if ($p.rids -eq 'host' -and $rid -ne $HostRid) {
+            [Console]::Error.WriteLine(
+                "  [skip] $($p.id) for ${rid}: it is NativeAOT and cross-OS native compilation is " +
+                "unsupported. Build on $rid, or use -Platform $HostRid.")
+            continue
+        }
 
         $outDir = switch ($p.output) {
             'rid'    { $ridDir }
@@ -323,8 +376,8 @@ foreach ($rid in $Rids) {
                     --output $outDir
             }
             'plain' {
-                # Single-file + self-contained + native bundling is configured in the .csproj.
-                # Only --runtime is needed here for RID selection.
+                # Single-file + self-contained + native bundling is configured in the project
+                # file. Only --runtime is needed here for RID selection.
                 dotnet publish $p.project `
                     --runtime $rid `
                     --configuration Release `
@@ -374,11 +427,34 @@ bash -c 'IDS=(); while IFS=$'"'"'\t'"'"' read -r a b c d e; do [ -z "$a" ] && co
 ```
 Expected: `scri scri-merge scri-plugin-embeddings`
 
-- [ ] **Step 6: Commit**
+Then confirm neither script names a project file, which Task 2 will assert:
 
 ```bash
-git add publish.projects.tsv publish.sh publish.ps1 .gitattributes
-git commit -m "fix(publish): one manifest both scripts read, and delete the directory-eating find"
+grep -n "\.csproj" publish.sh publish.ps1
+```
+Expected: no output. If anything matches — including a comment — reword it before continuing; Task 2's pin fails otherwise.
+
+- [ ] **Step 6: Update the three documented invocations**
+
+`-WithVulkan` no longer exists, so every documented command using it is broken. Update all three to `-WithEmbeddings`:
+
+- `README.md:118`
+- `docs/getting-started.md:51`
+- `docs/cli-reference.md:589`
+
+Each reads `.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan`.
+
+```bash
+grep -rn "WithVulkan" README.md docs/getting-started.md docs/cli-reference.md
+```
+Expected after the edit: no output. Do **not** touch `docs/planning/plans/2026-06-18-codebase-leanness-cleanup.md`, which is an archived plan describing the tree as it was.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add publish.projects.tsv publish.sh publish.ps1 .gitattributes \
+        README.md docs/getting-started.md docs/cli-reference.md
+git commit -m "fix(publish)!: one manifest both scripts read, and delete the directory-eating find"
 ```
 
 ---
@@ -390,9 +466,10 @@ git commit -m "fix(publish): one manifest both scripts read, and delete the dire
 - Modify: `tests/Scrinia.Server.Tests/TestPaths.cs`
 - Modify: `tests/Scrinia.Tests/StoreBoundaryTests.cs:171-181`
 - Create: `tests/Scrinia.Tests/PublishManifestTests.cs`
+- Read only (never modified): `.github/workflows/release.yml`, every `src/**/*.csproj`
 
 **Interfaces:**
-- Consumes: `publish.projects.tsv` from Task 1.
+- Consumes: `publish.projects.tsv` from Task 1, which has six columns.
 - Produces: `Scrinia.TestDoubles.RepoPaths.Root()` and `RepoPaths.Combine(params string[])`. Later tasks needing a repo-relative path use these.
 
 **Why the consolidation is in this task and not a separate one:** the walk-up-to-`Scrinia.sln` helper already exists three times — `tests/Scrinia.Merge.Tests/GitMergeHarness.cs`, `tests/Scrinia.Server.Tests/TestPaths.cs`, and a private copy in `tests/Scrinia.Tests/StoreBoundaryTests.cs` whose own comment acknowledges the duplication. This task needs the helper in `Scrinia.Tests`. Adding a fourth copy inside a branch whose subject is single sources of truth is not acceptable, so it moves to `Scrinia.TestDoubles`, which both `Scrinia.Tests` and `Scrinia.Server.Tests` already reference. `Scrinia.Merge.Tests` does not reference `Scrinia.TestDoubles` and keeps its copy — adding a project reference for a six-line helper costs more than it saves. Say so in the new file's doc comment.
@@ -444,7 +521,7 @@ public static string RepoRoot(params string[] relativeSegments) =>
 
 Delete the private `FindRepoRoot`. Update the class doc comment's second sentence to say the walk lives in `Scrinia.TestDoubles.RepoPaths`.
 
-In `tests/Scrinia.Tests/StoreBoundaryTests.cs`, delete the private `RepoRoot()` method (lines 171-181) and replace its call sites with `Scrinia.TestDoubles.RepoPaths.Root()`.
+In `tests/Scrinia.Tests/StoreBoundaryTests.cs`, delete the private `RepoRoot()` method (lines 171-182, the closing brace included) and replace its single call site at `:110` with `Scrinia.TestDoubles.RepoPaths.Root()`.
 
 - [ ] **Step 3: Build and run the two affected suites**
 
@@ -495,11 +572,27 @@ public sealed class PublishManifestTests
         ["Scrinia.AppHost"] =
             "Aspire development orchestrator — a local run-the-stack harness, never shipped to users.",
         ["Scrinia.Server"] =
-            "Ships as a container image (src/Scrinia.Server/Dockerfile, docker-compose.yml), " +
-            "not as a published binary in the CLI's output directory.",
+            "Shipped by release.yml's build-server job and as a container image " +
+            "(src/Scrinia.Server/Dockerfile, docker-compose.yml) — never by the developer publish " +
+            "scripts, which build the CLI and the plugin it loads.",
     };
 
-    private sealed record ManifestRow(string Id, string Project, string Condition, string Profile, string Output);
+    /// <summary>
+    /// Every `dotnet publish &lt;project&gt;` line in the release workflow. This is the list that
+    /// actually produces what users download, and it is hand-maintained: rule 5 below is what
+    /// stops it drifting from the manifest.
+    /// </summary>
+    private static List<string> ReleaseWorkflowProjects()
+    {
+        string yaml = File.ReadAllText(RepoPaths.Combine(".github", "workflows", "release.yml"));
+        return Regex.Matches(yaml, @"dotnet publish\s+(\S+\.csproj)")
+            .Select(m => Path.GetFileNameWithoutExtension(m.Groups[1].Value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private sealed record ManifestRow(
+        string Id, string Project, string Condition, string Profile, string Output, string Rids);
 
     private static List<ManifestRow> ReadManifest()
     {
@@ -508,8 +601,9 @@ public sealed class PublishManifestTests
         {
             if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
             string[] parts = line.Split('\t');
-            parts.Should().HaveCount(5, because: $"every manifest row has five tab-separated columns: '{line}'");
-            rows.Add(new ManifestRow(parts[0], parts[1], parts[2], parts[3], parts[4].TrimEnd('\r')));
+            parts.Should().HaveCount(6, because: $"every manifest row has six tab-separated columns: '{line}'");
+            rows.Add(new ManifestRow(
+                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5].TrimEnd('\r')));
         }
         return rows;
     }
@@ -599,15 +693,51 @@ public sealed class PublishManifestTests
                              "is skipped, shipping the CPU backend under a Vulkan switch");
         }
     }
+
+    /// <summary>
+    /// The manifest governs the two developer scripts; .github/workflows/release.yml is a third,
+    /// hand-maintained list — and the one that produces the archives users download. Without this
+    /// rule a new project could be added to the manifest, pass every check above, and never ship.
+    /// </summary>
+    [Fact]
+    public void TheReleaseWorkflow_ShipsEveryManifestProject_AndNothingUndeclared()
+    {
+        var manifestProjects = ReadManifest()
+            .Select(r => Path.GetFileNameWithoutExtension(r.Project))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var released = ReleaseWorkflowProjects();
+
+        released.Should().NotBeEmpty(because: "the regex must not silently match nothing");
+
+        using var scope = new AssertionScope();
+        foreach (string name in manifestProjects)
+        {
+            released.Any(r => string.Equals(r, name, StringComparison.OrdinalIgnoreCase))
+                .Should().BeTrue(
+                    because: $"{name} is in publish.projects.tsv but release.yml never publishes it, so " +
+                             "it would ship to nobody");
+        }
+
+        foreach (string name in released)
+        {
+            (manifestProjects.Contains(name) || ExcludedFromPublish.ContainsKey(name))
+                .Should().BeTrue(
+                    because: $"release.yml publishes {name}, but it is neither in publish.projects.tsv " +
+                             "nor named in ExcludedFromPublish — a developer building locally would not " +
+                             "get what the release ships");
+        }
+    }
 }
 ```
+
+Both directions are asserted on purpose. Manifest-not-in-release catches a project that would ship to nobody; release-not-in-manifest catches one a developer building locally would silently not get. `Scrinia.Server` is in `ExcludedFromPublish`, which is why the second direction passes for it today.
 
 - [ ] **Step 5: Run the pin**
 
 ```bash
 dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~PublishManifestTests"
 ```
-Expected: 4 passed.
+Expected: 5 passed.
 
 - [ ] **Step 6: Prove each assertion can fail (mutation check)**
 
@@ -617,8 +747,9 @@ Do these one at a time, confirming red, then reverting before the next:
 2. In `publish.projects.tsv`, change `scri-merge`'s project path to `src/Scrinia.Merge/Nope.csproj`. Expected: `EveryManifestProject_ExistsOnDisk` FAILS. Revert.
 3. Delete the `scri-merge` row from the manifest. Expected: `EveryShippableExecutable_IsInTheManifestOrNamedAsExcluded` FAILS naming `Scrinia.Merge`. Revert.
 4. In `publish.sh`, change `VULKAN_BACKEND_VERSION` to `0.24.0`. Expected: `VulkanBackendVersion_MatchesThePackageReference` FAILS. Revert.
+5. In `.github/workflows/release.yml`, change the `Scrinia.Merge` publish line's path to a different project. Expected: `TheReleaseWorkflow_ShipsEveryManifestProject_AndNothingUndeclared` FAILS in BOTH directions. Revert.
 
-Record the four observed failure messages in the task report. A pin that has never been seen red is not a pin.
+Record the five observed failure messages in the task report. A pin that has never been seen red is not a pin.
 
 - [ ] **Step 7: Commit**
 
@@ -666,11 +797,10 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class CliSurfaceConformanceTests
 {
-    /// <summary>Parameters that are not really options: the framework binds these itself.</summary>
-    private static readonly HashSet<string> FrameworkParameters = new(StringComparer.Ordinal)
-    {
-        "cancellationToken",
-    };
+    /// <summary>Public instance methods on these types that are deliberately NOT commands.
+    /// Empty: both types exist to declare the CLI surface, so a public instance method on either
+    /// is a command. An entry here would be a method the conformance rules stop covering.</summary>
+    private static readonly HashSet<string> NotCommands = new(StringComparer.Ordinal);
 
     /// <summary>Commands allowed a parameter named `workspace`. Empty: the family's name for the
     /// workspace root is `workspaceRoot`, with no exception.</summary>
@@ -718,7 +848,6 @@ public sealed class CliSurfaceConformanceTests
             foreach (var p in method.GetParameters())
             {
                 if (p.ParameterType != typeof(bool)) continue;
-                if (FrameworkParameters.Contains(p.Name!)) continue;
                 p.HasDefaultValue.Should().BeTrue(
                     because: $"{owner.Name}.{method.Name}'s --{p.Name} must be optional");
                 p.DefaultValue.Should().Be(false,
@@ -731,20 +860,21 @@ public sealed class CliSurfaceConformanceTests
     [Fact]
     public void EveryEntrypoint_CanReportFailure()
     {
-        // The filter in Entrypoints() already selects on the return type, so this asserts the
-        // inverse: no public instance method on these types looks like a command yet returns
-        // something that cannot carry an exit code.
+        // The inverse of the Entrypoints() filter: every public instance method on these two
+        // types must be able to carry an exit code. Do NOT narrow this by "takes a
+        // CancellationToken" — ScriniaCommands.List does not take one, so that filter would
+        // silently drop a real command and cover 22 of 23.
         using var scope = new AssertionScope();
         foreach (var type in new[] { typeof(ScriniaCommands), typeof(BundleCommands) })
         {
             foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             {
                 if (m.IsSpecialName) continue;
-                if (m.GetParameters().All(p => p.ParameterType != typeof(CancellationToken))) continue;
+                if (NotCommands.Contains(m.Name)) continue;
                 (m.ReturnType == typeof(int) || m.ReturnType == typeof(Task<int>)).Should().BeTrue(
-                    because: $"{type.Name}.{m.Name} takes a CancellationToken like every command does, " +
-                             $"but returns {m.ReturnType.Name} — a command that cannot return an exit " +
-                             "code cannot report failure");
+                    because: $"{type.Name}.{m.Name} is part of the CLI surface but returns " +
+                             $"{m.ReturnType.Name} — a command that cannot return an exit code cannot " +
+                             "report failure; if it is not a command, name it in NotCommands");
             }
         }
     }
@@ -843,6 +973,25 @@ if (json)
 
 Place that block immediately after `var result = ...` so it covers the nothing-to-migrate, dry-run and migrated cases with one shape, rather than three JSON branches that could disagree. Leave the existing markup path untouched below it.
 
+**Fix the one caller in the same step, or nothing in this task can be run.** `tests/Scrinia.Tests/MigrationTests.cs:114` is:
+
+```csharp
+int exit = await cmd.Migrate(root, dryRun: true, backup: false);
+```
+
+Removing `backup` makes that CS1739 and `tests/Scrinia.Tests` — which is where the conformance test lives — stops building. **Mind the polarity:** the replacement is `skipBackup: **true**`, not `false`. `backup: false` meant "do not back up"; `skipBackup: false` would silently flip the test into requesting a backup.
+
+```csharp
+int exit = await cmd.Migrate(root, dryRun: true, skipBackup: true);
+```
+
+This is the only affected caller: `StoreLayoutMigration.Migrate(root, dryRun, backup)` keeps its own signature, so the call sites in `StoreLayoutMigrationTests.cs` and `AgentFileEntityTests.cs:66` are untouched. Verify before moving on:
+
+```bash
+grep -rn "\.Migrate(" tests/ --include=*.cs | grep -v StoreLayoutMigration
+```
+Expected: only the one line in `MigrationTests.cs`, now reading `skipBackup: true`.
+
 - [ ] **Step 5: Run the conformance test again**
 
 ```bash
@@ -903,16 +1052,26 @@ namespace Scrinia.Tests;
 /// two-character escaper and interpolating the scope with no escaping at all — from the one
 /// command whose whole purpose is to be consumed by another program.
 ///
-/// <para><b>Reachability.</b> A path segment is sanitized (MemoryNaming.TrySanitizeSegment
-/// replaces `"` and `\`), but the ENTRY NAME held in the index is not the path: a store write
-/// keeps the name verbatim and derives a separate sanitized filename. `hint`'s matches read the
-/// index, so a quote in a name reaches this emitter intact. Bundle import writes entry names
-/// straight from an external bundle, which makes the route an untrusted one rather than only a
-/// theoretical one.</para>
+/// <para><b>What is actually broken.</b> JsonEscape escapes `\` then `"`, which is the correct
+/// order, so those two round-trip fine today — a test using only them passes before AND after
+/// this change and proves nothing. The reachable hole is a CONTROL CHARACTER: JsonEscape passes
+/// it through raw, and RFC 8259 forbids it inside a JSON string. (m.Scope is interpolated with no
+/// escaping at all, but a scope is a path segment and cannot carry one.)</para>
+///
+/// <para><b>Reachability.</b> A path segment is sanitized (MemoryNaming.TrySanitizeSegment), but
+/// the ENTRY NAME held in the index is not the path: a store write keeps the name verbatim and
+/// derives a separate sanitized filename. `hint`'s matches read the index, so a newline in a name
+/// reaches this emitter intact. Bundle import writes entry names straight from an external
+/// bundle, which makes the route an untrusted one rather than only a theoretical one.</para>
 ///
 /// <para>The hook envelope was never affected: Hint.BuildHookEnvelope uses Utf8JsonWriter.
 /// Only --json hand-rolled.</para>
+///
+/// <para>In GlobalWorkspaceConfigCollection because this drives WorkspaceSetup.Configure (a
+/// process-wide root) and redirects Console.Out. Without it another class's interleaved stdout
+/// can break JsonDocument.Parse here — a false red that looks exactly like the defect.</para>
 /// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class HintJsonOutputTests : IDisposable
 {
     private readonly string _root;
@@ -947,10 +1106,20 @@ public sealed class HintJsonOutputTests : IDisposable
     }
 
     [Fact]
-    public async Task HintJson_WithAQuoteInTheName_IsParseableJson()
+    public async Task HintJson_WithAControlCharacterInTheName_IsParseableJson()
     {
-        const string awkwardName = "oauth\"quoted\\flow";
+        // The newline is what the old escaper misses; the quote and backslash ride along so the
+        // round-trip assertion still covers the two characters it did handle.
+        const string awkwardName = "oauth\"quoted\\flow\nsecond-line";
+
+        // BM25's IDF term collapses toward zero in a one-document corpus, so a single seeded
+        // memory cannot clear the default floor no matter how well the prompt overlaps. Seed a
+        // small corpus AND pin the floor through the product's own config API, so this test is
+        // about the JSON emitter and not about the ranker's calibration.
+        WorkspaceConfig.SetValue(_root, "Scrinia:Hint:MinScore", "0.1");
         AddMemory(awkwardName, "OAuth implementation notes for the quoted flow");
+        AddMemory("session-store", "session storage and cookie lifetimes");
+        AddMemory("db-indexes", "database index maintenance notes");
 
         var writer = new StringWriter();
         Console.SetOut(writer);
@@ -985,7 +1154,9 @@ public sealed class HintJsonOutputTests : IDisposable
 
 Required usings: `System.Text.Json`, `FluentAssertions`, `Scrinia.Commands`, `Scrinia.Core`, `Scrinia.Core.Encoding`, `Scrinia.Core.Models`. Note that `tests/Scrinia.Tests/GlobalUsings.cs` carries only `global using Xunit;` — every other namespace must be declared in the file.
 
-If the seeded memory does not score above `HintCommand.DefaultMinScore` and no hint is emitted, adjust the *prompt* to overlap the content more strongly — never the assertion. A test that passes because nothing was emitted proves nothing.
+`WorkspaceConfig.SetValue` and `GlobalWorkspaceConfigCollection` are both reachable from this project: the former is `internal` in the `scri` assembly, which `Scrinia.csproj:30` exposes to `Scrinia.Tests`; the latter is declared in `tests/Scrinia.Tests/ConsolidateReembedTests.cs:133-140`.
+
+If no hint is emitted even with the floor pinned and three memories seeded, the problem is the seeding, not the assertion — fix the seeding. A test that passes because nothing was emitted proves nothing, and Step 2 below depends on this failing for the *right* reason.
 
 - [ ] **Step 2: Run it and confirm it fails on the parse**
 
@@ -1102,10 +1273,26 @@ public sealed class ConfigEnvVarConventionTests : IDisposable
     private const string SingleForm = "SCRINIA_EMBEDDINGS_PROVIDER";
     private const string DoubleForm = "SCRINIA__EMBEDDINGS__PROVIDER";
 
+    private readonly string _root;
+
+    /// <summary>An isolated empty workspace root. Without it, the pre-fix run of
+    /// DoubleUnderscoreForm_Resolves falls past both env lookups to
+    /// WorkspaceConfig.GetValue(Root, key), and WorkspaceSetup.Root THROWS when Configure has
+    /// not been called — so the expected red would be an InvalidOperationException, or worse a
+    /// silent read of whatever workspace another test class left behind.</summary>
+    public ConfigEnvVarConventionTests()
+    {
+        _root = Path.Combine(Path.GetTempPath(), $"scrinia_envvar_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_root);
+        WorkspaceSetup.OverrideRoot(_root);
+    }
+
     public void Dispose()
     {
         Environment.SetEnvironmentVariable(SingleForm, null);
         Environment.SetEnvironmentVariable(DoubleForm, null);
+        WorkspaceSetup.OverrideRoot(null);
+        try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
     /// <summary><c>WorkspaceSetup</c> is `internal static` and `src/Scrinia/Scrinia.csproj:30`
@@ -1149,7 +1336,7 @@ public sealed class EnvVarConventionCollection
 }
 ```
 
-`WorkspaceSetup.GetConfigValue` also consults the workspace config file when neither environment form is set. These tests never assert the unset case, so no config fixture is needed — but if a test is added that does, it must set an explicit workspace root first, or it will read whatever `.scrinia/config.json` exists in the directory the test host happens to run from.
+`WorkspaceSetup.OverrideRoot` (`src/Scrinia/Commands/WorkspaceSetup.cs:31`) is `AsyncLocal`-scoped and documented as being for tests needing root isolation — confirm that signature before use. It is required here, not optional: every lookup that misses both environment forms falls through to `WorkspaceConfig.GetValue(Root, key)`, and `Root` throws when nothing has configured it.
 
 - [ ] **Step 2: Run and confirm exactly one failure**
 
@@ -1190,7 +1377,7 @@ internal static string? GetConfigValue(string key)
 }
 ```
 
-Apply the same second lookup to `GetPluginName` (`:618-629`), between its existing environment lookup and its config-file fallback, so `plugins:embeddings` behaves like every other key. Update that method's doc comment to name both forms.
+Apply the same second lookup to `GetPluginName` (`:619-631`), between its existing environment lookup and its config-file fallback, so `plugins:embeddings` behaves like every other key. Update that method's doc comment to name both forms.
 
 - [ ] **Step 4: Run the test**
 
@@ -1201,7 +1388,7 @@ Expected: 3 passed.
 
 - [ ] **Step 5: Document both forms**
 
-In `docs/cli-reference.md`, replace the settings-resolution bullet at :551:
+In `docs/cli-reference.md`, replace the settings-resolution bullet at **:555** — not the `## Configuration` heading at :551:
 
 ```
 1. **Environment variable** (highest) -- either the single-underscore form, key with `:` replaced by `_` and uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`), or the .NET-standard double-underscore form (e.g., `SCRINIA__EMBEDDINGS__PROVIDER`), which the server also accepts. When both are set the single-underscore form wins.
@@ -1239,7 +1426,8 @@ Replace the doc comment on `MemoryEndpoints.IsWritable`:
 /// <c>store_access</c> claims — and nothing outside the test suite emits one. The only
 /// <c>IClaimsTransformation</c> in the tree is a test stand-in
 /// (<c>Scrinia.Server.Tests.MarkTargetUserReadOnlyTransform</c>), and no authentication handler
-/// adds the claim, so every request evaluates as writable at all eight call sites. This is
+/// adds the claim, so every request evaluates as writable at every call site — seven in this
+/// file, one in EmbeddingsEndpoints, and Program.cs:339, which gates the MCP surface. This is
 /// deliberate forward-looking scaffolding, not a live enforcement path: a reader of the guards
 /// below should not conclude that read-only stores are enforced today. To make it bite, register
 /// an <c>IClaimsTransformation</c> outside tests that emits <c>store_access</c> claims of the
@@ -1298,7 +1486,7 @@ git commit -m "docs(server): say that the read-only store gate ships inert"
 - Modify: `tests/Scrinia.Server.Tests/BuiltInEmbeddingsServiceReindexTests.cs`
 
 **Interfaces:**
-- Consumes: the existing harnesses in both files — `new PluginPipeline([...])` with `GetStore()`, and the `SeedEntry` / `FakeProvider` / `VectorStore` setup in the reindex tests. Do not build new harnesses.
+- Consumes: the existing harnesses in both files — `new PluginPipeline([...])` with `GetStore()`, and the `SeedEntry` (`:46-55`) / `FakeProvider` / `VectorStore` setup in the reindex tests. Do not build new harnesses.
 
 - [ ] **Step 1: Pin the pipeline's deduplication**
 
@@ -1331,7 +1519,7 @@ public async Task Store_withTheSameHookRegisteredTwice_firesItOnce()
 
 - [ ] **Step 2: Confirm it can fail**
 
-Temporarily change `PluginPipeline`'s constructor (`src/Scrinia.Server/Services/PluginPipeline.cs:25`) from `hooks.Distinct()` to `hooks`, run the test, and confirm it FAILS with `2` observed. Revert the mutation immediately and re-run to confirm green. Record the observed failure in the report.
+Temporarily change `PluginPipeline`'s constructor (`src/Scrinia.Server/Services/PluginPipeline.cs:24`) from `hooks.Distinct()` to `hooks`, run the test, and confirm it FAILS with `2` observed. Revert the mutation immediately and re-run to confirm green. Record the observed failure in the report.
 
 - [ ] **Step 3: Pin ephemeral reindex coverage**
 
@@ -1382,7 +1570,7 @@ Add `using Scrinia.Core.Models;` if the file does not already have it.
 
 - [ ] **Step 4: Confirm it can fail**
 
-Temporarily change `MemoryArtifactSource.ReadArtifactAsync` (`src/Scrinia.Core/Embeddings/MemoryArtifactSource.cs:62-65`) so the ephemeral branch is not taken — replace the conditional with the non-ephemeral call alone. Run the test and confirm it FAILS. Revert immediately, re-run, confirm green. Record the observed failure.
+Temporarily change `MemoryArtifactSource.ReadArtifactAsync` (the ternary at `src/Scrinia.Core/Embeddings/MemoryArtifactSource.cs:63-65`) so the ephemeral branch is not taken — replace the conditional with the non-ephemeral call alone. Run the test and confirm it FAILS. Revert immediately, re-run, confirm green. Record the observed failure.
 
 This is the whole point of the task: the mutation is the deletion that was nearly shipped.
 
@@ -1422,7 +1610,7 @@ Four sections under `## [Unreleased]`, each naming the user-visible change and, 
 
 1. **Breaking — `scri migrate` joins the option family.** `--workspace` is now `--workspace-root`; `--backup=true|false` is now `--skip-backup` (the backup still runs by default); `--json` added. A script passing `--workspace` or `--backup` must be updated.
 2. **Breaking — `publish.ps1`'s `-WithVulkan` is now `-WithEmbeddings`,** matching `publish.sh`'s `--with-embeddings`. The switch decides whether the embeddings plugin ships; Vulkan is the backend it carries.
-3. **Fixed — the non-Windows publish path.** `publish.sh` now publishes `scri-merge`, so a Linux or macOS build no longer leaves a configured merge driver pointing at a binary that does not exist. Its cleanup step, which deleted the plugin directory it had just populated, is gone. Both scripts now take their project list from `publish.projects.tsv`, and warn instead of silently skipping when the Vulkan natives are absent.
+3. **Fixed — the non-Windows publish path.** `publish.sh` now publishes `scri-merge` when building for the host platform, so a local Linux or macOS build no longer leaves a configured merge driver pointing at a binary that does not exist. (Release artifacts were never affected — `release.yml` builds each platform on its own runner and has always shipped `scri-merge`.) A foreign-RID build of `scri-merge` is skipped with a warning rather than attempted: it is NativeAOT, and cross-OS native compilation is unsupported. `publish.sh`'s cleanup step, which deleted the plugin directory it had just populated, is gone. Both scripts now take their project list from `publish.projects.tsv`, and warn instead of silently skipping when the Vulkan natives are absent.
 4. **Fixed — `scri hint --json` emits parseable JSON,** and the documented `SCRINIA__EMBEDDINGS__PROVIDER` environment form now resolves alongside `SCRINIA_EMBEDDINGS_PROVIDER`.
 
 - [ ] **Step 3: Full gate**
