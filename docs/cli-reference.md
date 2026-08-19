@@ -389,7 +389,7 @@ Empty stdout when:
 
 Plain output format: `[scrinia] N memories match: name1, name2, name3. Run search({ query: 'name1' }) to retrieve.`
 
-`--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`.
+`--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`, indented, through the same source-generated serializer as every other `--json` surface.
 
 Normally invoked by the UserPromptSubmit hook installed via `scri setup --hooks`; can also be run by hand to debug threshold tuning.
 
