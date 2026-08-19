@@ -1,8 +1,9 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
-using Scrinia.Core.Search;
 
 namespace Scrinia.Core.Bundles;
 
@@ -74,43 +75,71 @@ public static class BundleFormatService
             string bundleTopic = MemoryNaming.FormatScopeLabel(topicScope);
             exportedTopics.Add(bundleTopic);
 
-            // Write index.json for this topic
-            // ToList() because BundleIndex is a serialization DTO declared over List<T>; LoadIndex now
-            // returns a live view of the index cache and must not be handed to a type that could retain it.
-            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex);
-            var indexEntry = zip.CreateEntry($"topics/{bundleTopic}/index.json");
-            using (var writer = new StreamWriter(indexEntry.Open()))
-                writer.Write(indexJson);
-
-            // Write artifact files
-            foreach (var (name, filePath) in artifacts)
-            {
-                string artifactContent = File.ReadAllText(filePath);
-                string entryName = $"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2";
-                var zipEntry = zip.CreateEntry(entryName);
-                using var writer = new StreamWriter(zipEntry.Open());
-                writer.Write(artifactContent);
-                totalEntries++;
-            }
+            WriteTopic(zip, store, bundleTopic, entries,
+                artifacts.Select(a => (a.Name, File.ReadAllText(a.FilePath))));
+            totalEntries += artifacts.Count;
         }
 
         // Export disk-based file entities (skills, agent)
         var fileEntities = ExportFileEntities(zip, store);
+        WriteManifest(zip, exportedTopics, totalEntries, fileEntities);
 
-        // Write manifest — use v2 when file entities are present
-        int version = fileEntities is { Count: > 0 } ? 2 : 1;
+        return (exportedTopics, totalEntries);
+    }
+
+    /// <summary>
+    /// Writes one topic's <c>index.json</c> and its <c>.nmp2</c> artifact entries into an open
+    /// archive. The single definition of the topic half of the bundle layout — both
+    /// <see cref="ExportTopicsToZip"/> (which reads from a store) and the CLI's <c>scri bundle</c>
+    /// (which reads loose files that were never memories) call it, so the two cannot drift.
+    /// </summary>
+    /// <param name="artifacts">Entry name → artifact text. Enumerated lazily, so a caller
+    /// streaming from disk does not have to hold every artifact in memory at once.</param>
+    internal static void WriteTopic(
+        ZipArchive zip,
+        IMemoryStore store,
+        string bundleTopic,
+        IReadOnlyList<ArtifactEntry> entries,
+        IEnumerable<(string Name, string Content)> artifacts)
+    {
+        string indexJson = JsonSerializer.Serialize(
+            new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex);
+        var indexEntry = zip.CreateEntry($"topics/{bundleTopic}/index.json");
+        using (var writer = new StreamWriter(indexEntry.Open()))
+            writer.Write(indexJson);
+
+        foreach (var (name, content) in artifacts)
+        {
+            var zipEntry = zip.CreateEntry($"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2");
+            using var writer = new StreamWriter(zipEntry.Open());
+            writer.Write(content);
+        }
+    }
+
+    /// <summary>
+    /// Writes the archive manifest, including the version rule: v2 when the bundle carries
+    /// disk-based file entities, v1 otherwise. The single definition of that rule — the CLI used
+    /// to hard-code a literal 1, which happened to be right for what it writes and would have
+    /// stopped being right the moment it gained file entities.
+    /// </summary>
+    internal static void WriteManifest(
+        ZipArchive zip,
+        List<string> topics,
+        int totalEntries,
+        Dictionary<string, List<string>>? fileEntities)
+    {
+        bool hasFileEntities = fileEntities is { Count: > 0 };
         var manifest = new BundleManifest(
-            version,
+            hasFileEntities ? 2 : 1,
             DateTimeOffset.UtcNow.ToString("o"),
-            exportedTopics,
+            topics,
             totalEntries,
-            fileEntities is { Count: > 0 } ? fileEntities : null);
+            hasFileEntities ? fileEntities : null);
+
         string manifestJson = JsonSerializer.Serialize(manifest, BundleJsonContext.Default.BundleManifest);
         var manifestEntry = zip.CreateEntry("manifest.json");
         using (var writer = new StreamWriter(manifestEntry.Open()))
             writer.Write(manifestJson);
-
-        return (exportedTopics, totalEntries);
     }
 
     /// <summary>
@@ -180,6 +209,16 @@ public static class BundleFormatService
         int importedEntries = 0;
         var importedTopicNames = new List<string>();
 
+        // BUILD PASS — parse and validate every topic before writing any of them. The malformed-
+        // index InvalidOperationException below used to live inside the write loop, which meant a
+        // bundle with a good topic A followed by a malformed topic B wrote A to the store and only
+        // THEN told the caller the bundle was invalid — leaving a half-imported store, the exact
+        // failure mode the up-front scope-name validation loop above exists to rule out (":156" —
+        // "validate EVERY manifest topic before writing anything ... refuse cleanly ... before any
+        // side effect"). Fixed here by the same rule: nothing in this loop calls
+        // ImportTopicEntries. Parsed results are collected and written only in the pass below.
+        var toWrite = new List<(string TopicScope, string Topic, List<ArtifactEntry> Entries, Dictionary<string, string> ArtifactContents)>();
+
         foreach (string topic in topicsToImport)
         {
             // Task 13: import is a WRITE path, so an unconstructable topic throws rather than
@@ -201,111 +240,213 @@ public static class BundleFormatService
             using (var reader = new StreamReader(indexZipEntry.Open()))
                 indexJson = reader.ReadToEnd();
 
-            using var indexDoc = JsonDocument.Parse(indexJson);
-            var indexRoot = indexDoc.RootElement;
+            // Deserialize through the SAME source-generated context that ExportTopicsToZip
+            // serializes with, so the round trip is total by construction. This replaced a
+            // hand-written member-by-member parse that read 7 of ArtifactEntry's 13 members and
+            // silently dropped the rest on every backup restore (design review finding M4).
+            // Legacy keys are migrated first, in one bounded pass that knows about exactly two
+            // of them — see BundleLegacyKeys for why they do not live on the entry itself.
+            //
+            // JsonNode.Parse AND Deserialize both sit inside this one try: the hand-parse this
+            // replaced silently rewrote an unparseable createdAt to "now" and skipped malformed
+            // attribute values, and both are now refused rather than guessed — quietly inventing
+            // a timestamp is the same defect this branch removes. Covering Parse too (not just
+            // Deserialize) closes the whole class of "this topic's index.json is unreadable" —
+            // structurally invalid JSON text, not only a validly-shaped value this type rejects —
+            // rather than the one path a narrower catch would have named. Converting to
+            // InvalidOperationException keeps the contract this method documents (:125) true, and
+            // names the topic so the bad entry is findable.
+            BundleIndex? index;
+            try
+            {
+                if (JsonNode.Parse(indexJson) is not JsonObject indexObject)
+                    // A syntactically valid but non-object index root ([], 42, "x", null) is an
+                    // unreadable index, not an empty one. Skipping it would silently drop the
+                    // whole topic while other topics still imported — a silent partial restore,
+                    // and the pre-branch code threw here (JsonElement.TryGetProperty throws on a
+                    // non-object). Refuse it like any other unreadable index, before any write.
+                    throw new InvalidOperationException(
+                        $"Invalid bundle — topic '{topic}' has an unreadable index: " +
+                        "the index root is not a JSON object.");
 
-            if (!indexRoot.TryGetProperty("entries", out var entriesElement))
+                BundleLegacyKeys.NormalizeIndex(indexObject);
+
+                index = indexObject.Deserialize(BundleJsonContext.Default.BundleIndex);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Invalid bundle — topic '{topic}' has an unreadable index: {ex.Message}", ex);
+            }
+            if (index?.Entries is not { Count: > 0 })
                 continue;
 
-            var entries = new List<ArtifactEntry>();
+            var entries = new List<ArtifactEntry>(index.Entries.Count);
             var artifactContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var entryEl in entriesElement.EnumerateArray())
+            for (int entryIndex = 0; entryIndex < index.Entries.Count; entryIndex++)
             {
-                string? name = entryEl.GetProperty("name").GetString();
-                if (name is null) continue;
+                var deserialized = index.Entries[entryIndex];
 
-                long originalBytes = entryEl.TryGetProperty("originalBytes", out var ob) ? ob.GetInt64() : 0;
-                int chunkCount = entryEl.TryGetProperty("chunkCount", out var cc) ? cc.GetInt32() : 1;
-                // "description" is a back-compat read: pre-Merge-3 bundles carry it as the
-                // display carrier. Modern bundles carry "contentPreview" instead — prefer that
-                // when present, falling back to "description" for old bundles.
-                string description = entryEl.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
-                string? contentPreview = entryEl.TryGetProperty("contentPreview", out var cp) ? cp.GetString() : null;
-                contentPreview ??= description.Length > 0 ? description : null;
+                // A nameless entry is unaddressable, and dropping one silently is the same defect
+                // as silently dropping a whole topic for a non-object index root (":262-270") —
+                // one nesting level down. Two distinct cases land here, and they are refused for
+                // two different reasons:
+                //   - MISSING or null "name": the parse this replaced called
+                //     entryEl.GetProperty("name"), which threw KeyNotFoundException. Ugly, but
+                //     loud, and the whole import aborted. Deserialization leaves Name null
+                //     instead, and skipping it would drop that one memory from the restore while
+                //     every sibling entry imported — and nothing compares the returned EntryCount
+                //     against the manifest's totalEntries, so the user would be told the restore
+                //     succeeded. Refusing restores the pre-branch loudness.
+                //   - EMPTY-string "name": the old parse DID accept and store this
+                //     (JsonElement.GetString() on "" returns "", which is neither null nor
+                //     thrown). Refusing it is a separate, genuine improvement — an entry with no
+                //     name could never be found again by anything that looks entries up by Name —
+                //     and it is refused the same loud way rather than skipped, for the reason
+                //     above.
+                // This runs in the build pass, before any topic is written, so refusing here
+                // cannot leave an earlier valid topic half-imported.
+                if (string.IsNullOrEmpty(deserialized.Name))
+                    throw new InvalidOperationException(
+                        $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
+                        "with a missing or empty name.");
 
-                // "tags" is a back-compat read: pre-Merge-3 bundles carry free-form tags as a
-                // top-level array. Modern bundles carry "attributes" (a key → string[] dict,
-                // including the "tag" key) instead. Read both; the modern "attributes" reading
-                // wins if it already has a "tag" key, otherwise the legacy top-level "tags"
-                // fills Attributes[KnownAttributes.TagKey] so neither source is lost.
-                string[]? legacyTags = null;
-                if (entryEl.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
-                    legacyTags = tagsEl.EnumerateArray().Select(t2 => t2.GetString() ?? "").Where(t2 => t2.Length > 0).ToArray();
+                // Folds a pre-rename "fields" key into Attributes and clears the holder. The old
+                // hand-parse never did this, so such a bundle lost its attributes entirely. It is a
+                // FALLBACK, not a merge: an entry carrying both "fields" and legacy "tags" keeps
+                // only the tags-derived attributes, exactly as it does today.
+                var entry = deserialized.NormalizeAttributesKey();
 
-                Dictionary<string, string[]>? attributes = null;
-                if (entryEl.TryGetProperty("attributes", out var attrEl) && attrEl.ValueKind == JsonValueKind.Object)
-                {
-                    attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var prop in attrEl.EnumerateObject())
-                    {
-                        if (prop.Value.ValueKind != JsonValueKind.Array) continue;
-                        string[] vals = prop.Value.EnumerateArray().Select(v => v.GetString() ?? "")
-                            .Where(v => v.Length > 0).ToArray();
-                        if (vals.Length > 0) attributes[prop.Name] = vals;
-                    }
-                }
+                // The deleted hand-parse defaulted a missing "chunkCount" to 1; the deserializer
+                // leaves it at 0. Modern bundles always carry the key, so this only bites
+                // pre-Merge-3 and hand-crafted ones — which is precisely the population the legacy
+                // pre-pass exists for. Uri gets no such restoration on purpose: it is transiently
+                // null here and ImportTopicEntries overwrites it before any reader sees it.
+                if (entry.ChunkCount == 0)
+                    entry = entry with { ChunkCount = 1 };
 
-                if (legacyTags is { Length: > 0 } && (attributes is null || !attributes.ContainsKey(KnownAttributes.TagKey)))
-                {
-                    attributes ??= new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-                    attributes[KnownAttributes.TagKey] = legacyTags;
-                }
-
-                DateTimeOffset createdAt = entryEl.TryGetProperty("createdAt", out var ca)
-                    && DateTimeOffset.TryParse(ca.GetString(), out var parsedDate)
-                    ? parsedDate
-                    : DateTimeOffset.UtcNow;
-
-                ChunkEntry[]? chunkEntries = null;
-                if (entryEl.TryGetProperty("chunkEntries", out var ceEl) && ceEl.ValueKind == JsonValueKind.Array)
-                {
-                    var ceList = new List<ChunkEntry>();
-                    foreach (var ce in ceEl.EnumerateArray())
-                    {
-                        int ci = ce.TryGetProperty("chunkIndex", out var ciEl) ? ciEl.GetInt32() : 0;
-                        string? cePrev = ce.TryGetProperty("contentPreview", out var cpEl) ? cpEl.GetString() : null;
-                        string[]? ceKw = null;
-                        if (ce.TryGetProperty("keywords", out var kwEl) && kwEl.ValueKind == JsonValueKind.Array)
-                            ceKw = kwEl.EnumerateArray().Select(k => k.GetString() ?? "").Where(k => k.Length > 0).ToArray();
-                        Dictionary<string, int>? ceTf = null;
-                        if (ce.TryGetProperty("termFrequencies", out var tfEl) && tfEl.ValueKind == JsonValueKind.Object)
-                        {
-                            ceTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                            foreach (var prop in tfEl.EnumerateObject())
-                                if (prop.Value.TryGetInt32(out int v)) ceTf[prop.Name] = v;
-                        }
-                        ceList.Add(new ChunkEntry(ci, cePrev, ceKw, ceTf));
-                    }
-                    if (ceList.Count > 0) chunkEntries = ceList.ToArray();
-                }
-
-                entries.Add(new ArtifactEntry(
-                    Name: name,
-                    Uri: "",
-                    OriginalBytes: originalBytes,
-                    ChunkCount: chunkCount,
-                    CreatedAt: createdAt,
-                    ContentPreview: contentPreview,
-                    ChunkEntries: chunkEntries,
-                    Attributes: attributes));
-
-                string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2";
+                string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(entry.Name)}.nmp2";
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
                 if (artifactZipEntry is not null)
                 {
                     using var reader = new StreamReader(artifactZipEntry.Open());
-                    artifactContents[name] = reader.ReadToEnd();
+                    artifactContents[entry.Name] = reader.ReadToEnd();
                 }
+
+                // A null Keywords means this entry was never derived — `scri bundle` packages
+                // loose files that were never memories, so nothing ever ran over them. An EMPTY
+                // Keywords array is a different fact: derivation ran and found nothing, and must
+                // be left alone. Gating on `is null` rather than on length is the whole of that
+                // distinction.
+                //
+                // Round-tripping and deriving cover disjoint gaps. Round-tripping restores what
+                // CANNOT be re-derived (AgentKeywords, FileHashes, timestamps); this fills what
+                // was never there. Attributes are never rewritten here — the bundle's are
+                // authoritative and round-trip intact.
+                if (entry.Keywords is null && artifactContents.TryGetValue(entry.Name, out string? artifact))
+                {
+                    // A bundle is untrusted external input — hand-crafted, foreign, or corrupted —
+                    // and before this feature existed, import never decoded artifact bytes at all,
+                    // so such a bundle still imported successfully. Two decisions sit side by side
+                    // in this method that can look contradictory unless the distinction is written
+                    // down: a malformed `createdAt` (":230-244" above) REFUSES the whole import,
+                    // while an undecodable artifact here is TOLERATED. They are not the same kind
+                    // of failure.
+                    //   - A malformed timestamp would make us INVENT metadata — guessing "now" is
+                    //     the CreatedAt-reset defect this branch exists to remove.
+                    //   - An undecodable artifact makes us DECLINE TO ENRICH. Leaving Keywords null
+                    //     preserves its exact prior meaning — "never derived" — so nothing is
+                    //     fabricated and nothing that was there is lost.
+                    // One fabricates; the other abstains. Making decode failure fatal here would
+                    // make this derivation step — purely additive by design — newly REJECT bundles
+                    // that imported fine a moment ago, an acceptance regression caused by an
+                    // enrichment feature. So one entry's artifact failing to decode must not abort
+                    // the whole import; it must fall through with Keywords left exactly as the
+                    // bundle carried it (still null).
+                    //
+                    // The catch list below was determined by reading the decode path, not guessed:
+                    //   - FormatException: Nmp2Strategy.Base64UrlDecode -> Convert.FromBase64String
+                    //     on data that isn't valid base64 (confirmed via a real run against
+                    //     non-NMP/2 plain text).
+                    //   - InvalidOperationException: BrotliStream.Read's own "Decoder ran into
+                    //     invalid data" for base64-valid-but-not-Brotli payloads (confirmed via a
+                    //     real run; this is .NET's BCL type/message for that condition, unrelated to
+                    //     — and never reachable from inside — the InvalidOperationException this
+                    //     method itself throws for a malformed index at ":230-244", which runs
+                    //     earlier, over the index JSON, before this per-entry loop begins).
+                    //   - InvalidDataException: DecodeAllChunksVerified's own explicit throws for a
+                    //     declared chunk count outside [1, MaxChunkCount], a decompressed size
+                    //     exceeding MaxDecodedBytes, or a CRC/length mismatch in VerifyIntegrity.
+                    //   - OverflowException: an array allocation sized from a hostile declared
+                    //     count going negative (confirmed via a real run against a crafted header:
+                    //     "Arithmetic operation resulted in an overflow"). DecodeAllChunksVerified's
+                    //     own bound check runs before any such allocation, so this is now dead
+                    //     coverage for THIS call in particular — left in the filter regardless,
+                    //     since a defensive catch that never fires costs nothing and a future change
+                    //     to the shared method's allocation order should not silently lose it.
+                    //   - ArgumentOutOfRangeException: a forged `##PAD:{n}` footer with a NEGATIVE
+                    //     value makes Nmp2Strategy compute compressedLen > buffer length and slice
+                    //     past the end (Nmp2Strategy.cs:178-181, :306). Reachable down both
+                    //     branches of DecodeAllChunksVerified. This was removed in an earlier round
+                    //     as "unreachable" — true of DecodeChunk's own index bounds, false of this
+                    //     route, which is why the reason is recorded here rather than the verdict.
+                    string[]? chunks;
+                    try
+                    {
+                        // The shared decode path, not a local one: it carries the chunk-count
+                        // bound, the MaxDecodedBytes decompression-bomb budget and the CRC/length
+                        // integrity check, and it decompresses each chunk once rather than twice.
+                        // Bundle content is untrusted, so all three matter here. A hand-rolled
+                        // per-chunk loop over Nmp2ChunkedEncoder.GetChunkCount/DecodeChunk used to
+                        // live here; it duplicated the chunk-count bound and omitted the other two,
+                        // making it a seventh decode path on top of six existing production callers
+                        // of this exact method — the drift this branch exists to stop.
+                        chunks = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+                    }
+                    catch (Exception ex) when (ex is FormatException or InvalidDataException
+                        or InvalidOperationException or OverflowException
+                        or ArgumentOutOfRangeException)
+                    {
+                        chunks = null;
+                    }
+
+                    if (chunks is not null)
+                    {
+                        // fileHasher is null deliberately: hashing this machine's files against
+                        // paths captured on the exporting machine would fabricate a drift baseline
+                        // that never existed. A bundle's own FileHashes is preserved as-is above.
+                        var derived = MemoryDerivation.ForStore(
+                            chunks, keywords: entry.AgentKeywords, fileHasher: null);
+
+                        entry = entry with
+                        {
+                            Keywords = derived.Keywords,
+                            TermFrequencies = derived.TermFrequencies,
+                            ChunkEntries = entry.ChunkEntries ?? derived.ChunkEntries,
+                            AgentKeywords = entry.AgentKeywords ?? derived.AgentKeywords,
+                        };
+                    }
+                }
+
+                entries.Add(entry);
             }
 
             if (entries.Count > 0)
-            {
-                store.ImportTopicEntries(topicScope, entries, artifactContents, overwrite);
-                importedTopics++;
-                importedEntries += entries.Count;
-                importedTopicNames.Add(topic);
-            }
+                toWrite.Add((topicScope, topic, entries, artifactContents));
+        }
+
+        // WRITE PASS — nothing above this point has touched the store, so every throw in the
+        // build pass above happens before any side effect. Holding every topic's entries and
+        // artifact text in memory here is acceptable and consistent with the rest of this file,
+        // which already reads whole artifacts into memory during export; this is not a streaming
+        // path and should not become one.
+        foreach (var (topicScope, topic, entries, artifactContents) in toWrite)
+        {
+            store.ImportTopicEntries(topicScope, entries, artifactContents, overwrite);
+            importedTopics++;
+            importedEntries += entries.Count;
+            importedTopicNames.Add(topic);
         }
 
         // Import disk-based file entities (v2 bundles; v1 bundles skip this)

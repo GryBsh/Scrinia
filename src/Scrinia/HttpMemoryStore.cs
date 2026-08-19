@@ -916,8 +916,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // Nmp2ChunkedEncoder.DecodeChunk is 1-based — it throws ArgumentOutOfRangeException for
             // any index below 1 — so the loop runs [1, chunkCount], not [0, chunkCount).
             // DecodeAllChunksVerified does this same per-chunk walk with CRC re-checks and size
-            // guards, but it is `internal` to Scrinia.Core and this assembly (Scrinia) cannot call
-            // it, so the plain per-chunk decode is re-implemented here instead.
+            // guards. It is `internal` to Scrinia.Core, but this assembly CAN call it: the project
+            // builds as AssemblyName `scri` (Scrinia.csproj) and Scrinia.Core declares
+            // InternalsVisibleTo("scri") (Scrinia.Core/Properties/AssemblyInfo.cs) — Services/
+            // McpPluginHost.cs in this very assembly already does. So the duplicate walk below is
+            // not a visibility workaround; it is a deferral, kept as-is on this branch on purpose
+            // and scheduled to be folded into the shared method later.
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(entry.Artifact);
             string[] chunks = new string[chunkCount];
             for (int i = 0; i < chunkCount; i++)

@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
-using System.Text.Json;
 using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -208,35 +207,17 @@ public partial class ScriniaCommands
             artifactContents[entryName] = artifact;
         }
 
-        // Create the bundle zip
+        // Create the bundle zip. The archive layout has ONE definition, in BundleFormatService —
+        // this command used to duplicate it inline, along with a hard-coded manifest version.
         using (var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write))
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
         {
-            // Write topic index
-            string indexJson = JsonSerializer.Serialize(
-                new Scrinia.Core.Bundles.BundleIndex(entries),
-                Scrinia.Core.Bundles.BundleJsonContext.Default.BundleIndex);
-            var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
-            using (var writer = new StreamWriter(indexEntry.Open()))
-                writer.Write(indexJson);
+            Scrinia.Core.Bundles.BundleFormatService.WriteTopic(
+                zip, WorkspaceSetup.Store, sanitizedTopic, entries,
+                artifactContents.Select(kv => (kv.Key, kv.Value)));
 
-            // Write artifact files
-            foreach (var (name, artifactContent) in artifactContents)
-            {
-                string zipEntryName = $"topics/{sanitizedTopic}/{WorkspaceSetup.Store.SanitizeName(name)}.nmp2";
-                var zipEntry = zip.CreateEntry(zipEntryName);
-                using var writer = new StreamWriter(zipEntry.Open());
-                writer.Write(artifactContent);
-            }
-
-            // Write manifest
-            var manifest = new Scrinia.Core.Bundles.BundleManifest(1, DateTimeOffset.UtcNow.ToString("o"), [sanitizedTopic], entries.Count);
-            string manifestJson = JsonSerializer.Serialize(
-                manifest,
-                Scrinia.Core.Bundles.BundleJsonContext.Default.BundleManifest);
-            var manifestEntry = zip.CreateEntry("manifest.json");
-            using (var writer = new StreamWriter(manifestEntry.Open()))
-                writer.Write(manifestJson);
+            Scrinia.Core.Bundles.BundleFormatService.WriteManifest(
+                zip, [sanitizedTopic], entries.Count, fileEntities: null);
         }
 
         long fileSize = new FileInfo(bundlePath).Length;

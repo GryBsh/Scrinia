@@ -2171,6 +2171,49 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   older client ignores the new field, and a newer client against an older server reads `null`
   exactly as before, so `X-Scrinia-Api-Version` is deliberately not bumped.
 
+### Fixed — bundle import preserves every entry member and its timestamps
+
+- **Bundle import no longer drops entry metadata.** Export serialized every `ArtifactEntry`
+  member through a source-generated context while import re-read seven of them by hand, so a
+  backup restore silently lost `Keywords`, `TermFrequencies`, `UpdatedAt`, `FileHashes` and
+  `AgentKeywords`. `AgentKeywords` was the unrecoverable one — the curated-vs-auto keyword
+  distinction cannot be reconstructed after the fact. Import now deserializes through the same
+  context that serializes, so every member the bundle recorded comes back — except `Uri`, which
+  the store recomputes for the importing machine because the exporter's value would be wrong
+  there. This is not a promise to tolerate arbitrary malformed bundle JSON, see below.
+- **Restoring a backup no longer resets every memory's creation date.** `CreatedAt` was parsed
+  from the bundle and then overwritten with the import time. Both `CreatedAt` and `UpdatedAt`
+  are now preserved; a bundle carrying no timestamp still gets one at import.
+
+### Fixed — memories bundled from loose files are searchable on import
+
+- `scri bundle` packages files that were never memories, so their entries carry no keywords and
+  import derived none. Import now derives keywords and term frequencies for entries that have
+  none — and only for those, leaving an entry that was already derived exactly as the bundle
+  recorded it.
+
+### Fixed — a bundle with an unreadable topic index is refused before anything is written
+
+- Importing a multi-topic bundle where a later topic's `index.json` fails to parse used to write
+  every topic before it and only then report the bundle as invalid, leaving the store
+  half-imported. Every topic is now parsed and validated before any of them are written, so a
+  malformed topic is refused — naming the topic, in the message — with nothing from that bundle
+  written to the store.
+- An `index.json` that parses as syntactically valid JSON but is not an object at its root
+  (`[]`, `42`, `"x"`, `null`) used to be silently skipped, dropping that whole topic while every
+  other topic in the bundle still imported — a silent partial restore, and a regression from the
+  pre-branch behavior, which threw on exactly this shape. It is now refused the same way any
+  other unreadable index is, naming the topic, before anything is written. An artifact's content
+  that fails to decode is a narrower case and is unaffected by either fix: it degrades that one
+  entry to "no derived keywords" rather than aborting the import.
+
+### Changed (breaking) — a memory restored from a bundle now carries the metadata the bundle recorded
+
+- A memory restored from a bundle now carries the metadata the bundle recorded rather than a
+  partially-reconstructed copy. Anything depending on restored memories having a fresh
+  `CreatedAt`, or on their keyword lists being empty, will observe the difference. No API
+  signature changed; no caller needs recompiling.
+
 ## [0.5.0] — Initial public baseline
 
 First release with the canonical two-tool MCP surface (`guide`, `memory`) after the
