@@ -75,43 +75,71 @@ public static class BundleFormatService
             string bundleTopic = MemoryNaming.FormatScopeLabel(topicScope);
             exportedTopics.Add(bundleTopic);
 
-            // Write index.json for this topic
-            // ToList() because BundleIndex is a serialization DTO declared over List<T>; LoadIndex now
-            // returns a live view of the index cache and must not be handed to a type that could retain it.
-            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex);
-            var indexEntry = zip.CreateEntry($"topics/{bundleTopic}/index.json");
-            using (var writer = new StreamWriter(indexEntry.Open()))
-                writer.Write(indexJson);
-
-            // Write artifact files
-            foreach (var (name, filePath) in artifacts)
-            {
-                string artifactContent = File.ReadAllText(filePath);
-                string entryName = $"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2";
-                var zipEntry = zip.CreateEntry(entryName);
-                using var writer = new StreamWriter(zipEntry.Open());
-                writer.Write(artifactContent);
-                totalEntries++;
-            }
+            WriteTopic(zip, store, bundleTopic, entries,
+                artifacts.Select(a => (a.Name, File.ReadAllText(a.FilePath))));
+            totalEntries += artifacts.Count;
         }
 
         // Export disk-based file entities (skills, agent)
         var fileEntities = ExportFileEntities(zip, store);
+        WriteManifest(zip, exportedTopics, totalEntries, fileEntities);
 
-        // Write manifest — use v2 when file entities are present
-        int version = fileEntities is { Count: > 0 } ? 2 : 1;
+        return (exportedTopics, totalEntries);
+    }
+
+    /// <summary>
+    /// Writes one topic's <c>index.json</c> and its <c>.nmp2</c> artifact entries into an open
+    /// archive. The single definition of the topic half of the bundle layout — both
+    /// <see cref="ExportTopicsToZip"/> (which reads from a store) and the CLI's <c>scri bundle</c>
+    /// (which reads loose files that were never memories) call it, so the two cannot drift.
+    /// </summary>
+    /// <param name="artifacts">Entry name → artifact text. Enumerated lazily, so a caller
+    /// streaming from disk does not have to hold every artifact in memory at once.</param>
+    internal static void WriteTopic(
+        ZipArchive zip,
+        IMemoryStore store,
+        string bundleTopic,
+        IReadOnlyList<ArtifactEntry> entries,
+        IEnumerable<(string Name, string Content)> artifacts)
+    {
+        string indexJson = JsonSerializer.Serialize(
+            new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex);
+        var indexEntry = zip.CreateEntry($"topics/{bundleTopic}/index.json");
+        using (var writer = new StreamWriter(indexEntry.Open()))
+            writer.Write(indexJson);
+
+        foreach (var (name, content) in artifacts)
+        {
+            var zipEntry = zip.CreateEntry($"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2");
+            using var writer = new StreamWriter(zipEntry.Open());
+            writer.Write(content);
+        }
+    }
+
+    /// <summary>
+    /// Writes the archive manifest, including the version rule: v2 when the bundle carries
+    /// disk-based file entities, v1 otherwise. The single definition of that rule — the CLI used
+    /// to hard-code a literal 1, which happened to be right for what it writes and would have
+    /// stopped being right the moment it gained file entities.
+    /// </summary>
+    internal static void WriteManifest(
+        ZipArchive zip,
+        List<string> topics,
+        int totalEntries,
+        Dictionary<string, List<string>>? fileEntities)
+    {
+        bool hasFileEntities = fileEntities is { Count: > 0 };
         var manifest = new BundleManifest(
-            version,
+            hasFileEntities ? 2 : 1,
             DateTimeOffset.UtcNow.ToString("o"),
-            exportedTopics,
+            topics,
             totalEntries,
-            fileEntities is { Count: > 0 } ? fileEntities : null);
+            hasFileEntities ? fileEntities : null);
+
         string manifestJson = JsonSerializer.Serialize(manifest, BundleJsonContext.Default.BundleManifest);
         var manifestEntry = zip.CreateEntry("manifest.json");
         using (var writer = new StreamWriter(manifestEntry.Open()))
             writer.Write(manifestJson);
-
-        return (exportedTopics, totalEntries);
     }
 
     /// <summary>

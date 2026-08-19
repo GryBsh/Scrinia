@@ -810,4 +810,69 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
         using (var writer = new StreamWriter(artifactEntry.Open()))
             writer.Write(Nmp2ChunkedEncoder.Encode(content));
     }
+
+    // ── Layout identity ──────────────────────────────────────────────────────
+
+    [Fact]
+    public void ExportTopicsToZip_WritesTheExpectedArchiveLayout()
+    {
+        // Characterization: captures today's layout so the extraction in this task cannot change
+        // it silently. It exercises ExportTopicsToZip only — see the sibling test below for the
+        // one that actually drives the extracted writers.
+        var seed = FullyPopulatedEntry();
+        string scope = MemoryNaming.BuildScopedTopicScope("layout-topic");
+        _store.Upsert(seed, scope);
+        _store.WriteArtifactAsync(seed.Name, scope, Nmp2ChunkedEncoder.Encode("hello world"))
+            .GetAwaiter().GetResult();
+
+        string zipPath = Path.Combine(_tempDir, "layout.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+            BundleFormatService.ExportTopicsToZip(zip, _store, ["layout-topic"]);
+
+        using var read = new ZipArchive(new FileStream(zipPath, FileMode.Open, FileAccess.Read), ZipArchiveMode.Read);
+        read.Entries.Select(e => e.FullName).Should().BeEquivalentTo(
+        [
+            "topics/layout-topic/index.json",
+            $"topics/layout-topic/{_store.SanitizeName(seed.Name)}.nmp2",
+            "manifest.json",
+        ]);
+    }
+
+    [Fact]
+    public void TheSharedWriters_DrivenWithTheCliShapedInputs_ProduceAnImportableBundle()
+    {
+        // THIS is the test that justifies the extraction. `scri bundle` builds entries from loose
+        // files that were never memories — one topic, no file entities — and used to write the
+        // archive with its own inline copy of the layout. Driving the extracted writers with that
+        // exact input shape and then importing the result is what proves the CLI's bundles stay
+        // readable. Asserting the two writers agree would be circular after the extraction: they
+        // are the same code.
+        var entry = new ArtifactEntry(
+            Name: "loose-file",
+            Uri: "",
+            OriginalBytes: 11,
+            ChunkCount: 1,
+            CreatedAt: new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            ContentPreview: "a preview");
+        string artifact = Nmp2ChunkedEncoder.Encode("hello world");
+
+        string zipPath = Path.Combine(_tempDir, "cli-shaped.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            BundleFormatService.WriteTopic(
+                zip, _store, "cli-topic", [entry], [(entry.Name, artifact)]);
+            BundleFormatService.WriteManifest(zip, ["cli-topic"], 1, fileEntities: null);
+        }
+
+        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+
+        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("cli-topic"))
+            .Single(e => e.Name.Equals("loose-file", StringComparison.OrdinalIgnoreCase));
+        imported.ContentPreview.Should().Be("a preview");
+        imported.CreatedAt.Should().Be(new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero));
+    }
 }
