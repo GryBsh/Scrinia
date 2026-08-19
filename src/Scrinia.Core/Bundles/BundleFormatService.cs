@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Core.Bundles;
@@ -282,6 +283,55 @@ public static class BundleFormatService
                     artifactContents[entry.Name] = reader.ReadToEnd();
                 }
 
+                // A null Keywords means this entry was never derived — `scri bundle` packages
+                // loose files that were never memories, so nothing ever ran over them. An EMPTY
+                // Keywords array is a different fact: derivation ran and found nothing, and must
+                // be left alone. Gating on `is null` rather than on length is the whole of that
+                // distinction.
+                //
+                // Round-tripping and deriving cover disjoint gaps. Round-tripping restores what
+                // CANNOT be re-derived (AgentKeywords, FileHashes, timestamps); this fills what
+                // was never there. Attributes are never rewritten here — the bundle's are
+                // authoritative and round-trip intact.
+                if (entry.Keywords is null && artifactContents.TryGetValue(entry.Name, out string? artifact))
+                {
+                    // Every artifact `scri bundle` or the store's normal write path ever produces
+                    // is NMP/2-encoded (ScriniaCommands.Bundle.cs:182; FileMemoryStore's own
+                    // StoreAsync), so this should always decode. Still wrapped: one entry whose
+                    // artifact is NOT valid NMP/2 — a foreign or corrupted bundle, or hand-written
+                    // content some other tool placed directly on disk — must not abort the WHOLE
+                    // import over a derivation step that exists purely to ADD keywords. Leave
+                    // Keywords untouched (still null) and move on, exactly as import behaved
+                    // before this feature existed.
+                    string[]? chunks;
+                    try
+                    {
+                        chunks = DecodeChunks(artifact);
+                    }
+                    catch (Exception ex) when (ex is FormatException or InvalidDataException
+                        or InvalidOperationException or OverflowException or ArgumentOutOfRangeException)
+                    {
+                        chunks = null;
+                    }
+
+                    if (chunks is not null)
+                    {
+                        // fileHasher is null deliberately: hashing this machine's files against
+                        // paths captured on the exporting machine would fabricate a drift baseline
+                        // that never existed. A bundle's own FileHashes is preserved as-is above.
+                        var derived = MemoryDerivation.ForStore(
+                            chunks, keywords: entry.AgentKeywords, fileHasher: null);
+
+                        entry = entry with
+                        {
+                            Keywords = derived.Keywords,
+                            TermFrequencies = derived.TermFrequencies,
+                            ChunkEntries = entry.ChunkEntries ?? derived.ChunkEntries,
+                            AgentKeywords = entry.AgentKeywords ?? derived.AgentKeywords,
+                        };
+                    }
+                }
+
                 entries.Add(entry);
             }
 
@@ -309,6 +359,19 @@ public static class BundleFormatService
     }
 
     // ── File entity helpers ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Decodes an NMP/2 artifact to its chunk texts, one element per independently retrievable
+    /// chunk — the shape <see cref="MemoryDerivation.ForStore"/> expects.
+    /// </summary>
+    private static string[] DecodeChunks(string artifact)
+    {
+        int count = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+        var chunks = new string[count];
+        for (int i = 0; i < count; i++)
+            chunks[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, i + 1);  // DecodeChunk is 1-based
+        return chunks;
+    }
 
     /// <summary>
     /// Bundle manifest category key -> PathRouter file-entity kind. The manifest has used the

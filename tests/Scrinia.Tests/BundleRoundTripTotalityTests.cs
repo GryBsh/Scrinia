@@ -298,6 +298,21 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     }
 
     [Fact]
+    public void AStructurallyMalformedIndex_ThrowsInvalidOperationException_NamingTheTopic()
+    {
+        // AMalformedCreatedAt_ThrowsInvalidOperationException_NamingTheTopic above pins the
+        // OTHER half of the JsonException conversion at :240 — an unparseable VALUE inside
+        // otherwise-valid JSON, which Deserialize rejects. This pins the half that test does
+        // not: index.json text that is not JSON at all, so JsonNode.Parse itself throws before
+        // Deserialize ever runs.
+        Action act = () => ImportHandBuiltBundleWithRawIndex("malformed-index-topic", "{ not json");
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*malformed-index-topic*")
+            .Which.Should().NotBeOfType<JsonException>();
+    }
+
+    [Fact]
     public void AMalformedLaterTopic_DoesNotLeaveAnEarlierValidTopicHalfImported()
     {
         // THE FINDING (fix round 2): converting the malformed-index JsonException into
@@ -360,6 +375,85 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
         _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("topic-a")).Should().BeEmpty(
             "a malformed LATER topic must not leave an earlier, valid topic half-imported");
+    }
+
+    // ── Derivation ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public void AnEntryWithNoKeywords_HasThemDerivedFromItsContent()
+    {
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "underived",
+                ["originalBytes"] = 40,
+                ["chunkCount"] = 1,
+                ["contentPreview"] = "a preview",
+            }),
+        };
+
+        var imported = ImportHandBuiltBundle(
+            "derive-topic", index, "kubernetes scheduling latency investigation");
+
+        imported.Keywords.Should().NotBeNullOrEmpty(
+            "a bundle of loose files carries no keywords, so import must derive them or the " +
+            "memory is unsearchable");
+        imported.Keywords.Should().Contain(k => k.Contains("kubernetes", StringComparison.OrdinalIgnoreCase));
+        imported.TermFrequencies.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public void AnEntryThatAlreadyCarriesKeywords_KeepsExactlyThose()
+    {
+        var imported = RoundTrip(FullyPopulatedEntry()).Entry;
+
+        imported.Keywords.Should().Equal(["alpha", "beta"],
+            "derivation must not run over an entry the bundle already derived");
+    }
+
+    [Fact]
+    public void AnEmptyKeywordsArray_IsARealAnswer_AndIsNotOverwritten()
+    {
+        // Null means "never derived"; empty means "derived, found nothing". Gating on
+        // `is not { Length: > 0 }` instead of `is null` would silently conflate the two.
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "empty-keywords",
+                ["originalBytes"] = 40,
+                ["chunkCount"] = 1,
+                ["keywords"] = new JsonArray(),
+            }),
+        };
+
+        var imported = ImportHandBuiltBundle(
+            "empty-topic", index, "kubernetes scheduling latency investigation");
+
+        imported.Keywords.Should().BeEmpty(
+            "an empty keywords array is a derived answer, not a missing one");
+    }
+
+    [Fact]
+    public void DerivationDoesNotFabricateADriftBaselineFromThisMachinesFiles()
+    {
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "no-hashes",
+                ["originalBytes"] = 40,
+                ["chunkCount"] = 1,
+            }),
+        };
+
+        var imported = ImportHandBuiltBundle(
+            "hash-topic", index, "see src/Scrinia.Core/FileMemoryStore.cs for details");
+
+        imported.FileHashes.Should().BeNullOrEmpty(
+            "hashing THIS machine's files against paths captured on the exporting machine would " +
+            "fabricate a drift baseline that never existed");
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
@@ -477,6 +571,37 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
         return _store.LoadIndex(MemoryNaming.BuildScopedTopicScope(topic))
             .Single(e => e.Name.Equals(entryName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Builds a bundle zip whose topic index.json is written from raw text rather than a
+    /// <see cref="JsonObject"/> — the only way to test an index that is not valid JSON at all,
+    /// which a <see cref="JsonObject"/>-typed parameter could never represent. Imports it and lets
+    /// any exception propagate to the caller; there is no well-formed entry to read back.</summary>
+    private void ImportHandBuiltBundleWithRawIndex(string topic, string rawIndexJson)
+    {
+        string zipPath = Path.Combine(_tempDir, $"handbuilt-raw-{Guid.NewGuid():N}.zip");
+
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            var indexEntry = zip.CreateEntry($"topics/{topic}/index.json");
+            using (var writer = new StreamWriter(indexEntry.Open()))
+                writer.Write(rawIndexJson);
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using (var writer = new StreamWriter(manifest.Open()))
+                writer.Write(new JsonObject
+                {
+                    ["version"] = 1,
+                    ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                    ["topics"] = new JsonArray(topic),
+                    ["totalEntries"] = 1,
+                }.ToJsonString());
+        }
+
+        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
     }
 
     /// <summary>Writes one topic's index.json and its single artifact into an ALREADY-OPEN zip
