@@ -68,7 +68,7 @@ Config resolution order (highest priority first):
 Symptoms: Semantic search works but uses CPU (Model2Vec) instead of GPU.
 
 **Checklist:**
-1. Plugin binary exists at `{exeDir}/plugins/scri-plugin-embeddings[.exe]`
+1. Plugin binary exists at `{exeDir}/plugins/scri-plugin-embeddings/scri-plugin-embeddings[.exe]` (checked first), or `{exeDir}/plugins/scri-plugin-embeddings[.exe]` (checked second)
 2. Vulkan drivers are installed and up to date
 3. GPU supports Vulkan (check with `vulkaninfo`)
 4. GGUF model exists at `{exeDir}/plugins/scri-plugin-embeddings/models/`
@@ -86,7 +86,7 @@ The CLI auto-reconnects crashed plugins up to 3 times. After 3 failures, it sets
 
 ### Plugin not found despite being installed
 
-Plugin discovery looks for executables at `{exeDir}/plugins/scri-plugin-{name}[.exe]`. The plugin name comes from the `plugins:embeddings` config setting (default: `scri-plugin-embeddings`).
+Plugin discovery looks for executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`. The plugin name comes from the `plugins:embeddings` config setting (default: `scri-plugin-embeddings`).
 
 **Fix:**
 ```bash

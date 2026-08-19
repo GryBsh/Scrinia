@@ -1,5 +1,5 @@
 # Read by publish.sh with a tab-splitting `read`. A CRLF checkout would leave a carriage
-# return on the last field of every row and silently corrupt the `output` column.
+# return on the last field of every row and silently corrupt the `rids` column.
 publish.projects.tsv text eol=lf
 
 # publish.sh is executed by bash. This repo is developed with core.autocrlf=true, and a CRLF

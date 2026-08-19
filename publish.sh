@@ -15,12 +15,28 @@ VULKAN_BACKEND_VERSION="0.25.0"
 # Projects marked rids=host in the manifest are published only for this machine's own RID.
 # Scrinia.Merge is NativeAOT, and cross-OS native compilation is unsupported: a foreign-RID
 # publish exits 1 and writes nothing, which under `set -e` would abort this whole script.
+# OS and architecture are resolved separately and joined: a Linux or Windows arm64 host must
+# not be mistaken for its x64 sibling, the same way the Darwin branch already distinguishes them.
 case "$(uname -s)" in
-    Linux*)               HOST_RID="linux-x64" ;;
-    Darwin*)              if [ "$(uname -m)" = "arm64" ]; then HOST_RID="osx-arm64"; else HOST_RID="osx-x64"; fi ;;
-    MINGW*|MSYS*|CYGWIN*) HOST_RID="win-x64" ;;
-    *)                    HOST_RID="" ;;
+    Linux*)               HOST_OS="linux" ;;
+    Darwin*)              HOST_OS="osx" ;;
+    MINGW*|MSYS*|CYGWIN*) HOST_OS="win" ;;
+    *)                    HOST_OS="" ;;
 esac
+case "$(uname -m)" in
+    x86_64|amd64)  HOST_ARCH="x64" ;;
+    arm64|aarch64) HOST_ARCH="arm64" ;;
+    *)             HOST_ARCH="" ;;
+esac
+if [ -n "$HOST_OS" ] && [ -n "$HOST_ARCH" ]; then HOST_RID="$HOST_OS-$HOST_ARCH"; else HOST_RID=""; fi
+
+# Whether the host's own RID is one this script can actually publish for (and so a safe thing
+# to suggest in the [skip] message below). osx-x64 and an unrecognised host are examples of a
+# real, buildable machine whose RID is not in ALL_RIDS.
+HOST_RID_SUPPORTED=false
+for r in "${ALL_RIDS[@]}"; do
+    if [ "$r" = "$HOST_RID" ]; then HOST_RID_SUPPORTED=true; break; fi
+done
 
 # Parse arguments
 for arg in "$@"; do
@@ -67,12 +83,29 @@ IDS=(); PROJECTS=(); CONDITIONS=(); PROFILES=(); OUTPUTS=(); RIDSCOPES=()
 # The `|| [ -n "$m_id" ]` keeps the last row when the file has no trailing newline: `read`
 # returns non-zero at EOF-without-newline having already filled the variables, so the plain
 # form would silently drop it.
-while IFS=$'\t' read -r m_id m_project m_condition m_profile m_output m_rids || [ -n "$m_id" ]; do
+# A seventh field name (m_extra) catches a row with more than six tab-separated columns: `read`
+# with only six names would otherwise silently fold an extra column onto the end of m_rids.
+while IFS=$'\t' read -r m_id m_project m_condition m_profile m_output m_rids m_extra || [ -n "$m_id" ]; do
     # Strip a trailing CR: .gitattributes pins this file to LF, but a user whose git
     # configuration ignores it would otherwise get a corrupted final column.
     m_rids="${m_rids%$'\r'}"
+    m_extra="${m_extra%$'\r'}"
     if [ -z "$m_id" ]; then continue; fi
     case "$m_id" in \#*) continue ;; esac
+    if [ -n "$m_extra" ]; then
+        echo "Error: manifest row for '$m_id' has more than six columns" >&2
+        exit 1
+    fi
+    # Validated here, once, at read time — not deep inside the publish loop — so a bad row is
+    # caught before any artifact has been published for any RID, rather than mid-run.
+    case "$m_output" in
+        rid|plugin) ;;
+        *) echo "Error: unknown output kind '$m_output' for $m_id" >&2; exit 1 ;;
+    esac
+    case "$m_profile" in
+        trimmed|plain) ;;
+        *) echo "Error: unknown profile '$m_profile' for $m_id" >&2; exit 1 ;;
+    esac
     IDS+=("$m_id"); PROJECTS+=("$m_project"); CONDITIONS+=("$m_condition")
     PROFILES+=("$m_profile"); OUTPUTS+=("$m_output"); RIDSCOPES+=("$m_rids")
 done < <(tail -n +2 "$MANIFEST")
@@ -96,7 +129,10 @@ overwrite_vulkan_natives() {
     esac
     src="$HOME/.nuget/packages/$pkg/$VULKAN_BACKEND_VERSION/runtimes/$rid/native/vulkan"
     if [ -d "$src" ]; then
-        cp -f "$src"/* "$dest"/
+        # Not `cp -f "$src"/*`: under `set -e` that aborts the whole script if $src has no
+        # files (the glob stays literal) or contains a subdirectory ("omitting directory").
+        # -type f sidesteps both.
+        find "$src" -maxdepth 1 -type f -exec cp -f {} "$dest"/ \;
         echo "    Overwrote root native DLLs with Vulkan variants"
     else
         echo "  [warn] Vulkan natives not found at $src; shipping the CPU backend." >&2
@@ -118,8 +154,14 @@ for rid in "${RIDS[@]}"; do
         fi
 
         if [ "${RIDSCOPES[$i]}" = "host" ] && [ "$rid" != "$HOST_RID" ]; then
-            echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and cross-OS native compilation" >&2
-            echo "         is unsupported. Build on $rid, or use --platform=$HOST_RID." >&2
+            if [ "$HOST_RID_SUPPORTED" = true ]; then
+                echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and cross-OS native compilation" >&2
+                echo "         is unsupported. Build on $rid, or use --platform=$HOST_RID." >&2
+            else
+                echo "  [skip] ${IDS[$i]} for $rid: it is NativeAOT and cross-OS native compilation" >&2
+                echo "         is unsupported, and this host ($(uname -s)/$(uname -m)) is not one this" >&2
+                echo "         script publishes for. Supported: ${ALL_RIDS[*]}." >&2
+            fi
             continue
         fi
 
@@ -138,7 +180,7 @@ for rid in "${RIDS[@]}"; do
                 # member via reflection cannot ship. If a trim warning fires, fix the root cause —
                 # either move to a JsonSerializerContext, annotate with [DynamicallyAccessedMembers],
                 # or rewrite the reflection-heavy call to a trim-safe shape.
-                dotnet publish "${PROJECTS[$i]}" \
+                dotnet publish "$SCRIPT_DIR/${PROJECTS[$i]}" \
                     --runtime "$rid" \
                     --self-contained \
                     --configuration Release \
@@ -151,7 +193,7 @@ for rid in "${RIDS[@]}"; do
             plain)
                 # Single-file + self-contained + native bundling is configured in the project
                 # file. Only --runtime is needed here for RID selection.
-                dotnet publish "${PROJECTS[$i]}" \
+                dotnet publish "$SCRIPT_DIR/${PROJECTS[$i]}" \
                     --runtime "$rid" \
                     --configuration Release \
                     --output "$out_dir"

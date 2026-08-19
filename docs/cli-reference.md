@@ -785,10 +785,10 @@ scri bundle import ./project-knowledge.scrinia-bundle --topics api
 
 ## Custom Plugin Executable
 
-The CLI discovers plugin executables at `{exeDir}/plugins/scri-plugin-*`. You can override the embeddings plugin name:
+The CLI discovers plugin executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`. You can override the embeddings plugin name:
 
 ```bash
 scri config plugins:embeddings my-custom-embeddings
 ```
 
-The CLI looks for `{exeDir}/plugins/{name}[.exe]`.
+The CLI looks for `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`.
