@@ -12,9 +12,16 @@ namespace Scrinia.TestDoubles;
 /// </summary>
 public static class RepoPaths
 {
+    // Walking up to Scrinia.sln is a File.Exists per ancestor directory; this is now the
+    // shared entry point for three test projects, so the walk is done once per process and
+    // cached rather than repeated on every Root()/Combine() call.
+    private static readonly Lazy<string> CachedRoot = new(FindRoot);
+
     /// <summary>The repository root — the nearest ancestor of the test output directory
     /// containing <c>Scrinia.sln</c>.</summary>
-    public static string Root()
+    public static string Root() => CachedRoot.Value;
+
+    private static string FindRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))

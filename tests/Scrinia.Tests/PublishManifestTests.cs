@@ -22,10 +22,20 @@ public sealed class PublishManifestTests
     private static readonly string ManifestPath = RepoPaths.Combine("publish.projects.tsv");
 
     /// <summary>
-    /// Executable-producing projects under src/ that deliberately do NOT ship through the publish
-    /// scripts. Each entry states why; an unexplained absence is what this test exists to prevent.
+    /// Executable-producing projects anywhere in the repo that deliberately do NOT ship through
+    /// the developer publish SCRIPTS. Each entry states why; an unexplained absence is what this
+    /// test exists to prevent.
+    ///
+    /// <para>This answers "does publish.sh/publish.ps1 build this?", not "is this allowed to
+    /// appear in a release?" — those are different questions with different answers for
+    /// <c>Scrinia.AppHost</c> (excluded here, and must never appear in a release either) and
+    /// <c>Scrinia.Server</c> (excluded here, but legitimately released by a different job — see
+    /// <see cref="ReleasedOutsideTheManifest"/>). Keying the release-workflow check off this set
+    /// let a release step publishing AppHost pass silently; that is why the two sets are
+    /// separate.</para>
     /// </summary>
-    private static readonly Dictionary<string, string> ExcludedFromPublish = new()
+    private static readonly Dictionary<string, string> ExcludedFromPublish =
+        new(StringComparer.OrdinalIgnoreCase)
     {
         ["Scrinia.AppHost"] =
             "Aspire development orchestrator — a local run-the-stack harness, never shipped to users.",
@@ -33,6 +43,27 @@ public sealed class PublishManifestTests
             "Shipped by release.yml's build-server job and as a container image " +
             "(src/Scrinia.Server/Dockerfile, docker-compose.yml) — never by the developer publish " +
             "scripts, which build the CLI and the plugin it loads.",
+        ["Scrinia.Retrieval.Benchmarks"] =
+            "Benchmark harness under benchmarks/ — run from source via `dotnet run`, never " +
+            "distributed to users.",
+        ["Scrinia.Benchmarks"] =
+            "Benchmark harness under tests/ — run from source via `dotnet run`, never distributed " +
+            "to users.",
+    };
+
+    /// <summary>
+    /// Projects release.yml is allowed to publish that are deliberately NOT in
+    /// publish.projects.tsv. Strictly narrower than <see cref="ExcludedFromPublish"/>: every name
+    /// here is also excluded from the developer scripts, but not every script exclusion belongs
+    /// here — <c>Scrinia.AppHost</c> is excluded from the scripts AND must never appear in a
+    /// release, so it is deliberately absent from this set.
+    /// </summary>
+    private static readonly Dictionary<string, string> ReleasedOutsideTheManifest =
+        new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Scrinia.Server"] =
+            "release.yml's build-server job produces the server archive and container image " +
+            "directly; the developer scripts build only the CLI and the plugin it loads.",
     };
 
     /// <summary>
@@ -52,16 +83,24 @@ public sealed class PublishManifestTests
     private sealed record ManifestRow(
         string Id, string Project, string Condition, string Profile, string Output, string Rids);
 
+    /// <summary>
+    /// Deliberately called outside any <see cref="AssertionScope"/> everywhere it's used: a
+    /// malformed row must throw immediately from <c>HaveCount(6)</c> rather than be collected,
+    /// because a short row would otherwise reach <c>parts[5]</c> and throw
+    /// <see cref="IndexOutOfRangeException"/> instead of a message naming the offending line.
+    /// </summary>
     private static List<ManifestRow> ReadManifest()
     {
         var rows = new List<ManifestRow>();
-        foreach (string line in File.ReadAllLines(ManifestPath).Skip(1))
+        // Skip a leading run of comment lines, then exactly the header row that follows them —
+        // so a banner comment ever added above the header doesn't get treated as it and let the
+        // real header row be parsed as data.
+        foreach (string line in File.ReadAllLines(ManifestPath).SkipWhile(l => l.StartsWith('#')).Skip(1))
         {
             if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
             string[] parts = line.Split('\t');
             parts.Should().HaveCount(6, because: $"every manifest row has six tab-separated columns: '{line}'");
-            rows.Add(new ManifestRow(
-                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5].TrimEnd('\r')));
+            rows.Add(new ManifestRow(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]));
         }
         return rows;
     }
@@ -80,6 +119,16 @@ public sealed class PublishManifestTests
         }
     }
 
+    /// <summary>Token that must appear on every real `dotnet publish` invocation line in each
+    /// script — proof the path it publishes came from the manifest-derived array/object rather
+    /// than a literal. Matched per-script because the two scripts hold that value differently
+    /// (a bash array element vs. a PowerShell object property).</summary>
+    private static readonly Dictionary<string, string> ManifestDerivedToken = new()
+    {
+        ["publish.sh"] = "PROJECTS[",
+        ["publish.ps1"] = "$p.project",
+    };
+
     [Fact]
     public void NeitherScript_NamesAProjectItself()
     {
@@ -90,18 +139,49 @@ public sealed class PublishManifestTests
             text.Should().NotContain(".csproj",
                 because: $"{script} must take its project list from publish.projects.tsv — a literal " +
                          "project path here is how the two lists diverged in the first place");
+
+            // `dotnet publish` also accepts a bare project DIRECTORY (it resolves the single
+            // project inside), so a hardcoded `dotnet publish src/Scrinia.Merge` would reintroduce
+            // the same defect while never containing the substring ".csproj" above. Asserting the
+            // positive instead closes that gap: every actual invocation line (matched at line
+            // start so an unrelated string like the ps1 error message below is not swept in) must
+            // reference the manifest-derived variable, not merely avoid one literal spelling.
+            string token = ManifestDerivedToken[script];
+            var invocationLines = text
+                .Split('\n')
+                .Where(line => Regex.IsMatch(line, @"^\s*dotnet publish\b"))
+                .ToList();
+            invocationLines.Should().NotBeEmpty(because: $"{script} must actually invoke dotnet publish somewhere");
+            foreach (string line in invocationLines)
+            {
+                line.Should().Contain(token,
+                    because: $"{script} must publish only a path it read from the manifest — this line " +
+                             $"should reference {token}, not a literal project or directory argument");
+            }
         }
     }
 
     [Fact]
     public void EveryShippableExecutable_IsInTheManifestOrNamedAsExcluded()
     {
+        ExcludedFromPublish.Values.Should().AllSatisfy(r => r.Should().NotBeNullOrWhiteSpace(),
+            because: "an exclusion with no reason is exactly the unexplained absence this test exists to prevent");
+
         var manifestProjects = ReadManifest()
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        // Rooted at the repo root, not src/: benchmarks/Scrinia.Retrieval.Benchmarks and
+        // tests/Scrinia.Benchmarks are Exe-producing projects too, and a root of "src" would have
+        // dropped them from this enumeration with no named exclusion — the exact unnamed-absence
+        // shape this test exists to forbid. bin/ and obj/ are build output, not source; .claude/
+        // can hold a nested git worktree (gitignored — see .gitignore:2) that would otherwise
+        // double-count every project in it.
+        var excludedDirs = new[] { "bin", "obj", ".claude" };
         var executables = Directory
-            .EnumerateFiles(RepoPaths.Combine("src"), "*.csproj", SearchOption.AllDirectories)
+            .EnumerateFiles(RepoPaths.Root(), "*.csproj", SearchOption.AllDirectories)
+            .Where(p => !p.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(segment => excludedDirs.Contains(segment, StringComparer.OrdinalIgnoreCase)))
             .Where(p =>
             {
                 string text = File.ReadAllText(p);
@@ -141,14 +221,32 @@ public sealed class PublishManifestTests
         declared.Success.Should().BeTrue(because: "the plugin must still reference the Vulkan backend");
         string version = declared.Groups[1].Value;
 
-        using var scope = new AssertionScope();
-        foreach (string script in new[] { "publish.sh", "publish.ps1" })
+        // Anchored on the assignment itself and compared for equality, not a bare substring
+        // search over the whole script: a substring check still passes if the OLD version
+        // survives anywhere else in the file — e.g. a "# upgraded from 0.25.0" comment left next
+        // to a bumped assignment — on exactly the broken tree this test exists to catch.
+        var scriptVersionPatterns = new Dictionary<string, string>
         {
-            File.ReadAllText(RepoPaths.Combine(script))
-                .Should().Contain(version,
-                    because: $"{script} builds the Vulkan native path from a hardcoded version; when it " +
-                             "drifts from the PackageReference the path does not exist and the overwrite " +
-                             "is skipped, shipping the CPU backend under a Vulkan switch");
+            ["publish.sh"] = @"VULKAN_BACKEND_VERSION=""([^""]+)""",
+            ["publish.ps1"] = @"\$VulkanBackendVersion\s*=\s*'([^']+)'",
+        };
+
+        using var scope = new AssertionScope();
+        foreach ((string script, string pattern) in scriptVersionPatterns)
+        {
+            string text = File.ReadAllText(RepoPaths.Combine(script));
+            var matches = Regex.Matches(text, pattern);
+            matches.Should().HaveCount(1,
+                because: $"{script} must declare VULKAN_BACKEND_VERSION exactly once — a second " +
+                         "assignment could disagree with the first and neither would be caught by name");
+
+            if (matches.Count == 1)
+            {
+                matches[0].Groups[1].Value.Should().Be(version,
+                    because: $"{script} builds the Vulkan native path from this hardcoded version; when " +
+                             "it drifts from the PackageReference the path does not exist and the " +
+                             "overwrite is skipped, shipping the CPU backend under a Vulkan switch");
+            }
         }
     }
 
@@ -160,9 +258,13 @@ public sealed class PublishManifestTests
     [Fact]
     public void TheReleaseWorkflow_ShipsEveryManifestProject_AndNothingUndeclared()
     {
+        ReleasedOutsideTheManifest.Values.Should().AllSatisfy(r => r.Should().NotBeNullOrWhiteSpace(),
+            because: "an exclusion with no reason is exactly the unexplained absence this test exists to prevent");
+
         var manifestProjects = ReadManifest()
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        manifestProjects.Should().NotBeEmpty(because: "an emptied manifest must not make this loop vacuous");
         var released = ReleaseWorkflowProjects();
 
         released.Should().NotBeEmpty(because: "the regex must not silently match nothing");
@@ -178,11 +280,12 @@ public sealed class PublishManifestTests
 
         foreach (string name in released)
         {
-            (manifestProjects.Contains(name) || ExcludedFromPublish.ContainsKey(name))
+            (manifestProjects.Contains(name) || ReleasedOutsideTheManifest.ContainsKey(name))
                 .Should().BeTrue(
                     because: $"release.yml publishes {name}, but it is neither in publish.projects.tsv " +
-                             "nor named in ExcludedFromPublish — a developer building locally would not " +
-                             "get what the release ships");
+                             "nor named in ReleasedOutsideTheManifest — decide which it is and record " +
+                             "the reason. Naming it in ExcludedFromPublish is not enough: that set also " +
+                             "contains Scrinia.AppHost, which must never appear in a release");
         }
     }
 }

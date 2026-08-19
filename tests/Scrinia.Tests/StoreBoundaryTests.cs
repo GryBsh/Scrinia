@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia;
 using Scrinia.Core;
 using Scrinia.Core.Models;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
@@ -107,7 +108,7 @@ public sealed class StoreBoundaryTests
     [Fact]
     public void HttpMemoryStore_ThrowsNotSupported_OnlyToRejectAnInputValue()
     {
-        var sourcePath = Path.Combine(Scrinia.TestDoubles.RepoPaths.Root(), "src", "Scrinia", "HttpMemoryStore.cs");
+        var sourcePath = Path.Combine(RepoPaths.Root(), "src", "Scrinia", "HttpMemoryStore.cs");
         var lines = File.ReadAllLines(sourcePath);
         var throwLines = lines
             .Select((line, i) => (Line: line, Index: i))
