@@ -614,16 +614,26 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
-    /// Resolves a plugin executable name from env var -> config file -> default.
+    /// Resolves a plugin executable name from env var -> config file -> default. A
+    /// colon-separated key (e.g. "plugins:embeddings") is accepted in two environment forms:
+    /// single-underscore (e.g. "PLUGINS_EMBEDDINGS"), which is the historically documented one
+    /// and keeps priority, and the .NET-standard double-underscore form (e.g.
+    /// "PLUGINS__EMBEDDINGS"), which the server accepts natively through
+    /// WebApplication.CreateBuilder's environment provider.
     /// </summary>
     internal static string GetPluginName(string key, string defaultName)
     {
-        // 1. Environment variable
+        // 1. Environment variable, single-underscore form (highest priority)
         string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
         string? value = Environment.GetEnvironmentVariable(envKey);
         if (value is not null) return value;
 
-        // 2. Config file
+        // 2. Environment variable, .NET-standard double-underscore form
+        envKey = key.Replace(":", "__").ToUpperInvariant();
+        value = Environment.GetEnvironmentVariable(envKey);
+        if (value is not null) return value;
+
+        // 3. Config file
         value = WorkspaceConfig.GetValue(Root, key);
         if (value is not null) return value;
 
@@ -632,22 +642,27 @@ internal static class WorkspaceSetup
 
     /// <summary>
     /// Reads config from environment variables, then falls back to the workspace config file.
-    /// Supports colon-separated keys (e.g. "Scrinia:Embeddings:Provider")
-    /// mapped to double-underscore env vars (e.g. "SCRINIA__EMBEDDINGS__PROVIDER").
+    /// A colon-separated key (e.g. "Scrinia:Embeddings:Provider") is accepted in two environment
+    /// forms: single-underscore (SCRINIA_EMBEDDINGS_PROVIDER), which is the historically documented
+    /// one and keeps priority, and the .NET-standard double-underscore form
+    /// (SCRINIA__EMBEDDINGS__PROVIDER), which the server accepts natively through
+    /// WebApplication.CreateBuilder's environment provider.
     /// </summary>
     internal static string? GetConfigValue(string key)
     {
-        // 1. Environment variable (highest priority)
+        // 1. Environment variable, single-underscore form (highest priority)
         string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
         string? value = Environment.GetEnvironmentVariable(envKey);
         if (value is not null) return value;
 
-        // Also try the .NET-standard double-underscore convention
-        envKey = key.Replace(':', '_').Replace(".", "_").ToUpperInvariant();
+        // 2. Environment variable, .NET-standard double-underscore form. This branch used to
+        //    compute a string byte-identical to the one above for every key in the repository, so
+        //    the documented form never resolved.
+        envKey = key.Replace(":", "__").ToUpperInvariant();
         value = Environment.GetEnvironmentVariable(envKey);
         if (value is not null) return value;
 
-        // 2. Config file (workspace-scoped)
+        // 3. Config file (workspace-scoped)
         return WorkspaceConfig.GetValue(Root, key);
     }
 }

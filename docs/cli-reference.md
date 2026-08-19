@@ -553,7 +553,7 @@ If a `.scrinia/` directory exists somewhere resolution deliberately did not use 
 
 Settings are resolved in priority order:
 
-1. **Environment variable** (highest) -- key with `:` replaced by `_`, uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`)
+1. **Environment variable** (highest) -- either the single-underscore form, key with `:` replaced by `_` and uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`), or the .NET-standard double-underscore form (e.g., `SCRINIA__EMBEDDINGS__PROVIDER`), which the server also accepts. When both are set the single-underscore form wins.
 2. **Config file** -- `.scrinia/config.json` in the workspace root
 3. **Default value** (lowest)
 
