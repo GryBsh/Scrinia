@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
@@ -201,102 +202,55 @@ public static class BundleFormatService
             using (var reader = new StreamReader(indexZipEntry.Open()))
                 indexJson = reader.ReadToEnd();
 
-            using var indexDoc = JsonDocument.Parse(indexJson);
-            var indexRoot = indexDoc.RootElement;
-
-            if (!indexRoot.TryGetProperty("entries", out var entriesElement))
+            // Deserialize through the SAME source-generated context that ExportTopicsToZip
+            // serializes with, so the round trip is total by construction. This replaced a
+            // hand-written member-by-member parse that read 7 of ArtifactEntry's 13 members and
+            // silently dropped the rest on every backup restore (design review finding M4).
+            // Legacy keys are migrated first, in one bounded pass that knows about exactly two
+            // of them — see BundleLegacyKeys for why they do not live on the entry itself.
+            if (JsonNode.Parse(indexJson) is not JsonObject indexObject)
                 continue;
 
-            var entries = new List<ArtifactEntry>();
+            BundleLegacyKeys.NormalizeIndex(indexObject);
+
+            var index = indexObject.Deserialize(BundleJsonContext.Default.BundleIndex);
+            if (index?.Entries is not { Count: > 0 })
+                continue;
+
+            var entries = new List<ArtifactEntry>(index.Entries.Count);
             var artifactContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var entryEl in entriesElement.EnumerateArray())
+            foreach (var deserialized in index.Entries)
             {
-                string? name = entryEl.GetProperty("name").GetString();
-                if (name is null) continue;
+                // A nameless entry is unaddressable. The parse this replaced threw for a missing
+                // "name" key and skipped a null one; skipping both is strictly kinder and loses
+                // nothing, since neither could be stored.
+                if (string.IsNullOrEmpty(deserialized.Name))
+                    continue;
 
-                long originalBytes = entryEl.TryGetProperty("originalBytes", out var ob) ? ob.GetInt64() : 0;
-                int chunkCount = entryEl.TryGetProperty("chunkCount", out var cc) ? cc.GetInt32() : 1;
-                // "description" is a back-compat read: pre-Merge-3 bundles carry it as the
-                // display carrier. Modern bundles carry "contentPreview" instead — prefer that
-                // when present, falling back to "description" for old bundles.
-                string description = entryEl.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
-                string? contentPreview = entryEl.TryGetProperty("contentPreview", out var cp) ? cp.GetString() : null;
-                contentPreview ??= description.Length > 0 ? description : null;
+                // Folds a pre-rename "fields" key into Attributes and clears the holder. The old
+                // hand-parse never did this, so such a bundle lost its attributes entirely. It is a
+                // FALLBACK, not a merge: an entry carrying both "fields" and legacy "tags" keeps
+                // only the tags-derived attributes, exactly as it does today.
+                var entry = deserialized.NormalizeAttributesKey();
 
-                // "tags" is a back-compat read: pre-Merge-3 bundles carry free-form tags as a
-                // top-level array. Modern bundles carry "attributes" (a key → string[] dict,
-                // including the "tag" key) instead. Read both; the modern "attributes" reading
-                // wins if it already has a "tag" key, otherwise the legacy top-level "tags"
-                // fills Attributes[KnownAttributes.TagKey] so neither source is lost.
-                string[]? legacyTags = null;
-                if (entryEl.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
-                    legacyTags = tagsEl.EnumerateArray().Select(t2 => t2.GetString() ?? "").Where(t2 => t2.Length > 0).ToArray();
+                // The deleted hand-parse defaulted a missing "chunkCount" to 1; the deserializer
+                // leaves it at 0. Modern bundles always carry the key, so this only bites
+                // pre-Merge-3 and hand-crafted ones — which is precisely the population the legacy
+                // pre-pass exists for. Uri gets no such restoration on purpose: it is transiently
+                // null here and ImportTopicEntries overwrites it before any reader sees it.
+                if (entry.ChunkCount == 0)
+                    entry = entry with { ChunkCount = 1 };
 
-                Dictionary<string, string[]>? attributes = null;
-                if (entryEl.TryGetProperty("attributes", out var attrEl) && attrEl.ValueKind == JsonValueKind.Object)
-                {
-                    attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var prop in attrEl.EnumerateObject())
-                    {
-                        if (prop.Value.ValueKind != JsonValueKind.Array) continue;
-                        string[] vals = prop.Value.EnumerateArray().Select(v => v.GetString() ?? "")
-                            .Where(v => v.Length > 0).ToArray();
-                        if (vals.Length > 0) attributes[prop.Name] = vals;
-                    }
-                }
-
-                if (legacyTags is { Length: > 0 } && (attributes is null || !attributes.ContainsKey(KnownAttributes.TagKey)))
-                {
-                    attributes ??= new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-                    attributes[KnownAttributes.TagKey] = legacyTags;
-                }
-
-                DateTimeOffset createdAt = entryEl.TryGetProperty("createdAt", out var ca)
-                    && DateTimeOffset.TryParse(ca.GetString(), out var parsedDate)
-                    ? parsedDate
-                    : DateTimeOffset.UtcNow;
-
-                ChunkEntry[]? chunkEntries = null;
-                if (entryEl.TryGetProperty("chunkEntries", out var ceEl) && ceEl.ValueKind == JsonValueKind.Array)
-                {
-                    var ceList = new List<ChunkEntry>();
-                    foreach (var ce in ceEl.EnumerateArray())
-                    {
-                        int ci = ce.TryGetProperty("chunkIndex", out var ciEl) ? ciEl.GetInt32() : 0;
-                        string? cePrev = ce.TryGetProperty("contentPreview", out var cpEl) ? cpEl.GetString() : null;
-                        string[]? ceKw = null;
-                        if (ce.TryGetProperty("keywords", out var kwEl) && kwEl.ValueKind == JsonValueKind.Array)
-                            ceKw = kwEl.EnumerateArray().Select(k => k.GetString() ?? "").Where(k => k.Length > 0).ToArray();
-                        Dictionary<string, int>? ceTf = null;
-                        if (ce.TryGetProperty("termFrequencies", out var tfEl) && tfEl.ValueKind == JsonValueKind.Object)
-                        {
-                            ceTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                            foreach (var prop in tfEl.EnumerateObject())
-                                if (prop.Value.TryGetInt32(out int v)) ceTf[prop.Name] = v;
-                        }
-                        ceList.Add(new ChunkEntry(ci, cePrev, ceKw, ceTf));
-                    }
-                    if (ceList.Count > 0) chunkEntries = ceList.ToArray();
-                }
-
-                entries.Add(new ArtifactEntry(
-                    Name: name,
-                    Uri: "",
-                    OriginalBytes: originalBytes,
-                    ChunkCount: chunkCount,
-                    CreatedAt: createdAt,
-                    ContentPreview: contentPreview,
-                    ChunkEntries: chunkEntries,
-                    Attributes: attributes));
-
-                string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2";
+                string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(entry.Name)}.nmp2";
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
                 if (artifactZipEntry is not null)
                 {
                     using var reader = new StreamReader(artifactZipEntry.Open());
-                    artifactContents[name] = reader.ReadToEnd();
+                    artifactContents[entry.Name] = reader.ReadToEnd();
                 }
+
+                entries.Add(entry);
             }
 
             if (entries.Count > 0)
