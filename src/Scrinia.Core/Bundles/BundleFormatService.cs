@@ -284,17 +284,33 @@ public static class BundleFormatService
             var entries = new List<ArtifactEntry>(index.Entries.Count);
             var artifactContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var deserialized in index.Entries)
+            for (int entryIndex = 0; entryIndex < index.Entries.Count; entryIndex++)
             {
-                // A nameless entry is unaddressable. The parse this replaced threw for a missing
-                // "name" key and skipped a null one, but it DID accept and store an empty-string
-                // name (JsonElement.GetString() on "" returns "", which is neither null nor
-                // thrown). IsNullOrEmpty now refuses that case too — an entry with no name could
-                // never be found again by anything that looks entries up by Name, so storing one
-                // was never actually useful; refusing it here is still an improvement, not a
-                // silent behavior change with a cost.
+                var deserialized = index.Entries[entryIndex];
+
+                // A nameless entry is unaddressable, and dropping one silently is the same defect
+                // as silently dropping a whole topic for a non-object index root (":262-270") —
+                // one nesting level down. Two distinct cases land here, and they are refused for
+                // two different reasons:
+                //   - MISSING or null "name": the parse this replaced called
+                //     entryEl.GetProperty("name"), which threw KeyNotFoundException. Ugly, but
+                //     loud, and the whole import aborted. Deserialization leaves Name null
+                //     instead, and skipping it would drop that one memory from the restore while
+                //     every sibling entry imported — and nothing compares the returned EntryCount
+                //     against the manifest's totalEntries, so the user would be told the restore
+                //     succeeded. Refusing restores the pre-branch loudness.
+                //   - EMPTY-string "name": the old parse DID accept and store this
+                //     (JsonElement.GetString() on "" returns "", which is neither null nor
+                //     thrown). Refusing it is a separate, genuine improvement — an entry with no
+                //     name could never be found again by anything that looks entries up by Name —
+                //     and it is refused the same loud way rather than skipped, for the reason
+                //     above.
+                // This runs in the build pass, before any topic is written, so refusing here
+                // cannot leave an earlier valid topic half-imported.
                 if (string.IsNullOrEmpty(deserialized.Name))
-                    continue;
+                    throw new InvalidOperationException(
+                        $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
+                        "with a missing or empty name.");
 
                 // Folds a pre-rename "fields" key into Attributes and clears the holder. The old
                 // hand-parse never did this, so such a bundle lost its attributes entirely. It is a

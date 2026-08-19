@@ -18,11 +18,13 @@ namespace Scrinia.Tests;
 /// hand, so the two drifted and five members were silently dropped on every backup restore.
 ///
 /// <para>The field list is NOT the defect; the shape is. So the pin below enumerates
-/// <c>ArtifactEntry</c>'s public instance properties reflectively — every member with a setter or
-/// init accessor, not just the ones the primary constructor happens to expose as parameters — so a
+/// <c>ArtifactEntry</c>'s public instance properties reflectively — every member with a public
+/// GETTER, not just the ones the primary constructor happens to expose as parameters — so a
 /// member added later, whether as a positional parameter or as a plain property (like
 /// <see cref="ArtifactEntry.LegacyFields"/>), is covered without anyone remembering to add it
-/// here.</para>
+/// here. A get-only member is enumerated too: System.Text.Json SERIALIZES one and silently
+/// ignores it on deserialize, which is this branch's own defect shape, so it is exactly the
+/// member this pin must not filter away before it ever looks.</para>
 /// </summary>
 public sealed class BundleRoundTripTotalityTests : IDisposable
 {
@@ -68,43 +70,72 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
         nameof(ArtifactEntry.LegacyFields),
     };
 
+    /// <summary>Members that CANNOT be assigned by a deserializer — a public getter with no
+    /// setter or init accessor. System.Text.Json writes such a member on export and silently
+    /// ignores it on import, so it is dropped on every restore by construction; a round trip
+    /// cannot preserve it and the probe cannot set it. Excluded from both the guard and the
+    /// comparison, for the same reason <see cref="NormalizedAwayOnLoad"/> is.
+    ///
+    /// <para><b>Deliberately EMPTY today, and that is the point.</b> <c>ArtifactEntry</c> has no
+    /// such member right now. Adding a name here is a conscious, written-down edit — if you find
+    /// yourself doing it because the pin went red, stop: the pin is telling you the member you
+    /// just added is written into every <c>index.json</c> and read back by nothing. Give it an
+    /// <c>init</c> accessor instead. Only put it here if being export-only is genuinely
+    /// intended, and say why on the line above it.</para></summary>
+    private static readonly HashSet<string> NotDeserializable = new(StringComparer.Ordinal)
+    {
+        // (empty — no ArtifactEntry member is get-only.)
+    };
+
     /// <summary>
-    /// Every public instance property on <see cref="ArtifactEntry"/> that has a setter or init
-    /// accessor — i.e. every member something (a caller, or a deserializer) can actually assign.
-    /// Deliberately NOT constructor-parameter-based: <see cref="Type.GetConstructors()"/> only
-    /// covers the primary constructor's positional members, so a member added later as a plain
-    /// property — <see cref="ArtifactEntry.LegacyFields"/> already is one — would be invisible to
-    /// a parameter-based enumeration and silently excluded from this pin.
+    /// Every public instance property on <see cref="ArtifactEntry"/> with a public GETTER — i.e.
+    /// every member that export's source-generated serializer will WRITE. Deliberately not
+    /// filtered down to the assignable ones: a get-only property serializes and then deserializes
+    /// to nothing, which is this branch's exact defect shape, so filtering on the setter would
+    /// remove that member from the guard AND the comparison before either could see it. Members
+    /// that really cannot be assigned go through <see cref="NotDeserializable"/>, by name.
+    ///
+    /// <para>Also deliberately NOT constructor-parameter-based:
+    /// <see cref="Type.GetConstructors()"/> only covers the primary constructor's positional
+    /// members, so a member added later as a plain property — <see cref="ArtifactEntry.LegacyFields"/>
+    /// already is one — would be invisible to a parameter-based enumeration and silently excluded
+    /// from this pin.</para>
     /// </summary>
     private static PropertyInfo[] EntryMembers() =>
         typeof(ArtifactEntry)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.SetMethod is not null)
+            .Where(p => p.GetMethod is { IsPublic: true })
             .ToArray();
 
     private static object? Read(ArtifactEntry entry, string member) =>
         typeof(ArtifactEntry).GetProperty(member, BindingFlags.Public | BindingFlags.Instance)!
             .GetValue(entry);
 
-    /// <summary>True when a value is distinguishable from its type's default/empty form.</summary>
-    private static bool IsPopulated(object? value) => value switch
-    {
-        null => false,
-        string s => s.Length > 0,
-        DateTimeOffset d => d != default,
-        long l => l != 0,
-        int i => i != 0,
-        System.Collections.ICollection c => c.Count > 0,
-        // NOT `_ => true`. A silent catch-all here is finding M4 reproduced inside the artifact
-        // built to prevent it: add `bool Pinned = false` to ArtifactEntry tomorrow, and a `true`
-        // fallthrough would report it "populated" while it sits at its own default, let the guard
-        // pass, and then let a same-default-to-same-default comparison pass too — dropped on every
-        // restore, pin green throughout. Any type without a rule here must fail LOUDLY so the rule
-        // gets added, not quietly rubber-stamp whatever value shows up.
-        _ => throw new InvalidOperationException(
-            $"IsPopulated has no rule for {value.GetType()}. Add one — a silent `true` here " +
-            $"would let a defaulted member pass the guard and defeat the pin."),
-    };
+    /// <summary>
+    /// The minimum <see cref="ArtifactEntry"/> the type permits: every member left at its own
+    /// declared default. The guard compares the probe against THIS rather than against a
+    /// per-type notion of "looks empty", because those two differ precisely where the pin is
+    /// most at risk — a member whose declared default is itself populated-looking. Add
+    /// <c>int SchemaVersion = 1</c> or <c>string Kind = "memory"</c> to ArtifactEntry and an
+    /// "is it non-zero / non-empty?" test says yes while the probe never touched it; if import
+    /// then drops the member, both sides sit at the same default and the comparison passes too —
+    /// dropped on every restore, pin green throughout. "Differs from the default" states the
+    /// thing the guard actually means, needs no per-type rules, and cannot be blind to a type it
+    /// has never seen.
+    /// </summary>
+    private static ArtifactEntry BaselineEntry() => new("", "", 0, 0, default);
+
+    /// <summary>True when the probe's value for a member is indistinguishable from the value that
+    /// member has on a default-constructed entry — i.e. the probe did not set it.</summary>
+    private static bool MatchesBaseline(object? probeValue, object? baselineValue)
+        // Equals covers every value type, string, and "the probe set a reference where the
+        // default is null". The empty-collection arm covers the one case Equals gets wrong: a
+        // declared default that allocates a fresh empty collection per instance, where the probe's
+        // untouched value and the baseline's are equal in every way that matters but are not the
+        // same reference.
+        => Equals(probeValue, baselineValue)
+            || (probeValue is System.Collections.ICollection { Count: 0 }
+                && baselineValue is System.Collections.ICollection { Count: 0 });
 
     // ── The pin ──────────────────────────────────────────────────────────────
 
@@ -116,18 +147,25 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
         // THE GUARD THAT MAKES THIS TEST BITE. Without it, a member added to ArtifactEntry that
         // the probe never sets is never compared, and the test passes vacuously while the new
         // member is dropped on every restore — the exact failure this pin exists to prevent.
+        // The comparison is against a DEFAULT-CONSTRUCTED entry, not against a per-type "looks
+        // empty" rule; see BaselineEntry() for why that distinction is the whole guard.
         // NormalizedAwayOnLoad is excluded here too: the probe must NOT populate LegacyFields (no
-        // store write path can produce that state), so demanding it be populated would be wrong,
-        // not merely unnecessary.
-        string[] unpopulated = EntryMembers()
+        // store write path can produce that state), so demanding it differ would be wrong, not
+        // merely unnecessary. NotDeserializable is excluded for the same kind of reason — nothing
+        // can assign such a member, so the probe cannot set it.
+        var baseline = BaselineEntry();
+        string[] unset = EntryMembers()
             .Select(p => p.Name)
             .Where(name => !NormalizedAwayOnLoad.Contains(name))
-            .Where(name => !IsPopulated(Read(probe, name)))
+            .Where(name => !NotDeserializable.Contains(name))
+            .Where(name => MatchesBaseline(Read(probe, name), Read(baseline, name)))
             .ToArray();
-        unpopulated.Should().BeEmpty(
-            "the probe must set EVERY ArtifactEntry member (other than ones excluded above for a " +
-            "stated reason), or this test cannot detect a dropped one. If you just added a " +
-            "member, populate it in FullyPopulatedEntry().");
+        unset.Should().BeEmpty(
+            "the probe must set EVERY ArtifactEntry member to a value that DIFFERS from its " +
+            "default (other than ones excluded above for a stated reason), or this test cannot " +
+            "detect a dropped one — a member left at its default round-trips from default to " +
+            "default and compares equal even when import drops it. If you just added a member, " +
+            "give it a distinctive value in FullyPopulatedEntry().");
 
         var imported = RoundTrip(probe).Entry;
 
@@ -139,7 +177,9 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             foreach (var member in EntryMembers())
             {
                 string name = member.Name;
-                if (RecomputedByImport.Contains(name) || NormalizedAwayOnLoad.Contains(name))
+                if (RecomputedByImport.Contains(name)
+                    || NormalizedAwayOnLoad.Contains(name)
+                    || NotDeserializable.Contains(name))
                     continue;
 
                 Read(imported, name).Should().BeEquivalentTo(
@@ -430,6 +470,80 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
         _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("topic-a")).Should().BeEmpty(
             "a non-object index root for a LATER topic must not leave an earlier, valid topic " +
+            "half-imported");
+    }
+
+    [Fact]
+    public void AnEntryWithNoNameKey_ThrowsInvalidOperationException_NamingTheTopicAndIndex_AndDoesNotHalfImport()
+    {
+        // The same silent-drop defect as ANonObjectIndexRoot_... above, one nesting level down:
+        // the pre-branch parse called entryEl.GetProperty("name"), which threw
+        // KeyNotFoundException and aborted the import. Deserialization leaves Name null instead,
+        // and the loop used to `continue` — so that one memory vanished from the restore while
+        // every sibling entry imported, and since nothing compares the returned EntryCount
+        // against the manifest's totalEntries, the user was told the restore succeeded.
+        // Two topics, because the refusal has to happen in the BUILD pass: topic-a must not be
+        // written even though it is perfectly valid and comes first.
+        var goodIndex = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "good-entry",
+                ["originalBytes"] = 11,
+                ["chunkCount"] = 1,
+            }),
+        };
+        // The nameless entry sits at index 1, behind a valid sibling, so the reported index is
+        // the entry's real position in the array and not a constant that happens to read as 0.
+        var namelessIndex = new JsonObject
+        {
+            ["entries"] = new JsonArray(
+                new JsonObject
+                {
+                    ["name"] = "named-sibling",
+                    ["originalBytes"] = 11,
+                    ["chunkCount"] = 1,
+                },
+                new JsonObject
+                {
+                    ["originalBytes"] = 11,
+                    ["chunkCount"] = 1,
+                }),
+        };
+
+        string zipPath = Path.Combine(_tempDir, $"nameless-entry-{Guid.NewGuid():N}.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            WriteHandBuiltTopic(zip, "topic-a", goodIndex, "hello world");
+            WriteHandBuiltTopic(zip, "topic-b", namelessIndex, "hello world");
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using var writer = new StreamWriter(manifest.Open());
+            writer.Write(new JsonObject
+            {
+                ["version"] = 1,
+                ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                ["topics"] = new JsonArray("topic-a", "topic-b"),
+                ["totalEntries"] = 3,
+            }.ToJsonString());
+        }
+
+        Action act = () =>
+        {
+            using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+        };
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*topic-b*")
+            .WithMessage("*index 1*",
+                "the refusal has to say WHICH entry, or a hand-editable index.json with dozens " +
+                "of entries gives the user nothing to go on");
+
+        _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("topic-a")).Should().BeEmpty(
+            "a nameless entry in a LATER topic must not leave an earlier, valid topic " +
             "half-imported");
     }
 
