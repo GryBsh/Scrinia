@@ -75,6 +75,45 @@ public sealed class BuiltInEmbeddingsServiceReindexTests : IDisposable
         vectors.Should().HaveCount(1, because: "vectors must be written under the memory's REAL scope so search (which looks up by real scope) can find them");
     }
 
+    /// <summary>
+    /// Scrinia has FOUR full-corpus reindex loops and they split on the ephemeral scope.
+    /// EmbeddingReindexer.ReindexAsync and ReindexViaSinkAsync filter it out; this one and
+    /// EmbeddingsPlugin.ReindexStoreAsync do not, because they iterate store.ListScoped(), which
+    /// includes ephemeral memories by design. So a literal scope of "ephemeral" reaches
+    /// MemoryArtifactSource ONLY from here, and only this path exercises its scope-keyed
+    /// IsEphemeral(scope) check.
+    ///
+    /// <para>On 2026-08-17 a review residual asserted that check was provably dead and instructed its
+    /// deletion — a claim derived from inspecting only EmbeddingReindexer's two loops. No test drove
+    /// this path, so the deletion would have shipped green. This test is what makes it fail. Before
+    /// calling MemoryArtifactSource.IsEphemeral or EphemeralScope dead, run this.</para>
+    /// </summary>
+    [Fact]
+    public async Task ReindexStoreAsync_EphemeralMemory_IndexesItUnderTheEphemeralScope()
+    {
+        const string name = "scratch-note";
+        const string content = "ephemeral working note";
+        _store.RememberEphemeral(name, new EphemeralEntry(
+            Name: name,
+            Artifact: Nmp2ChunkedEncoder.Encode(content),
+            OriginalBytes: content.Length,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow));
+
+        using var vectorStore = new VectorStore(_embeddingsDir, expectedSignature: null);
+        var service = new BuiltInEmbeddingsService(
+            new FakeProvider(), vectorStore, semanticWeight: 50.0,
+            NullLogger<BuiltInEmbeddingsService>.Instance);
+
+        int count = await service.ReindexStoreAsync(_store, CancellationToken.None);
+
+        count.Should().Be(1, because: "ListScoped includes ephemeral memories, so reindex must embed them");
+        vectorStore.GetVectors(MemoryArtifactSource.EphemeralScope)
+            .Should().HaveCount(1,
+                because: "the scope-keyed ephemeral branch in MemoryArtifactSource.ReadArtifactAsync is " +
+                         "what resolves '~name'; without it this memory is silently skipped");
+    }
+
     private sealed class FakeProvider : IEmbeddingProvider
     {
         public bool IsAvailable => true;

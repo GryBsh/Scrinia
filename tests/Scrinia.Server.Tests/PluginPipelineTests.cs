@@ -292,6 +292,33 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
             .WithMessage("forget blocked");
     }
 
+    // ── Deduplication ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A plugin may register itself as an IMemoryOperationHook inside its own ConfigureServices AND
+    /// be registered again by the loader that discovered it — EmbeddingsPlugin.ConfigureServices and
+    /// Program.cs both add the same instance. AddSingleton appends rather than replaces, so
+    /// GetServices&lt;IMemoryOperationHook&gt;() hands back one instance twice, and PluginPipeline's
+    /// constructor deduplicates by reference. Firing one instance twice per operation would break the
+    /// documented once-per-operation guarantee. Only a comment held this; now a test does.
+    /// </summary>
+    [Fact]
+    public async Task Store_withTheSameHookRegisteredTwice_firesItOnce()
+    {
+        int beforeStoreCalls = 0;
+        var hook = new TestHook
+        {
+            OnBeforeStore = (_, _) => { beforeStoreCalls++; return Task.CompletedTask; },
+        };
+        var pipeline = new PluginPipeline([hook, hook]);
+        var store = GetStore();
+
+        await pipeline.StoreAsync(store, new StoreRequest(["dedupe"], "pipeline-dedupe-1"));
+
+        beforeStoreCalls.Should().Be(1,
+            because: "the same instance registered twice is one hook, not two");
+    }
+
     // ── Ordering ────────────────────────────────────────────────────────────
 
     [Fact]
