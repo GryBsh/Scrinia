@@ -107,7 +107,7 @@ public sealed class StoreBoundaryTests
     [Fact]
     public void HttpMemoryStore_ThrowsNotSupported_OnlyToRejectAnInputValue()
     {
-        var sourcePath = Path.Combine(RepoRoot(), "src", "Scrinia", "HttpMemoryStore.cs");
+        var sourcePath = Path.Combine(Scrinia.TestDoubles.RepoPaths.Root(), "src", "Scrinia", "HttpMemoryStore.cs");
         var lines = File.ReadAllLines(sourcePath);
         var throwLines = lines
             .Select((line, i) => (Line: line, Index: i))
@@ -166,18 +166,5 @@ public sealed class StoreBoundaryTests
                        + "is what makes mutating it a compile error instead of silent cache "
                        + "corruption — widening it back would reopen that hole with no other "
                        + "test failing");
-    }
-
-    private static string RepoRoot()
-    {
-        // Same walk-up as tests/Scrinia.Merge.Tests/GitMergeHarness.cs:33-38. Copy its
-        // failure message too — it names the directory it started from, which is the only
-        // thing worth knowing when this fails. That project is outside this branch's test
-        // scope, so the helper is duplicated rather than referenced.
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))
-            dir = dir.Parent;
-        return dir?.FullName ?? throw new InvalidOperationException(
-            $"Could not find Scrinia.sln walking up from {AppContext.BaseDirectory}.");
     }
 }
