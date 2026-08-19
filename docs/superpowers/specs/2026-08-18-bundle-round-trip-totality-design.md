@@ -116,11 +116,29 @@ pre-Merge-3 bundles age out, which the holder-property shape would not be.
 trim-safe, so this is expected to pass — and the publish gate is what proves it. Running a trimmed
 publish is a required verification step, not an assumption.
 
-**A third legacy path is fixed for free.** The hand-parse never calls
+**A third legacy path is partly fixed, and the limit matters.** The hand-parse never calls
 `ArtifactEntry.NormalizeAttributesKey()`, so a bundle whose index carries the pre-rename `"fields"`
 key loses its attributes entirely today. `LegacyFields` is `[JsonInclude]` on the record, so
 deserializing through the context picks the key up and the existing normalize seam folds it into
 `Attributes`. Call `NormalizeAttributesKey()` on each deserialized entry.
+
+`NormalizeAttributesKey` is a **fallback, not a merge** — `Attributes ?? _legacyFields`
+(`ArtifactEntry.cs:85-88`). So `fields` is folded only when nothing else produced an `Attributes`
+object, and an entry carrying both `fields` **and** a legacy top-level `tags` array keeps only the
+tags-derived attributes: the pre-pass creates `Attributes` from `tags`, and the `??` then discards
+the `fields` payload whole. That is not a regression — the hand-parse never read `fields` at all —
+but it is not "fixed for free" either, and the two legacy attribute carriers are never merged.
+Merging them would be a change to `NormalizeAttributesKey`'s contract, which is shared with the
+store's sidecar path; it is deliberately **out of scope** here. Tests must cover the two carriers
+separately rather than in one fixture.
+
+**Two defaults the hand-parse supplied that deserialization does not.** The loop being deleted
+defaults a missing `chunkCount` to `1` (`:219`) and hard-codes `Uri: ""` (`:285`). Source-generated
+deserialization leaves both at `default` — `ChunkCount` becomes `0`, and `Uri` is transiently
+`null` despite being declared non-nullable. Modern bundles always carry both keys, so this reaches
+only pre-Merge-3 and hand-crafted bundles. `Uri` needs nothing: `ImportTopicEntries` overwrites it
+before any reader sees it. `ChunkCount` is restored explicitly to `1`, because `0` is not a value
+any reader is prepared for, and pinned by a fixture that omits the key.
 
 ### 2. Timestamps survive the import
 

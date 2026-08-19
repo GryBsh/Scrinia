@@ -33,7 +33,7 @@
 |---|---|
 | `src/Scrinia.Core/Bundles/BundleLegacyKeys.cs` **(create)** | Rewrites two pre-Merge-3 JSON keys to the modern shape. Knows nothing else about `ArtifactEntry`. Deletable in one piece when old bundles age out. |
 | `src/Scrinia.Core/Bundles/BundleFormatService.cs` **(modify)** | Import deserializes through `BundleJsonContext`; the archive layout gets one definition via two internal writers. |
-| `src/Scrinia.Core/FileMemoryStore.cs` **(modify, `:2540-2550`)** | `ImportTopicEntries` stops overwriting `CreatedAt`. |
+| `src/Scrinia.Core/FileMemoryStore.cs` **(modify, `:2544-2548`)** | `ImportTopicEntries` stops overwriting `CreatedAt`. |
 | `src/Scrinia/Commands/ScriniaCommands.Bundle.cs` **(modify, `:211-241`)** | Calls the shared writers instead of duplicating the archive layout. |
 | `tests/Scrinia.Tests/BundleLegacyKeysTests.cs` **(create)** | Unit tests for the key migration, in isolation. |
 | `tests/Scrinia.Tests/BundleRoundTripTotalityTests.cs` **(create)** | The reflective totality pin, plus legacy-bundle, timestamp and derivation round trips. |
@@ -272,7 +272,10 @@ internal static class BundleLegacyKeys
                     && value.TryGetValue(out string? text)
                     && !string.IsNullOrWhiteSpace(text))
                 {
-                    values.Add(JsonValue.Create(text));
+                    // The (JsonNode?) cast is load-bearing. Without it this binds to the generic
+                    // JsonArray.Add<T>, which carries [RequiresUnreferencedCode] — and Scrinia.Core
+                    // is IsTrimmable with TreatWarningsAsErrors, so it fails the build as IL2026.
+                    values.Add((JsonNode?)JsonValue.Create(text));
                 }
             }
 
@@ -334,7 +337,7 @@ The heart of the branch. After this task the round trip is total, and the reflec
 
 **Files:**
 - Modify: `src/Scrinia.Core/Bundles/BundleFormatService.cs:196-291` (the per-topic index read and the hand-parse loop)
-- Modify: `src/Scrinia.Core/FileMemoryStore.cs:2543-2548` (`ImportTopicEntries`)
+- Modify: `src/Scrinia.Core/FileMemoryStore.cs:2544-2548` (`ImportTopicEntries`)
 - Test: `tests/Scrinia.Tests/BundleRoundTripTotalityTests.cs` (create)
 
 **Interfaces:**
@@ -346,7 +349,8 @@ The heart of the branch. After this task the round trip is total, and the reflec
 - `ArtifactEntry` (`src/Scrinia.Core/Models/ArtifactEntry.cs`) has **13** primary-constructor members. Export writes all 13 through `BundleJsonContext`; the loop you are deleting reads 7.
 - `ImportTopicEntries` (`FileMemoryStore.cs:2521`) currently overwrites both `Uri` **and** `CreatedAt`. `Uri` must keep being overwritten — the exporting machine's URI is wrong here. `CreatedAt` must not.
 - `FileMemoryStore.CopyMemory` (`:2384-2385`) also sets `CreatedAt = DateTimeOffset.UtcNow`. **That one is correct** — a copy is a new memory. Do not touch it.
-- After deserialization, call `ArtifactEntry.NormalizeAttributesKey()` on each entry. The hand-parse never did, so a bundle carrying the pre-rename `"fields"` key loses its attributes today; deserializing through the context picks it up via `LegacyFields` and this seam folds it.
+- After deserialization, call `ArtifactEntry.NormalizeAttributesKey()` on each entry. The hand-parse never did, so a bundle carrying the pre-rename `"fields"` key loses its attributes today; deserializing through the context picks it up via `LegacyFields` and this seam folds it. **It is a fallback, not a merge** (`Attributes ?? _legacyFields`, `ArtifactEntry.cs:85-88`), so an entry carrying both `fields` and legacy `tags` keeps only the `tags`-derived attributes. That matches today's behaviour; do not try to merge them here.
+- **Two defaults the hand-parse supplied that deserialization will not.** The loop you are deleting reads `chunkCount` with a fallback of **1** (`:219`) and hard-codes `Uri: ""` (`:285`). Source-generated deserialization leaves both at `default` — `ChunkCount` becomes `0`, and `Uri` is transiently `null` despite being declared non-nullable. `Uri` is harmless because `ImportTopicEntries` overwrites it before anything reads it, but **nothing in your loop may touch `entry.Uri`**. `ChunkCount` is a real value change and Step 3 restores the default explicitly.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -357,8 +361,10 @@ using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using FluentAssertions.Execution;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -396,9 +402,9 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     // ── Reflection helpers ───────────────────────────────────────────────────
 
     /// <summary>
-    /// ArtifactEntry's primary constructor. Records also synthesize a PROTECTED copy constructor,
-    /// which <see cref="Type.GetConstructors()"/> excludes by default — but take the widest one
-    /// regardless, so this does not become brittle if that ever changes.
+    /// ArtifactEntry's primary constructor. A SEALED record's synthesized copy constructor is
+    /// private, so <see cref="Type.GetConstructors()"/> excludes it — but take the widest one
+    /// regardless, so this does not become brittle if the record ever stops being sealed.
     /// </summary>
     private static ParameterInfo[] EntryMembers() =>
         typeof(ArtifactEntry).GetConstructors()
@@ -451,15 +457,22 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
         var imported = RoundTrip(probe);
 
-        foreach (var member in EntryMembers())
+        // The AssertionScope is load-bearing for diagnosis, not just tidiness. Without it
+        // FluentAssertions throws on the FIRST failed member and the run names only that one —
+        // which, by primary-constructor order, is CreatedAt. You would see one name and have no
+        // idea the other five were also dropped.
+        using (new AssertionScope())
         {
-            string name = member.Name!;
-            if (recomputedByDesign.Contains(name))
-                continue;
+            foreach (var member in EntryMembers())
+            {
+                string name = member.Name!;
+                if (recomputedByDesign.Contains(name))
+                    continue;
 
-            Read(imported, name).Should().BeEquivalentTo(
-                Read(probe, name),
-                $"ArtifactEntry.{name} must survive a bundle round trip");
+                Read(imported, name).Should().BeEquivalentTo(
+                    Read(probe, name),
+                    $"ArtifactEntry.{name} must survive a bundle round trip");
+            }
         }
     }
 
@@ -474,11 +487,16 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
     // ── Legacy bundles ───────────────────────────────────────────────────────
 
+    // The two legacy attribute carriers are NEVER merged, and these are two tests rather than one
+    // because of it. `ArtifactEntry.NormalizeAttributesKey` is a fallback, not a merge —
+    // `Attributes ?? _legacyFields` (ArtifactEntry.cs:85-88) — so once the "tags" migration has
+    // created an Attributes object, a "fields" payload on the same entry is discarded whole. That
+    // matches today's behaviour (the hand-parse never read "fields" at all), so it is not a
+    // regression, but a single fixture carrying both keys would assert something that is false.
+
     [Fact]
-    public void ALegacyBundle_ImportsItsDescriptionTagsAndFieldsKeys()
+    public void ALegacyBundle_ImportsItsDescriptionAndTagsKeys()
     {
-        // A hand-built pre-Merge-3 index: display text under "description", free-form "tags", and
-        // attributes under the pre-rename "fields" key.
         var index = new JsonObject
         {
             ["entries"] = new JsonArray(new JsonObject
@@ -489,7 +507,6 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
                 ["createdAt"] = "2024-03-04T05:06:07+00:00",
                 ["description"] = "legacy display text",
                 ["tags"] = new JsonArray("alpha"),
-                ["fields"] = new JsonObject { ["topic"] = new JsonArray("retrieval") },
             }),
         };
 
@@ -498,6 +515,27 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
         imported.ContentPreview.Should().Be("legacy display text");
         imported.Attributes.Should().ContainKey(KnownAttributes.TagKey)
             .WhoseValue.Should().Equal("alpha");
+    }
+
+    [Fact]
+    public void ALegacyBundle_WithNoTags_PicksUpThePreRenameFieldsKey()
+    {
+        // "fields" is folded ONLY when nothing else produced an Attributes object. Deserializing
+        // through the context is what picks it up at all — the hand-parse this replaces read
+        // "attributes" only, so such a bundle lost its attributes entirely.
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "fields-probe",
+                ["originalBytes"] = 11,
+                ["chunkCount"] = 1,
+                ["fields"] = new JsonObject { ["topic"] = new JsonArray("retrieval") },
+            }),
+        };
+
+        var imported = ImportHandBuiltBundle("fields-topic", index, "hello world");
+
         imported.Attributes.Should().ContainKey("topic")
             .WhoseValue.Should().Equal("retrieval");
     }
@@ -536,11 +574,36 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             "a bundle carrying no timestamp gets one now rather than the year 1");
     }
 
+    [Fact]
+    public void AnEntryWithNoChunkCount_DefaultsToOne_NotZero()
+    {
+        // The hand-parse this replaces defaulted a missing "chunkCount" to 1; source-generated
+        // deserialization leaves it at 0. Only pre-Merge-3 and hand-crafted bundles omit the key,
+        // but a ChunkCount of 0 is not a value any reader is prepared for.
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "no-chunk-count",
+                ["originalBytes"] = 11,
+            }),
+        };
+
+        var imported = ImportHandBuiltBundle("chunk-topic", index, "hello world");
+
+        imported.ChunkCount.Should().Be(1);
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────────
 
     /// <summary>
     /// An entry with EVERY member set to a distinctive non-default value. When you add a member to
     /// <see cref="ArtifactEntry"/>, add it here — the guard in the pin will tell you if you forget.
+    ///
+    /// <para>Keep the collection values in ASCII-ascending order. <c>FileMemoryStore.WriteSidecarCore</c>
+    /// sorts Keywords, TermFrequencies, FileHashes and each ChunkEntry's keywords on the way to
+    /// disk, so an order-sensitive assertion downstream survives only because the values here are
+    /// already sorted. Making them "more distinctive" without re-sorting produces a baffling red.</para>
     /// </summary>
     private static ArtifactEntry FullyPopulatedEntry() => new(
         Name: "probe",
@@ -630,9 +693,18 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~BundleRoundTripTotalityTests"`
 
-Expected FAIL, and the failure message names the dropped members. **Copy the exact list into your report** — it is the measured evidence for the branch, and it should read `Keywords`, `TermFrequencies`, `UpdatedAt`, `FileHashes`, `AgentKeywords`, plus `CreatedAt` from the timestamp test.
+Expected FAIL. Because the comparison runs inside an `AssertionScope`, one run names **every**
+dropped member. **Copy the exact list into your report** — it is the measured evidence for the
+branch. It should name six: `CreatedAt`, `Keywords`, `TermFrequencies`, `UpdatedAt`, `FileHashes`,
+`AgentKeywords`.
 
-If a member you did not expect appears, stop and report it before implementing — the spec's count would be wrong and that matters more than the fix.
+`CreatedAt` belongs in that list — it is overwritten by `FileMemoryStore.cs:2547`, and it fails in
+the pin as well as in the timestamp test. `Name`, `OriginalBytes`, `ChunkCount`, `ContentPreview`,
+`ChunkEntries` and `Attributes` must **not** appear: today's hand-parse already reads those six, so
+they pass before the fix.
+
+If the list differs from those six in either direction, stop and report it before implementing —
+the spec's count would be wrong, and that matters more than the fix.
 
 - [ ] **Step 3: Replace the hand-parse in `ImportTopicsFromZip`**
 
@@ -668,8 +740,18 @@ Replace everything from `using var indexDoc = JsonDocument.Parse(indexJson);` (`
                     continue;
 
                 // Folds a pre-rename "fields" key into Attributes and clears the holder. The old
-                // hand-parse never did this, so such a bundle lost its attributes entirely.
+                // hand-parse never did this, so such a bundle lost its attributes entirely. It is a
+                // FALLBACK, not a merge: an entry carrying both "fields" and legacy "tags" keeps
+                // only the tags-derived attributes, exactly as it does today.
                 var entry = deserialized.NormalizeAttributesKey();
+
+                // The deleted hand-parse defaulted a missing "chunkCount" to 1; the deserializer
+                // leaves it at 0. Modern bundles always carry the key, so this only bites
+                // pre-Merge-3 and hand-crafted ones — which is precisely the population the legacy
+                // pre-pass exists for. Uri gets no such restoration on purpose: it is transiently
+                // null here and ImportTopicEntries overwrites it before any reader sees it.
+                if (entry.ChunkCount == 0)
+                    entry = entry with { ChunkCount = 1 };
 
                 string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(entry.Name)}.nmp2";
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
@@ -726,7 +808,7 @@ Do **not** touch `CopyMemory` at `:2384-2385`; a copy is a new memory and resett
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~BundleRoundTripTotalityTests"`
 
-Expected: PASS, 5 tests.
+Expected: PASS, 7 tests.
 
 - [ ] **Step 6: Falsify the pin by mutation**
 
@@ -935,7 +1017,7 @@ Add this private helper to `BundleFormatService`, beside the other private helpe
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~BundleRoundTripTotalityTests"`
 
-Expected: PASS, 9 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Falsify by mutation**
 
@@ -980,10 +1062,11 @@ Append to `tests/Scrinia.Tests/BundleRoundTripTotalityTests.cs`, inside the clas
     // ── Layout identity ──────────────────────────────────────────────────────
 
     [Fact]
-    public void BothWriters_ProduceTheSameArchiveLayout()
+    public void ExportTopicsToZip_WritesTheExpectedArchiveLayout()
     {
-        // The CLI used to duplicate the archive layout inline. This pins that whatever writes a
-        // bundle, an importer finds the same three things in the same places.
+        // Characterization: captures today's layout so the extraction in this task cannot change
+        // it silently. It exercises ExportTopicsToZip only — see the sibling test below for the
+        // one that actually drives the extracted writers.
         var seed = FullyPopulatedEntry();
         string scope = MemoryNaming.BuildScopedTopicScope("layout-topic");
         _store.Upsert(seed, scope);
@@ -1003,13 +1086,55 @@ Append to `tests/Scrinia.Tests/BundleRoundTripTotalityTests.cs`, inside the clas
             "manifest.json",
         ]);
     }
+
+    [Fact]
+    public void TheSharedWriters_DrivenWithTheCliShapedInputs_ProduceAnImportableBundle()
+    {
+        // THIS is the test that justifies the extraction. `scri bundle` builds entries from loose
+        // files that were never memories — one topic, no file entities — and used to write the
+        // archive with its own inline copy of the layout. Driving the extracted writers with that
+        // exact input shape and then importing the result is what proves the CLI's bundles stay
+        // readable. Asserting the two writers agree would be circular after the extraction: they
+        // are the same code.
+        var entry = new ArtifactEntry(
+            Name: "loose-file",
+            Uri: "",
+            OriginalBytes: 11,
+            ChunkCount: 1,
+            CreatedAt: new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            ContentPreview: "a preview");
+        string artifact = Nmp2ChunkedEncoder.Encode("hello world");
+
+        string zipPath = Path.Combine(_tempDir, "cli-shaped.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            BundleFormatService.WriteTopic(
+                zip, _store, "cli-topic", [entry], [(entry.Name, artifact)]);
+            BundleFormatService.WriteManifest(zip, ["cli-topic"], 1, fileEntities: null);
+        }
+
+        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+
+        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("cli-topic"))
+            .Single(e => e.Name.Equals("loose-file", StringComparison.OrdinalIgnoreCase));
+        imported.ContentPreview.Should().Be("a preview");
+        imported.CreatedAt.Should().Be(new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero));
+    }
 ```
 
 - [ ] **Step 2: Run it to verify it passes already**
 
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "BothWriters_ProduceTheSameArchiveLayout"`
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~BundleRoundTripTotalityTests"`
 
-Expected: PASS. This one is a **characterization test** — it captures today's layout so the refactor in Step 3 cannot silently change it. A refactor's test is allowed to be green before the change; that is what makes it a safety net rather than a spec.
+Expected: `ExportTopicsToZip_WritesTheExpectedArchiveLayout` PASSES — it is a **characterization
+test**, capturing today's layout so Step 3 cannot silently change it. A refactor's test is allowed
+to be green before the change; that is what makes it a safety net rather than a spec.
+
+`TheSharedWriters_DrivenWithTheCliShapedInputs_ProduceAnImportableBundle` FAILS to compile —
+`WriteTopic` and `WriteManifest` do not exist yet. That is its correct red.
 
 - [ ] **Step 3: Extract the two writers**
 
@@ -1119,13 +1244,22 @@ In `src/Scrinia/Commands/ScriniaCommands.Bundle.cs`, replace the whole `using (v
 grep -n 'CreateEntry\|BundleIndex\|BundleManifest' src/Scrinia/Commands/ScriniaCommands.Bundle.cs
 ```
 
-Expected: only the two `BundleFormatService.Write*` calls. Any remaining `zip.CreateEntry` in that file means the duplication is still there.
+Expected: **no output at all.** The replacement calls are `BundleFormatService.WriteTopic` and
+`BundleFormatService.WriteManifest`, neither of which contains any of the three search strings —
+today's only matches (`CreateEntry` at `:219`, `:227`, `:237`; `BundleIndex`/`BundleManifest` at
+`:217-218`, `:233`, `:236`) are all inside the block you deleted. A clean grep here is success, not
+a failed edit. Any remaining `zip.CreateEntry` means the duplication is still there.
+
+Then remove the now-dead `using System.Text.Json;` at `src/Scrinia/Commands/ScriniaCommands.Bundle.cs:4`
+— its only uses were the two `JsonSerializer.Serialize` calls inside the deleted block.
 
 - [ ] **Step 6: Run the full suite**
 
 Run: `dotnet test Scrinia.sln`
 
-Expected: 0 failed. `BothWriters_ProduceTheSameArchiveLayout`, `BundleV2Tests` and `BundleExitCodeTests` are the ones that would catch a layout change — if any goes red, the refactor changed behaviour and must be corrected rather than the test adjusted.
+Expected: 0 failed. `ExportTopicsToZip_WritesTheExpectedArchiveLayout`,
+`TheSharedWriters_DrivenWithTheCliShapedInputs_ProduceAnImportableBundle`, `BundleV2Tests` and
+`BundleExitCodeTests` are the ones that would catch a layout change — if any goes red, the refactor changed behaviour and must be corrected rather than the test adjusted.
 
 - [ ] **Step 7: Commit**
 
@@ -1204,7 +1338,7 @@ git commit -m "docs: record the bundle round-trip fixes"
 At branch close, all of the following must be true and **each must have been observed, not assumed**:
 
 1. `dotnet build Scrinia.sln` — 0 errors.
-2. `dotnet test Scrinia.sln` — 0 failed. Baseline 2670 passed / 4 skipped, plus 18 new tests.
+2. `dotnet test Scrinia.sln` — 0 failed. Baseline 2670 passed / 4 skipped, plus 21 new tests.
 3. The reflective pin fails when any member is stripped from the writer (Task 2, Step 6).
 4. The pin's **guard** fails when the probe stops populating a member — this is what covers members added in future (Task 2, Step 6).
 5. The derivation gate fails when changed from `is null` to a length check (Task 3, Step 5).
