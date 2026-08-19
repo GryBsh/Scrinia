@@ -436,6 +436,64 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     }
 
     [Fact]
+    public void AnUndecodableArtifact_IsToleratedNotRejected_AndLeavesKeywordsNull()
+    {
+        // A bundle is untrusted external input. Before this feature existed, import never decoded
+        // artifact bytes at all, so a bundle carrying non-NMP/2 artifact content (hand-crafted,
+        // foreign, or corrupted) still imported successfully. Making decode failure fatal here
+        // would make THIS branch newly reject bundles that previously imported fine — an acceptance
+        // regression caused by an enrichment feature that is supposed to be purely additive.
+        var index = new JsonObject
+        {
+            ["entries"] = new JsonArray(new JsonObject
+            {
+                ["name"] = "not-nmp2",
+                ["originalBytes"] = 40,
+                ["chunkCount"] = 1,
+            }),
+        };
+
+        // ImportHandBuiltBundle always encodes its content via Nmp2ChunkedEncoder, so it cannot
+        // produce non-NMP2 artifact bytes; write the zip by hand instead.
+        string zipPath = Path.Combine(_tempDir, $"undecodable-{Guid.NewGuid():N}.zip");
+        using (var stream = new FileStream(zipPath, FileMode.Create, FileAccess.Write))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        {
+            var indexEntry = zip.CreateEntry("topics/undecodable-topic/index.json");
+            using (var writer = new StreamWriter(indexEntry.Open()))
+                writer.Write(index.ToJsonString());
+
+            var artifactEntry = zip.CreateEntry("topics/undecodable-topic/not-nmp2.nmp2");
+            using (var writer = new StreamWriter(artifactEntry.Open()))
+                writer.Write("this is not NMP/2 content, just plain text");
+
+            var manifest = zip.CreateEntry("manifest.json");
+            using (var writer = new StreamWriter(manifest.Open()))
+                writer.Write(new JsonObject
+                {
+                    ["version"] = 1,
+                    ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+                    ["topics"] = new JsonArray("undecodable-topic"),
+                    ["totalEntries"] = 1,
+                }.ToJsonString());
+        }
+
+        (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) result;
+        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+            result = BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+
+        result.EntryCount.Should().Be(1, "the import must succeed rather than throw over one entry's undecodable artifact");
+
+        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("undecodable-topic"))
+            .Single(e => e.Name == "not-nmp2");
+
+        imported.Keywords.Should().BeNull(
+            "decline to enrich, not fabricate — a decode failure must leave Keywords in its " +
+            "exact prior state (never derived), not silently become an empty derived answer");
+    }
+
+    [Fact]
     public void DerivationDoesNotFabricateADriftBaselineFromThisMachinesFiles()
     {
         var index = new JsonObject

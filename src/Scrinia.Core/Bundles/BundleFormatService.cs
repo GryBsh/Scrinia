@@ -295,21 +295,53 @@ public static class BundleFormatService
                 // authoritative and round-trip intact.
                 if (entry.Keywords is null && artifactContents.TryGetValue(entry.Name, out string? artifact))
                 {
-                    // Every artifact `scri bundle` or the store's normal write path ever produces
-                    // is NMP/2-encoded (ScriniaCommands.Bundle.cs:182; FileMemoryStore's own
-                    // StoreAsync), so this should always decode. Still wrapped: one entry whose
-                    // artifact is NOT valid NMP/2 — a foreign or corrupted bundle, or hand-written
-                    // content some other tool placed directly on disk — must not abort the WHOLE
-                    // import over a derivation step that exists purely to ADD keywords. Leave
-                    // Keywords untouched (still null) and move on, exactly as import behaved
-                    // before this feature existed.
+                    // A bundle is untrusted external input — hand-crafted, foreign, or corrupted —
+                    // and before this feature existed, import never decoded artifact bytes at all,
+                    // so such a bundle still imported successfully. Two decisions sit side by side
+                    // in this method that can look contradictory unless the distinction is written
+                    // down: a malformed `createdAt` (":230-244" above) REFUSES the whole import,
+                    // while an undecodable artifact here is TOLERATED. They are not the same kind
+                    // of failure.
+                    //   - A malformed timestamp would make us INVENT metadata — guessing "now" is
+                    //     the CreatedAt-reset defect this branch exists to remove.
+                    //   - An undecodable artifact makes us DECLINE TO ENRICH. Leaving Keywords null
+                    //     preserves its exact prior meaning — "never derived" — so nothing is
+                    //     fabricated and nothing that was there is lost.
+                    // One fabricates; the other abstains. Making decode failure fatal here would
+                    // make this derivation step — purely additive by design — newly REJECT bundles
+                    // that imported fine a moment ago, an acceptance regression caused by an
+                    // enrichment feature. So one entry's artifact failing to decode must not abort
+                    // the whole import; it must fall through with Keywords left exactly as the
+                    // bundle carried it (still null).
+                    //
+                    // The catch list below was determined by reading the decode path, not guessed:
+                    //   - FormatException: Nmp2Strategy.Base64UrlDecode -> Convert.FromBase64String
+                    //     on data that isn't valid base64 (confirmed via a real run against
+                    //     non-NMP/2 plain text).
+                    //   - InvalidOperationException: BrotliStream.Read's own "Decoder ran into
+                    //     invalid data" for base64-valid-but-not-Brotli payloads (confirmed via a
+                    //     real run; this is .NET's BCL type/message for that condition, unrelated to
+                    //     — and never reachable from inside — the InvalidOperationException this
+                    //     method itself throws for a malformed index at ":230-244", which runs
+                    //     earlier, over the index JSON, before this per-entry loop begins).
+                    //   - InvalidDataException: Nmp2Strategy's own explicit throws for a declared
+                    //     chunk count outside [1, MaxChunkCount], a CRC/length mismatch in
+                    //     VerifyIntegrity, or a decompressed size exceeding MaxDecodedBytes.
+                    //   - OverflowException: `new string[count]` in DecodeChunks below, when a
+                    //     crafted header declares a negative chunk count (confirmed via a real run:
+                    //     "Arithmetic operation resulted in an overflow").
+                    // ArgumentOutOfRangeException (DecodeChunk's own chunkIndex bounds check) is
+                    // deliberately NOT caught: DecodeChunks always derives chunkIndex from the same
+                    // GetChunkCount call it bounds the loop with, so that exception cannot fire from
+                    // non-NMP/2 content here — if it ever does, it means DecodeChunks itself has a
+                    // bug, and that must NOT be swallowed as "just an undecodable artifact."
                     string[]? chunks;
                     try
                     {
                         chunks = DecodeChunks(artifact);
                     }
                     catch (Exception ex) when (ex is FormatException or InvalidDataException
-                        or InvalidOperationException or OverflowException or ArgumentOutOfRangeException)
+                        or InvalidOperationException or OverflowException)
                     {
                         chunks = null;
                     }
@@ -367,6 +399,18 @@ public static class BundleFormatService
     private static string[] DecodeChunks(string artifact)
     {
         int count = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+
+        // Nmp2Strategy.Decode() bounds a declared chunk count to [1, MaxChunkCount] on its own
+        // all-at-once decode path, but Nmp2ChunkedEncoder's per-chunk API (GetChunkCount/
+        // DecodeChunk, used here) does not carry that check — confirmed by direct observation: a
+        // crafted header declaring an ~1-billion chunk count made this loop run for minutes without
+        // ever throwing. Bundle content is untrusted, so this call site enforces the same bound
+        // Nmp2Strategy already uses elsewhere, and treats a violation exactly like any other
+        // undecodable artifact (InvalidDataException, caught by this method's caller).
+        if (count < 1 || count > Nmp2Strategy.MaxChunkCount)
+            throw new InvalidDataException(
+                $"NMP/2 artifact declares {count} chunks; must be 1..{Nmp2Strategy.MaxChunkCount}.");
+
         var chunks = new string[count];
         for (int i = 0; i < count; i++)
             chunks[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, i + 1);  // DecodeChunk is 1-based
