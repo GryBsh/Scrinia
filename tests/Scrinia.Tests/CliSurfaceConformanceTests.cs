@@ -40,9 +40,16 @@ public sealed class CliSurfaceConformanceTests
     public void Entrypoints_AreFound()
     {
         // Guards the other three tests against passing vacuously if the reflection filter breaks.
-        Entrypoints().Should().HaveCountGreaterThan(15,
-            because: "the CLI has 23 command entrypoints; a filter matching almost none would make " +
-                     "every rule below pass without checking anything");
+        // Exact, not a loose floor: 20 entrypoints on ScriniaCommands plus 3 on BundleCommands.
+        // A loose ">15" threshold caught a total filter break but not a partial one — e.g.
+        // dropping BundleCommands entirely still leaves 20 > 15, so a real command class (and
+        // any --workspace/bool-default regression on it) could fall out of every rule below
+        // without this test noticing. Adding or removing a command must restate this number
+        // deliberately — that restatement is the point of the guard.
+        Entrypoints().Should().HaveCount(23,
+            because: "the CLI has exactly 23 command entrypoints (20 on ScriniaCommands, 3 on " +
+                     "BundleCommands); a filter that stops seeing some of them — even not all — " +
+                     "would make the rules below pass without checking what it silently dropped");
     }
 
     [Fact]
@@ -67,7 +74,9 @@ public sealed class CliSurfaceConformanceTests
             if (DefaultTrueBoolExemptions.Contains(method.Name)) continue;
             foreach (var p in method.GetParameters())
             {
-                if (p.ParameterType != typeof(bool)) continue;
+                // Covers `bool?` too — a nullable-bool flag defaulting to true would evade the
+                // opt-in rule this test exists to enforce just as a plain `bool` would.
+                if (p.ParameterType != typeof(bool) && p.ParameterType != typeof(bool?)) continue;
                 p.HasDefaultValue.Should().BeTrue(
                     because: $"{owner.Name}.{method.Name}'s --{p.Name} must be optional");
                 p.DefaultValue.Should().Be(false,

@@ -238,7 +238,7 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     public void Migrate_DryRun_WithBackupRequested_WritesNoBackupAndMovesNothing()
     {
         // The realistic CLI default shape is dryRun: true, backup: true — `scri migrate
-        // --dry-run` doesn't pass --backup=false. The only other dry-run test above pins
+        // --dry-run` doesn't pass --skip-backup. The only other dry-run test above pins
         // backup: false, same as the one dry-run case in the CLI-level MigrationTests, so
         // nothing pinned the "dry run never writes a backup even when asked" invariant. It
         // holds today because RunMigration's dry-run branch returns before the lock/backup

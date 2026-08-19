@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
@@ -116,6 +117,138 @@ public sealed class MigrationTests : IDisposable
             exit.Should().Be(0);
             File.Exists(Path.Combine(legacy, "review.nmp2")).Should().BeTrue();
             Directory.Exists(Path.Combine(root, ".scrinia", "memories")).Should().BeFalse();
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>Creates a fresh workspace root (own temp dir, never reused across tests, so
+    /// StoreLayoutMigration's "skip the backup if one already exists" guard cannot mask a
+    /// backup assertion) with exactly one legacy, non-colliding file to migrate — one file
+    /// moved, zero conflicts.</summary>
+    private static string CreateLegacyWorkspaceRoot()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_cli_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        string legacy = Path.Combine(root, ".scrinia", "topics", "findings");
+        Directory.CreateDirectory(legacy);
+        File.WriteAllText(Path.Combine(legacy, "review.nmp2"), "body");
+        return root;
+    }
+
+    // These two pin the `backup: !skipBackup` inversion in ScriniaCommands.Migrate. Deleting
+    // that `!` leaves every existing test green — the only other CLI-level test is a dry run,
+    // and StoreLayoutMigration's dry-run branch returns before the backup block ever executes,
+    // so it cannot observe the flag either way. Real (non-dry-run) invocations are required.
+
+    [Fact]
+    public async Task Migrate_ByDefault_WritesTheBackup()
+    {
+        string root = CreateLegacyWorkspaceRoot();
+        try
+        {
+            var cmd = new ScriniaCommands();
+            int exit = await cmd.Migrate(root); // no flags: the default shape
+
+            exit.Should().Be(0);
+            Directory.EnumerateDirectories(root, ".scrinia-backup-*").Should().NotBeEmpty(
+                because: "skipBackup defaults to false, so the default `scri migrate` must " +
+                         "pass backup: true through to StoreLayoutMigration and write a backup " +
+                         "before moving files");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Migrate_SkipBackup_WritesNoBackup()
+    {
+        string root = CreateLegacyWorkspaceRoot();
+        try
+        {
+            var cmd = new ScriniaCommands();
+            int exit = await cmd.Migrate(root, skipBackup: true);
+
+            exit.Should().Be(0);
+            Directory.EnumerateDirectories(root, ".scrinia-backup-*").Should().BeEmpty(
+                because: "skipBackup: true must suppress the pre-migration backup");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>Runs <see cref="ScriniaCommands.Migrate"/> with <c>json: true</c> while
+    /// capturing stdout, returning the exit code and the raw JSON text.</summary>
+    private static async Task<(int Exit, string Json)> RunMigrateJson(ScriniaCommands cmd, params object?[] args)
+    {
+        var originalOut = Console.Out;
+        var writer = new StringWriter();
+        Console.SetOut(writer);
+        int exit;
+        try
+        {
+            exit = args switch
+            {
+                [string root] => await cmd.Migrate(workspaceRoot: root, json: true),
+                [string root, bool dryRun] => await cmd.Migrate(workspaceRoot: root, dryRun: dryRun, json: true),
+                _ => throw new ArgumentException("unsupported arg shape", nameof(args)),
+            };
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        return (exit, writer.ToString().Trim());
+    }
+
+    [Fact]
+    public async Task Migrate_Json_MissingStore_ReportsErrorAndExitsNonZero()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_cli_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        try
+        {
+            var (exit, json) = await RunMigrateJson(new ScriniaCommands(), root);
+
+            exit.Should().Be(1);
+            using var doc = JsonDocument.Parse(json);
+            doc.RootElement.GetProperty("error").GetString().Should().Contain(".scrinia/");
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Migrate_Json_DryRun_ReportsMovedAndConflictsWithoutSwapping()
+    {
+        // CliStoreMigrateOutput's constructor call is positional: `Moved` and `Conflicts` are
+        // adjacent ints, `Ran`/`BackupSkipped`/`DryRun` are adjacent bools. A workspace with
+        // exactly one legacy, non-colliding file makes moved=1 distinct from conflicts=0, and a
+        // dry run makes ran=false distinct from dryRun=true — so a positional swap of either
+        // pair fails this test instead of compiling silently into wrong JSON.
+        string root = CreateLegacyWorkspaceRoot();
+        try
+        {
+            var (exit, json) = await RunMigrateJson(new ScriniaCommands(), root, true);
+
+            exit.Should().Be(0);
+            using var doc = JsonDocument.Parse(json);
+            var el = doc.RootElement;
+
+            el.GetProperty("moved").GetInt32().Should().Be(1);
+            el.GetProperty("conflicts").GetInt32().Should().Be(0);
+            el.GetProperty("ran").GetBoolean().Should().BeFalse();
+            el.GetProperty("dryRun").GetBoolean().Should().BeTrue();
+            el.GetProperty("backupSkipped").GetBoolean().Should().BeFalse();
         }
         finally
         {
