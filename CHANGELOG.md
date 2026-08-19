@@ -52,11 +52,16 @@ and all assembly attributes.
 
 - `scri hint --json` hand-built its output with an escaper that did not escape control characters,
   so a memory name containing one produced output no JSON parser would accept. It now serializes
-  through the same source-generated context as the rest of the CLI.
+  through the same source-generated context as the rest of the CLI. The output shape changes as a
+  result: `CliJsonContext` writes indented (multi-line) JSON where the old hand-rolled emitter wrote
+  one line. Field names are unchanged — `count`, `matches`, `scope`, `name`, and `score` still mean
+  the same thing — so a caller parsing the JSON rather than matching the raw text is unaffected.
 - `SCRINIA__EMBEDDINGS__PROVIDER` — the double-underscore form the configuration docs prescribe and
   the server already accepts — now resolves in the CLI. Both underscore forms work;
-  `SCRINIA_EMBEDDINGS_PROVIDER` keeps priority where both are set, so no existing installation
-  changes behaviour.
+  `SCRINIA_EMBEDDINGS_PROVIDER` keeps priority where both are set, so no installation that set the
+  single-underscore form changes behaviour. An installation that exported the double-underscore form
+  for the server only (previously ignored by the CLI, which fell through to `.scrinia/config.json`)
+  will see the CLI pick it up now.
 
 ### Changed (breaking) — MCP `search`, `list` and `facts` take `scopes`/`excludeTopics` as arrays
 

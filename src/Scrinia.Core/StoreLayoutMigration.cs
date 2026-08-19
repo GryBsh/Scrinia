@@ -328,7 +328,8 @@ public static class StoreLayoutMigration
     /// followed by an 8-digit date and a 6-digit time (<c>RunMigration</c>'s
     /// <c>DateTimeOffset.UtcNow:yyyyMMdd-HHmmss</c> format), nothing else. Deliberately excludes
     /// <c>.scrinia-backup-attrs-{ts}</c> (<c>ScriniaCommands.BackupScriniaDir</c>, used by
-    /// <c>scri migrate_attributes --backup</c>) — see the backup-guard comment in
+    /// <c>scri migrate_attributes</c>'s default backup, which runs unless <c>--skip-backup</c> is
+    /// passed) — see the backup-guard comment in
     /// <see cref="RunMigration"/> for why the two must not collide.
     /// </summary>
     private static bool IsOwnBackupDirName(string dirName) =>

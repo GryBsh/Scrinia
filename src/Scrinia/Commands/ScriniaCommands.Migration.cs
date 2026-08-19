@@ -115,7 +115,8 @@ public partial class ScriniaCommands
     /// antivirus scan, a sync client such as Synology Drive) is skipped rather than aborting the
     /// whole backup — a live lock file carries no committed data worth preserving anyway, and
     /// <c>File.Copy</c>'s bare (unguarded) call used to let that abort
-    /// <c>scri migrate_attributes --backup</c> entirely on a single transiently-locked file.
+    /// <c>scri migrate_attributes</c>'s backup (which runs by default unless <c>--skip-backup</c>
+    /// is passed) entirely on a single transiently-locked file.
     /// Catches <see cref="UnauthorizedAccessException"/> alongside <see cref="IOException"/> — on
     /// Windows a sharing violation can surface as either.</summary>
     private static void CopyDirectoryRecursive(string sourceDir, string targetDir)

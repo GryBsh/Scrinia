@@ -139,7 +139,8 @@ public static class MemoryEndpoints
     /// <c>IClaimsTransformation</c> in the tree is a test stand-in
     /// (<c>Scrinia.Server.Tests.MarkTargetUserReadOnlyTransform</c>), and no authentication handler
     /// adds the claim, so every request evaluates as writable at every call site — seven in this
-    /// file, one in EmbeddingsEndpoints, and Program.cs:339, which gates the MCP surface. This is
+    /// file, one in EmbeddingsEndpoints, and the <c>McpPermissionFilter.CurrentStoreReadOnly</c>
+    /// assignment in <c>Program.cs</c>'s MCP session setup, which gates the MCP surface. This is
     /// deliberate forward-looking scaffolding, not a live enforcement path: a reader of the guards
     /// below should not conclude that read-only stores are enforced today. To make it bite, register
     /// an <c>IClaimsTransformation</c> outside tests that emits <c>store_access</c> claims of the
