@@ -80,6 +80,25 @@ public sealed class PublishManifestTests
             .ToList();
     }
 
+    /// <summary>
+    /// Every project path declared by a `Project(...)` line in Scrinia.sln — the authoritative
+    /// build list, not a filesystem walk over whatever happens to be on disk. A project not in
+    /// the solution is not built by CI and cannot ship; a nested worktree or other stray copy
+    /// living somewhere under the repo root cannot forge its way into this list the way it could
+    /// into a directory enumeration, because nothing adds it to Scrinia.sln. Solution folders
+    /// ("{2150E333-...}" entries with no project file, e.g. "src", "Tests") are filtered out by
+    /// requiring the second quoted value to end in .csproj.
+    /// </summary>
+    private static List<string> SolutionProjectPaths()
+    {
+        string sln = File.ReadAllText(RepoPaths.Combine("Scrinia.sln"));
+        return Regex.Matches(sln,
+                @"^Project\(""\{[0-9A-Fa-f-]+\}""\)\s*=\s*""[^""]+"",\s*""([^""]+\.csproj)""",
+                RegexOptions.Multiline)
+            .Select(m => m.Groups[1].Value)
+            .ToList();
+    }
+
     private sealed record ManifestRow(
         string Id, string Project, string Condition, string Profile, string Output, string Rids);
 
@@ -171,17 +190,17 @@ public sealed class PublishManifestTests
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Rooted at the repo root, not src/: benchmarks/Scrinia.Retrieval.Benchmarks and
-        // tests/Scrinia.Benchmarks are Exe-producing projects too, and a root of "src" would have
-        // dropped them from this enumeration with no named exclusion — the exact unnamed-absence
-        // shape this test exists to forbid. bin/ and obj/ are build output, not source; .claude/
-        // can hold a nested git worktree (gitignored — see .gitignore:2) that would otherwise
-        // double-count every project in it.
-        var excludedDirs = new[] { "bin", "obj", ".claude" };
-        var executables = Directory
-            .EnumerateFiles(RepoPaths.Root(), "*.csproj", SearchOption.AllDirectories)
-            .Where(p => !p.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                .Any(segment => excludedDirs.Contains(segment, StringComparer.OrdinalIgnoreCase)))
+        // Sourced from Scrinia.sln, not a filesystem walk: a directory enumeration finds whatever
+        // happens to be on disk, which once included a nested git worktree under .claude/
+        // containing a full second copy of the repo (gitignored — see .gitignore:2) and required
+        // an explicit path exclusion to work around. That exclusion stops working the moment a
+        // stray copy lands anywhere else, and it is the same class of hazard that already broke
+        // BenchmarkDotNet's toolchain once (it searches the whole tree for a matching project
+        // file and throws when it finds two). The solution is the authoritative list instead: a
+        // project not in it is not built by CI and cannot ship, and no stray copy can add itself
+        // to Scrinia.sln.
+        var executables = SolutionProjectPaths()
+            .Select(relPath => RepoPaths.Combine(relPath.Replace('\\', Path.DirectorySeparatorChar)))
             .Where(p =>
             {
                 string text = File.ReadAllText(p);
