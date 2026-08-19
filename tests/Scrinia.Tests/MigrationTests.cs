@@ -111,7 +111,7 @@ public sealed class MigrationTests : IDisposable
         try
         {
             var cmd = new ScriniaCommands();
-            int exit = await cmd.Migrate(root, dryRun: true, backup: false);
+            int exit = await cmd.Migrate(root, dryRun: true, skipBackup: true);
 
             exit.Should().Be(0);
             File.Exists(Path.Combine(legacy, "review.nmp2")).Should().BeTrue();

@@ -494,14 +494,15 @@ command is only needed to preview the plan, migrate deliberately before a large 
 or re-run after restoring a backup.
 
 ```bash
-scri migrate [--workspace <path>] [--dry-run] [--backup=true|false]
+scri migrate [--workspace-root <path>] [--dry-run] [--skip-backup] [--json]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--workspace` | cwd | Workspace root containing the `.scrinia/` directory. |
+| `--workspace-root` | cwd | Workspace root containing the `.scrinia/` directory. |
 | `--dry-run` | false | Print how many files would move without moving any. |
-| `--backup` | true | Copy `.scrinia/` to `.scrinia-backup-{timestamp}/` before migrating. |
+| `--skip-backup` | false | Skip the timestamped backup; the backup runs by default. |
+| `--json` | false | Output as JSON instead of formatted text. |
 
 Files are **moved**, not copied — exactly one copy of each memory exists at all times. Where
 two legacy locations map to the same target (for example `topics/api/x` and

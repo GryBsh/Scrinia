@@ -23,6 +23,7 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliMcpOutput))]
 [JsonSerializable(typeof(CliConsolidateOutput))]
 [JsonSerializable(typeof(CliMigrateOutput))]
+[JsonSerializable(typeof(CliStoreMigrateOutput))]
 internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record MergeConfig(
@@ -90,5 +91,14 @@ internal sealed record CliConsolidateOutput(
     int CompactionCandidates,
     string[] Compacted);
 
-/// <summary>Output of the attributes-migration command (<c>scri migrate</c>).</summary>
+/// <summary>Output of the attributes-migration command (<c>scri migrate_attributes</c>).</summary>
 internal sealed record CliMigrateOutput(int Total, int Migrated, int Skipped, bool DryRun);
+
+/// <summary>Output of the store-layout migration command (<c>scri migrate</c>).</summary>
+internal sealed record CliStoreMigrateOutput(
+    bool Ran,
+    int Moved,
+    int Conflicts,
+    string? BackupPath,
+    bool BackupSkipped,
+    bool DryRun);
