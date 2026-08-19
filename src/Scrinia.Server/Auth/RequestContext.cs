@@ -23,7 +23,10 @@ public sealed class RequestContext
     /// <summary>True when the caller holds wildcard store access ("*") — the global admin role.</summary>
     public bool IsGlobalAdmin => Stores.Contains("*", StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Store access level claims, populated from SSO claim transformer.</summary>
+    /// <summary>Store access level claims, populated from an SSO claim transformer.
+    /// <b>Empty in every shipped configuration</b> — no <c>IClaimsTransformation</c> outside the test
+    /// suite emits <c>store_access</c>, so <see cref="GetStoreAccessLevel"/> always returns its
+    /// read-write default. See <c>MemoryEndpoints.IsWritable</c> for what would have to be added.</summary>
     public string[] StoreAccessLevels { get; set; } = [];
 
     /// <summary>

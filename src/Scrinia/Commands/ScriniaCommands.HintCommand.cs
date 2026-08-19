@@ -112,6 +112,10 @@ public partial class ScriniaCommands
             Console.WriteLine(HintCommand.FormatHook(
                 result, "UserPromptSubmit", HintCommand.ParseClient(client)));
         }
+        // Deliberate unconditional zero, not a missing failure path. This command runs as a
+        // UserPromptSubmit hook: a non-zero exit is how a hook signals "block this prompt", so
+        // reporting an internal failure that way would fail the user's turn over a missing hint.
+        // Every early return above is zero for the same reason.
         return 0;
     }
 
