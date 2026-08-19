@@ -24,6 +24,7 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliConsolidateOutput))]
 [JsonSerializable(typeof(CliMigrateOutput))]
 [JsonSerializable(typeof(CliStoreMigrateOutput))]
+[JsonSerializable(typeof(CliHintOutput))]
 internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record MergeConfig(
@@ -102,3 +103,9 @@ internal sealed record CliStoreMigrateOutput(
     string? BackupPath,
     bool BackupSkipped,
     bool DryRun);
+
+/// <summary>Output of <c>scri hint --json</c> — the raw structured HintResult shape for
+/// programmatic consumers, distinct from the hook envelope Hint.BuildHookEnvelope emits.</summary>
+internal sealed record CliHintOutput(int Count, CliHintMatch[] Matches);
+
+internal sealed record CliHintMatch(string Scope, string Name, double Score);
