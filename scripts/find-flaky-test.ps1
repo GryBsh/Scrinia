@@ -80,17 +80,37 @@ for ($i = 1; $i -le $Times; $i++) {
     # --no-build by default: the caller opts into building once via -Build. Rebuilding every
     # iteration would dominate the wall clock and reduce the number of samples per hour, and
     # sample count is the whole point.
-    dotnet test (Join-Path $repoRoot $Project) --no-build `
+    #
+    # Output is captured rather than discarded. Sending it to $null would throw away build and
+    # restore errors too, so a run that never started would report "no TRX produced" and nothing
+    # else — the same losing-the-evidence failure this script exists to prevent.
+    $runLog = & dotnet test (Join-Path $repoRoot $Project) --no-build `
         --logger "trx;LogFileName=$trxName" `
-        --results-directory $ResultsDirectory *> $null
+        --results-directory $ResultsDirectory 2>&1
 
     if (-not (Test-Path $trxPath)) {
         Write-Host ("run {0,3}: no TRX produced — the run itself failed to start" -f $i) -ForegroundColor Yellow
+        $runLog | Select-Object -Last 20 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkYellow }
         continue
     }
 
     [xml]$trx = Get-Content $trxPath
-    $failures = @($trx.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq 'Failed' })
+    # `| Where-Object { $_ }` is load-bearing, not tidiness. PowerShell unwraps a single XML child
+    # to a scalar and a missing one to $null — and `@($null).Count` is 1, not 0 (verified). So
+    # `@($trx.TestRun.Results.UnitTestResult).Count` reports 1 for a TRX containing NO results,
+    # which would defeat the zero-result guard below and count an empty run as a pass. Filtering
+    # the nulls out first is what makes the count mean what it reads as.
+    $results = @($trx.TestRun.Results.UnitTestResult | Where-Object { $_ })
+    $failures = @($results | Where-Object { $_.outcome -eq 'Failed' })
+
+    if ($results.Count -eq 0) {
+        # A TRX with no results is not a pass. It means the filter matched nothing or the host
+        # died before running anything — silently counting that "ok" would let a sweep report
+        # thirty clean runs having executed no tests at all.
+        Write-Host ("run {0,3}: TRX contains NO test results — nothing was executed" -f $i) -ForegroundColor Yellow
+        Write-Host "      kept: $trxPath" -ForegroundColor DarkYellow
+        continue
+    }
 
     if ($failures.Count -eq 0) {
         # Passing runs are deleted: 30 full-solution TRX files is ~100MB of noise, and a

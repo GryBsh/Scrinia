@@ -329,9 +329,23 @@ public sealed class PublishManifestTests
     private static bool PowerShellDispatchContains(string scriptText, string value)
     {
         string escaped = Regex.Escape(value);
-        bool inNotInList = Regex.IsMatch(scriptText, $@"-cnotin\s+@\([^)]*'{escaped}'[^)]*\)");
-        bool inCeq = Regex.IsMatch(scriptText, $@"-ceq\s+'{escaped}'");
-        bool inSwitchLabel = Regex.IsMatch(scriptText, $@"'{escaped}'\s*\{{");
+
+        // `^[^#\r\n]*` with Multiline is what makes this an anchor rather than a substring search,
+        // and it is not decoration. Without it these three patterns matched ANYWHERE in the file,
+        // so commenting out the real check while leaving its text behind —
+        //     # if ($p.output -cnotin @('bundle')) { throw ... }
+        // — kept this green with nothing dispatching on the value. That is precisely the
+        // vacuous-pass shape this helper exists to close, and it survived on the PowerShell side
+        // for one commit while the doc comment already claimed otherwise.
+        //
+        // Requiring no '#' between line start and the construct rejects both a fully commented-out
+        // line and a trailing comment that happens to quote real dispatch syntax.
+        bool Dispatches(string body) =>
+            Regex.IsMatch(scriptText, $@"^[^#\r\n]*{body}", RegexOptions.Multiline);
+
+        bool inNotInList = Dispatches($@"-cnotin\s+@\([^)]*'{escaped}'[^)]*\)");
+        bool inCeq = Dispatches($@"-ceq\s+'{escaped}'");
+        bool inSwitchLabel = Dispatches($@"'{escaped}'\s*\{{");
         return inNotInList || inCeq || inSwitchLabel;
     }
 

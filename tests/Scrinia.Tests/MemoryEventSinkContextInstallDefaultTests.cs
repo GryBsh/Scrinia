@@ -81,7 +81,7 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
         // "this class is the ONLY writer of Default in the whole test tree, verified by
         // enumeration". That enumeration searched tests/ for `Default = …` and so missed every
         // write that arrives through PRODUCTION code: WorkspaceSetup's eight InstallDefault sites
-        // all sit inside LoadPluginsAsync, which is awaited by ~18 CLI command entrypoints across
+        // all sit inside LoadPluginsAsync, which is awaited by 15 CLI command entrypoints across
         // ScriniaCommands.*. Any test class that runs `list`, `search`, `facts`, `bundle`,
         // `restore`, `consolidate`, `setup`, `serve` or `migrate` therefore replaces Default with
         // a fresh CompositeEventSink. The residual flake was that, not a product race — the
@@ -167,7 +167,7 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
 /// <para><c>DisableParallelization</c> rather than a shared collection listing the classes that
 /// mutate <c>Default</c>, because that list cannot be written down correctly. Every
 /// <c>InstallDefault</c> call site lives in <c>WorkspaceSetup.LoadPluginsAsync</c>, and
-/// <c>LoadPluginsAsync</c> is awaited by roughly eighteen CLI entrypoints across
+/// <c>LoadPluginsAsync</c> is awaited by fifteen CLI entrypoints across
 /// <c>ScriniaCommands.*</c> — so the writer set is "every test class that invokes a command", and
 /// it grows silently whenever someone adds one. A membership list would be wrong the first time a
 /// test called a new command; "this class runs alone" stays correct without maintenance.</para>
