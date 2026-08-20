@@ -270,6 +270,42 @@ public sealed partial class ScriniaMcpTools
     /// Both write sites go through this one helper rather than each remembering to do the same
     /// two things.</para>
     /// </remarks>
+    /// <summary>Reads an <c>attributes</c>-shaped node — an object whose every value is an array
+    /// of strings. ABSENT returns true with a null map; MALFORMED returns false so the caller
+    /// escalates, matching <c>TryReadIntMap</c>'s contract and the driver's
+    /// <c>TryGetStringArrayMap</c>.</summary>
+    private static bool TryReadStringArrayMap(JsonNode? node, string key, out Dictionary<string, string[]>? map)
+    {
+        map = null;
+        if (node is not JsonObject obj || !obj.TryGetPropertyValue(key, out var n))
+            return true; // absent
+        if (n is not JsonObject inner)
+            return false; // malformed: present but not an object
+
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in inner)
+        {
+            if (value is not JsonArray arr) return false;
+            var values = new List<string>(arr.Count);
+            foreach (var element in arr)
+            {
+                if (element is JsonValue ev && ev.TryGetValue<string>(out string? s) && s is not null)
+                    values.Add(s);
+                else
+                    return false;
+            }
+            result[name] = [.. values];
+        }
+        map = result;
+        return true;
+    }
+
+    private static JsonObject ToJsonAttributeObject(Dictionary<string, string[]> map) =>
+        new(map.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+               .Select(kv => KeyValuePair.Create(
+                   kv.Key,
+                   (JsonNode?)new JsonArray(kv.Value.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()))));
+
     private static void WriteResolved(string absolutePath, string content)
     {
         FileMemoryStore.AtomicWriteAllText(absolutePath, content);
@@ -790,6 +826,26 @@ public sealed partial class ScriniaMcpTools
                 (baseNode as JsonObject)?.Remove("termFrequencies");
             else
                 baseNode["termFrequencies"] = ToJsonObject(mergedTf);
+
+            // Union the attributes through the ONE rule (Scrinia.Core.Merge.SidecarAttributeMerge).
+            // This resolver never looked at attributes at all, so whichever side lost the timestamp
+            // selection lost its attributes with it — and `ref` is an attribute, so a link written
+            // on one branch simply disappeared when that branch merged.
+            //
+            // Same ABSENT/MALFORMED contract as termFrequencies above. A false return from TryUnion
+            // is a different thing: a scalar key both sides set to different values, which nothing
+            // here can order, so it escalates to manual resolution rather than picking a winner.
+            if (!TryReadStringArrayMap(baseNode, "attributes", out var baseAttrs) ||
+                !TryReadStringArrayMap(otherNode, "attributes", out var otherAttrs))
+                return false;
+
+            if (!SidecarAttributeMerge.TryUnion(baseAttrs, otherAttrs, out var mergedAttrs))
+                return false;
+
+            if (mergedAttrs is null)
+                (baseNode as JsonObject)?.Remove("attributes");
+            else
+                baseNode["attributes"] = ToJsonAttributeObject(mergedAttrs);
 
             var writeOptions = new JsonSerializerOptions { WriteIndented = true };
             resolvedJson = baseNode.ToJsonString(writeOptions);
