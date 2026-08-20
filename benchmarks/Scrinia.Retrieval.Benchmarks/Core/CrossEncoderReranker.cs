@@ -15,7 +15,7 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 /// (sentence-MaxSim is bench-only — the shipped product re-ranks by whole-vector cosine over
 /// the BM25 + attribute candidate set, in <c>Scrinia.Core.Embeddings.HybridReranker</c>)
 /// — particularly once agent-supplied anchors are in play (findings #4/#5 in
-/// <c>docs/research/benchmark-methodology-findings.md</c> show anchors and rerankers
+/// <c>docs/findings/benchmark-methodology-findings.md</c> show anchors and rerankers
 /// are substitutes). If the cross-encoder doesn't beat sentence-MaxSim by a clear
 /// margin with anchors on, it doesn't justify importing ONNX Runtime + a BERT
 /// tokenizer into <c>Scrinia.Core</c>. We measure before we adopt.</para>

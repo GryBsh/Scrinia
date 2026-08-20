@@ -21,7 +21,7 @@
   <!-- Cross-encoder reranker (bench-only): ONNX Runtime for inference, ML.Tokenizers
        for BERT WordPiece. Bench-side only by design — this is the experiment that
        decides whether a real cross-encoder belongs in Core at all (see
-       docs/research/cross-encoding-reranking.md). Kept out of Scrinia.Core so the
+       docs/findings/cross-encoding-reranking.md). Kept out of Scrinia.Core so the
        product surface stays unchanged while we measure. -->
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />

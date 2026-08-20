@@ -8,7 +8,7 @@ namespace Scrinia.Core.Search;
 /// else a scoped build from the query's candidates. Surfaces memories associated to a query entity
 /// through a shared entity that lexical/semantic scoring buries (query names A; the gold memory is
 /// about B, which co-occurs with A). Validated as a within-pool precision lever in finding #8 of
-/// <c>docs/research/benchmark-methodology-findings.md</c>.
+/// <c>docs/findings/benchmark-methodology-findings.md</c>.
 ///
 /// <para>Unlike the embeddings/path-segment contributors (which sum into the shared
 /// supplemental channel), this signal is consumed as its <i>own</i> fusion source in

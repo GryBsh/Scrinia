@@ -30,7 +30,7 @@ internal static class RetrieverFactory
     /// only; <see cref="SentenceMaxSim"/> applies sentence-level MaxSim reranking on
     /// top-K candidates using the existing embedding model (the bench default);
     /// <see cref="CrossEncoder"/> runs an ONNX BERT cross-encoder over the top-N
-    /// candidates (bench experiment — see docs/research/cross-encoding-reranking.md).
+    /// candidates (bench experiment — see docs/findings/cross-encoding-reranking.md).
     /// </summary>
     public enum RerankMode { None, SentenceMaxSim, CrossEncoder }
 
