@@ -169,12 +169,28 @@ foreach ($rid in $Rids) {
                 # member via reflection cannot ship. If a trim warning fires, fix the root cause —
                 # either move to a JsonSerializerContext, annotate with [DynamicallyAccessedMembers],
                 # or rewrite the reflection-heavy call to a trim-safe shape.
+                #
+                # PublishReadyToRun precompiles the managed code, so a short-lived verb stops
+                # paying JIT for a startup path it will never run twice. Measured on this
+                # repository's own workspace with ./measure-startup.ps1, median of 20 runs:
+                #
+                #     verb              before    after
+                #     hint               272ms    109ms
+                #     restore            373ms    140ms
+                #     search             515ms    187ms
+                #     list               333ms    129ms
+                #
+                # Confirmed as JIT and not something else: re-running the SAME R2R binary with
+                # DOTNET_ReadyToRun=0 puts hint back to 263ms. It costs binary size — 19.5MB to
+                # 42.9MB — which is the trade taken deliberately, because `hint` fires on every
+                # user prompt through the agent hook and the size is paid once per install.
                 dotnet publish (Join-Path $PSScriptRoot $p.project) `
                     --runtime $rid `
                     --self-contained `
                     --configuration Release `
                     -p:PublishSingleFile=true `
                     -p:PublishTrimmed=true `
+                    -p:PublishReadyToRun=true `
                     -p:SuppressTrimAnalysisWarnings=false `
                     -p:TreatWarningsAsErrors=true `
                     --output $outDir
