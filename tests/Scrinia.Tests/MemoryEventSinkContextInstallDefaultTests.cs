@@ -4,11 +4,13 @@ using Scrinia.Core;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Pins the composition contract of <see cref="MemoryEventSinkContext.InstallDefault"/>: the six
+/// Pins the composition contract of <see cref="MemoryEventSinkContext.InstallDefault"/>: the
 /// sink-install sites in <c>WorkspaceSetup.cs</c> now all route through this one method, so a
 /// future change to how the default is composed (e.g. wrapping in a logging decorator) only needs
-/// to happen here instead of at six call sites.
+/// to happen here instead of at each of them. (There are eight; this comment read "six" well past
+/// the point that was true, which is why it now names no number it cannot check.)
 /// </summary>
+[Collection(EventSinkDefaultCollection.Name)]
 public sealed class MemoryEventSinkContextInstallDefaultTests
 {
     /// <summary>
@@ -73,13 +75,25 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
         // problem: it protects OTHER tests from this one, not this one from them. Every test scope
         // in the suite also wrote Default (`= null`, in both construction and disposal), so a scope
         // in a parallel class could null the value between this test's InstallDefault call and the
-        // assertion below. Those scopes now shadow the AsyncLocal `Current` instead, which leaves
-        // this class as the ONLY writer of Default in the whole test tree — verified by
-        // enumeration. A single writer cannot race, and xUnit runs the facts within one class
-        // sequentially, so the three here cannot race each other either.
+        // assertion below. Those scopes now shadow the AsyncLocal `Current` instead.
         //
-        // Keep it that way: a new `MemoryEventSinkContext.Default = …` anywhere in tests/ reopens
-        // this. Use Current and Scrinia.TestDoubles.SilentEventSink.
+        // That fix was necessary but NOT sufficient, and the comment here used to claim it was —
+        // "this class is the ONLY writer of Default in the whole test tree, verified by
+        // enumeration". That enumeration searched tests/ for `Default = …` and so missed every
+        // write that arrives through PRODUCTION code: WorkspaceSetup's eight InstallDefault sites
+        // all sit inside LoadPluginsAsync, which is awaited by ~18 CLI command entrypoints across
+        // ScriniaCommands.*. Any test class that runs `list`, `search`, `facts`, `bundle`,
+        // `restore`, `consolidate`, `setup`, `serve` or `migrate` therefore replaces Default with
+        // a fresh CompositeEventSink. The residual flake was that, not a product race — the
+        // failure compared two DIFFERENT CompositeEventSink instances, not a null.
+        //
+        // Hence [Collection(EventSinkDefaultCollection.Name)] on this class: serialising the seven
+        // "WorkspaceSetup-driving" classes would not have been enough, because the writer set is
+        // "every class that invokes a command". See the collection's own comment.
+        //
+        // Still keep the AsyncLocal discipline: a new `MemoryEventSinkContext.Default = …`
+        // anywhere in tests/ reopens the original race. Use Current and
+        // Scrinia.TestDoubles.SilentEventSink.
         var prior = MemoryEventSinkContext.Default;
         try
         {
@@ -144,4 +158,26 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
         public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
+}
+
+/// <summary>
+/// Serialises the one class that asserts on <c>MemoryEventSinkContext.Default</c>, the process-wide
+/// sink cell, against the whole assembly.
+///
+/// <para><c>DisableParallelization</c> rather than a shared collection listing the classes that
+/// mutate <c>Default</c>, because that list cannot be written down correctly. Every
+/// <c>InstallDefault</c> call site lives in <c>WorkspaceSetup.LoadPluginsAsync</c>, and
+/// <c>LoadPluginsAsync</c> is awaited by roughly eighteen CLI entrypoints across
+/// <c>ScriniaCommands.*</c> — so the writer set is "every test class that invokes a command", and
+/// it grows silently whenever someone adds one. A membership list would be wrong the first time a
+/// test called a new command; "this class runs alone" stays correct without maintenance.</para>
+///
+/// <para>Cost is one class of four fast tests, not the assembly: every other class keeps running in
+/// parallel. Same shape and the same reason as <c>BackgroundWorkCollection</c>, which serialises
+/// the other process-wide registry in this assembly.</para>
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class EventSinkDefaultCollection
+{
+    public const string Name = "EventSinkDefault";
 }

@@ -33,11 +33,14 @@ public static class MemoryEventSinkContext
     public static IMemoryEventSink? Default { get => _default; set => _default = value; }
 
     /// <summary>Installs the process-wide default sink as a composite over <paramref name="sinks"/>.
-    /// The one place <see cref="Default"/> is assigned from — six call sites in WorkspaceSetup each
-    /// built their own CompositeEventSink, so a change to how the default is composed had six
-    /// places to miss.
-    /// The guards below exist because centralising six call sites turned six independent chances
-    /// to notice a bad argument into one trap for the seventh caller.</summary>
+    /// The one place <see cref="Default"/> is assigned from — the call sites in WorkspaceSetup each
+    /// built their own CompositeEventSink, so a change to how the default is composed had that many
+    /// places to miss. There are eight today (<c>WorkspaceSetup.cs</c> :240 :400 :417 :426 :446
+    /// :463 :472 :528), all inside <c>LoadPluginsAsync</c> and its helpers; this comment said "six"
+    /// for two of them longer than it was true, so prefer the count that is checkable over one
+    /// written into prose.
+    /// The guards below exist because centralising those call sites turned that many independent
+    /// chances to notice a bad argument into one trap for the next caller.</summary>
     public static void InstallDefault(params IMemoryEventSink[] sinks)
     {
         ArgumentNullException.ThrowIfNull(sinks);

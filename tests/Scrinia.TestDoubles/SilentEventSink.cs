@@ -25,7 +25,7 @@ namespace Scrinia.TestDoubles;
 /// non-null value, which is the whole reason this type exists.</para>
 ///
 /// <para><b>Do NOT convert <c>Default</c> itself to <c>AsyncLocal</c>.</b> Measured, not assumed:
-/// all six <c>InstallDefault</c> call sites sit inside <c>WorkspaceSetup.LoadPluginsAsync</c>
+/// every <c>InstallDefault</c> call site sits inside <c>WorkspaceSetup.LoadPluginsAsync</c>
 /// (<c>async Task</c>), and an <c>AsyncLocal</c> write inside an async method dies when that method
 /// returns — before the MCP host is even constructed. Every CLI event consumer reads
 /// <c>Current?.OnStoredAsync(…) ?? Task.CompletedTask</c>, which has no error path, so the result
