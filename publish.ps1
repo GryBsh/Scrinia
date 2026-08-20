@@ -171,19 +171,32 @@ foreach ($rid in $Rids) {
                 # or rewrite the reflection-heavy call to a trim-safe shape.
                 #
                 # PublishReadyToRun precompiles the managed code, so a short-lived verb stops
-                # paying JIT for a startup path it will never run twice. Measured on this
-                # repository's own workspace with ./measure-startup.ps1, median of 20 runs:
+                # paying JIT for a startup path it will never run twice. ./measure-startup.ps1,
+                # median of 20 runs, the two builds INTERLEAVED, against a local-disk copy of this
+                # repository's workspace with the Model2Vec model present:
                 #
-                #     verb              before    after
-                #     hint               272ms    109ms
-                #     restore            373ms    140ms
-                #     search             515ms    187ms
-                #     list               333ms    129ms
+                #     verb              trimmed    +R2R
+                #     hint                285ms   118ms   -58%
+                #     restore             460ms   227ms   -51%
+                #     search              631ms   266ms   -58%
+                #     list                346ms   136ms   -61%
                 #
-                # Confirmed as JIT and not something else: re-running the SAME R2R binary with
-                # DOTNET_ReadyToRun=0 puts hint back to 263ms. It costs binary size — 19.5MB to
-                # 42.9MB — which is the trade taken deliberately, because `hint` fires on every
-                # user prompt through the agent hook and the size is paid once per install.
+                # Confirmed as JIT and not something correlated with it: re-running the SAME R2R
+                # binary with DOTNET_ReadyToRun=0 puts hint back to 263ms.
+                #
+                # Read those numbers on a LOCAL disk only. The same measurement against the
+                # workspace in its normal home on a Synology Drive share reported hint at 401ms vs
+                # 388ms — a 13ms difference instead of 167ms — because the sync layer's per-read
+                # cost is larger than the JIT and serializes against it. That tax is also not
+                # constant; it appeared partway through a session after writes into .scrinia/.
+                #
+                # Cost: 19.5MB to 42.9MB on win-x64 (linux-x64 47.5MB, osx-arm64 51.3MB). Taken
+                # deliberately — size is paid once per install, the JIT was paid per prompt,
+                # because `hint` fires on every user prompt through the agent hook.
+                #
+                # --version and --help go the OTHER way, 213ms to 336ms. Not JIT
+                # (DOTNET_ReadyToRun=0 leaves them at 352ms) and not page-in of the bigger image
+                # (hint runs at 118ms from that same image). Unexplained; neither is on a hot path.
                 dotnet publish (Join-Path $PSScriptRoot $p.project) `
                     --runtime $rid `
                     --self-contained `
