@@ -25,7 +25,7 @@ public class AgentFileEntityTests
     public async Task AgentWrite_LandsAtTopLevelAgentDir_NotInTheStore()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
 

@@ -23,7 +23,7 @@ public class LoadIndexCacheHitTests
     public void LoadIndex_OnACacheHit_OpensNoLockFile()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         store.Upsert(Entry("warm"), "local");
 
@@ -54,7 +54,7 @@ public class LoadIndexCacheHitTests
     public void LoadIndex_OnAColdRead_StillTakesTheSharedFileLock()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
         store.Upsert(Entry("cold"), "local");
 
         // A second store over the same workspace has an empty _indexCache, so this read is cold
@@ -73,7 +73,7 @@ public class LoadIndexCacheHitTests
     public void LoadIndex_AfterAWriteThroughTheSameStore_SeesTheWrite()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         store.Upsert(Entry("first"), "local");
         store.LoadIndex("local").Should().ContainSingle();
@@ -89,7 +89,7 @@ public class LoadIndexCacheHitTests
     public void LoadIndex_DoesNotSeeAnotherStoreInstancesWrite_WhichIsWhyTheLockBuysNothingHere()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
         store.Upsert(Entry("mine"), "local");
         store.LoadIndex("local").Should().ContainSingle();   // warm the cache
 

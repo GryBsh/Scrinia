@@ -103,7 +103,7 @@ public class BundleExitCodeTests
 
         // A space is not a valid FileEntityName character, so the /agent/ route rejects this with
         // ResponseBuilder.Error(..., INVALID_PARAMETER) at MemoryTools.Core.cs:273-274 — before the
-        // ILocalMemoryStore check below it, so the verdict does not depend on the store mode.
+        // IMemoryStore check below it, so the verdict does not depend on the store mode.
         int exit = await new ScriniaCommands().Store(
             "/agent/bad name", contentFile, workspaceRoot: scope.WorkspaceDir);
 

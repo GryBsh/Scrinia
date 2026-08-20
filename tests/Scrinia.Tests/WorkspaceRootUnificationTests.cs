@@ -5,7 +5,7 @@ using Xunit;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// ILocalMemoryStore.WorkspaceRoot is the single authority for "the directory containing
+/// IMemoryStore.WorkspaceRoot is the single authority for "the directory containing
 /// .scrinia/". It lives on the local contract rather than IMemoryStore because a remote store
 /// has no local filesystem to root.
 /// Callers previously reverse-engineered it from GetStoreDirForScope with two different
@@ -18,7 +18,7 @@ public class WorkspaceRootUnificationTests
     public void WorkspaceRoot_MatchesTwoHopDerivationFromLocalStoreDir()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         string storeDir = store.GetStoreDirForScope("local");
         string expected = Path.GetDirectoryName(Path.GetDirectoryName(storeDir)!)!;
@@ -31,7 +31,7 @@ public class WorkspaceRootUnificationTests
     public void ScriniaDir_IsOneHopFromLocalStoreDir()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir)!;

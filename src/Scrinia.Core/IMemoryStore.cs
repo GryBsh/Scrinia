@@ -4,8 +4,20 @@ using Scrinia.Core.Search;
 namespace Scrinia.Core;
 
 /// <summary>
-/// Abstraction over persistent and ephemeral memory storage.
-/// Seam for Phase 2: local (filesystem) vs remote (HTTP) implementations.
+/// Abstraction over persistent and ephemeral memory storage, backed by a workspace on disk.
+///
+/// <para>There is one production implementation, <see cref="FileMemoryStore"/>. This is an
+/// interface rather than a class because the tool surface is tested against hand-written doubles,
+/// not because a second backing store is expected.</para>
+///
+/// <para>It used to be two interfaces. <c>ILocalMemoryStore</c> carried the members with no
+/// meaning off a filesystem — the paths, the workspace root, the bundle export pair — so that
+/// "this operation needs local files" was a compile-time fact rather than a
+/// <see cref="NotSupportedException"/> thrown at runtime by the six members <c>HttpMemoryStore</c>
+/// could only implement by throwing. With the remote store gone, the split named a distinction
+/// that no longer divides anything: every implementation has a workspace root, so the narrowing
+/// casts at each use site could only ever succeed, and their refusal branches could not be
+/// reached.</para>
 /// </summary>
 public interface IMemoryStore : IPluginStore
 {
@@ -301,8 +313,7 @@ public interface IMemoryStore : IPluginStore
         return true;
     }
 
-    // Copy & Archive
-    bool CopyMemory(string src, string dst, bool overwrite, out string message);
+    // Archive
     void ArchiveVersion(string subject, string scope = "local");
 
     // Naming / addressing
@@ -320,4 +331,25 @@ public interface IMemoryStore : IPluginStore
 
     // Scope resolution
     IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null);
+
+    // ── Filesystem layout ────────────────────────────────────────────────────
+    // Merged in from ILocalMemoryStore when the remote store was dropped; see the type summary.
+
+    string ArtifactPath(string name, string scope = "local");
+    string FindArtifactPath(string subject, string normalizedScope);
+    string GetStoreDirForScope(string scope);
+
+    /// <summary>
+    /// Absolute path to the workspace root — the directory that contains <c>.scrinia/</c>.
+    /// The authority for the workspace's filesystem layout: hand-authored file entities
+    /// (via <see cref="PathRouter.ToFileEntityDir"/>), bundle export/import, conflict
+    /// scanning, and drift detection all resolve their on-disk location from this one
+    /// property.
+    /// </summary>
+    string WorkspaceRoot { get; }
+
+    // Export/Import support
+    List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
+    void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
+        Dictionary<string, string> artifactContents, bool overwrite);
 }

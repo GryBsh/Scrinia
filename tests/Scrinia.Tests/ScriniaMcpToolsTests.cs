@@ -547,7 +547,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "forget-me");
-        string filePath = TestHelpers.LocalStore.ArtifactPath("forget-me");
+        string filePath = TestHelpers.Store.ArtifactPath("forget-me");
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
         string result = (await Tools().Forget("forget-me")).ToYaml();
@@ -654,7 +654,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "already-deleted");
-        string filePath = TestHelpers.LocalStore.ArtifactPath("already-deleted");
+        string filePath = TestHelpers.Store.ArtifactPath("already-deleted");
 
         // Manually delete the file first
         File.Delete(filePath);
@@ -1031,46 +1031,6 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Copy_EphemeralToPersistent_PromotesMemory()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        string original = "promote this content";
-        await Tools().Remember([original], "~promote-me");
-
-        string result = (await Tools().Copy("~promote-me", "promoted")).ToYaml();
-
-        ResponseParser.Parse(result).Content.Should().Contain("Copied",
-            because: "Copy must confirm ephemeral → persistent promotion");
-
-        // Verify the promoted memory exists and is correct
-        string restored = (await Tools().Recall("promoted")).ToYaml();
-        ResponseParser.Parse(restored).Content.Should().Be(original,
-            because: "promoted memory must contain the same content");
-
-        // Original ephemeral still exists (non-destructive copy)
-        string ephResult = (await Tools().Recall("~promote-me")).ToYaml();
-        ResponseParser.Parse(ephResult).Content.Should().Be(original,
-            because: "Copy must be non-destructive — source still exists");
-    }
-
-    [Fact]
-    public async Task Copy_PersistentToEphemeral_LoadsIntoMemory()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        string original = "load into ephemeral";
-        await Tools().Remember([original], "persistent-src");
-
-        string result = (await Tools().Copy("persistent-src", "~fast-ref")).ToYaml();
-
-        ResponseParser.Parse(result).Content.Should().Contain("Copied",
-            because: "Copy must confirm persistent → ephemeral load");
-
-        string restored = (await Tools().Recall("~fast-ref")).ToYaml();
-        ResponseParser.Parse(restored).Content.Should().Be(original,
-            because: "ephemeral copy must contain the same content");
-    }
-
-    [Fact]
     public async Task E2E_Ephemeral_FullLifecycle()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -1088,18 +1048,13 @@ public sealed class ScriniaMcpToolsTests
         string restored = (await Tools().Recall("~lifecycle")).ToYaml();
         ResponseParser.Parse(restored).Content.Should().Be(original);
 
-        // Promote to persistent
-        await Tools().Copy("~lifecycle", "lifecycle-saved");
-        string persistedCheck = (await Tools().Recall("lifecycle-saved")).ToYaml();
-        ResponseParser.Parse(persistedCheck).Content.Should().Be(original);
-
-        // Forget ephemeral
+        // Forget ephemeral. There was a promote-to-persistent step between the recall above and
+        // this one; it went with copy(), which the server was the only live caller of. Nothing
+        // moves an ephemeral into the persistent store any more — an agent that wants to keep a
+        // `~scratch` re-issues remember() against a real path.
         await Tools().Forget("~lifecycle");
         string afterForget = (await Tools().List(mode: "full")).ToYaml();
-        var afterForgetContent = ResponseParser.Parse(afterForget).Content!;
-        afterForgetContent.Should().NotContain("~lifecycle");
-        afterForgetContent.Should().Contain("lifecycle-saved",
-            because: "the promoted persistent copy must survive ephemeral Forget");
+        ResponseParser.Parse(afterForget).Content!.Should().NotContain("~lifecycle");
     }
 
     // ── Multi-term search (3 tests) ─────────────────────────────────────────

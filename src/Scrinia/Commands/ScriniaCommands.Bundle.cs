@@ -147,8 +147,8 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         // Determine output path
-        string exportsDir = Path.Combine(WorkspaceSetup.LocalStore.WorkspaceRoot, ".scrinia", "exports");
-        FileMemoryStore.EnsureGitIgnore(WorkspaceSetup.LocalStore.WorkspaceRoot);
+        string exportsDir = Path.Combine(WorkspaceSetup.Store.WorkspaceRoot, ".scrinia", "exports");
+        FileMemoryStore.EnsureGitIgnore(WorkspaceSetup.Store.WorkspaceRoot);
         Directory.CreateDirectory(exportsDir);
 
         if (!TryResolveBundlePath(exportsDir, output, out string bundlePath, out string? pathError, sanitizedTopic))

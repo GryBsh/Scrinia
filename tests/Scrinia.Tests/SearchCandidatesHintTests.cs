@@ -37,7 +37,7 @@ public class SearchCandidatesHintTests
     public void SearchAll_WithCandidatesFromAWiderSlice_IgnoresTheOutOfScopeOnes()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         store.Upsert(Entry("alpha-note"), "local:alpha");
         store.Upsert(Entry("beta-note"), "local:beta");
@@ -62,7 +62,7 @@ public class SearchCandidatesHintTests
     public void SearchAll_WithCandidatesIgnoringExcludeTopics_StillExcludesThem()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         store.Upsert(Entry("alpha-note"), "local:alpha");
         store.Upsert(Entry("beta-note"), "local:beta");
@@ -83,7 +83,7 @@ public class SearchCandidatesHintTests
     public void SearchAll_WithCorrectlyScopedCandidates_ReturnsTheSameAsNoCandidates()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         store.Upsert(Entry("alpha-note"), "local:alpha");
         store.Upsert(Entry("beta-note"), "local:beta");
@@ -107,7 +107,7 @@ public class SearchCandidatesHintTests
     public void SearchAll_EmptyScopesAndExcludeTopics_BehaveIdenticallyToNull()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         store.Upsert(Entry("alpha-note"), "local:alpha");
         store.Upsert(Entry("beta-note"), "local:beta");

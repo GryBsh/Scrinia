@@ -37,15 +37,6 @@ internal static class WorkspaceSetup
         MemoryStoreContext.Current ?? throw new InvalidOperationException(
             "WorkspaceSetup.Configure must be called before reading Store.");
 
-    /// <summary>The configured store, narrowed to the local-filesystem contract. CLI commands
-    /// that read or write workspace files use this. Throws when the process is in remote mode
-    /// (<c>scri serve --remote</c>), which is the only configuration that installs a non-local
-    /// store — see ScriniaCommands.Serve.</summary>
-    internal static ILocalMemoryStore LocalStore =>
-        MemoryStoreContext.Current as ILocalMemoryStore
-        ?? throw new InvalidOperationException(
-            "This command needs a local workspace; the configured store is remote.");
-
     internal static void Configure(string? workspaceRoot)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());

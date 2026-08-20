@@ -31,7 +31,7 @@ public partial class ScriniaCommands
     {
         // One store, always local. `--remote` and its HttpMemoryStore were removed with
         // Scrinia.Server: a second IMemoryStore implementation is what forced the
-        // ILocalMemoryStore split, the NOT_SUPPORTED branches on a third of the tool
+        // IMemoryStore split, the NOT_SUPPORTED branches on a third of the tool
         // surface, and the parity suite that held the two honest.
         WorkspaceSetup.Configure(workspaceRoot);
         WorkspaceSetup.WarnOnOrphanStores();

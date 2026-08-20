@@ -18,7 +18,7 @@ public class StorePurityInvariantTests
     public async Task MemoriesDirectory_NeverContainsFileEntities()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         await Tools().MemoryRemember(path: "/skill/qa", content: ["skill body"]);
         await Tools().MemoryRemember(path: "/agent/profile", content: ["agent body"]);
@@ -93,7 +93,7 @@ public class StorePurityInvariantTests
     public void FileEntityDirectories_SitOutsideTheStore(string kind)
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         string dir = PathRouter.ToFileEntityDir(kind, store.WorkspaceRoot);
         string memories = store.GetStoreDirForScope("local");
@@ -116,7 +116,7 @@ public class StorePurityInvariantTests
         // exercises the orphan-sweep regression agent's move was made to prevent — adding it
         // here would duplicate that coverage rather than extend it.
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         await Tools().MemoryRemember(path: "/skill/qa", content: ["skill body"]);
 

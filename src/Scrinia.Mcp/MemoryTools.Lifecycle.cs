@@ -71,13 +71,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Content for 'merged' resolution.")] string? content = null,
         CancellationToken cancellationToken = default)
     {
-        // Both branches — scan and resolve — walk .scrinia/ on disk for conflict markers. A
-        // remote store has no such directory, so there is no partial answer to give.
-        if (!TryGetLayout(out var store))
-            return Task.FromResult(ResponseBuilder.Error(
-                "Reconcile reads and rewrites conflicted files under .scrinia/ on disk, and the active store is remote.",
-                ErrorCodes.NotSupported,
-                "Resolve merge conflicts in the workspace checkout, then retry there."));
+        var store = CurrentStore;
 
         if (conflictId is null && !string.IsNullOrWhiteSpace(choice))
             return Task.FromResult(ResponseBuilder.Error(
@@ -1312,7 +1306,7 @@ public sealed partial class ScriniaMcpTools
 
         // Check for unresolved merge conflicts in .scrinia/ — local stores only; a remote store
         // has no working copy to conflict.
-        if (store is ILocalMemoryStore conflictLayout)
+        if (store is IMemoryStore conflictLayout)
         {
             try
             {
@@ -1341,7 +1335,7 @@ public sealed partial class ScriniaMcpTools
         // Available skills (built-in + disk overrides). Skipped entirely for a remote store:
         // the built-in names alone, with no disk overrides to reconcile them against, would
         // report a skill set the agent cannot actually load remotely.
-        if (store is ILocalMemoryStore skillsLayout)
+        if (store is IMemoryStore skillsLayout)
         {
             try
             {
@@ -1366,7 +1360,7 @@ public sealed partial class ScriniaMcpTools
         // The whole section is local-only, fallback included: remotely the workspace-root read
         // threw into the catch below and took the fallback with it. Preserved deliberately —
         // widening it to run the NMP/2 branch remotely is a behaviour change, not a tidy-up.
-        if (store is ILocalMemoryStore agentLayout)
+        if (store is IMemoryStore agentLayout)
         {
             try
             {
