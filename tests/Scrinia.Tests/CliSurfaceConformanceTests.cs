@@ -49,7 +49,18 @@ public sealed class CliSurfaceConformanceTests
     /// <c>app.Add&lt;T&gt;()</c>, parsed from source. Mirrors the pattern
     /// PublishManifestTests.ReleaseWorkflowProjects/SolutionProjectPaths already use for
     /// release.yml/Scrinia.sln: the authoritative list is a file on disk, not something reflection
-    /// over a running process can see here.</summary>
+    /// over a running process can see here.
+    ///
+    /// <para>Residual risk, not exploitable today: this regex assumes Program.cs's actual shape —
+    /// every registration written as a single-line, unqualified <c>app.Add&lt;T&gt;()</c> call,
+    /// where <c>app</c> is exactly that identifier. A registration split across lines, using a
+    /// receiver variable other than <c>app</c> (e.g. a locally-scoped builder), or
+    /// namespace-qualified (<c>app.Add&lt;Scrinia.Commands.Foo&gt;()</c>) would not match and would
+    /// silently drop that entry from the parsed set. <see cref="Entrypoints_CoverEveryTypeProgramCsRegisters"/>'s
+    /// <c>NotEmpty()</c> guard only catches the regex matching NOTHING (e.g. Program.cs rewritten
+    /// so no line matches at all) — it has no way to detect a PARTIAL match, where some
+    /// registrations are found and others are silently missed. If Program.cs's registration shape
+    /// ever changes, this regex needs to change with it.</para></summary>
     private static HashSet<string> RegisteredCommandTypeNames()
     {
         string programCs = File.ReadAllText(RepoPaths.Combine("src", "Scrinia", "Program.cs"));

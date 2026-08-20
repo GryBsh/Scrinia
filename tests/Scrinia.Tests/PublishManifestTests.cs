@@ -306,6 +306,35 @@ public sealed class PublishManifestTests
         }
     }
 
+    /// <summary>
+    /// True when <paramref name="value"/> appears as one alternative of a bash `case` pattern arm
+    /// — e.g. the "rid" in "    rid|plugin) ;;" — rather than anywhere at all in the file. A bare
+    /// substring search (the shape this replaced) still passes if the value survives only in a
+    /// comment; this is anchored to the syntax that actually dispatches on the value.
+    /// </summary>
+    private static bool BashCaseArmContains(string scriptText, string value)
+    {
+        string escaped = Regex.Escape(value);
+        string pattern = $@"^[ \t]*(?:[\w-]+\|)*{escaped}(?:\|[\w-]+)*\)";
+        return Regex.IsMatch(scriptText, pattern, RegexOptions.Multiline);
+    }
+
+    /// <summary>
+    /// True when <paramref name="value"/> appears in one of publish.ps1's three real dispatch
+    /// shapes for a manifest value: a `-cnotin @(...)` vocabulary list, a `-ceq '...'`
+    /// comparison, or a quoted `switch -CaseSensitive` case label. Anchored the same way as
+    /// <see cref="BashCaseArmContains"/> and for the same reason — a bare substring search
+    /// passes on a comment.
+    /// </summary>
+    private static bool PowerShellDispatchContains(string scriptText, string value)
+    {
+        string escaped = Regex.Escape(value);
+        bool inNotInList = Regex.IsMatch(scriptText, $@"-cnotin\s+@\([^)]*'{escaped}'[^)]*\)");
+        bool inCeq = Regex.IsMatch(scriptText, $@"-ceq\s+'{escaped}'");
+        bool inSwitchLabel = Regex.IsMatch(scriptText, $@"'{escaped}'\s*\{{");
+        return inNotInList || inCeq || inSwitchLabel;
+    }
+
     [Fact]
     public void BothScripts_ContainEveryVocabularyLiteralTheManifestActuallyUses()
     {
@@ -316,18 +345,23 @@ public sealed class PublishManifestTests
             .ToList();
         usedValues.Should().NotBeEmpty();
 
+        string shText = File.ReadAllText(RepoPaths.Combine("publish.sh"));
+        string ps1Text = File.ReadAllText(RepoPaths.Combine("publish.ps1"));
+
         using var scope = new AssertionScope();
-        foreach (string script in new[] { "publish.sh", "publish.ps1" })
+        foreach (string value in usedValues)
         {
-            string text = File.ReadAllText(RepoPaths.Combine(script));
-            foreach (string value in usedValues)
-            {
-                text.Should().Contain(value,
-                    because: $"{script} must recognise manifest value '{value}' — teaching only one " +
-                             "script a new vocabulary literal (e.g. adding output=bundle to the " +
-                             "manifest and updating only one script's vocabulary list) would let that " +
-                             "script silently mis-handle every row using it");
-            }
+            BashCaseArmContains(shText, value).Should().BeTrue(
+                because: $"publish.sh must recognise manifest value '{value}' in a real `case` pattern " +
+                         "arm, not merely mention it somewhere in the file (e.g. in a comment) — " +
+                         "teaching only one script a new vocabulary literal (e.g. adding output=bundle " +
+                         "to the manifest and updating only one script's vocabulary list) would let " +
+                         "that script silently mis-handle every row using it");
+            PowerShellDispatchContains(ps1Text, value).Should().BeTrue(
+                because: $"publish.ps1 must recognise manifest value '{value}' in a real -cnotin list, " +
+                         "-ceq comparison, or switch case label, not merely mention it somewhere in the " +
+                         "file (e.g. in a comment) — teaching only one script a new vocabulary literal " +
+                         "would let that script silently mis-handle every row using it");
         }
     }
 
