@@ -1,0 +1,1 @@
+- [Public contract doc sweep](feedback_public_contract_doc_sweep.md) — docs/architecture/*.md quote interface source verbatim with no test guarding them; sweep by hand on any public signature change.

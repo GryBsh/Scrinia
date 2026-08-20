@@ -27,22 +27,14 @@ public sealed class PublishManifestTests
     /// test exists to prevent.
     ///
     /// <para>This answers "does publish.sh/publish.ps1 build this?", not "is this allowed to
-    /// appear in a release?" — those are different questions with different answers for
-    /// <c>Scrinia.AppHost</c> (excluded here, and must never appear in a release either) and
-    /// <c>Scrinia.Server</c> (excluded here, but legitimately released by a different job — see
-    /// <see cref="ReleasedOutsideTheManifest"/>). Keying the release-workflow check off this set
-    /// let a release step publishing AppHost pass silently; that is why the two sets are
-    /// separate.</para>
+    /// appear in a release?" — two questions that had different answers while a server existed,
+    /// which is why the two sets below are still separate even though nothing currently sits in
+    /// one and not the other. Keying the release-workflow check off this set once let a release
+    /// step publishing AppHost pass silently.</para>
     /// </summary>
     private static readonly Dictionary<string, string> ExcludedFromPublish =
         new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Scrinia.AppHost"] =
-            "Aspire development orchestrator — a local run-the-stack harness, never shipped to users.",
-        ["Scrinia.Server"] =
-            "Shipped by release.yml's build-server job and as a container image " +
-            "(src/Scrinia.Server/Dockerfile, docker-compose.yml) — never by the developer publish " +
-            "scripts, which build the CLI and the plugin it loads.",
         ["Scrinia.Retrieval.Benchmarks"] =
             "Benchmark harness under benchmarks/ — run from source via `dotnet run`, never " +
             "distributed to users.",
@@ -55,16 +47,15 @@ public sealed class PublishManifestTests
     /// Projects release.yml is allowed to publish that are deliberately NOT in
     /// publish.projects.tsv. Strictly narrower than <see cref="ExcludedFromPublish"/>: every name
     /// here is also excluded from the developer scripts, but not every script exclusion belongs
-    /// here — <c>Scrinia.AppHost</c> is excluded from the scripts AND must never appear in a
-    /// release, so it is deliberately absent from this set.
+    /// here — a benchmark harness is excluded from the scripts AND must never appear in a release,
+    /// so neither is in this set.
+    /// <para>EMPTY, and deliberately kept rather than deleted. Its sole entry was
+    /// <c>Scrinia.Server</c>, released by a job that no longer exists. The set is the thing that
+    /// makes "the release publishes something the developer scripts do not" a decision someone has
+    /// to write down, and that check is worth keeping armed at zero.</para>
     /// </summary>
     private static readonly Dictionary<string, string> ReleasedOutsideTheManifest =
-        new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Scrinia.Server"] =
-            "release.yml's build-server job produces the server archive and container image " +
-            "directly; the developer scripts build only the CLI and the plugin it loads.",
-    };
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Every `dotnet publish &lt;project&gt;` line in the release workflow. This is the list that
@@ -426,8 +417,13 @@ public sealed class PublishManifestTests
     [Fact]
     public void TheReleaseWorkflow_ShipsEveryManifestProject_AndNothingUndeclared()
     {
-        ReleasedOutsideTheManifest.Values.Should().AllSatisfy(r => r.Should().NotBeNullOrWhiteSpace(),
-            because: "an exclusion with no reason is exactly the unexplained absence this test exists to prevent");
+        // Vacuously true while the set is empty — which it is, since Scrinia.Server was its only
+        // entry. AllSatisfy throws on an empty collection, so the emptiness is handled rather than
+        // asserted away: "every entry carries a reason" is a statement about entries, and zero
+        // entries satisfy it.
+        foreach (string reason in ReleasedOutsideTheManifest.Values)
+            reason.Should().NotBeNullOrWhiteSpace(
+                because: "an exclusion with no reason is exactly the unexplained absence this test exists to prevent");
 
         var manifestProjects = ReadManifest()
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
