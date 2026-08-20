@@ -47,6 +47,14 @@ public sealed class AnswerabilityJudge
     private int _judgedCount;
     private int _noGoldCount;
     private int _failedCount;
+    private int _unparseableCount;
+
+    /// <summary>First line of <paramref name="raw"/>, capped, for a one-line stderr diagnostic.</summary>
+    private static string Excerpt(string raw)
+    {
+        string oneLine = raw.ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= 80 ? oneLine : string.Concat(oneLine.AsSpan(0, 77), "...");
+    }
 
     /// <param name="answerMaxTokens">The answerer call's <c>max_tokens</c>. On an
     /// OpenAI-compatible server this bounds the WHOLE request — the question + the retrieved
@@ -77,9 +85,15 @@ public sealed class AnswerabilityJudge
     public int NoGoldCount => _noGoldCount;
     public int FailedCount => _failedCount;
 
+    /// <summary>Questions whose grader call succeeded but whose reply carried no readable
+    /// verdict. Excluded from the aggregate and drained to the failure sink. A non-zero value
+    /// means the grader model is drifting off its one-word contract — inspect the sink.</summary>
+    public int UnparseableCount => _unparseableCount;
+
     /// <summary>
-    /// Returns null when the question has no gold answer OR a judge call failed (both
-    /// excluded from the aggregate; the reason is logged). Non-null = a real verdict.
+    /// Returns null when the question has no gold answer, a judge call failed, or the grader's
+    /// reply carried no readable verdict (all three excluded from the aggregate, each with its
+    /// own counter; the reason is logged). Non-null = a real verdict.
     /// </summary>
     public async Task<JudgeVerdict?> JudgeAsync(
         string questionId, string question, string? goldAnswer,
@@ -109,9 +123,28 @@ public sealed class AnswerabilityJudge
             questionId, ct).ConfigureAwait(false);
         if (graderReply is null) return null;
 
-        bool correct = JudgePrompts.ParseGrade(graderReply);
+        // An off-contract grader reply is evidence about the GRADER, not about the answer, so it
+        // is excluded rather than scored — the same treatment as no-gold and a failed call above.
+        // Counting it as incorrect (what the old bool-returning parser did) silently depressed
+        // CorrectRate with no counter, no log line, and no failure-sink record.
+        bool? correct = JudgePrompts.ParseGrade(graderReply);
+        if (correct is null)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia-bench:judge] grader verdict unparseable for {questionId}: {Excerpt(graderReply)}");
+            Interlocked.Increment(ref _unparseableCount);
+            string graderUser = JudgePrompts.GraderUser(question, answer, goldAnswer);
+            _failureSink?.Record(new FailureRecord(
+                Role: "grader", Id: questionId, Reason: "unparseable-verdict",
+                Attempts: 1, MaxTokens: _graderMaxTokens,
+                PromptChars: JudgePrompts.GraderSystem.Length + graderUser.Length,
+                SystemPrompt: JudgePrompts.GraderSystem, UserPrompt: graderUser,
+                AttemptLog: [new FailureAttempt(1, graderReply, null)]));
+            return null;
+        }
+
         Interlocked.Increment(ref _judgedCount);
-        return new JudgeVerdict(IsSurfaced(answer), correct, answer, graderReply);
+        return new JudgeVerdict(IsSurfaced(answer), correct.Value, answer, graderReply);
     }
 
     /// <summary>

@@ -44,12 +44,38 @@ public static class JudgePrompts
         return sb.ToString();
     }
 
-    public static bool ParseGrade(string? raw)
+    /// <summary>
+    /// Reads the grader's one-word verdict. <c>true</c> = correct, <c>false</c> = incorrect,
+    /// <c>null</c> = no parseable verdict (excluded from the aggregate and drained to the
+    /// failure sink, exactly like a failed call — never silently scored).
+    /// </summary>
+    /// <remarks>
+    /// <para>This replaced a substring parser (<c>Contains("incorrect")</c> first, else
+    /// <c>Contains("correct")</c>) that was wrong in three ways, all silent because the return
+    /// type could not express "unreadable":</para>
+    /// <list type="bullet">
+    /// <item>An echoed rubric — <c>GraderUser</c> ends with "Verdict (correct/incorrect):", and a
+    /// grader that restates it before answering emits BOTH tokens, so checking "incorrect" first
+    /// scored an echoed <em>correct</em> verdict as incorrect. Measured over the 3,079 cached
+    /// grader replies, this shape had fired twice — the only failure mode that reached production.</item>
+    /// <item>A negated verdict — "this is not correct" contains "correct" and not "incorrect",
+    /// so it scored CORRECT.</item>
+    /// <item>Free prose containing neither token scored INCORRECT, indistinguishable from a
+    /// genuine wrong answer.</item>
+    /// </list>
+    /// <para>Two rules fix all three. Read only what follows the LAST colon, which discards an
+    /// echoed rubric and the reasoning in a chain-of-thought reply; then match the remainder
+    /// EXACTLY rather than by substring, because <c>GraderSystem</c> mandates "exactly one word".
+    /// Anything off-contract is a null, not a guess: the grader prompt is the contract, and a
+    /// reply that breaks it is evidence about the grader, not about the answer.</para>
+    /// </remarks>
+    public static bool? ParseGrade(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return false;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
         string s = raw.Trim().ToLowerInvariant();
-        // Check "incorrect" first — it contains "correct" as a substring.
-        if (s.Contains("incorrect")) return false;
-        return s.Contains("correct");
+        int lastColon = s.LastIndexOf(':');
+        if (lastColon >= 0) s = s[(lastColon + 1)..];
+        s = s.Trim(' ', '\t', '\r', '\n', '.', '!', '"', '\'', '*', '`');
+        return s switch { "correct" => true, "incorrect" => false, _ => null };
     }
 }

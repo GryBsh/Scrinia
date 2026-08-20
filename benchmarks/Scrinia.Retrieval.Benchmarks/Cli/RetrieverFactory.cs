@@ -376,6 +376,8 @@ internal static class RetrieverFactory
         Console.WriteLine($"  judged:   {judge.JudgedCount}");
         Console.WriteLine($"  no gold:  {judge.NoGoldCount}");
         Console.WriteLine($"  failed:   {judge.FailedCount}");
+        if (judge.UnparseableCount > 0)
+            Console.WriteLine($"  unparseable verdict: {judge.UnparseableCount}  (excluded — grader replied off-contract)");
         if (judge.FailedCount > 0 && judge.FailuresPath is not null)
             Console.WriteLine($"  failures logged: {judge.FailedCount} → {judge.FailuresPath}  (full prompt + raw per attempt)");
     }

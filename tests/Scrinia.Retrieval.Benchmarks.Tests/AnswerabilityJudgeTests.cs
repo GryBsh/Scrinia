@@ -54,6 +54,31 @@ public sealed class AnswerabilityJudgeTests : IDisposable
     }
 
     [Fact]
+    public async Task Judge_UnparseableVerdict_IsExcluded_NotScoredIncorrect()
+    {
+        var c = new ScriptedLlmClient("Lisbon", "The candidate matches the gold answer.");
+        var j = Judge(c);
+        var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default);
+        v.Should().BeNull("an unreadable verdict is not evidence the answer was wrong");
+        j.UnparseableCount.Should().Be(1);
+        j.JudgedCount.Should().Be(0, "an unreadable verdict must not enter the CorrectRate denominator");
+        j.FailedCount.Should().Be(0, "the grader call succeeded — only its reply was off-contract");
+    }
+
+    [Fact]
+    public async Task Judge_EchoedRubric_ReadsTheVerdictThatFollowsIt()
+    {
+        // The exact shape that misgraded two real questions: the grader restates the
+        // prompt's "Verdict (correct/incorrect):" line, which contains both tokens.
+        var c = new ScriptedLlmClient("Lisbon", "Verdict (correct/incorrect): correct");
+        var j = Judge(c);
+        var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
+        v!.AnsweredCorrectly.Should().BeTrue();
+        j.JudgedCount.Should().Be(1);
+        j.UnparseableCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Judge_NoGold_ReturnsNull_AndCountsNoGold()
     {
         var c = new ScriptedLlmClient();
