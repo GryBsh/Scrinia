@@ -553,7 +553,9 @@ Index entries carry `Keywords` so consumers can filter without decoding artifact
 
 ### Version Archiving
 
-When a memory is overwritten, the old version is moved to `.scrinia/store/versions/{name}_{timestamp}.nmp2`. This provides a safety net for accidental overwrites.
+When a memory is overwritten, the old version is copied to `.scrinia/memories/{scope}/versions/{name}_{timestamp}.nmp2`, pruned to the 10 most recent. This provides a safety net for accidental overwrites.
+
+The archive holds the artifact only — the `.meta.json` sidecar is not archived — so restoring a version by hand leaves the sidecar describing the newer content. Recovery is manual and unassisted: no CLI verb, MCP tool, or code path reads `versions/` back.
 
 ### IStorageBackend
 

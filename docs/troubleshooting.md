@@ -166,18 +166,20 @@ If `wwwroot/index.html` doesn't exist, the MSBuild target auto-runs `npm ci && n
 
 ## Memory Issues
 
-### Version bloat in .scrinia/store/versions/
+### Version bloat in .scrinia/memories/{scope}/versions/
 
-Every memory overwrite archives the previous version. For frequently updated memories, this can accumulate.
+Every write to an existing memory archives the previous version — `store`, `append` and
+`compact` alike. Each memory keeps its 10 most recent versions, so the archive grows with the
+number of frequently-edited memories rather than with the number of writes.
 
 **Fix:** Periodically clean old versions:
 ```bash
 # Remove versions older than 30 days
-find .scrinia/store/versions/ -name "*.nmp2" -mtime +30 -delete
-find .scrinia/topics/*/versions/ -name "*.nmp2" -mtime +30 -delete
+find .scrinia/memories -path "*/versions/*.nmp2" -mtime +30 -delete
 ```
 
-Note: append-only memories that update frequently (e.g., session logs) skip archiving by design to prevent version bloat.
+Archived copies exist for manual recovery only; nothing reads them back, so deleting them is
+safe. See [Version Retention](server-admin.md#version-retention).
 
 ### Search returns unexpected results
 

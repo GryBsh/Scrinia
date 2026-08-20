@@ -4,7 +4,7 @@
 
 Persistent, portable memory for AI agents. Scrinia is a local-first MCP server that stores what agents save and serves it back — **agents bring the intelligence; scrinia provides the substrate**.
 
-Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + the `anchor` attribute (query-vocabulary phrases the agent supplies at write time), weighted field scoring over attributes, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), and a sentence-MaxSim reranker on top. **There is no LLM consultation at write or read time on the server side** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (supplying the `anchor` attribute, query refinement, summarization); scrinia just stores and surfaces.
+Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + the `anchor` attribute (query-vocabulary phrases the agent supplies at write time), weighted field scoring over attributes, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), re-ranked by cosine similarity over the BM25 + attribute candidate set. **There is no LLM consultation at write or read time on the server side** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (supplying the `anchor` attribute, query refinement, summarization); scrinia just stores and surfaces.
 
 Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
