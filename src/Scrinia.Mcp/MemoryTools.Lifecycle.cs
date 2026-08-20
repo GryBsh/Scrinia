@@ -135,7 +135,7 @@ public sealed partial class ScriniaMcpTools
                 double threshold = GetJaccardThreshold(scriniaDir);
                 if (TryComputeAutoResolvedMetaJson(fileContent, threshold, out string? autoResolvedJson))
                 {
-                    try { File.WriteAllText(absolutePath, autoResolvedJson!); }
+                    try { WriteResolved(absolutePath, autoResolvedJson!); }
                     catch (Exception ex)
                     {
                         return ResponseBuilder.Error(
@@ -239,7 +239,7 @@ public sealed partial class ScriniaMcpTools
         try
         {
             string toWrite = type == "nmp2" ? Nmp2ChunkedEncoder.Encode(resolvedContent) : resolvedContent;
-            File.WriteAllText(absolutePath, toWrite);
+            WriteResolved(absolutePath, toWrite);
         }
         catch (Exception ex)
         {
@@ -250,6 +250,31 @@ public sealed partial class ScriniaMcpTools
         }
 
         return ResponseBuilder.Success($"Resolved {conflictId} ({type}) with '{choice}'.").WithAction("reconciled");
+    }
+
+    /// <summary>
+    /// Writes conflict-resolved bytes back into the store and drops the store's cached views.
+    /// </summary>
+    /// <remarks>
+    /// A repair is not a well-formed store write — it produces bytes for whichever path the
+    /// conflict scan found, a <c>.nmp2</c> body or a <c>.meta.json</c> sidecar — so it does not
+    /// go through <c>Upsert</c>, and forcing it through one would change the merge semantics the
+    /// git driver and this auto-resolver deliberately share. But it must still behave like a
+    /// store write in two respects a bare <c>File.WriteAllText</c> did not.
+    /// <para>ATOMIC AND DURABLE: routed through the store's own temp-then-rename writer, so a
+    /// concurrent reader never observes a half-repaired sidecar and the bytes reach media before
+    /// the rename.</para>
+    /// <para>VISIBLE: <c>_indexCache</c> is not keyed by mtime (only the artifact cache is), so
+    /// without an explicit invalidation a long-lived MCP session went on serving the PRE-repair
+    /// sidecar for the rest of the process — having just reported the resolve as successful.
+    /// Both write sites go through this one helper rather than each remembering to do the same
+    /// two things.</para>
+    /// </remarks>
+    private static void WriteResolved(string absolutePath, string content)
+    {
+        FileMemoryStore.AtomicWriteAllText(absolutePath, content);
+        if (MemoryStoreContext.Current is FileMemoryStore store)
+            store.InvalidateCaches();
     }
 
     private static McpResponse ScanForConflicts(string scriniaDir)

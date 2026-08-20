@@ -1055,12 +1055,38 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// this class's own <see cref="EnsureGitIgnore"/> writes), so that write goes through the same
     /// atomic-temp-then-move convention as every other artifact write in this codebase rather than
     /// a bare <c>File.WriteAllText</c>.</summary>
+    /// <summary>
+    /// Writes text and forces it to physical media before returning, so the temp file the
+    /// caller is about to rename holds real bytes rather than page-cache promises.
+    /// </summary>
+    /// <remarks>
+    /// The temp-then-rename convention around this call buys ATOMICITY — a concurrent reader
+    /// never sees a half-written file. It does not buy DURABILITY: without this flush, a crash
+    /// or power loss can leave an atomically-renamed file whose contents the OS never wrote,
+    /// which presents as a present-but-empty or truncated artifact. Every atomic writer in this
+    /// class funnels through here, so the flush lands once.
+    /// <para>Scope, stated so nobody assumes more than this does: the FILE's contents are
+    /// synced. The containing DIRECTORY entry created by the rename is not — .NET exposes no
+    /// portable directory fsync, and Windows offers no equivalent. So the rename itself can
+    /// still be lost on power failure, leaving the previous body intact. That is the safe
+    /// direction to fail in, and it is why the write order (artifact, then sidecar) matters.</para>
+    /// <para>Encoding is deliberately left to <see cref="StreamWriter"/>'s default, which is
+    /// UTF-8 with no BOM — byte-identical to the <c>File.WriteAllText</c> this replaced.</para>
+    /// </remarks>
+    private static void WriteAllTextDurable(string path, string content)
+    {
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        using (var writer = new StreamWriter(fs, leaveOpen: true))
+            writer.Write(content);
+        fs.Flush(flushToDisk: true);
+    }
+
     internal static void AtomicWriteAllText(string path, string content)
     {
         string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
-            FileRetry.Run(() => File.WriteAllText(tmp, content));
+            FileRetry.Run(() => WriteAllTextDurable(tmp, content));
             FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
         }
         catch
@@ -1070,12 +1096,28 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         }
     }
 
+    /// <summary>Async twin of <see cref="WriteAllTextDurable"/>. The final flush is synchronous
+    /// because <see cref="FileStream.Flush(bool)"/> has no async form — the fsync blocks either
+    /// way, and pretending otherwise would only hide it.</summary>
+    private static async Task WriteAllTextDurableAsync(string path, string content, CancellationToken ct)
+    {
+        var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None,
+                                bufferSize: 4096, useAsync: true);
+        await using (fs.ConfigureAwait(false))
+        {
+            var writer = new StreamWriter(fs, leaveOpen: true);
+            await using (writer.ConfigureAwait(false))
+                await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
+            fs.Flush(flushToDisk: true);
+        }
+    }
+
     private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
     {
         string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await FileRetry.RunAsync(() => File.WriteAllTextAsync(tmp, content, ct), ct: ct);
+            await FileRetry.RunAsync(() => WriteAllTextDurableAsync(tmp, content, ct), ct: ct);
             FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
         }
         catch
@@ -1118,6 +1160,31 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// <para>Ownership includes normalizing: the elements are replaced in place with their
     /// <see cref="ArtifactEntry.NormalizeAttributesKey"/> form before anything reads them.</para>
     /// </summary>
+    /// <summary>
+    /// Drops every cached view of the store, so the next read comes from disk.
+    /// </summary>
+    /// <remarks>
+    /// For callers that repair store files OUT OF BAND — <c>reconcile</c> writes merged bytes
+    /// straight to an absolute path rather than going through <see cref="Upsert"/>, because a
+    /// git-conflict repair is not a well-formed store write and forcing it through one would
+    /// change the merge semantics the driver and the auto-resolver share.
+    /// <para>Blanket rather than per-scope, deliberately: the caller holds a filesystem path,
+    /// not a scope, and a conflict repair is a rare heavyweight operation where re-reading
+    /// everything is proportionate. The narrow per-scope invalidation stays where the hot path
+    /// is, inside <see cref="Upsert"/>.</para>
+    /// <para>Why this is needed at all: <c>_indexCache</c> is not keyed by mtime — only
+    /// <c>_artifactCache</c> is — so a long-lived process (an MCP <c>scri serve</c> session)
+    /// went on serving the pre-repair sidecar for its whole lifetime, having just reported the
+    /// repair as successful.</para>
+    /// </remarks>
+    public void InvalidateCaches()
+    {
+        _indexCache.Clear();
+        _cachedTopics = null;
+        _artifactCache.Invalidate(string.Empty);
+        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+    }
+
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         WithExclusiveLock(scope, () => SaveIndexUnsafe(entries, scope));
@@ -2415,20 +2482,46 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         string versionsDir = Path.Combine(storeDir, "versions");
         Directory.CreateDirectory(versionsDir);
 
-        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        string archiveName = $"{SanitizeName(subject)}_{timestamp}.nmp2";
-        string archivePath = Path.Combine(versionsDir, archiveName);
+        // Stamped to the MILLISECOND, and never overwriting. A second-granularity stamp copied
+        // with overwrite:true meant two archives of one subject inside the same second silently
+        // replaced each other — losing a prior body from the only directory backing the promise
+        // that a write never destroys what was already there. Two overwrites in a row is the
+        // ordinary shape of an agent correcting itself mid-turn, not a contrived race.
+        // Milliseconds still collide under a tight loop, so the counter is a floor, not a
+        // flourish: the invariant is that this method never replaces an existing archive.
+        string safe = SanitizeName(subject);
+        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+        string baseName = $"{safe}_{stamp}";
+        string archivePath = Path.Combine(versionsDir, $"{baseName}.nmp2");
+        for (int n = 2; File.Exists(archivePath); n++)
+            archivePath = Path.Combine(versionsDir, $"{baseName}-{n}.nmp2");
 
-        AtomicFileCopy(currentPath, archivePath);
+        AtomicFileCopy(currentPath, archivePath, overwrite: false);
 
-        // Prune old versions — keep only the 10 most recent
-        var versionFiles = Directory.GetFiles(versionsDir, $"{SanitizeName(subject)}_*.nmp2")
-            .OrderByDescending(f => f)
+        // The sidecar travels WITH the body. Archiving the artifact alone made the documented
+        // recovery in docs/server-admin.md corrupting rather than restoring: copying a body back
+        // left the .meta.json describing the newer content, and StoreAsync's own comment records
+        // where that lands — a later append reads the stale ChunkEntries and numbers the appended
+        // chunk from the real count, yielding non-contiguous indices. Best-effort: a missing or
+        // unreadable sidecar must not fail the write this archive is protecting.
+        string metaPath = MetaPath(subject, scope);
+        if (File.Exists(metaPath))
+        {
+            try { AtomicFileCopy(metaPath, Path.ChangeExtension(archivePath, null) + ".meta.json", overwrite: false); }
+            catch (IOException) { /* body is archived; metadata is a best-effort companion */ }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        // Prune old versions — keep only the 10 most recent, and take each body's sidecar with it
+        // so pruning cannot leave a .meta.json describing an artifact that is gone.
+        var stale = Directory.GetFiles(versionsDir, $"{safe}_*.nmp2")
+            .OrderByDescending(f => f, StringComparer.Ordinal)
             .Skip(10)
             .ToList();
-        foreach (var old in versionFiles)
+        foreach (var old in stale)
         {
             try { File.Delete(old); } catch { /* best-effort cleanup */ }
+            try { File.Delete(Path.ChangeExtension(old, null) + ".meta.json"); } catch { }
         }
     }
 

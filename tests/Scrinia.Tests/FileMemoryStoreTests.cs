@@ -1293,6 +1293,55 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.Exists(versionsDir).Should().BeFalse();
     }
 
+    // Archive names were stamped to the SECOND and copied with overwrite:true, so two
+    // archives of the same memory inside one second silently replaced each other --
+    // losing the older body from the only directory backing "a write never destroys
+    // what was already there". Two overwrites in a row is not a contrived case: it is
+    // an agent correcting itself mid-turn.
+    [Fact]
+    public void ArchiveVersion_TwiceWithinOneSecond_KeepsBothBodies()
+    {
+        string artifactPath = _store.ArtifactPath("rapid");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+
+        File.WriteAllText(artifactPath, "NMP/2 first body");
+        _store.ArchiveVersion("rapid");
+        File.WriteAllText(artifactPath, "NMP/2 second body");
+        _store.ArchiveVersion("rapid");
+
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "memories", "versions");
+        string[] archives = Directory.GetFiles(versionsDir, "rapid_*.nmp2");
+
+        archives.Should().HaveCount(2, "each archive is a distinct prior body, not a slot to overwrite");
+        archives.Select(File.ReadAllText).Should()
+            .Contain("NMP/2 first body")
+            .And.Contain("NMP/2 second body");
+    }
+
+    // The archive held the artifact only. docs/server-admin.md documents versions/ as the
+    // human recovery path, but copying a body back left the sidecar describing the NEWER
+    // content -- and FileMemoryStore's own comment records where that leads: a later
+    // append reads the stale ChunkEntries and yields non-contiguous chunk indices. A
+    // recovery path that corrupts the store is not a recovery path.
+    [Fact]
+    public void ArchiveVersion_ArchivesTheSidecarBesideTheArtifact()
+    {
+        string artifactPath = _store.ArtifactPath("with-meta");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllText(artifactPath, "NMP/2 body");
+        File.WriteAllText(_store.MetaPath("with-meta"), """{"name":"with-meta","chunkCount":1}""");
+
+        _store.ArchiveVersion("with-meta");
+
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "memories", "versions");
+        string artifact = Directory.GetFiles(versionsDir, "with-meta_*.nmp2").Should().ContainSingle().Subject;
+
+        string sidecar = Path.ChangeExtension(artifact, null) + ".meta.json";
+        File.Exists(sidecar).Should().BeTrue(
+            because: "a body without its metadata cannot be restored without corrupting the entry");
+        File.ReadAllText(sidecar).Should().Contain("with-meta");
+    }
+
     // ── ResolveReadScopes / NormalizeScopeFilters ────────────────────────────
 
     [Fact]

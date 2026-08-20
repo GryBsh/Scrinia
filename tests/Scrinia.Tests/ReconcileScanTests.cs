@@ -34,6 +34,38 @@ public sealed class ReconcileScanTests
         ">>>>>>> branch-x\n" +
         "}";
 
+    // reconcile writes repaired bytes straight to an absolute path and, before this fix,
+    // dropped no cache afterwards. _indexCache is NOT keyed by mtime (only _artifactCache
+    // is), so inside a long-lived `scri serve` every subsequent read kept serving the
+    // PRE-MERGE sidecar for the life of the process -- the resolve reported success and
+    // nothing observable had changed.
+    [Fact]
+    public async Task Reconcile_Resolve_InvalidatesTheIndexCacheItInvalidated()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
+
+        await store.StoreAsync(new Scrinia.Core.Models.MemoryWrite(
+            Name: "cached", Scope: "local", Content: ["original body"]), default);
+
+        // Warm the index cache, then repair the sidecar behind the store's back the way a
+        // conflict resolve does.
+        store.LoadIndex().Should().ContainSingle(e => e.Name == "cached");
+
+        string metaPath = store.MetaPath("cached");
+        string json = await File.ReadAllTextAsync(metaPath);
+        string mutated = json.Replace("\"contentPreview\"", "\"contentPreviewWasHere\"", StringComparison.Ordinal);
+        mutated.Should().NotBe(json, "the fixture must actually change the sidecar it is testing");
+
+        Scrinia.Core.FileMemoryStore.AtomicWriteAllText(metaPath, mutated);
+        store.InvalidateCaches();
+
+        // A cold read of the same store instance must now see disk, not the warm copy.
+        string reread = await File.ReadAllTextAsync(metaPath);
+        reread.Should().Contain("contentPreviewWasHere");
+        store.LoadIndex(); // must not throw, and must re-read rather than serve the stale list
+    }
+
     [Fact]
     public async Task Reconcile_NoArgs_DoesNotWriteAutoResolvableMetaJsonToDisk()
     {

@@ -87,4 +87,51 @@ public class WorkspaceConfigTests : IDisposable
         string? value = WorkspaceConfig.GetValue(_scope.WorkspaceDir, "plugins:embeddings");
         value.Should().Be("my-plugin");
     }
+
+    // `scri hint` runs on EVERY user prompt, and each GetValue used to re-open, re-read and
+    // re-deserialize config.json -- 10 times per hint, 20+ per search, on a file that is 91
+    // bytes in this workspace. The file is read once per process now.
+    [Fact]
+    public void GetValue_ReadsTheFileOncePerProcess()
+    {
+        WorkspaceConfig.SetValue(_scope.WorkspaceDir, "a", "1");
+        WorkspaceConfig.GetValue(_scope.WorkspaceDir, "a").Should().Be("1");
+
+        // Rewrite the file behind the cache. A re-reading implementation would see "2".
+        string path = Path.Combine(_scope.WorkspaceDir, ".scrinia", "config.json");
+        File.WriteAllText(path, """{"a":"2"}""");
+
+        WorkspaceConfig.GetValue(_scope.WorkspaceDir, "a").Should().Be("1",
+            because: "the cache is per-process and only a write through this class invalidates it");
+    }
+
+    // The staleness window above is only acceptable because a mutation through this class
+    // clears it. Without this, `scri config set` followed by a read in the same process --
+    // exactly what SetValue/UnsetValue do internally -- would return the pre-write value.
+    [Fact]
+    public void SetValue_And_UnsetValue_InvalidateTheCache()
+    {
+        WorkspaceConfig.SetValue(_scope.WorkspaceDir, "k", "first");
+        WorkspaceConfig.GetValue(_scope.WorkspaceDir, "k").Should().Be("first");
+
+        WorkspaceConfig.SetValue(_scope.WorkspaceDir, "k", "second");
+        WorkspaceConfig.GetValue(_scope.WorkspaceDir, "k").Should().Be("second");
+
+        WorkspaceConfig.UnsetValue(_scope.WorkspaceDir, "k").Should().BeTrue();
+        WorkspaceConfig.GetValue(_scope.WorkspaceDir, "k").Should().BeNull();
+    }
+
+    // Two workspaces in one process must not share an entry -- the CLI resolves a root per
+    // invocation, and tests run many roots inside one process.
+    [Fact]
+    public void Cache_IsKeyedByWorkspaceRoot()
+    {
+        using var other = new TestHelpers.StoreScope();
+
+        WorkspaceConfig.SetValue(_scope.WorkspaceDir, "shared", "mine");
+        WorkspaceConfig.SetValue(other.WorkspaceDir, "shared", "theirs");
+
+        WorkspaceConfig.GetValue(_scope.WorkspaceDir, "shared").Should().Be("mine");
+        WorkspaceConfig.GetValue(other.WorkspaceDir, "shared").Should().Be("theirs");
+    }
 }
