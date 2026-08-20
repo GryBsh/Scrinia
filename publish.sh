@@ -92,22 +92,32 @@ if [ "$ACTUAL_HEADER" != "$EXPECTED_HEADER" ]; then
 fi
 
 IDS=(); PROJECTS=(); CONDITIONS=(); PROFILES=(); OUTPUTS=(); RIDSCOPES=()
-# The `|| [ -n "$m_id" ]` keeps the last row when the file has no trailing newline: `read`
-# returns non-zero at EOF-without-newline having already filled the variables, so the plain
-# form would silently drop it.
-# A seventh field name (m_extra) catches a row with more than six tab-separated columns: `read`
-# with only six names would otherwise silently fold an extra column onto the end of m_rids.
-while IFS=$'\t' read -r m_id m_project m_condition m_profile m_output m_rids m_extra || [ -n "$m_id" ]; do
+# The `|| [ -n "$raw_line" ]` keeps the last row when the file has no trailing newline: `read`
+# returns non-zero at EOF-without-newline having already filled the variable, so the plain form
+# would silently drop it.
+while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     # Strip a trailing CR: .gitattributes pins this file to LF, but a user whose git
     # configuration ignores it would otherwise get a corrupted final column.
-    m_rids="${m_rids%$'\r'}"
-    m_extra="${m_extra%$'\r'}"
-    if [ -z "$m_id" ]; then continue; fi
-    case "$m_id" in \#*) continue ;; esac
-    if [ -n "$m_extra" ]; then
-        echo "Error: manifest row for '$m_id' has more than six columns" >&2
+    raw_line="${raw_line%$'\r'}"
+    if [ -z "$raw_line" ]; then continue; fi
+    case "$raw_line" in \#*) continue ;; esac
+
+    # Field count is computed on the RAW line, before `read` ever splits it. Tab is IFS
+    # whitespace, so `IFS=$'\t' read` collapses a trailing run of it: a row ending in a stray
+    # tab (a malformed, empty 7th column) parsed identically to a clean 6-column row here, and
+    # publish.ps1's `-split "\t"` count of that same line is 7 — the same input was silently
+    # accepted by this script and rejected by the other. Counting the tabs directly (not asking
+    # `read` to split first) catches a genuine 7th column and a trailing tab with one check and
+    # one message, matching publish.ps1's `$fieldCount` check below.
+    tabs_only="${raw_line//[^$'\t']/}"
+    field_count=$((${#tabs_only} + 1))
+    if [ "$field_count" -ne 6 ]; then
+        echo "Error: manifest row has $field_count tab-separated columns, expected 6: '$raw_line'" >&2
         exit 1
     fi
+
+    IFS=$'\t' read -r m_id m_project m_condition m_profile m_output m_rids <<< "$raw_line"
+
     # Validated here, once, at read time — not deep inside the publish loop — so a bad row is
     # caught before any artifact has been published for any RID, rather than mid-run.
     case "$m_output" in
