@@ -213,11 +213,37 @@ public sealed class RetryPolicyTests
             r => r == -1,
             new RetryOptions(MaxRetries: 3, BaseDelayMs: 50));
 
-        // With exponential backoff, later delays should generally be longer
-        // delay[0] ~ 50ms, delay[1] ~ 100ms, delay[2] ~ 200ms (plus jitter)
         delays.Should().HaveCount(3);
-        // The third delay (attempt 2 = 200ms base) should be larger than the first (attempt 0 = 50ms base)
-        delays[2].Should().BeGreaterThan(delays[0]);
+
+        // Each delay is asserted against its OWN lower bound rather than compared to another
+        // measured delay, and that distinction is the whole point.
+        //
+        // `RetryPolicy.ComputeDelay` is `baseDelay * 2^attempt + jitter[0, baseDelay)`, so with a
+        // 50ms base the computed values fall in [50,100), [100,150) and [200,250) — ranges that
+        // cannot overlap, so `delays[2] > delays[0]` is true of the POLICY by construction. What
+        // these numbers actually measure is wall clock, which is the computed delay PLUS however
+        // long the thread pool took to resume the continuation. Under a loaded parallel test host
+        // that scheduling penalty is unbounded, and it lands on each sample independently: a 250ms
+        // stall on the first sample and none on the third inverts the comparison and fails a test
+        // about arithmetic that never went wrong. That is the observed flake — caught by name on
+        // 2026-08-20 during a full-solution run.
+        //
+        // Scheduling noise is ONE-DIRECTIONAL: it can only make an observed delay longer, never
+        // shorter. So a lower bound per delay is immune to it by construction, while any
+        // comparison between two noisy samples is not. The bounds also pin growth more tightly
+        // than the old assertion did — it only related delays[2] to delays[0] and said nothing
+        // about delays[1].
+        //
+        // The 10% slack absorbs timer granularity (Task.Delay resolves on a ~15.6ms tick on
+        // Windows), not load. Collapsing ComputeDelay to a constant still fails these: a flat 50ms
+        // would have to pick up 130ms of scheduling delay to reach the third bound.
+        delays[0].Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(45),
+            because: "attempt 0 sleeps baseDelay (50ms) plus jitter, and scheduling only adds");
+        delays[1].Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(90),
+            because: "attempt 1 doubles to 100ms — the step the old assertion never checked");
+        delays[2].Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(180),
+            because: "attempt 2 doubles again to 200ms; a backoff that stopped growing cannot "
+                   + "reach this without 130ms of scheduling delay landing on exactly this sample");
     }
 
     [Fact]

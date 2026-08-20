@@ -26,25 +26,38 @@ public partial class ScriniaCommands
     /// .scrinia/memories/. Runs automatically on first store access; this command exists
     /// to preview the plan, migrate deliberately, or re-run after restoring a backup.
     /// </summary>
-    /// <param name="workspace">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="dryRun">Print how many files would move without moving any.</param>
-    /// <param name="backup">Copy .scrinia/ to .scrinia-backup-{timestamp}/ before migrating.</param>
+    /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public Task<int> Migrate(
-        string? workspace = null,
+        string? workspaceRoot = null,
         bool dryRun = false,
-        bool backup = true,
+        bool skipBackup = false,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
-        WorkspaceSetup.Configure(workspace);
+        WorkspaceSetup.Configure(workspaceRoot);
         string root = WorkspaceSetup.Root;
 
         if (!Directory.Exists(Path.Combine(root, ".scrinia")))
         {
+            if (json) { WriteJsonError("No .scrinia/ directory found."); return Task.FromResult(1); }
             AnsiConsole.MarkupLine("[red]Error:[/] No .scrinia/ directory found.");
             return Task.FromResult(1);
         }
 
-        var result = StoreLayoutMigration.Migrate(root, dryRun, backup);
+        var result = StoreLayoutMigration.Migrate(root, dryRun, backup: !skipBackup);
+
+        if (json)
+        {
+            WriteJson(
+                new CliStoreMigrateOutput(
+                    result.Ran, result.Moved, result.Conflicts,
+                    result.BackupPath, result.BackupSkipped, dryRun),
+                CliJsonContext.Default.CliStoreMigrateOutput);
+            return Task.FromResult(0);
+        }
 
         if (!result.Ran && result.Moved == 0)
         {
@@ -102,7 +115,8 @@ public partial class ScriniaCommands
     /// antivirus scan, a sync client such as Synology Drive) is skipped rather than aborting the
     /// whole backup — a live lock file carries no committed data worth preserving anyway, and
     /// <c>File.Copy</c>'s bare (unguarded) call used to let that abort
-    /// <c>scri migrate_attributes --backup</c> entirely on a single transiently-locked file.
+    /// <c>scri migrate_attributes</c>'s backup (which runs by default unless <c>--skip-backup</c>
+    /// is passed) entirely on a single transiently-locked file.
     /// Catches <see cref="UnauthorizedAccessException"/> alongside <see cref="IOException"/> — on
     /// Windows a sharing violation can surface as either.</summary>
     private static void CopyDirectoryRecursive(string sourceDir, string targetDir)

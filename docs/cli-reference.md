@@ -389,7 +389,7 @@ Empty stdout when:
 
 Plain output format: `[scrinia] N memories match: name1, name2, name3. Run search({ query: 'name1' }) to retrieve.`
 
-`--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`.
+`--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`, indented, through the same source-generated serializer as every other `--json` surface.
 
 Normally invoked by the UserPromptSubmit hook installed via `scri setup --hooks`; can also be run by hand to debug threshold tuning.
 
@@ -494,14 +494,15 @@ command is only needed to preview the plan, migrate deliberately before a large 
 or re-run after restoring a backup.
 
 ```bash
-scri migrate [--workspace <path>] [--dry-run] [--backup=true|false]
+scri migrate [--workspace-root <path>] [--dry-run] [--skip-backup] [--json]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--workspace` | cwd | Workspace root containing the `.scrinia/` directory. |
+| `--workspace-root` | cwd | Workspace root containing the `.scrinia/` directory. |
 | `--dry-run` | false | Print how many files would move without moving any. |
-| `--backup` | true | Copy `.scrinia/` to `.scrinia-backup-{timestamp}/` before migrating. |
+| `--skip-backup` | false | Skip the timestamped backup; the backup runs by default. |
+| `--json` | false | Output as JSON instead of formatted text. |
 
 Files are **moved**, not copied — exactly one copy of each memory exists at all times. Where
 two legacy locations map to the same target (for example `topics/api/x` and
@@ -552,7 +553,7 @@ If a `.scrinia/` directory exists somewhere resolution deliberately did not use 
 
 Settings are resolved in priority order:
 
-1. **Environment variable** (highest) -- key with `:` replaced by `_`, uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`)
+1. **Environment variable** (highest) -- either the single-underscore form, key with `:` replaced by `_` and uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`), or the .NET-standard double-underscore form (e.g., `SCRINIA__EMBEDDINGS__PROVIDER`), which the server also accepts. When both are set the single-underscore form wins.
 2. **Config file** -- `.scrinia/config.json` in the workspace root
 3. **Default value** (lowest)
 
@@ -586,7 +587,7 @@ Downloads `model.safetensors` (~22MB) and `vocab.txt` to `{exeDir}/models/m2v-Mi
 GPU-accelerated embeddings via LLamaSharp with Vulkan backend. Requires the plugin to be installed:
 
 ```bash
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
 When the Vulkan plugin is installed, it automatically overrides the built-in Model2Vec provider.
@@ -785,10 +786,10 @@ scri bundle import ./project-knowledge.scrinia-bundle --topics api
 
 ## Custom Plugin Executable
 
-The CLI discovers plugin executables at `{exeDir}/plugins/scri-plugin-*`. You can override the embeddings plugin name:
+The CLI discovers plugin executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`. You can override the embeddings plugin name:
 
 ```bash
 scri config plugins:embeddings my-custom-embeddings
 ```
 
-The CLI looks for `{exeDir}/plugins/{name}[.exe]`.
+The CLI looks for `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`.

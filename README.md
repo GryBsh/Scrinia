@@ -115,7 +115,7 @@ dotnet build
 scri setup
 
 # Optional: with Vulkan GPU-accelerated embeddings plugin
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
 ## MCP setup

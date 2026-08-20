@@ -23,6 +23,8 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliMcpOutput))]
 [JsonSerializable(typeof(CliConsolidateOutput))]
 [JsonSerializable(typeof(CliMigrateOutput))]
+[JsonSerializable(typeof(CliStoreMigrateOutput))]
+[JsonSerializable(typeof(CliHintOutput))]
 internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record MergeConfig(
@@ -90,5 +92,20 @@ internal sealed record CliConsolidateOutput(
     int CompactionCandidates,
     string[] Compacted);
 
-/// <summary>Output of the attributes-migration command (<c>scri migrate</c>).</summary>
+/// <summary>Output of the attributes-migration command (<c>scri migrate_attributes</c>).</summary>
 internal sealed record CliMigrateOutput(int Total, int Migrated, int Skipped, bool DryRun);
+
+/// <summary>Output of the store-layout migration command (<c>scri migrate</c>).</summary>
+internal sealed record CliStoreMigrateOutput(
+    bool Ran,
+    int Moved,
+    int Conflicts,
+    string? BackupPath,
+    bool BackupSkipped,
+    bool DryRun);
+
+/// <summary>Output of <c>scri hint --json</c> — the raw structured HintResult shape for
+/// programmatic consumers, distinct from the hook envelope Hint.BuildHookEnvelope emits.</summary>
+internal sealed record CliHintOutput(int Count, CliHintMatch[] Matches);
+
+internal sealed record CliHintMatch(string Scope, string Name, double Score);

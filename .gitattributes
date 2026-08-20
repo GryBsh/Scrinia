@@ -1,0 +1,8 @@
+# Read by publish.sh with a tab-splitting `read`. A CRLF checkout would leave a carriage
+# return on the last field of every row and silently corrupt the `rids` column.
+publish.projects.tsv text eol=lf
+
+# publish.sh is executed by bash. This repo is developed with core.autocrlf=true, and a CRLF
+# checkout makes a shell script fail at the shebang ("bad interpreter: /bin/bash^M"). All three
+# tracked .sh blobs are LF today; this keeps a CRLF one from ever being committed.
+*.sh text eol=lf

@@ -10,6 +10,59 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — `scri migrate` joins the CLI option family
+
+- `scri migrate` took `--workspace` where every other command takes `--workspace-root`. It now
+  takes `--workspace-root`. A script passing `--workspace` must be updated.
+- `scri migrate --json` is new: the command previously printed only human-readable text, so a
+  caller could not tell a completed migration from a no-op without parsing prose.
+- A bare `--backup` is no longer accepted. It was a no-op — see the backup fix below.
+
+### Changed (breaking) — `publish.ps1`'s `-WithVulkan` is now `-WithEmbeddings`
+
+- The switch decides whether the embeddings plugin ships; Vulkan is merely the backend that plugin
+  carries. The new name matches `publish.sh`'s existing `--with-embeddings`, so the two scripts
+  now take the same argument for the same decision.
+
+### Fixed — `scri migrate`'s backup switch now exists
+
+- `scri migrate` documented `--backup=true|false` for turning off the pre-migration backup. No
+  such switch was reachable: the parameter was declared `bool backup = true`, and the CLI framework
+  binds a `bool` as a bare presence flag with no value syntax, so `--backup=false` never parsed and
+  the backup could not be turned off by any input. The documented capability did not exist.
+- The switch is now `--skip-backup`, absent by default, and it works. Behaviour with no flag is
+  unchanged: the backup still runs. This is a fix rather than a rename — there was no working
+  spelling to rename from.
+
+### Fixed — the non-Windows publish path
+
+- `publish.sh` now publishes `scri-merge` when building for the host platform. A local Linux or
+  macOS build previously produced a workspace whose configured merge driver pointed at a binary
+  that had never been built. Release artifacts were never affected: `release.yml` builds each
+  platform on its own runner and has always shipped `scri-merge`.
+- A foreign-RID build of `scri-merge` is skipped with a warning rather than attempted. It is
+  NativeAOT, and native compilation cannot cross OS or CPU architecture.
+- `publish.sh`'s cleanup step, which deleted the plugin directory it had just populated, is gone.
+- Both publish scripts now take their project list from `publish.projects.tsv`, so a project added
+  to one is added to both, and a test holds the manifest against the release workflow.
+- Both scripts now warn instead of silently continuing when the Vulkan native libraries are absent,
+  which previously shipped the CPU backend under a Vulkan-named build without saying so.
+
+### Fixed — `scri hint --json` emits parseable JSON, and the documented environment form resolves
+
+- `scri hint --json` hand-built its output with an escaper that did not escape control characters,
+  so a memory name containing one produced output no JSON parser would accept. It now serializes
+  through the same source-generated context as the rest of the CLI. The output shape changes as a
+  result: `CliJsonContext` writes indented (multi-line) JSON where the old hand-rolled emitter wrote
+  one line. Field names are unchanged — `count`, `matches`, `scope`, `name`, and `score` still mean
+  the same thing — so a caller parsing the JSON rather than matching the raw text is unaffected.
+- `SCRINIA__EMBEDDINGS__PROVIDER` — the double-underscore form the configuration docs prescribe and
+  the server already accepts — now resolves in the CLI. Both underscore forms work;
+  `SCRINIA_EMBEDDINGS_PROVIDER` keeps priority where both are set, so no installation that set the
+  single-underscore form changes behaviour. An installation that exported the double-underscore form
+  for the server only (previously ignored by the CLI, which fell through to `.scrinia/config.json`)
+  will see the CLI pick it up now.
+
 ### Changed (breaking) — MCP `search`, `list` and `facts` take `scopes`/`excludeTopics` as arrays
 
 - `search`, `list` and `facts` now take `scopes` and `excludeTopics` as string arrays instead of

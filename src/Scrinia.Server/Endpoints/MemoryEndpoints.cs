@@ -131,7 +131,20 @@ public static class MemoryEndpoints
     private const int MaxCarriedChunkKeywords = 25;
 
     /// <summary>True when the caller may write to <c>store</c> — i.e. the store is not
-    /// marked read-only by an SSO store_access claim. API keys default to read-write.</summary>
+    /// marked read-only by an SSO store_access claim. API keys default to read-write.
+    ///
+    /// <para><b>No shipped configuration can make this false today.</b> The claim is read from
+    /// <see cref="RequestContext.StoreAccessLevels"/>, which <c>Program.cs</c> fills from
+    /// <c>store_access</c> claims — and nothing outside the test suite emits one. The only
+    /// <c>IClaimsTransformation</c> in the tree is a test stand-in
+    /// (<c>Scrinia.Server.Tests.MarkTargetUserReadOnlyTransform</c>), and no authentication handler
+    /// adds the claim, so every request evaluates as writable at every call site — seven in this
+    /// file, one in EmbeddingsEndpoints, and the <c>McpPermissionFilter.CurrentStoreReadOnly</c>
+    /// assignment in <c>Program.cs</c>'s MCP session setup, which gates the MCP surface. This is
+    /// deliberate forward-looking scaffolding, not a live enforcement path: a reader of the guards
+    /// below should not conclude that read-only stores are enforced today. To make it bite, register
+    /// an <c>IClaimsTransformation</c> outside tests that emits <c>store_access</c> claims of the
+    /// form <c>{store}:read-only</c>.</para></summary>
     internal static bool IsWritable(RequestContext ctx, string store) =>
         !string.Equals(ctx.GetStoreAccessLevel(store), "read-only", StringComparison.OrdinalIgnoreCase);
 

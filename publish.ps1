@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)]
     [string]$OutputDir,
 
-    [switch]$WithVulkan,
+    [switch]$WithEmbeddings,
 
     [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string]$Platform
@@ -10,68 +10,189 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$Rids = if ($Platform) { @($Platform) } else { @('win-x64', 'linux-x64', 'osx-arm64') }
-$Project = 'src/Scrinia/Scrinia.csproj'
-$MergeProject = 'src/Scrinia.Merge/Scrinia.Merge.csproj'
-$VulkanProject = 'src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj'
+$AllRids = @('win-x64', 'linux-x64', 'osx-arm64')
+$Rids = if ($Platform) { @($Platform) } else { $AllRids }
 # When a single platform is specified, output directly into OutputDir (no RID subdirectory).
 $SinglePlatform = [bool]$Platform
+
+# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in the
+# Scrinia.Plugin.Embeddings project file by a test — a drift here makes the overwrite path
+# below not exist, which used to be a silent skip.
+$VulkanBackendVersion = '0.25.0'
+
+# Projects marked rids=host in the manifest are published only for this machine's own RID.
+# Scrinia.Merge is NativeAOT, and cross-OS native compilation is unsupported: a foreign-RID
+# publish exits 1 and writes nothing.
+#
+# RuntimeInformation rather than $IsWindows/$IsLinux/$IsMacOS: those automatic variables do not
+# exist in Windows PowerShell 5.1, where they evaluate to $null — which would skip scri-merge for
+# EVERY rid and reproduce the missing merge driver this branch fixes. OS and architecture are
+# resolved separately and joined so a linux-arm64 or win-arm64 host is not mistaken for its x64
+# sibling — the same distinction the old macOS-only branch made, now made for every OS.
+$HostOs =
+    if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { 'win' }
+    elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) { 'linux' }
+    elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) { 'osx' }
+    else { '' }
+$HostArch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+    'X64'   { 'x64' }
+    'Arm64' { 'arm64' }
+    default { '' }
+}
+$HostRid = if ($HostOs -and $HostArch) { "$HostOs-$HostArch" } else { '' }
+# Whether the host's own RID is one this script can actually publish for (and so a safe thing
+# to suggest in the [skip] message below). osx-x64 and an unrecognised host are examples of a
+# real, buildable machine whose RID is not in $AllRids.
+$HostRidSupported = $AllRids -contains $HostRid
+
+# The manifest is the one source of truth for what ships. publish.sh reads the same file.
+$Manifest = Join-Path $PSScriptRoot 'publish.projects.tsv'
+if (-not (Test-Path $Manifest)) { throw "Manifest not found at $Manifest" }
+
+$ManifestLines = @(Get-Content -Path $Manifest)
+if ($ManifestLines.Count -eq 0) { throw "Manifest $Manifest is empty" }
+
+# Pinned exactly, in order: publish.sh reads columns POSITIONALLY, so a reordered or renamed
+# header would silently misassign every field there without either script raising an error.
+# -cne is a case-sensitive comparison — plain -ne is case-insensitive in PowerShell and would
+# accept a header bash rejects. publish.sh pins the identical line — the two readers of one
+# source of truth must agree about what the file means.
+$ExpectedHeader = "id`tproject`tcondition`tprofile`toutput`trids"
+if ($ManifestLines[0] -cne $ExpectedHeader) {
+    throw "Manifest header must be exactly 'id<TAB>project<TAB>condition<TAB>profile<TAB>output<TAB>rids' — found '$($ManifestLines[0])'"
+}
+
+# Import-Csv cannot see a field beyond the header's column count — it silently drops extras
+# rather than erroring the way publish.sh's positional `read` does. Validated against the raw
+# line, before Import-Csv ever runs, so a 7-column row is rejected here instead of quietly
+# publishing with its last field dropped.
+foreach ($line in $ManifestLines | Select-Object -Skip 1) {
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { continue }
+    $fieldCount = @($line -split "`t").Count
+    if ($fieldCount -ne 6) {
+        throw "Manifest row has $fieldCount tab-separated columns, expected 6: '$line'"
+    }
+}
+
+# Filters blank and #-prefixed rows exactly as publish.sh does. The two readers of one source
+# of truth must agree about what the file means.
+$Projects = @(Import-Csv -Path $Manifest -Delimiter "`t" |
+    Where-Object { $_.id -and -not $_.id.StartsWith('#') })
+if ($Projects.Count -eq 0) { throw "Manifest $Manifest lists no projects" }
+# Validated here, once, at read time — not deep inside the publish loop — so a bad row is
+# caught before any artifact has been published for any RID, rather than mid-run.
+#
+# -cnotin, not -notin: PowerShell's membership operators are case-insensitive by default, so
+# plain -notin would silently ACCEPT 'output=Rid' where publish.sh's `case` rejects it. Every
+# comparison against a manifest value here and in the publish loop below uses the
+# case-sensitive form for the same reason — condition and rids gate which projects/RIDs
+# actually build, so a value degrading past validation used to ship the embeddings plugin in
+# EVERY build (a `with_embeddings` typo) or silently fall back to `all` RIDs (`rids=hostt`).
+foreach ($p in $Projects) {
+    if ($p.output -cnotin @('rid', 'plugin')) { throw "Unknown output kind '$($p.output)' for $($p.id)" }
+    if ($p.profile -cnotin @('trimmed', 'plain')) { throw "Unknown profile '$($p.profile)' for $($p.id)" }
+    if ($p.condition -cnotin @('always', 'with-embeddings')) { throw "Unknown condition '$($p.condition)' for $($p.id)" }
+    if ($p.rids -cnotin @('all', 'host')) { throw "Unknown rids scope '$($p.rids)' for $($p.id)" }
+}
+
+# Overwrites the published native DLLs with the Vulkan-compiled variants. Single-file publish
+# flattens all native DLLs to the root, and the CPU backend's (ggml-base, ggml, llama, mtmd)
+# overwrite the Vulkan ones since they share filenames — so LLamaSharp would load CPU.
+function Set-VulkanNatives {
+    param([string]$Rid, [string]$Dest)
+
+    $pkg = if ($Rid -like 'win-*') { 'llamasharp.backend.vulkan.windows' }
+           elseif ($Rid -like 'linux-*') { 'llamasharp.backend.vulkan.linux' }
+           else { $null }
+
+    if (-not $pkg) {
+        # [Console]::Error, not Write-Warning: publish.sh writes these to stderr, and the two
+        # scripts are meant to be an equivalent pair. Write-Warning uses the warning stream.
+        [Console]::Error.WriteLine("  [warn] no Vulkan backend package exists for $Rid; shipping the CPU backend.")
+        return
+    }
+
+    # $HOME, not $env:USERPROFILE: the latter is Windows-only and unset on Linux/macOS, which
+    # made this branch never find the Vulkan natives there and silently ship the CPU backend
+    # every time. $HOME is a PowerShell automatic variable on every platform.
+    $src = "$HOME/.nuget/packages/$pkg/$VulkanBackendVersion/runtimes/$Rid/native/vulkan"
+    if (Test-Path $src) {
+        Copy-Item "$src/*" $Dest -Force
+        Write-Host '    Overwrote root native DLLs with Vulkan variants'
+    } else {
+        [Console]::Error.WriteLine("  [warn] Vulkan natives not found at $src; shipping the CPU backend.")
+    }
+}
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 foreach ($rid in $Rids) {
     $ridDir = if ($SinglePlatform) { $OutputDir } else { "$OutputDir/$rid" }
 
-    Write-Host "Publishing $rid ..."
-    # Trim-analysis warnings are gated as errors so a regression silently dropping a member
-    # via reflection cannot ship. If a trim warning fires, fix the root cause — either move
-    # to a JsonSerializerContext, annotate with [DynamicallyAccessedMembers], or rewrite the
-    # reflection-heavy call to a trim-safe shape.
-    dotnet publish $Project `
-        --runtime $rid `
-        --self-contained `
-        --configuration Release `
-        -p:PublishSingleFile=true `
-        -p:PublishTrimmed=true `
-        -p:SuppressTrimAnalysisWarnings=false `
-        -p:TreatWarningsAsErrors=true `
-        --output $ridDir
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid" }
-    Write-Host "  -> $ridDir"
+    foreach ($p in $Projects) {
+        # -ceq: case-sensitive. Plain -eq is case-insensitive in PowerShell, so 'With-Embeddings'
+        # or 'Host' would silently match here where publish.sh's bash `[ = ]` would not.
+        if ($p.condition -ceq 'with-embeddings' -and -not $WithEmbeddings) { continue }
 
-    Write-Host "  Publishing scri-merge for $rid ..."
-    dotnet publish $MergeProject `
-        --runtime $rid `
-        --configuration Release `
-        --output $ridDir
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish (scri-merge) failed for $rid" }
-    Write-Host "  -> $ridDir/scri-merge"
-
-    if ($WithVulkan) {
-        Write-Host "  Publishing Vulkan embeddings plugin for $rid ..."
-        $pluginsDir = "$ridDir/plugins/scri-plugin-embeddings"
-        # Single-file + self-contained (not trimmed). Native DLLs extract alongside the exe.
-        dotnet publish $VulkanProject `
-            --runtime $rid `
-            --configuration Release `
-            --output $pluginsDir
-        if ($LASTEXITCODE -ne 0) { throw "dotnet publish (vulkan plugin) failed for $rid" }
-
-        # Single-file publish flattens all native DLLs to the root. The CPU backend's
-        # DLLs (ggml-base, ggml, llama, mtmd) overwrite the Vulkan ones since they share
-        # filenames. Overwrite the root copies with the Vulkan-compiled versions so
-        # LLamaSharp loads Vulkan by default.
-        $nugetBase = "$env:USERPROFILE/.nuget/packages"
-        if ($rid -like 'win-*') {
-            $vulkanSrc = "$nugetBase/llamasharp.backend.vulkan.windows/0.25.0/runtimes/$rid/native/vulkan"
-        } else {
-            $vulkanSrc = "$nugetBase/llamasharp.backend.vulkan.linux/0.25.0/runtimes/$rid/native/vulkan"
+        if ($p.rids -ceq 'host' -and $rid -ne $HostRid) {
+            if ($HostRidSupported) {
+                [Console]::Error.WriteLine(
+                    "  [skip] $($p.id) for ${rid}: it is NativeAOT and native compilation cannot cross " +
+                    "OS or CPU architecture. Build on $rid, or use -Platform $HostRid.")
+            } else {
+                # The platform's own identification of itself, not $HostOs/$HostArch — those are
+                # the NORMALIZED values, and on a host this script cannot map one of them is
+                # empty, which is how this line came to print "(/x64)". publish.sh prints
+                # `uname -s`/`uname -m` here for the same reason.
+                $rawOs = [Runtime.InteropServices.RuntimeInformation]::OSDescription
+                $rawArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+                [Console]::Error.WriteLine(
+                    "  [skip] $($p.id) for ${rid}: it is NativeAOT and native compilation cannot " +
+                    "cross OS or CPU architecture, and this host ($rawOs/$rawArch) is not one this " +
+                    "script publishes for. Supported: $($AllRids -join ' ').")
+            }
+            continue
         }
-        if (Test-Path $vulkanSrc) {
-            Copy-Item "$vulkanSrc/*" $pluginsDir -Force
-            Write-Host "    Overwrote root native DLLs with Vulkan variants"
+
+        # -CaseSensitive: a bare `switch` matches case-insensitively in PowerShell, so
+        # 'output=Rid' would silently take the 'rid' branch instead of falling to default.
+        $outDir = switch -CaseSensitive ($p.output) {
+            'rid'    { $ridDir }
+            'plugin' { "$ridDir/plugins/$($p.id)" }
+            default  { throw "Unknown output kind '$($p.output)' for $($p.id)" }
         }
-        Write-Host "  -> $pluginsDir"
+
+        Write-Host "Publishing $($p.id) for $rid ..."
+        switch -CaseSensitive ($p.profile) {
+            'trimmed' {
+                # Trim-analysis warnings are gated as errors so a regression silently dropping a
+                # member via reflection cannot ship. If a trim warning fires, fix the root cause —
+                # either move to a JsonSerializerContext, annotate with [DynamicallyAccessedMembers],
+                # or rewrite the reflection-heavy call to a trim-safe shape.
+                dotnet publish (Join-Path $PSScriptRoot $p.project) `
+                    --runtime $rid `
+                    --self-contained `
+                    --configuration Release `
+                    -p:PublishSingleFile=true `
+                    -p:PublishTrimmed=true `
+                    -p:SuppressTrimAnalysisWarnings=false `
+                    -p:TreatWarningsAsErrors=true `
+                    --output $outDir
+            }
+            'plain' {
+                # Single-file + self-contained + native bundling is configured in the project
+                # file. Only --runtime is needed here for RID selection.
+                dotnet publish (Join-Path $PSScriptRoot $p.project) `
+                    --runtime $rid `
+                    --configuration Release `
+                    --output $outDir
+            }
+            default { throw "Unknown profile '$($p.profile)' for $($p.id)" }
+        }
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $($p.id) / $rid" }
+
+        if ($p.output -ceq 'plugin') { Set-VulkanNatives -Rid $rid -Dest $outDir }
+        Write-Host "  -> $outDir"
     }
 }
 
@@ -82,9 +203,9 @@ foreach ($rid in $Rids) {
     Get-ChildItem "$ridDir/scri*" -ErrorAction SilentlyContinue |
         ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |
         Write-Host
-    if ($WithVulkan) {
+    if ($WithEmbeddings) {
         $ext = if ($rid -like 'win-*') { '.exe' } else { '' }
-        Get-ChildItem "$ridDir/plugins/scri-plugin-embeddings$ext" -ErrorAction SilentlyContinue |
+        Get-ChildItem "$ridDir/plugins/scri-plugin-embeddings/scri-plugin-embeddings$ext" -ErrorAction SilentlyContinue |
             ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |
             Write-Host
     }

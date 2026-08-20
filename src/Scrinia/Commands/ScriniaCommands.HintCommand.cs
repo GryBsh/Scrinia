@@ -90,11 +90,15 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            // Raw structured HintResult shape for programmatic consumers — distinct from
-            // the hook envelope (which wraps a model-facing instruction string).
-            var matches = string.Join(",", result.Matches.Select(m =>
-                $"{{\"scope\":\"{m.Scope}\",\"name\":\"{JsonEscape(m.Name)}\",\"score\":{m.Score.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"));
-            Console.WriteLine($"{{\"count\":{result.Matches.Count},\"matches\":[{matches}]}}");
+            // Raw structured HintResult shape for programmatic consumers — distinct from the hook
+            // envelope (which wraps a model-facing instruction string). Through the generated context,
+            // not string interpolation: this used to escape the name with a two-character escaper and
+            // interpolate the scope with none at all.
+            WriteJson(
+                new CliHintOutput(
+                    result.Matches.Count,
+                    [.. result.Matches.Select(m => new CliHintMatch(m.Scope, m.Name, m.Score))]),
+                CliJsonContext.Default.CliHintOutput);
         }
         else if (plain)
         {
@@ -108,6 +112,10 @@ public partial class ScriniaCommands
             Console.WriteLine(HintCommand.FormatHook(
                 result, "UserPromptSubmit", HintCommand.ParseClient(client)));
         }
+        // Deliberate unconditional zero, not a missing failure path. This command runs as a
+        // UserPromptSubmit hook: a non-zero exit is how a hook signals "block this prompt", so
+        // reporting an internal failure that way would fail the user's turn over a missing hint.
+        // Every early return above is zero for the same reason.
         return 0;
     }
 
@@ -145,7 +153,4 @@ public partial class ScriniaCommands
         catch (System.Text.Json.JsonException) { /* fall through */ }
         return raw;
     }
-
-    private static string JsonEscape(string s) =>
-        s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 }
