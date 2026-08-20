@@ -135,9 +135,6 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
-        // The whole store, not a narrowed one: only the /agent/ branch below needs local files, and
-        // it is guarded where it is reached. A remote store implements everything else — ephemeral
-        // storage included — so narrowing here would break remember() in remote mode.
         var store = CurrentStore;
 
         // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
@@ -145,10 +142,9 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["/agent/".Length..].Trim();
 
-            // Validate before the guard, so /agent/ and /skill/ answer the same way for the same
-            // bad input. SkillCreate validates its name first; without this hoist, a remote
-            // remember({ path: '/agent/bad name' }) reported NOT_SUPPORTED while the /skill/
-            // sibling reported INVALID_PARAMETER. The path check below stays as defence in depth.
+            // Validated first, so /agent/ and /skill/ answer the same way for the same bad input:
+            // a bad name is INVALID_PARAMETER on both, never whatever the next guard would have
+            // said. The path check below stays as defence in depth.
             if (!FileEntityName.IsValid(agentSubject))
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.",
@@ -334,10 +330,9 @@ public sealed partial class ScriniaMcpTools
 
         // The ephemeral branch sits AHEAD of ParseQualifiedName, where the refusal it replaces sat:
         // ParseQualifiedName does not strip `~`, so a ~name reaching it resolves to a persistent
-        // address that is not this memory. An ephemeral lives in this process in both store modes
-        // (FileMemoryStore's map locally, HttpMemoryStore's own map remotely — nothing about it goes
-        // over the wire), so the same three members serve both: GetEphemeral, the projection pair on
-        // EphemeralEntry, and RememberEphemeral.
+        // address that is not this memory. An ephemeral lives in this process — never on disk — so
+        // three members serve it: GetEphemeral, the projection pair on EphemeralEntry, and
+        // RememberEphemeral.
         if (ephemeral)
         {
             string key = MemoryNaming.StripEphemeralPrefix(name);
@@ -379,13 +374,11 @@ public sealed partial class ScriniaMcpTools
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
             // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
-            // used to have. Remotely, Upsert is a deliberate no-op, so that shape mutated a copy,
-            // handed it to a method that discards it, and still reported "updated" — link() said
-            // "Linked 'a' <-> 'b'" while the `ref` attribute never reached the server. TryUpdateEntry
-            // is the seam that already fails closed there (HttpMemoryStore overrides it precisely so a
-            // mutation it cannot persist is refused rather than silently dropped), and locally it
-            // additionally runs under FileMemoryStore's per-scope write lock, so load→mutate→persist
-            // is atomic instead of a racy read-modify-write. `found`/`changes` are captured out of the
+            // used to have: it runs under FileMemoryStore's per-scope write lock, so
+            // load→mutate→persist is atomic instead of a racy read-modify-write. (The shape it
+            // replaced was also how link() came to report "Linked 'a' <-> 'b'" while the `ref`
+            // attribute reached nothing — on the remote store Upsert was a deliberate no-op, so the
+            // mutated copy was handed to a method that discards it.) `found`/`changes` are captured out of the
             // callback because a false return has three distinct causes the caller must tell apart:
             // no such entry, nothing to change, and "found but not persistable".
             //
@@ -409,12 +402,12 @@ public sealed partial class ScriniaMcpTools
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, attributes, description, reviewAfter, reviewWhen."));
 
-        // Found, had something to change, and the store still would not persist it. Remotely that
-        // now means the server REFUSED the metadata write rather than that no channel exists —
-        // most often because the change touches keywords, which are derived from content the
-        // metadata endpoint does not have. Reporting success here is the defect this branch exists
-        // to close, so say so plainly instead. Unreachable for an ephemeral: the write is a
-        // dictionary assignment in this process, and the only other way out of that branch is the
+        // Found, had something to change, and the store still would not persist it. Reporting
+        // success here is the defect this branch exists to close, so it says so plainly instead.
+        // It was reachable when a metadata-only write could be refused for touching keywords, which
+        // are derived from content a metadata endpoint does not carry; against a filesystem store
+        // it is a genuine fault rather than a contract. Unreachable for an ephemeral: the write is
+        // a dictionary assignment in this process, and the only other way out of that branch is the
         // null mutation the warning above already answered.
         if (!persisted)
             return Task.FromResult(ResponseBuilder.Error(
@@ -422,7 +415,7 @@ public sealed partial class ScriniaMcpTools
                 "metadata-only change. Changing keywords is the usual cause — they are derived " +
                 "from the memory's content, so they can only change through a write that carries it.",
                 ErrorCodes.NotSupported,
-                "remember({ path: '...', content: [...] }) — a full write does carry attributes, keywords and description to a remote store"));
+                "remember({ path: '...', content: [...] }) — a full write carries attributes, keywords and description together"));
 
         // An ephemeral write touches no file, so it reports no file changes.
         var success = ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.");
@@ -445,9 +438,9 @@ public sealed partial class ScriniaMcpTools
     /// <para><paramref name="changes"/> is an accumulator, appended to in place, and it is how the
     /// caller renders the response. <b>It is the caller's job to make sure it describes one
     /// mutation.</b> On the persistent path that is free — <c>TryUpdateEntry</c> invokes its
-    /// mutation exactly once in all three implementations
-    /// (<see cref="IMemoryStore.TryUpdateEntry"/>'s default, <c>FileMemoryStore</c>'s locked
-    /// override, and <c>HttpMemoryStore</c>'s GET-mutate-PATCH override). On the ephemeral path it
+    /// mutation exactly once in both implementations
+    /// (<see cref="IMemoryStore.TryUpdateEntry"/>'s default and <c>FileMemoryStore</c>'s locked
+    /// override). On the ephemeral path it
     /// is not: <see cref="IMemoryStore.TryUpdateEphemeral"/> is a compare-and-swap that re-runs its
     /// mutation against the newer entry when a concurrent writer wins the swap, so
     /// <c>UpdateMeta</c>'s ephemeral callback clears the list on entry.</para>
@@ -578,12 +571,11 @@ public sealed partial class ScriniaMcpTools
         // boost for the added keywords and attributes itself — caller-side derivation, at a
         // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
         // strings rather than index tokens (against D-14), and reachable only through UpdateMeta
-        // — no caller outside link() and the tests. Over HTTP it could not persist at all: PATCH
-        // refuses TermFrequencies from a body, correctly, so this write reported full success
-        // while silently discarding the boost, and a remote corpus ranked differently from a
-        // local one forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside
-        // TryUpdateEntry on the persistent path, and at UpdateMeta's ephemeral branch, which IS
-        // the store for a ~name. Either way nothing derived crosses the wire.
+        // — no caller outside link() and the tests. (It could not persist over HTTP at all, so
+        // this write reported full success while discarding the boost, and a remote corpus ranked
+        // differently from a local one forever.) MemoryDerivation.ForMetadataUpdate re-derives it —
+        // inside TryUpdateEntry on the persistent path, and at UpdateMeta's ephemeral branch, which
+        // IS the store for a ~name.
         var updated = entry with
         {
             Keywords = mergedKeywords,
@@ -607,9 +599,6 @@ public sealed partial class ScriniaMcpTools
                      "An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        // The whole store, not a narrowed one: only the drift branch is unconditionally local.
-        // Summary mode, the empty-store early return, and full mode over entries without file
-        // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
 
         // A caller can send "mode": null over JSON-RPC, distinct from omitting the field.
@@ -1119,14 +1108,11 @@ public sealed partial class ScriniaMcpTools
     /// <see cref="IMemoryStore.GetEphemeral"/> for a <c>~name</c>, and
     /// <see cref="IMemoryStore.TryUpdateEntry"/> with a mutation that returns null for everything
     /// else. That member's contract is exactly this probe — the mutation runs if and only if the
-    /// entry exists, and a null return persists nothing — so all three implementations short-circuit
+    /// entry exists, and a null return persists nothing — so both implementations short-circuit
     /// before their write.</para>
     ///
     /// <para>A <c>LoadIndex</c> scan would have been a SECOND resolution rule to keep in step with
-    /// <c>FileMemoryStore.TryUpdateEntry</c>'s sidecar lookup, and remotely a second ENDPOINT: the
-    /// listing route needs the <c>search</c> permission where the metadata route needs <c>read</c>,
-    /// so an API key scoped for <c>link</c> would have begun failing on the precheck — and failing
-    /// by throwing, since a 403 there is deliberately not "not found".</para>
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s sidecar lookup.</para>
     /// </summary>
     private static bool Exists(IMemoryStore store, string name)
     {

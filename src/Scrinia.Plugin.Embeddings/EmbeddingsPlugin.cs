@@ -11,7 +11,7 @@ using Scrinia.Plugin.Abstractions;
 namespace Scrinia.Plugin.Embeddings;
 
 /// <summary>
-/// Vulkan GPU-accelerated embeddings plugin for the server path.
+/// Vulkan GPU-accelerated embeddings plugin.
 ///
 /// Implements three interfaces:
 /// - <see cref="IMemoryOperationHook"/>: REST path hooks (via PluginPipeline)

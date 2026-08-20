@@ -1185,10 +1185,9 @@ public sealed partial class ScriniaMcpTools
         }
         else
         {
-            // Case-insensitive match plus canonical-casing carry-forward — see
-            // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
-            // the whole class's reasoning. Here an ordinal match sent the write out with no metadata
-            // at all, which is precisely the reset this read exists to prevent.
+            // Case-insensitive match plus canonical-casing carry-forward, the same rule every
+            // other name lookup in this codebase follows. Here an ordinal match sent the write out
+            // with no metadata at all, which is precisely the reset this read exists to prevent.
             var entries = store.LoadIndex(scope);
             var existingEntry = entries.FirstOrDefault(
                 e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -1304,13 +1303,11 @@ public sealed partial class ScriniaMcpTools
         var followUpNames = new List<string>();
         string? instruction = null;
 
-        // Check for unresolved merge conflicts in .scrinia/ — local stores only; a remote store
-        // has no working copy to conflict.
-        if (store is IMemoryStore conflictLayout)
+        // Check for unresolved merge conflicts in .scrinia/.
         {
             try
             {
-                string resumeScriniaDir = Path.Combine(conflictLayout.WorkspaceRoot, ".scrinia");
+                string resumeScriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
                 if (Directory.Exists(resumeScriniaDir))
                 {
                     bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
@@ -1332,14 +1329,11 @@ public sealed partial class ScriniaMcpTools
             catch { /* best-effort check */ }
         }
 
-        // Available skills (built-in + disk overrides). Skipped entirely for a remote store:
-        // the built-in names alone, with no disk overrides to reconcile them against, would
-        // report a skill set the agent cannot actually load remotely.
-        if (store is IMemoryStore skillsLayout)
+        // Available skills (built-in + disk overrides).
         {
             try
             {
-                string skillsDir = PathRouter.ToFileEntityDir("skill", skillsLayout.WorkspaceRoot);
+                string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
                 var diskSkills = Directory.Exists(skillsDir)
                     ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
                     : [];
@@ -1357,14 +1351,10 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Collect agent/* names for followUp — .md files first, NMP/2 fallback.
-        // The whole section is local-only, fallback included: remotely the workspace-root read
-        // threw into the catch below and took the fallback with it. Preserved deliberately —
-        // widening it to run the NMP/2 branch remotely is a behaviour change, not a tidy-up.
-        if (store is IMemoryStore agentLayout)
         {
             try
             {
-                string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
+                string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
                 bool usedMdFiles = false;
 
                 if (Directory.Exists(agentDir))

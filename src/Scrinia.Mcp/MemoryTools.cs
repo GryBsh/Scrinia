@@ -103,7 +103,7 @@ public sealed partial class ScriniaMcpTools
     /// <summary>
     /// Canonicalizes an address arriving at the MCP facade. One helper rather than seven
     /// repetitions of the same call — the CLI (<c>ScriniaCommands.RefuseEphemeral</c>) and REST
-    /// (<c>MemoryEndpoints.NameRefusal</c>) already have theirs.
+    /// already have theirs.
     ///
     /// <para>The facade canonicalizes and PROCEEDS; the CLI and REST deliberately REFUSE instead,
     /// because their processes cannot serve an ephemeral memory back — the CLI exits immediately,

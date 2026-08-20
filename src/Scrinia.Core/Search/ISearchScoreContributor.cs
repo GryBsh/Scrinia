@@ -17,7 +17,8 @@ public interface ISearchScoreContributor
 /// AsyncLocal context for making <see cref="ISearchScoreContributor"/> available
 /// to both MCP tools and REST endpoints without passing it through every method.
 /// <para>
-/// In the server, <see cref="Current"/> is set per-request (AsyncLocal).
+/// <see cref="Current"/> is an AsyncLocal, so a host that serves concurrent callers sets it per
+/// call rather than once per process.
 /// In the CLI, AsyncLocal doesn't propagate through the generic host to MCP tool handlers,
 /// so <see cref="Default"/> provides a process-wide fallback.
 /// </para>
@@ -41,7 +42,7 @@ public static class SearchContributorContext
 /// scores reach <c>WeightedAttributeScorer</c> as a distinct fusion source instead of being
 /// merged with embeddings/path-segment.
 /// <para>Same Current/Default contract and rationale as
-/// <see cref="SearchContributorContext"/>: the server sets <see cref="Current"/> per
+/// <see cref="SearchContributorContext"/>: a multi-caller host sets <see cref="Current"/> per
 /// request; the CLI sets <see cref="Default"/> because AsyncLocal doesn't propagate
 /// through the generic host to MCP tool handlers.</para>
 /// </summary>

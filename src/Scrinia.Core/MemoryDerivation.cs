@@ -26,11 +26,10 @@ namespace Scrinia.Core;
 /// <para><b>Raw in, derived out (D-01/D-29).</b> The keyword parameters carry the CALLER's raw
 /// keywords. A derived keyword list must never be handed back in as input: doing so reclassifies
 /// every auto-extracted term as agent-supplied and boosts it +5 instead of +2. That was the mistake
-/// <c>HttpMemoryStore.WriteArtifactAsync</c> used to make by sending MCP's already-merged keywords
-/// over the wire — it now sends only <c>StoreApiRequest([text], qualifiedName)</c>, no keywords at
-/// all (see <c>CHANGELOG.md</c>'s "remote writes silently discarded the agent's metadata" entry) —
-/// and it is still the mistake the one compact would make by round-tripping its stored keyword
-/// list. There
+/// the deleted <c>HttpMemoryStore.WriteArtifactAsync</c> made by sending MCP's already-merged
+/// keywords over the wire (see <c>CHANGELOG.md</c>'s "remote writes silently discarded the agent's
+/// metadata" entry), and it is still the mistake the one compact would make by round-tripping its
+/// stored keyword list. There
 /// is deliberately no parameter on <see cref="ForStore"/> through which a previously-derived list
 /// could enter. (<see cref="ForAppend"/>'s <see cref="ExistingMetadata.Keywords"/> is the one
 /// carry-forward, and it is a ruled data-loss fix — D-12 — not a round-trip: an append that
@@ -45,7 +44,8 @@ public static partial class MemoryDerivation
     private const int AutoKeywordBoost = 2;
 
     // Content whose claims are counts goes stale silently, so a count pattern auto-derives a
-    // review condition (D-05 — kept; the server never implemented it). Copied from
+    // review condition (D-05 — kept when the two derivation paths were reconciled; the server's
+    // never implemented it). Copied from
     // ScriniaMcpTools.CountPattern; that copy dies with the MCP derivation block it serves.
     [GeneratedRegex(@"\b\d+\s+(tests?|tools?|skills?|endpoints?|routes?|models?|memories)\b",
         RegexOptions.IgnoreCase)]
@@ -123,9 +123,9 @@ public static partial class MemoryDerivation
         if (string.IsNullOrWhiteSpace(reviewWhen) && !isEphemeral && CountPattern().IsMatch(joined))
             reviewWhen = CountReviewCondition;
 
-        // D-04: the drift baseline is computed on BOTH store modes now. It used to be skipped
-        // whenever the store was remote, so a remote write had no baseline at all; the pipeline
-        // runs inside the store, so whoever has the workspace supplies the hasher.
+        // D-04: the drift baseline is always computed. It used to be skipped whenever the store
+        // was remote, so a remote write had no baseline at all; this pipeline runs inside the
+        // store, so whoever has the workspace supplies the hasher.
         var fileHashes = HashFileRefs(attrs, fileHasher);
 
         var carrier = AttributeMigration.BuildCarrierAttributes(
@@ -136,10 +136,10 @@ public static partial class MemoryDerivation
 
         // D-08 — the one deliberate ordering choice in the pipeline, and it inverts the "MCP wins"
         // default. The complete attribute map is assembled FIRST, then seeded exactly ONCE, here,
-        // as the last step of attribute handling. This is the server's order: MCP seeded before
-        // folding its carrier, so tag/review/file values never seeded at all and anchor values
-        // seeded +2 from a separate pass. MCP's split is not expressible over one flat map — a
-        // wire map cannot say which keys were "carrier" — so the two paths converge on this one.
+        // as the last step of attribute handling. This was the server's order; MCP's was to seed
+        // before folding its carrier, so tag/review/file values never seeded at all and anchor
+        // values seeded +2 from a separate pass. MCP's split is not expressible over one flat map —
+        // a map cannot say which keys were "carrier" — so the two paths converged on this one.
         // Deliberate, user-visible ranking change: tag/review/file 0 → +3, anchor +2 → +3.
         AttributeExtractor.SeedTermFrequencies(attrs, tf);
 
@@ -398,11 +398,11 @@ public static partial class MemoryDerivation
     /// <c>TermFrequencies</c> from a body, correctly — so the same edit indexed locally and did not
     /// index remotely, with a success reported both times.</para>
     ///
-    /// <para><b>The rule is here and applied by whichever side holds the store</b>, i.e. inside
-    /// <see cref="IMemoryStore.TryUpdateEntry"/>. A local session applies it in
-    /// <c>FileMemoryStore</c>; a remote one sends only the attributes, and the server applies it in
-    /// the <c>FileMemoryStore</c> behind <c>PATCH</c>. No derived value crosses the wire, one
-    /// implementation serves both, and every mutation route gets it.</para>
+    /// <para><b>The rule is here and applied by whoever holds the store</b>, i.e. inside
+    /// <see cref="IMemoryStore.TryUpdateEntry"/>, which is what makes every mutation route get it.
+    /// While there was a wire, this placement was also what kept a derived value off it: the remote
+    /// client sent only the attributes and the server's own <c>FileMemoryStore</c> derived from
+    /// them.</para>
     ///
     /// <para><b>Only the DELTA seeds.</b> Term frequencies are cumulative, so re-seeding the whole
     /// attribute map on every update would inflate every token without bound and make an unedited

@@ -45,7 +45,7 @@ public sealed partial class ScriniaMcpTools
     /// JSON options for MCP tool parameter marshalling. The tool surface exposes
     /// <c>Dictionary&lt;string, string[]&gt;</c> parameters (<c>attributes</c> / <c>attributeFilter</c> on
     /// remember/search/append). The trimmed single-file <c>scri serve</c> publish has no reflection
-    /// metadata, so the server must marshal them via source generation — compose the SDK defaults
+    /// metadata, so the host must marshal them via source generation — compose the SDK defaults
     /// (primitives, arrays, MCP protocol types) with <see cref="ScriniaMcpJsonContext"/>, which supplies
     /// the attribute-dictionary metadata. Pass to <c>WithTools&lt;ScriniaMcpTools&gt;(...)</c>; without it,
     /// tool construction throws <see cref="System.NotSupportedException"/> at server startup under trimming.

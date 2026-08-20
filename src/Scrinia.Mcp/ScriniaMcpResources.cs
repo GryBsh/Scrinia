@@ -11,7 +11,7 @@ namespace Scrinia.Mcp;
 /// MCP resources exposed by the Scrinia server. Lets a stored memory be pulled into context as an
 /// attachment via an <c>@</c>-mention on clients that honor MCP resources (Claude Code, OpenCode).
 /// Tools-only clients (Codex, Copilot) ignore resources — they reach memories through the tools and
-/// the server <c>instructions</c> field instead.
+/// the MCP server's <c>instructions</c> field instead.
 ///
 /// <para>Read-only: the resource resolves a memory name/path to its decoded text using the same
 /// store + NMP/2 decode path the <c>recall</c>/<c>show</c> tool uses.</para>
@@ -40,7 +40,7 @@ public sealed class ScriniaMcpResources
 
         // Same resolution + decode path as the show/recall tool: resolve to the NMP/2 artifact,
         // then decode to the original UTF-8 text. Translate a missing memory into a clean MCP error
-        // rather than leaking a FileNotFoundException (mirrors REST's 404 in MemoryEndpoints).
+        // rather than leaking a FileNotFoundException.
         string artifact;
         try
         {

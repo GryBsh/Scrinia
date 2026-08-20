@@ -16,7 +16,8 @@ public interface IMemoryEventSink
 /// AsyncLocal context for making <see cref="IMemoryEventSink"/> available
 /// to MCP tools without passing it through every method.
 /// <para>
-/// In the server, <see cref="Current"/> is set per-request (AsyncLocal).
+/// <see cref="Current"/> is an AsyncLocal, so a host that serves concurrent callers sets it per
+/// call rather than once per process.
 /// In the CLI, AsyncLocal doesn't propagate through the generic host to MCP tool handlers,
 /// so <see cref="Default"/> provides a process-wide fallback.
 /// </para>

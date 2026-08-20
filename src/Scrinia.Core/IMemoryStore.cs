@@ -92,12 +92,9 @@ public interface IMemoryStore : IPluginStore
     /// <para><b>The store re-derives term frequencies from the mutation; the caller must not.</b>
     /// Attribute values feed the BM25 index, so a mutation that adds one and leaves
     /// <c>TermFrequencies</c> alone makes the entry unfindable by its own new attribute. Every
-    /// local mutation eventually runs <see cref="MemoryDerivation.ForMetadataUpdate"/> over
-    /// <c>(current, mutated)</c> before persisting — <c>FileMemoryStore.TryUpdateEntry</c> does so
-    /// directly; <c>HttpMemoryStore.TryUpdateEntry</c> does not run it itself, it GETs the entry,
-    /// applies <paramref name="mutate"/>, and PATCHes the result, and the server's own
-    /// <c>FileMemoryStore</c> is what derives on that end. Either way the rule runs in exactly one
-    /// place per side of the wire, which is what makes this member behave the same however the
+    /// mutation eventually runs <see cref="MemoryDerivation.ForMetadataUpdate"/> over
+    /// <c>(current, mutated)</c> before persisting, and <c>FileMemoryStore.TryUpdateEntry</c> is
+    /// where it runs — one place, which is what makes this member behave the same however the
     /// mutation arrived. A caller that computes the boost itself has re-created the defect this
     /// branch exists to remove; one of them did (<c>MemoryTools.UpdateMeta</c>), and the other two
     /// mutation routes through this member (<c>EntityTypingEventHandler.PromoteAsync</c>,
@@ -108,11 +105,10 @@ public interface IMemoryStore : IPluginStore
     /// write lock.</para>
     /// <para>Name matching is case-insensitive here — <c>SanitizeName</c> does not fold case, so an
     /// ordinal comparison silently reported "not found" for an entry stored under a different
-    /// casing. Every implementation now agrees, on every filesystem: this default,
+    /// casing. Every implementation agrees, on every filesystem: this default, and
     /// <c>FileMemoryStore.TryUpdateEntry</c> and <c>FileMemoryStore.Remove</c> (which share one
-    /// resolver: an exact-name probe falling back to a case-insensitive sidecar scan), and
-    /// <c>HttpMemoryStore.TryUpdateEntry</c>. No case-sensitive gate remains on any of these
-    /// paths.</para>
+    /// resolver: an exact-name probe falling back to a case-insensitive sidecar scan). No
+    /// case-sensitive gate remains on any of these paths.</para>
     /// </summary>
     bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
@@ -148,17 +144,20 @@ public interface IMemoryStore : IPluginStore
     /// <summary>
     /// Every entry in <paramref name="scopes"/>, or across every readable scope when null.
     ///
-    /// <para><b>The listing is COMPLETE.</b> An implementation backed by a paged remote source
-    /// must page to exhaustion before returning; returning one page is not a degraded answer,
-    /// it is a wrong one, and it is silent — the caller sees a short list, not an error.</para>
+    /// <para><b>The listing is COMPLETE.</b> An implementation backed by a paged source must page
+    /// to exhaustion before returning; returning one page is not a degraded answer, it is a wrong
+    /// one, and it is silent — the caller sees a short list, not an error.</para>
     ///
     /// <para>This is the precondition every default implementation that reads through this member
     /// rests on: <see cref="GetEntityFactStore"/>, <see cref="ListScoped(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> and
     /// (through <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> are all
-    /// correct exactly insofar as this member is. <c>HttpMemoryStore.ListScoped</c> broke it by
-    /// sending no <c>limit</c> against a server defaulting to 200 rows, and all three inherited
-    /// the truncation — including the one that makes whole topic scopes disappear rather than
-    /// merely lose entries. <c>PagedListingConformanceTests</c> is what holds this now.</para>
+    /// correct exactly insofar as this member is. The store that broke it was the deleted
+    /// <c>HttpMemoryStore</c>, which sent no <c>limit</c> against a server defaulting to 200 rows;
+    /// all three defaults inherited the truncation, including the one that makes whole topic scopes
+    /// disappear rather than merely lose entries. The rule is written down here because the next
+    /// paged source will inherit it the same way — and <b>nothing tests it any more</b>:
+    /// <c>PagedListingConformanceTests</c> drove it through the remote store and was deleted with
+    /// it. The one surviving implementation reads a directory, which cannot page.</para>
     /// </summary>
     List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null);
 
@@ -215,8 +214,7 @@ public interface IMemoryStore : IPluginStore
     /// Default implementation post-filters after calling <see cref="ResolveReadScopes(IReadOnlyList{string}?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.
     /// <para>Correct for the same reason as its sibling, and with the same precondition: the
-    /// underlying single-argument resolution must see every scope, which for a remote store means
-    /// a complete listing.</para>
+    /// underlying single-argument resolution must see every scope.</para>
     /// </summary>
     IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
     {
@@ -294,9 +292,8 @@ public interface IMemoryStore : IPluginStore
     /// that exercises the retry, which escapes by writing on its first invocation only.</para>
     ///
     /// <para>Unlike <see cref="TryUpdateEntry"/> this takes no scope: an ephemeral memory is its own
-    /// whole address. It also stays entirely in-process on BOTH store implementations — a
-    /// <c>~name</c> addresses the process holding it, never the server — so there is no remote
-    /// variant of this member and nothing it does crosses the wire.</para>
+    /// whole address, and it never reaches disk — a <c>~name</c> addresses the process holding
+    /// it.</para>
     ///
     /// <para>Default implementation is the unsynchronized load→mutate→store, adequate for
     /// in-memory/test stores with no concurrent writers, matching how

@@ -9,19 +9,15 @@ namespace Scrinia.Core;
 /// references (dual-reading legacy <c>ref:</c> keywords alongside the ref attribute).
 ///
 /// <para><b>The orphan marker is an ATTRIBUTE, not a keyword.</b> It used to be the bare keyword
-/// <c>"orphan"</c>, which made this sink unable to do half its job against a remote store:
-/// <c>PATCH /memories/{name}</c> refuses a body that changes <c>Keywords</c> — deliberately, and
-/// that refusal stays, because keywords are derived from a memory's CONTENT and a metadata
-/// endpoint has none to re-derive from — so every orphan write over HTTP came back 400 and was
-/// discarded, while the identical local write succeeded. Same tool, same input, two corpora that
-/// disagree, with nothing to explain why.</para>
-///
-/// <para>Orphan-ness is not content-derived; it is a corpus-level fact about inbound references,
-/// and it was only ever in the keyword list because that list happened to be searchable. As an
-/// attribute it is caller-owned metadata that <c>PATCH</c> accepts, so local and remote now behave
-/// identically — and it gains an <c>attributeFilter</c> the magic keyword never had. It stays
-/// searchable by the word "orphan" because attribute keys and values seed the term-frequency index
-/// (D-08), which a metadata update now re-derives (<see cref="MemoryDerivation.ForMetadataUpdate"/>).</para>
+/// <c>"orphan"</c>. The defect that forced the change was a remote one — the metadata endpoint
+/// refused a body that changed <c>Keywords</c>, so every orphan write over HTTP came back 400 while
+/// the identical local write succeeded — and that endpoint is gone. The change stands on its own
+/// terms anyway: orphan-ness is not content-derived, it is a corpus-level fact about inbound
+/// references, and it was only ever in the keyword list because that list happened to be
+/// searchable. As an attribute it gains an <c>attributeFilter</c> the magic keyword never had, and
+/// it stays searchable by the word "orphan" because attribute keys and values seed the
+/// term-frequency index (D-08), which a metadata update re-derives
+/// (<see cref="MemoryDerivation.ForMetadataUpdate"/>).</para>
 /// <para>Entries written before this carry the legacy <c>orphan</c> KEYWORD. Marking keys off the
 /// attribute alone, so a legacy orphan migrates onto the new carrier; clearing removes both, so a
 /// stale keyword goes once the entry gains an inbound reference. An earlier version of this change
@@ -30,13 +26,15 @@ namespace Scrinia.Core;
 /// (<c>WeightedAttributeScorer.ScoreEntryTerm</c> matches attribute VALUES, never keys), so an entry
 /// with demonstrable inbound refs outranked the real orphans.</para>
 ///
-/// <para><b>The clear is two writes, not one.</b> Because marking leaves the keyword alone,
-/// dual-marked entries are the normal migration outcome, so the clear is the common path rather than
-/// a rare one. Bundling the keyword removal into the same mutation as the attribute removal made a
-/// remote store refuse BOTH — <c>PATCH</c> rejects a <c>Keywords</c> change — leaving a non-orphan
-/// marked <c>orphan:true</c> indefinitely, worse than the behaviour it replaced. The attribute is
-/// cleared first and the keyword attempted separately, best-effort, so the remote floor is the
-/// attribute always clearing and only the legacy keyword lingering.</para>
+/// <para><b>The clear is two writes, not one</b> — and its reason has expired. Bundling the
+/// keyword removal into the same mutation as the attribute removal made the remote store refuse
+/// BOTH, leaving a non-orphan marked <c>orphan:true</c> indefinitely; splitting them guaranteed the
+/// attribute cleared even when the keyword could not. With one store, both carriers live in the
+/// same sidecar and one mutation could clear them together, atomically, for one write instead of
+/// two on what is the COMMON path (marking deliberately leaves a legacy entry's keyword alone, so
+/// dual-marked entries are the normal migration outcome). Left as two deliberately, rather than
+/// merged in passing: it is a behaviour change to a sink that fires on every store event, not
+/// dead-code removal, and it belongs in its own change with its own tests.</para>
 ///
 /// <para>The marker is a <see cref="KnownAttributes.StateMarkerKeys">state marker</see>, so it is
 /// excluded from the entity graph: every entry sharing one boolean value would otherwise form a
@@ -88,8 +86,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
     ///
     /// <para>Reads the ONE scope that can hold the answer. This is a question about a named entry
     /// in a known scope, so <see cref="IMemoryStore.LoadIndex"/> answers it at one-scope cost —
-    /// normally a warm-cache hit on a <c>FileMemoryStore</c>, and one scope's paged listing rather
-    /// than the whole store's on an <c>HttpMemoryStore</c>. It previously ran
+    /// normally a warm-cache hit. It previously ran
     /// <see cref="IMemoryStore.AnyScoped"/> over every scope with a predicate that then filtered
     /// back down to this one scope and name. <c>AnyScoped</c> short-circuits on a MATCH, so the
     /// no-legacy-entries case — the one every migrated workspace is in, and the one the old
@@ -120,11 +117,10 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             {
                 var (targetScope, targetSubject) = store.ParseQualifiedName(refName);
 
-                // TryUpdateEntry, not LoadIndex → mutate → Upsert: remotely Upsert is a no-op, so
-                // that shape discarded the link silently; TryUpdateEntry fails closed there and runs
-                // under the per-scope write lock locally. Doing the "already linked?" check inside
-                // the callback also keeps this to ONE index read — hoisting it back out would cost a
-                // second network round trip per referenced memory on a remote store.
+                // TryUpdateEntry, not LoadIndex → mutate → Upsert: it runs under the per-scope
+                // write lock, and doing the "already linked?" check inside the callback keeps this
+                // to ONE index read. (The shape it replaced also discarded the link silently on the
+                // remote store, where Upsert was a no-op.)
                 store.TryUpdateEntry(targetSubject, targetScope, targetEntry =>
                 {
                     // Write the ref attribute (unified attributes) — no more ref: keyword emission.
@@ -157,12 +153,10 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // the qualified name needs the source entry itself, and TryUpdateEntry below reads the
             // entry once, atomically, instead of the old racy load → mutate → Upsert. AnyScoped
             // instead of ListScoped(null).Any(...): this genuinely is a whole-store question, and
-            // on a store that overrides AnyScoped it is a lazy scan stopping at the first matching
-            // referrer rather than a materialized listing of every entry. Only FileMemoryStore
-            // overrides it; HttpMemoryStore inherits the interface default, which is
-            // ListScoped(scopes).Any(predicate) — correct, but no cheaper than the ListScoped(null)
-            // that stood here, since its ListScoped pages the whole store over the network. See
-            // IMemoryStore.AnyScoped, which states that qualification.
+            // FileMemoryStore's override makes it a lazy scan stopping at the first matching
+            // referrer rather than a materialized listing of every entry. A store that does not
+            // override it still answers correctly, just without the short-circuit — see
+            // IMemoryStore.AnyScoped.
             bool hasInboundRefs = store.AnyScoped(null, sa =>
                 (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
                 || (sa.Entry.Attributes is not null
@@ -174,11 +168,9 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // Deliberately does NOT touch Keywords, and that separation is the point. Marking
             // leaves a legacy entry's keyword in place, so dual-marked entries are the NORMAL
             // migration outcome — which means the clear below is the common case, not a rare one.
-            // Bundling the keyword removal into this same mutation made a remote store refuse the
-            // whole thing (PATCH rejects a Keywords change), so NEITHER carrier was cleared and a
-            // non-orphan kept `orphan:true` forever, retrying and warning on every later store
-            // event. Splitting the writes restores the floor: the attribute clears remotely even
-            // when the keyword cannot.
+            // Bundling the keyword removal into this same mutation made the remote store refuse
+            // the whole thing, so NEITHER carrier was cleared and a non-orphan kept `orphan:true`
+            // forever. That store is gone; see the type summary for why the split is still here.
             bool attributeWriteAttempted = false;
             bool markerDroppedByTheKeyCap = false;
             bool attributeWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
@@ -230,15 +222,11 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // re-walking everything. The hasInboundRefs gate means a store with no inbound refs —
             // the common case — never asks the second question at all.
             //
-            // Cost, honestly, per backend. On a FileMemoryStore the whole-store pass short-circuits
-            // and the scope read is a warm-cache hit, so this is strictly cheaper than the single
-            // ListScoped(null) it replaced. On an HttpMemoryStore the whole-store pass costs the
-            // same full paged listing that ListScoped(null) did, and when the gate opens the scope
-            // read adds one more listing of that scope — so a remote store pays slightly more than
-            // before on the has-inbound-refs path. Accepted rather than papered over: the gate is
-            // what keeps every OTHER store event from attempting a write, and the alternative
-            // (dropping it and letting the callback decline) trades that for a lock acquisition
-            // and an entry round trip on every such event.
+            // Cost, honestly: the whole-store pass short-circuits and the scope read is a
+            // warm-cache hit, so this is strictly cheaper than the single ListScoped(null) it
+            // replaced. The gate is what keeps every OTHER store event from attempting a write;
+            // dropping it and letting the callback decline would trade that for a lock acquisition
+            // and an entry read on every such event.
             //
             // The callback re-checks against the freshly-read entry, so the gate is an
             // optimization and not the correctness condition.
@@ -266,9 +254,10 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // design, but "the store would not take the write" is a different thing from "there
             // was nothing to write", and the two used to be indistinguishable because the result
             // was discarded. Same channel this class already reports its own failures on. The two
-            // writes report separately: a refused keyword clean-up on a remote store is expected
-            // (PATCH will not take a Keywords change) and must not read as the attribute having
-            // failed, which is the far more serious condition.
+            // writes report separately, from when a refused keyword clean-up was the EXPECTED
+            // remote outcome and must not read as the attribute having failed. Against the one
+            // surviving store either refusal is a genuine fault, and both are still worth
+            // distinguishing: the attribute is the marker, the keyword is only legacy residue.
             if (markerDroppedByTheKeyCap)
                 Console.Error.WriteLine(
                     $"[scrinia:warn] MaintenanceEventSink: '{sourceQualified}' already carries " +

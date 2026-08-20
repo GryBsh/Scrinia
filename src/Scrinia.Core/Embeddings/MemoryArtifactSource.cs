@@ -31,12 +31,11 @@ namespace Scrinia.Core.Embeddings;
 /// hand from <c>IMemoryStore.ListScoped()</c> — including a literal <c>"ephemeral"</c> scope for
 /// ephemeral memories, since <c>ListScoped()</c> includes them by default. The CLI's
 /// <c>EmbeddingReindexer</c> filters ephemeral scope out of its own item list before ever calling
-/// this, so it never passes <c>"ephemeral"</c> through — but the server admin reindex loops
-/// (<c>BuiltInEmbeddingsService.ReindexStoreAsync</c>, <c>EmbeddingsPlugin.ReindexStoreAsync</c>)
-/// do not filter, and rely on this method taking the ephemeral branch for those items in the same
-/// long-lived process where the ephemeral store is still populated. Five call sites, one rule,
-/// expressed once — but two different keys, because the two kinds of caller start from two
-/// different things (a name vs. an already-resolved scope).</para>
+/// this, so it never passes <c>"ephemeral"</c> through — but a whole-store reindex loop
+/// (<c>EmbeddingsPlugin.ReindexStoreAsync</c>) does not filter, and relies on this method taking
+/// the ephemeral branch for those items in the same long-lived process where the ephemeral store
+/// is still populated. One rule, expressed once — but two different keys, because the two kinds of
+/// caller start from two different things (a name vs. an already-resolved scope).</para>
 /// </summary>
 public static class MemoryArtifactSource
 {

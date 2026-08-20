@@ -147,12 +147,12 @@ public static class MemoryNaming
     //
     // The one deliberate NON-participant is scope RECOVERY — reading back a scope that already
     // exists, in FileMemoryStore.DiscoverMemoriesRecursive (from a directory name the filesystem
-    // itself produced) and ParseScopeLabel (from a label a remote store reports).
+    // itself produced) and ParseScopeLabel (from a label a listing reports).
     //
     // Why that is safe is NOT "no write is reachable from them" — writes very much are: both feed
     // DiscoverTopics -> ResolveReadScopes, and MemoryTools' forget-by-URI loop calls DeleteArtifact
     // and Remove once per resolved scope. The actual reason is stronger: a RECOVERED scope is
-    // canonical BY CONSTRUCTION. It is the name the filesystem or the remote store actually holds,
+    // canonical BY CONSTRUCTION. It is the name the filesystem actually holds,
     // so a write through it targets the very directory it was read from and cannot mint a second
     // key for one directory — which is the only thing the rule prevents.
     //
@@ -342,12 +342,12 @@ public static class MemoryNaming
     /// label. Needed by remote clients, which receive topic results labelled rather than scoped.
     ///
     /// <para><b>Deliberately not routed through <see cref="BuildScopedTopicScope"/></b> (Task 13).
-    /// This RECOVERS a scope the remote store already reports as existing, rather than
+    /// This RECOVERS a scope a listing already reports as existing, rather than
     /// constructing one from caller input, so it must round-trip whatever that store says —
     /// exactly as <c>FileMemoryStore.DiscoverMemoriesRecursive</c> reports the directory names it
     /// finds on disk.
     ///
-    /// <para>Note this value DOES reach writes — <c>HttpMemoryStore</c>'s list path feeds
+    /// <para>Note this value DOES reach writes — a list path feeds
     /// <c>DiscoverTopics</c>, and <c>MemoryTools</c>' forget-by-URI loop calls <c>Remove</c> once
     /// per resolved scope. That is safe because a recovered scope is canonical by construction:
     /// it names the directory it was read from, so it cannot create a second key for one

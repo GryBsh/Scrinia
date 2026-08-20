@@ -4,7 +4,7 @@ namespace Scrinia.Mcp;
 /// The canonical short "memories exist — here's when to use them" baseline. Single source of truth
 /// shared by everything that needs to state the baseline: the CLI's AGENTS.md/CLAUDE.md writers and
 /// the MCP server <c>instructions</c> field. Lives in <c>Scrinia.Mcp</c> because both the CLI and
-/// <c>Scrinia.Server</c> reference this assembly. Deliberately terse — it points at <c>guide()</c>
+/// the CLI reference this assembly. Deliberately terse — it points at <c>guide()</c>
 /// for the full primer rather than duplicating the ~164-line agent guide (<c>prompts/guide.md</c>).
 /// </summary>
 public static class ScriniaPrimer

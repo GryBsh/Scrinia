@@ -101,7 +101,7 @@ public static class TextAnalysis
     /// <c>ArtifactEntry.Keywords</c> at — a LOCAL memory's real, post-merge keyword ceiling, not to
     /// be confused with <see cref="AnalyzeText"/>'s own <c>topN</c> (25), which bounds only the
     /// AUTO half before agent keywords are folded in. Named so a wire-side bound mirroring this
-    /// ceiling (<c>Scrinia.Server.Endpoints.MemoryEndpoints.CarriedEntryBoundsError</c>) reads it
+    /// ceiling — while there was a wire to carry an entry over — read it
     /// from here rather than carrying its own copy of "30" that could silently drift from this one
     /// (round 2 review, remote-copy-and-fence-aware-extraction Task 3: a wire bound tighter than
     /// what the local path can legitimately produce recreates the exact "remember() writes it,

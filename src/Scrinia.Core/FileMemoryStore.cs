@@ -1464,9 +1464,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (updated is null) return false;
 
             // The store owns derivation, including on a metadata-only write — see
-            // IMemoryStore.TryUpdateEntry. This is the local half of "whichever side holds the
-            // store applies it"; the remote half is this same call, reached through the server's
-            // PATCH handler, on the server's own FileMemoryStore.
+            // IMemoryStore.TryUpdateEntry.
             updated = MemoryDerivation.ForMetadataUpdate(current, updated);
 
             WriteSidecar(updated, storeDir);
@@ -1606,8 +1604,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // existing one is RESTORED instead: Upsert does real file I/O and can fail transiently,
             // and deleting would make that permanent — nothing reads versions/ back, so the user
             // would have no recovery path for a memory they only asked to overwrite. Same rule as
-            // AppendAsync below. The destructive form of this block — an unconditional delete — is
-            // what the server's own store path used to do; it was deleted, not ported.
+            // AppendAsync below. The destructive form of this block — an unconditional delete —
+            // is what the server's own store path did; it was deleted, not ported.
             // CancellationToken.None: a cancelled store must still be rolled back.
             try
             {
@@ -1792,10 +1790,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// The pipeline's one contact with the filesystem (D-04): resolves a <c>file</c> attribute value
     /// against this store's workspace root and hashes it, or returns null when it cannot — outside
     /// the workspace, missing, or unreadable.
-    /// <para>Supplying this is what gives a REMOTE write a drift baseline. The old rule was "hash
-    /// only when the store is local", so a write through <c>HttpMemoryStore</c> got none at all;
-    /// derivation now runs inside whichever store owns the workspace, and the server's own store is
-    /// a <see cref="FileMemoryStore"/> with one.</para>
+    /// <para>Supplying it here is what makes the baseline unconditional. The old rule was "hash
+    /// only when the store is local", which the remote store failed, so those writes got no
+    /// baseline at all; derivation runs inside whoever owns the workspace instead.</para>
     /// </summary>
     private string? HashWorkspaceFile(string relativePath)
     {
@@ -1853,11 +1850,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // RULING (remote-mode-leftovers, final fixes, Finding 2): this fallback is the exact
             // counterpart of the one in Remove above.
             //
-            // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs, and
-            // MemoryOrchestrator.ForgetAsync). Remove's name match is case-insensitive; this one was
-            // not. On a case-sensitive filesystem forget("mixedcase") against a memory stored as
-            // "MixedCase" therefore returned removed=true, deleted=false — the caller reported
-            // "Forgot: mixedcase." and the server answered success, while MixedCase.nmp2 stayed on
+            // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs). Remove's
+            // name match is case-insensitive; this one was not. On a case-sensitive filesystem
+            // forget("mixedcase") against a memory stored as "MixedCase" therefore returned
+            // removed=true, deleted=false — the caller reported "Forgot: mixedcase." and the tool
+            // answered success, while MixedCase.nmp2 stayed on
             // disk with its sidecar gone: orphaned, unreachable through list() or search(), and
             // invisible to the next forget(). Before the sidecar lookup became case-insensitive both
             // halves returned false and the user got a clean "no artifact found"; fixing one half

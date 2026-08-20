@@ -13,15 +13,15 @@ public static class KnownAttributes
 
     /// <summary>
     /// Maximum values retained under a single attribute key. Enforced by <see cref="Merge"/> — the
-    /// one point every write path funnels through — so a local write and a remote one keep the same
-    /// values for the same input, and the server's matching wire bound
-    /// (<c>MemoryEndpoints.RememberMemory</c>) can never fire for a map this code produced.
+    /// one point every write path funnels through, so every write keeps the same values for the
+    /// same input.
     ///
     /// <para>Sized to be unreachable from auto-extraction rather than to be tight. The previous
     /// wire-only bound of 64 was reachable from ROUTINE extraction: nothing caps <c>file</c> or
     /// <c>ref</c> values (unlike <c>mention</c>, capped at
     /// <see cref="AttributeExtractor.MaxMentionSpans"/>), and a memory citing 70 distinct paths —
-    /// an ordinary shape for a code-heavy note — stored fine locally and 400'd remotely. Raising the
+    /// an ordinary shape for a code-heavy note — stored fine locally and was refused over the
+    /// wire. Raising the
     /// bound alone would only move that cliff, and capping at 64 to match would start discarding
     /// file references from real content; 256 distinct values under one key is past what any
     /// extractor produces from a single memory, so this bounds storage growth without truncating
@@ -142,7 +142,7 @@ public static class KnownAttributes
     /// nothing survives. Matches the Attributes convention (AttributeExtractor lowercases keys).
     ///
     /// <para>Every write path calls this — the MCP tools locally and
-    /// <c>MemoryOrchestrator</c> for requests arriving over HTTP — so a local and a remote write of
+    /// <c>MemoryOrchestrator</c> for requests that arrived over HTTP — so a local and a remote write of
     /// the same map produce the same attributes. It lives here, next to <see cref="Merge"/>, for
     /// that reason: a second copy is how local and remote drift apart.</para></summary>
     public static Dictionary<string, string[]>? Normalize(IReadOnlyDictionary<string, string[]>? attributes)

@@ -12,8 +12,8 @@ public readonly record struct SearchOutcome(
 
 /// <summary>
 /// The single scoring pipeline behind the MCP <c>search</c> tool, the <c>scri search</c> CLI
-/// command, and the server's <c>/search</c> endpoint. It lives in Core because that is the one
-/// project all three reference — the server previously carried its own copy in
+/// command, and (while it existed) the server's <c>/search</c> endpoint. It lives in Core because
+/// that is the one project they all reference — the server previously carried its own copy in
 /// <c>PluginPipeline.SearchAsync</c> which had drifted to support no filters at all.
 /// <para>Contributors are parameters, not ambient lookups: callers resolve them at the edge. That
 /// keeps the pipeline callable from a test without installing AsyncLocal state.</para>
