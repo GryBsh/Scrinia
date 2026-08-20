@@ -1,189 +1,143 @@
 # Security & Threat Model
 
-This document describes what Scrinia's security mechanisms defend against, what they
-explicitly do **not** defend against, and where operators are expected to provide
-additional controls. For the *what's implemented* view, see
-[Server Administration → Authentication](server-admin.md#authentication) and
-[Security Hardening](server-admin.md#security-hardening).
+What Scrinia defends against, what it explicitly does **not**, and where you are expected to
+provide the control yourself.
+
+This document was written for a deployment with an HTTP API, API keys, and multiple tenants. All of
+that is gone. Scrinia is a local process that reads and writes a directory you already own, so most
+of what a security model would have covered is now covered by your operating system's file
+permissions instead. What is left is genuinely Scrinia's problem, and it is a shorter list.
 
 ## Trust boundaries
 
-Scrinia's threat model assumes three classes of principals:
-
-| Principal | Trust | Authentication |
+| Principal | Trust | Enforced by |
 |---|---|---|
-| **Operator** | Trusted: writes config, owns `{dataDir}`, holds the bootstrap key. | Filesystem ownership of `{dataDir}`. |
-| **API caller (human or agent)** | Partially trusted: only what their API key grants. | Bearer token (`scri_…` Base64Url). |
-| **Stored content** | Untrusted: memory bodies are user / agent input. | None — content is data, not code. |
+| **You** | Trusted: you own the workspace and launch the process. | Filesystem ownership of the repository. |
+| **The agent driving the MCP tools** | Trusted exactly as far as the process is — it runs as you. | Nothing. See below. |
+| **Stored content** | Untrusted: memory bodies are agent and user input. | Content is data, never a code path. |
 
-Anything outside the API caller boundary is treated as adversarial — in particular,
-the contents of memories and the values of API requests are validated, size-capped,
-and never deserialised as code paths.
-
-## What the API key protects
-
-A valid bearer token authenticates the caller and binds them to a `(stores[], permissions[])`
-tuple. Permissions are checked *per endpoint*, not per resource. The key:
-
-- **Identifies** the caller for audit logging and rate-limit attribution.
-- **Authorises** specific operation classes (`store`, `read`, `search`, `forget`, `chat`,
-  `manage_keys`, …). See [server-admin.md → Permissions](server-admin.md#permissions).
-- **Scopes** access to one or more named stores (`*` for all).
-
-Privilege escalation is structurally prevented: callers cannot grant stores or
-permissions they don't themselves hold.
-
-### What the API key does NOT protect
-
-- **Per-memory ACLs**. There is no row-level authorisation. Any key with `read` on a
-  store can read every memory in that store. If you need data isolation between
-  users, give each user a separate store.
-- **Content classification**. The server doesn't inspect memory bodies for secrets.
-  An attacker with `store` permission can write data that an attacker with `read`
-  permission will later see. Pair `store`/`read` carefully.
-- **Replay attacks**. Bearer tokens are not bound to request payloads, timestamps,
-  or nonces. A leaked token is valid until revoked. Treat tokens like passwords —
-  rotate on suspicion, revoke immediately on confirmed leak.
+**The agent boundary is not a boundary.** `scri serve` speaks MCP over stdio to whatever launched
+it, and inherits that process's identity. Any agent that can call `remember` can write anywhere the
+workspace sandbox allows, and any agent that can call `recall` can read every memory in the
+workspace. There is no per-memory authorisation, and there is no mechanism by which there could be:
+one user, one workspace, one process. If you need memories one agent cannot see, use a separate
+workspace — the isolation is the directory.
 
 ## Threats addressed
 
-### Authentication & authorisation
-- **Anonymous read/write** — every `/api/v1/*` route requires `Authorize` middleware. The
-  only public route is the static SPA login page.
-- **Lost bearer token** — operators can revoke a key via `manage_keys`. Hashed storage
-  means a database leak doesn't expose live tokens.
-- **Privilege escalation via key creation** — `ApiKeyAuthHandler` constrains new keys to a
-  subset of the caller's own permissions/stores.
+### Untrusted artifact content
 
-### Resource exhaustion
-- **Memory-pressure DoS via large requests** — Kestrel body limit (10 MB), per-content
-  element cap (5 MB), bundle multipart cap (50 MB), and `Nmp2Strategy.MaxDecodedBytes`
-  (64 MB) prevent unbounded allocation.
-- **Decompression bombs** — `Nmp2Strategy.BrotliDecompressBounded` rejects artifacts
-  whose Brotli output exceeds the cap *during* decompression, not after.
-- **Chunk-count abuse** — multi-chunk artifacts declaring more than `MaxChunkCount`
-  (100k) chunks are rejected up front.
-- **Per-IP / per-user flood** — sliding-window rate limit at 100 req/min on `/api/v1/*`.
+An NMP/2 artifact can arrive from a bundle you did not create, so decoding is bounded rather than
+trusting the header:
 
-### Input validation
-- **Path traversal** — `PathParser` rejects `\`, `:`, `..`, and control characters. Bundle
-  import paths are constrained to the workspace root before file I/O. The CLI store
-  enforces the workspace sandbox identically.
-- **XSS / response smuggling** — responses are emitted as YAML (MCP) or JSON (REST). Hand-built
-  YAML serialisation escapes control chars and quotes problematic characters; JSON
-  serialisation uses source-generated `JsonSerializerContext` so trimming-removed members
-  cannot be exploited.
-- **API-key forgery** — keys are random 32 bytes (Base64Url); only SHA-256 hashes are
-  persisted. Even with full database read, an attacker cannot reconstruct live tokens.
+- **Decompression bombs** — `Nmp2Strategy.BrotliDecompressBounded` rejects an artifact whose Brotli
+  output exceeds `MaxDecodedBytes` (64 MB) *during* decompression, not after.
+- **Chunk-count abuse** — an artifact declaring outside `[1, MaxChunkCount]` (100,000) chunks is
+  refused before any allocation.
+- **Integrity** — a CRC-32 or length mismatch fails the decode rather than yielding partial content.
 
-### Concurrency
-- **Cross-process write races** — OS-enforced file locks (`FileLock`) serialise index
-  mutations across processes. Contention is logged at `Warning` and timeouts at `Error`
-  with structured `{LockPath}` and `{ElapsedMs}` fields for SIEM ingestion.
-- **In-process read/write conflicts** — `VectorStore` uses a per-scope `SemaphoreSlim` to
-  serialize writes; `FileMemoryStore` uses per-scope reader-writer locks.
+`BundleFormatService` applies all three on import, which is the one path where bytes you did not
+write reach the decoder.
 
-### Network surface
-- **CORS** — restrictive by default. Configure allowed origins via `Scrinia:CorsOrigins`.
-  A `*` wildcard is supported but explicit per-origin lists are recommended.
-- **HTTPS / HSTS** — enforced in production. Use a reverse proxy (nginx, Caddy)
-  for TLS termination; configurations are in `server-admin.md`.
-- **Security headers** — `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: strict-origin-when-cross-origin`, `X-XSS-Protection: 0`.
+### Path traversal
+
+`PathParser` rejects `\`, `:`, `..`, and control characters in memory names. Bundle import paths are
+constrained to the workspace root before any file I/O. A memory name cannot address a file outside
+`.scrinia/`.
+
+### Response injection
+
+MCP responses are hand-built YAML. The serialiser escapes control characters and quotes problematic
+ones, so a memory body containing YAML syntax cannot restructure the envelope around it. JSON output
+(`--json`) uses source-generated `JsonSerializerContext`.
+
+### Concurrent writes
+
+- **Cross-process races** — OS-enforced file locks (`FileLock`) serialise index mutations across
+  processes. Contention logs at `Warning`, timeouts at `Error`, with structured `{LockPath}` and
+  `{ElapsedMs}`.
+- **In-process** — `VectorStore` serialises writes with a per-scope `SemaphoreSlim`;
+  `FileMemoryStore` uses per-scope reader-writer locks.
 
 ## Threats NOT addressed
 
-These are out of scope for the current design. Operators must compensate.
+### Secrets in stored content
+
+Scrinia does not scan memory bodies for tokens, credentials, or PII, and **agents store what they
+are told**. This matters more here than in most systems because `.scrinia/` is designed to be
+committed: a secret an agent writes into a memory is a secret in your git history.
+
+Run a secret scanner (`gitleaks` or equivalent) over `.scrinia/` in a pre-commit hook if agents
+write anything derived from a live environment.
 
 ### Encryption at rest
-- `.scrinia/` is **plaintext on disk** (NMP/2-compressed, but not encrypted). A
-  malicious actor with filesystem access reads memories directly. Encrypt the data
-  volume (LUKS, BitLocker, EFS, cloud-provider disk encryption) if the threat model
-  includes physical or backup-tape attackers.
-- API keys are SHA-256 hashed in `apikeys.db`, but the SQLite database itself is
-  unencrypted. Same advice — encrypt the volume.
 
-### Secret detection in stored content
-- Scrinia does not scan memory bodies for tokens, credentials, or PII. Agents may
-  inadvertently store secrets. Recommend a pre-commit hook (e.g. `gitleaks`) on the
-  workspace `.scrinia/` directory if you commit it to version control.
+`.scrinia/` is **plaintext on disk**. NMP/2 is Brotli-compressed and Base64Url-encoded, which is not
+encryption and is trivially reversible — `scri recall` does it. Anyone with read access to the
+directory reads your memories. Encrypt the volume (LUKS, BitLocker, FileVault, cloud disk
+encryption) if your threat model includes offline attackers or backup media.
 
-### Audit logging
-- The structured log (`ILogger`) records request handling and lock contention but is
-  **not a tamper-evident audit log**. Forward logs to an append-only sink (cloud
-  logging service, syslog with WORM storage) if you need compliance-grade audit.
-- API-key creation/revocation events are logged but **not signed**. An operator with
-  log-write access can rewrite history.
+### The stdio channel
 
-### Multi-tenancy
-- Stores provide *scoping*, not *isolation*. A privileged operator can read any
-  store; the server process trusts itself. If you need cross-tenant isolation,
-  run one Scrinia process per tenant (or use the CLI mode where each workspace is
-  filesystem-isolated).
-
-### Network confidentiality
-- The MCP-over-HTTP transport accepts the bearer token in the `Authorization` header.
-  Without TLS this is over the wire in plaintext. **Do not run Scrinia HTTP without
-  TLS** outside `127.0.0.1`.
-- The MCP-over-stdio transport (CLI) inherits parent-process trust. Anyone who can
-  attach a debugger or read the stdio pipe is effectively privileged.
+`scri serve` inherits its parent's trust. Anyone who can attach a debugger to the parent, or read
+the stdio pipe, is effectively you. This is the same property every MCP server has.
 
 ### Plugin trust
-- Loaded plugins run in-process with full server permissions. There is no plugin
-  sandboxing. Treat the plugin directory like an executable allowlist:
-  - Restrict filesystem permissions on `{dataDir}/plugins/` to the operator account.
-  - Only install plugins you have read and audited.
-  - Pin plugin versions in source control.
 
-### Token-based DoS amplification
-- `chat` permission allows the caller to drive upstream LLM API calls. A leaked
-  `chat` token amplifies into provider cost. Mitigate with:
-  - Tight rate limits on `chat`-permitted keys.
-  - Per-provider spend caps at the upstream provider (OpenAI / Anthropic / Gemini).
-  - Audit the `MaxTokens` / temperature defaults in `Scrinia:Chat`.
+The embeddings plugin is launched as a **child process** — `{exeDir}/plugins/{name}/{name}[.exe]`,
+resolved from the `plugins:embeddings` config key — and runs with your permissions, not a
+sandbox's. Treat the plugin directory as an executable allowlist:
+
+- Restrict write permission on `{exeDir}/plugins/` to your own account. Anyone who can write there
+  can run code as you the next time `scri serve` starts.
+- Only install plugins you have read.
+- Pin plugin versions in source control.
+
+### Remote embedding providers
+
+Configuring `Scrinia:Embeddings:Provider` as `ollama`, `openai`, `voyageai`, `azure`, or `google`
+sends **memory content** to that provider for embedding, along with your API key for it. That is the
+only outbound network call Scrinia makes, and it is off by default: the built-in `model2vec`
+provider runs in-process and sends nothing.
+
+Provider API keys live in `.scrinia/config.json` or environment variables. If you commit
+`.scrinia/`, put the key in the environment, not the config file.
+
+### Audit
+
+Structured logs (`ILogger`) record lock contention and errors. This is not a tamper-evident audit
+log, and there is no record of which agent read which memory.
 
 ## Data at rest
 
 ```
-{dataDir}/
-  apikeys.db                   # SQLite, SHA-256 key hashes + permissions
-  BOOTSTRAP_KEY                # plaintext, written once on first start
-  stores/{name}/.scrinia/
-    {topic}/{name}.nmp2        # Brotli + Base64Url, plaintext content
-    {topic}/{name}.meta.json   # plaintext sidecar (description, tags, refs)
-    skills/{name}.md           # plaintext Markdown
-    agent/{name}.md            # plaintext Markdown
-    embeddings/                # binary vector cache (provider-specific)
+{repo}/.scrinia/
+  memories/{scope}/{name}.nmp2       Brotli + Base64Url, plaintext content
+  memories/{scope}/{name}.meta.json  plaintext sidecar (description, keywords, attributes, refs)
+  memories/{scope}/versions/         rollback archives, gitignored by default
+  skills/{name}.md                   plaintext Markdown
+  agent/{name}.md                    plaintext Markdown
+  embeddings/                        binary vector cache (provider-specific)
+  config.json                        workspace config — may hold provider API keys
 ```
 
-**Sensitive files** (encrypt the parent volume):
-- `BOOTSTRAP_KEY` — full-permission token. Delete after creating scoped keys.
-- `apikeys.db` — key hashes (limits damage on theft) plus key metadata (userId,
-  stores, permissions) which itself can be sensitive in a multi-tenant deployment.
-- Memory contents — whatever your agents have stored.
+**Sensitive:** memory contents, and `config.json` if you put a provider key in it.
 
-**Not sensitive** (safe to commit to source control if your team agrees):
-- `skills/`, `agent/` markdown files — these are reusable prompts.
-- `.meta.json` sidecars when memory contents are public-by-design (e.g. architecture
-  docs). The agent-facing `list` only shows metadata, never bodies.
+**Safe to commit, and meant to be:** `skills/` and `agent/` markdown, `.meta.json` sidecars, and the
+memory bodies themselves when they are project knowledge rather than anything derived from a live
+environment. That is the design — memories travel with the code.
+
+`versions/` is gitignored by default (`.scrinia/.gitignore` includes `**/versions/`).
 
 ## Recommendations
 
-1. **Bootstrap discipline.** Use the bootstrap key once to create scoped keys,
-   then **delete `BOOTSTRAP_KEY` and revoke the bootstrap key entry**. Track this
-   in your deployment runbook.
-2. **Per-purpose keys.** Don't reuse keys across humans and CI. A leaked CI key
-   shouldn't be useful to a human attacker on a different network.
-3. **Minimum permissions per key.** A CI key that only stores memories needs
-   `store`, not `manage_keys`. The `*` store wildcard is rarely needed.
-4. **Run behind TLS in production.** No exceptions. The MCP-over-HTTP transport
-   is bearer-authenticated and that token will be replayed for the lifetime
-   of the key.
-5. **Encrypt the data volume.** Standard OS / cloud-provider disk encryption is
-   sufficient — the threat is offline attackers, not online ones.
-6. **Audit your plugins.** Read every plugin DLL you load — they run with full
-   server permissions inside the same process.
-7. **Forward logs to an append-only sink** if you need compliance-grade audit.
-   The local log file is not tamper-evident.
-8. **Rotate keys on personnel changes.** There is no SSO integration — keys are
-   bearer tokens, not federated identities.
+1. **Scan before you commit.** `.scrinia/` goes into git by design, and agents write into it
+   without review. A `gitleaks` pre-commit hook is the single highest-value control here.
+2. **Keep provider API keys in the environment**, not `.scrinia/config.json`, if the workspace is
+   committed or shared.
+3. **Encrypt the volume** if offline access to the disk is in your threat model. Standard OS disk
+   encryption is sufficient.
+4. **Audit your plugins**, and lock down write access to the plugin directory — a plugin is an
+   executable you launch as yourself.
+5. **Use a separate workspace for anything an agent should not see.** The directory is the
+   isolation boundary; there is no finer one.

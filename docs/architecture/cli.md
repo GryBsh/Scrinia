@@ -33,16 +33,6 @@ app.Run(args);
 
 `app.Add<T>()` registers each public method on the type as a command. `app.Add<T>("prefix")` nests them under that prefix — `MemoryCommands.List` becomes `scri memory list`, `BundleCommands.Export` becomes `scri bundle export`. Methods on `ScriniaCommands` that should NOT be top-level commands (the memory CRUD operations, the bundle file operations) are kept `internal` so the source generator skips them while the forwarder classes in `MemoryCommands` / `BundleCommands` call into them across the assembly.
 
-### Bundle commands: topic filters differ deliberately between CLI and HTTP
-
-`scri bundle import --topics a,b` comma-splits one string. The HTTP endpoint binds
-`[FromQuery] string[] topics` and reads repeated keys — `?topics=a&topics=b`. Each follows its own
-surface's convention: comma-separated lists are idiomatic for a CLI flag, repeated keys are
-idiomatic for a query string and are what ASP.NET Core's model binder produces.
-
-This is not an inconsistency to unify. Unifying requires first deciding which surface is canonical,
-and neither has a claim over the other. Documented and pinned 2026-08-10.
-
 ### Pitfalls
 
 - `[Argument]` attribute requires `using ConsoleAppFramework;`
@@ -83,7 +73,7 @@ WorkspaceSetup.LoadPluginsAsync()  (commands that need search/embeddings)
       +-- Wires embeddings provider, plugin host
 ```
 
-Once configured, code reads the store back through two static properties: `WorkspaceSetup.Store` (the `IMemoryStore` interface, backed by `MemoryStoreContext.Current`) and `WorkspaceSetup.LocalStore` (narrowed to `ILocalMemoryStore`, for commands that read or write workspace files directly — it throws if the process is in remote mode, i.e. `scri serve --remote`). Both CLI commands and MCP tool handlers reach the store through `MemoryStoreContext.Current`; `WorkspaceSetup` is what populates it.
+Once configured, code reads the store back through `WorkspaceSetup.Store`, backed by `MemoryStoreContext.Current`. There was a second property, `WorkspaceSetup.LocalStore`, narrowed to the filesystem half of the store contract and throwing in remote mode; with one store the two were the same thing and it is gone. Both CLI commands and MCP tool handlers reach the store through `MemoryStoreContext.Current`; `WorkspaceSetup` is what populates it.
 
 ## MCP Server Mode
 
@@ -99,10 +89,6 @@ builder.Services
 The MCP tools are exposed by `ScriniaMcpTools`, a sealed partial class registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
 
 Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
-
-### Remote Mode
-
-When `--remote` is specified, the CLI creates a remote store proxy instead of a local `FileMemoryStore`. All MCP tool calls are forwarded to the Scrinium HTTP API.
 
 ## Embeddings Integration
 
@@ -212,11 +198,11 @@ The config file is a flat `Dictionary<string, string>` with case-insensitive key
 
 Three `AsyncLocal`-based context types provide indirection between MCP tool handlers and their backing services:
 
-| Context | Purpose | CLI | Server |
-|---------|---------|-----|--------|
-| `MemoryStoreContext` | Routes to active `IMemoryStore` | Set once at startup | Set per-request |
-| `SearchContributorContext` | Semantic search scoring plugin | `.Default` (static) | `.Current` (per-request) |
-| `MemoryEventSinkContext` | Store/append/forget event hooks | `.Default` (static) | `.Current` (per-request) |
+| Context | Purpose | How the CLI sets it |
+|---------|---------|---------------------|
+| `MemoryStoreContext` | Routes to active `IMemoryStore` | Set once at startup |
+| `SearchContributorContext` | Semantic search scoring plugin | `.Default` (static) |
+| `MemoryEventSinkContext` | Store/append/forget event hooks | `.Default` (static) |
 
 **Why Default exists:** `AsyncLocal<T>` does NOT propagate from the CLI's startup code through the .NET generic host to MCP tool handler threads. The generic host creates new threads with empty `AsyncLocal` values. The `.Default` static fallback solves this:
 
@@ -229,7 +215,7 @@ MemoryEventSinkContext.Default = pluginHost;
 var contributor = SearchContributorContext.Current ?? SearchContributorContext.Default;
 ```
 
-The server does NOT use `.Default` — it sets `.Current` per-request in middleware, which propagates correctly within a single request's async chain. See [Server Architecture](server.md#asynclocal-context-pattern) for the server-side pattern.
+The `.Current` half is what a host serving concurrent callers sets per call, where `AsyncLocal` propagates correctly within one call's async chain. The deleted server did that; nothing does now. It is kept because it is also how tests install a store for one async flow without disturbing another.
 
 ## Output Rendering
 

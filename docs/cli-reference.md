@@ -26,20 +26,16 @@ Start the MCP server over stdio transport. This is how MCP clients (Claude Code,
 
 ```bash
 scri serve [--workspace-root <path>] [--no-auto-setup]
-scri serve --remote http://localhost:5000 --api-key <key> [--store default]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--workspace-root` | Auto-detected | Override workspace directory |
-| `--remote` | (none) | Connect to a remote Scrinium instead of local storage |
-| `--api-key` | (none) | API key for remote server authentication |
-| `--store` | `default` | Target store on the remote server |
 | `--no-auto-setup` | `false` | Skip the first-run embedding model download |
 
-**Local mode** reads/writes directly to `.scrinia/` on disk. On first launch, `serve` checks for the built-in embedding model (`m2v-MiniLM-L6-v2`) and downloads it if missing (~50MB, one-time). Download progress goes to stderr to keep the JSON-RPC stdout clean. If the download fails, the server still starts — semantic search degrades to BM25-only until you run `scri setup` manually.
+Reads and writes directly to `.scrinia/` on disk. On first launch, `serve` checks for the built-in embedding model (`m2v-MiniLM-L6-v2`) and downloads it if missing (~50MB, one-time). Download progress goes to stderr to keep the JSON-RPC stdout clean. If the download fails, the server still starts — semantic search degrades to BM25-only until you run `scri setup` manually.
 
-**Remote mode** proxies all MCP tool calls to a Scrinium instance over HTTP — no local embedding model needed.
+There was a `--remote` mode that proxied every MCP tool call to an HTTP server, with `--api-key` and `--store`. It is gone, along with the server it talked to. Sharing memories between people is a git question now: `.scrinia/` is committed like any other directory and the merge driver resolves what conflicts — see [Multi-User Setup](multi-user-setup.md).
 
 ### scri list
 
@@ -225,9 +221,8 @@ lives only in the memory of the process that created it, and every `scri`
 invocation is a fresh process, so a `~name` is never present when the command
 starts — `scri link ~scratch /patterns/x` is refused outright with an
 ephemeral-address error (exit 1), before either side's existence is even
-checked. The MCP `link` tool does support ephemerals, because the server
-(`scri serve`) is a long-lived process that still holds the one that created
-them.
+checked. The MCP `link` tool does support ephemerals, because `scri serve` is a
+long-lived process that still holds the ones it created.
 
 ```bash
 scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]
@@ -318,8 +313,8 @@ Interactive workspace setup. Two things in order:
    Ollama isn't configured and the Vulkan embeddings plugin isn't installed.
 
 Setup does **not** prompt for any LLM configuration. Scrinia ships zero
-LLM-at-rest enrichment — there is no background LLM the server consults at
-write or read time, so there is nothing for setup to wire up. Agents that
+LLM-at-rest enrichment — there is no background LLM consulted at write or read
+time, so there is nothing for setup to wire up. Agents that
 want to enrich memories do so client-side and pass `attributes` (including
 `anchor`) and `keywords` through the MCP `remember` tool.
 
@@ -483,8 +478,8 @@ cap of 1000 or more would let one element's windows overflow into the next eleme
 | `Scrinia:Hint:MinScore` | `10.0` | BM25 score floor — matches below this are suppressed. |
 
 The `plugins:embeddings` key overrides the executable name used to launch the
-embeddings plugin process — only useful for custom builds. Scrinia ships no
-server-side LLM plugin; the historical `plugins:llm` key has been removed.
+embeddings plugin process — only useful for custom builds. Scrinia ships no LLM
+plugin; the historical `plugins:llm` key has been removed.
 
 ### scri migrate
 
@@ -553,9 +548,13 @@ If a `.scrinia/` directory exists somewhere resolution deliberately did not use 
 
 Settings are resolved in priority order:
 
-1. **Environment variable** (highest) -- either the single-underscore form, key with `:` replaced by `_` and uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`), or the .NET-standard double-underscore form (e.g., `SCRINIA__EMBEDDINGS__PROVIDER`), which the server also accepts. When both are set the single-underscore form wins.
+1. **Environment variable** (highest) -- either the single-underscore form, key with `:` replaced by `_` and uppercased (e.g., `SCRINIA_EMBEDDINGS_PROVIDER`), or the .NET-standard double-underscore form (e.g., `SCRINIA__EMBEDDINGS__PROVIDER`). When both are set the single-underscore form wins.
 2. **Config file** -- `.scrinia/config.json` in the workspace root
 3. **Default value** (lowest)
+
+The config file is read once per process and cached, so a change written by another process is not
+picked up by an already-running one. That costs nothing for CLI commands, where every invocation is
+a fresh process; restart a long-running `scri serve` after `scri config set`.
 
 ### General Settings
 
@@ -718,20 +717,6 @@ Add to `.mcp.json` in your project root or `~/.claude/`:
 its working directory; passing `--workspace-root` explicitly makes the server independent
 of whatever directory the client launches it from.
 
-### Remote Mode (Connecting to Scrinium)
-
-```json
-{
-  "mcpServers": {
-    "scrinia": {
-      "command": "scri",
-      "args": ["serve", "--remote", "http://localhost:5000", "--api-key", "YOUR_KEY"],
-      "transport": "stdio"
-    }
-  }
-}
-```
-
 ### Cursor / Other MCP Clients
 
 The configuration pattern is the same -- point your MCP client at `scri serve` over stdio. Refer to your client's documentation for the exact configuration file location and format.
@@ -740,8 +725,8 @@ The configuration pattern is the same -- point your MCP client at `scri serve` o
 
 | Pattern | Scope | Storage Path |
 |---------|-------|--------------|
-| `subject` | Local | `.scrinia/store/subject.nmp2` |
-| `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` |
+| `subject` | Local | `.scrinia/memories/subject.nmp2` |
+| `topic:subject` | Topic | `.scrinia/memories/topic/subject.nmp2` |
 | `~subject` | Ephemeral | In-memory only (dies with process). **Not available from the CLI.** |
 
 Names are sanitized for filesystem safety: `..` is stripped, `/` and `\` are replaced with `_`, and invalid filename characters are removed.

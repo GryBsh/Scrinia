@@ -33,7 +33,13 @@ internal static class WorkspaceConfig
     /// handing out the cached instance would let a caller edit the cache without writing the
     /// file — the aliasing footgun this codebase has already paid for once, on the index.</summary>
     internal static Dictionary<string, string> Load(string workspaceRoot) =>
-        new(Cache.GetOrAdd(workspaceRoot, static root => ReadFromDisk(root)), StringComparer.OrdinalIgnoreCase);
+        new(Cached(workspaceRoot), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The cached instance itself. Read-only callers use this rather than
+    /// <see cref="Load"/>: a lookup does not need a copy of the whole map, and this is the hot
+    /// path — <c>hint</c> asks for ten keys on every user prompt.</summary>
+    private static Dictionary<string, string> Cached(string workspaceRoot) =>
+        Cache.GetOrAdd(workspaceRoot, static root => ReadFromDisk(root));
 
     private static Dictionary<string, string> ReadFromDisk(string workspaceRoot)
     {
@@ -60,11 +66,8 @@ internal static class WorkspaceConfig
         Cache[workspaceRoot] = new Dictionary<string, string>(config, StringComparer.OrdinalIgnoreCase);
     }
 
-    internal static string? GetValue(string workspaceRoot, string key)
-    {
-        var config = Load(workspaceRoot);
-        return config.TryGetValue(key, out var value) ? value : null;
-    }
+    internal static string? GetValue(string workspaceRoot, string key) =>
+        Cached(workspaceRoot).TryGetValue(key, out var value) ? value : null;
 
     internal static void SetValue(string workspaceRoot, string key, string value)
     {

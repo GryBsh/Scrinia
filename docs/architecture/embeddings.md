@@ -293,8 +293,7 @@ public sealed record VectorEntry(
 ## Chunked Embeddings
 
 A memory's **content array is its addressable unit**: element index, 1-based, the same unit
-`ChunkEntry.ChunkIndex` and the REST contract use (`docs/server-admin.md`'s `chunkEntries` and
-`GET .../chunks/{index}`). Each content element is further sliced into overlapping windows
+`ChunkEntry.ChunkIndex` uses (the same index `recall({ chunk: n })` takes). Each content element is further sliced into overlapping windows
 before embedding, and every window is embedded and stored as its own vector — long memories no
 longer degrade to one mean-pooled vector, and a needle buried at char 12000 of a long session
 log is still vector-reachable (it was silently lost to truncation, or to the provider's context
@@ -625,16 +624,14 @@ status and settings only need `read`. There is no settings-update route: embeddi
 is read from `Scrinia:Embeddings:*` config, not written through the API, and the web Settings
 page reflects that (read-only, with a pointer to `scri config`).
 
-### Two Code Paths
+### Two Hook Mechanisms
 
-To avoid double-firing, the server uses different hook mechanisms for REST and MCP:
+`IMemoryEventSink` (via `MemoryEventSinkContext`) fires on the MCP tool path.
+`IMemoryOperationHook` (via `PluginPipeline`) is the other mechanism; the deleted REST API was its
+only caller.
 
-| Path | Mechanism | When |
-|------|-----------|------|
-| REST API | `IMemoryOperationHook` via `PluginPipeline` | REST endpoint calls |
-| MCP over HTTP | `IMemoryEventSink` via `MemoryEventSinkContext` | MCP tool calls |
-
-A plugin implementing both interfaces fires only once per operation.
+The rule that kept them apart still stands, and a second caller would have to honour it: **a plugin
+implementing both interfaces fires only once per operation.**
 
 ## Data Isolation
 

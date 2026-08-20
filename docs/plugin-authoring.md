@@ -262,7 +262,9 @@ retrying internally — otherwise a bulk reindex retries twice over and stalls.
 
 ## Testing
 
-For unit tests, instantiate the plugin directly and call its methods — there's no special harness required. For integration tests, use `WebApplicationFactory<Program>` and inject the plugin via `IReadOnlyList<IScriniaPlugin>`. See `tests/Scrinia.Server.Tests/` for examples of the server test setup.
+For unit tests, instantiate the plugin directly and call its methods — there's no special harness required. See `tests/Scrinia.Plugin.Embeddings.Tests/` for a worked example, which constructs the plugin directly rather than through a host.
+
+There is no integration harness for `ConfigureServices` / `MapEndpoints`. Those members exist for a host that provides an ASP.NET service collection and endpoint builder, which the deleted HTTP server was; nothing in the repository calls them today. A plugin that only implements `IMemoryEventSink`, `ISearchScoreContributor`, or `IMemoryOperationHook` needs neither.
 
 ## Common pitfalls
 
