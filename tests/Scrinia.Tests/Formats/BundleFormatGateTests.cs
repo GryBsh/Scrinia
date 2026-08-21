@@ -131,8 +131,14 @@ public sealed class BundleFormatGateTests : IDisposable
         Action act = () => BundleFormatService.ImportTopicsFromZip(
             zipRead, _store, filterTopics: null, overwrite: true);
 
+        // "Invalid bundle" is load-bearing, not decoration. TWO gates can refuse this entry:
+        // this one, and the store's own ScopeReadOnlyException from ImportTopicEntries, whose
+        // message ALSO contains "schema version 2". Asserting only on that substring made this
+        // test pass with the bundle gate disabled entirely -- the store gate caught it one layer
+        // down and the message still matched. Defence in depth is real and welcome, but a test
+        // named for the bundle-level check must fail when the bundle-level check is removed.
         act.Should().Throw<InvalidOperationException>()
-            .WithMessage($"*schema version {newerThanCurrent}*");
+            .WithMessage($"*Invalid bundle*schema version {newerThanCurrent}*");
 
         _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("test")).Should().BeEmpty();
     }
