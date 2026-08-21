@@ -702,7 +702,7 @@ Then replace the write and commit portions of the loop body. The `foreach` now s
                 // Roll back what is still staged. Anything already renamed is committed and
                 // consistent; rolling that back would need the previous content, which staging
                 // deliberately did not retain.
-                foreach (var (stagedPath, _) in staged)
+                foreach (var (stagedPath, _, _) in staged)
                     TryDeleteStagingFile(stagedPath);
                 throw;
             }
