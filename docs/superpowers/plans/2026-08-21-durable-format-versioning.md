@@ -405,7 +405,9 @@ MSG
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`:
+Create `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs` (Task 1 creates only
+`FormatVersionTests.cs` in that directory, so this file does not exist yet — later tasks say
+"append to" and mean this file):
 
 ```csharp
 using System.Text.Json;
@@ -628,7 +630,7 @@ Append to `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`. These need a 
 
         WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
 
-        store.InvalidateCaches();
+        ((FileMemoryStore)store).InvalidateCaches();   // NOT on IMemoryStore — cast required
         store.LoadIndex("local:notes").Select(e => e.Name)
             .Should().Contain("from-the-future");
     }
@@ -798,7 +800,7 @@ preserve — and every Task 2 test still passes. Read spec §B7 before starting.
         await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
         AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
 
-        await store.AppendAsync(/* match AppendAsync's real signature */);
+        await store.AppendAsync(new MemoryWrite("seed", "local:notes", ["second"]));
 
         ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
     }
@@ -828,12 +830,12 @@ preserve — and every Task 2 test still passes. Read spec §B7 before starting.
         var store = TestHelpers.Store;
         await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
-        byte[] before = File.ReadAllBytes(ArtifactPath(scope, "local:notes", "seed"));
+        byte[] before = File.ReadAllBytes(store.ArtifactPath("seed", "local:notes"));
 
         try { await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["overwrite"])); }
         catch (ScopeReadOnlyException) { }
 
-        File.ReadAllBytes(ArtifactPath(scope, "local:notes", "seed")).Should().Equal(before);
+        File.ReadAllBytes(store.ArtifactPath("seed", "local:notes")).Should().Equal(before);
     }
 ```
 
@@ -858,7 +860,10 @@ FAILS (no refusal — the rebuilt entry has a null version).
             // v1 on the first rewrite.
             SchemaVersion: prior?.SchemaVersion)
         {
-            Unknown = prior?.Unknown
+            // COPIED, never aliased: LoadIndex hands cached entries out BY REFERENCE, so
+            // assigning prior.Unknown directly would make this entry and the cached one share
+            // one Dictionary, and WriteSidecarCore's sort would then mutate the cache.
+            Unknown = prior?.Unknown is { } u ? new Dictionary<string, JsonElement>(u) : null
         });
 ```
 
@@ -869,7 +874,12 @@ Same reasoning that kept a `bool sweepOrphans` flag out of the transactional-res
 - [ ] **Step 4: Pass `prior` at both call sites**
 
 `FileMemoryStore.cs:1613` (`StoreAsync`) already has `existingEntry` in scope — pass it.
-`:1725` (`AppendAsync`) has the entry it is appending to — pass that. Neither needs a new read.
+`:1725` (`AppendAsync`) binds `existingEntry` at `:1669` — pass that. Neither needs a new read.
+
+**`AppendAsync`'s may be null, and that is correct.** It gates on the `.nmp2` artifact, not on
+the index entry, and tolerates an artifact with no sidecar (`:1674`). `prior` is `ArtifactEntry?`
+precisely so that is expressible — an orphaned artifact has no sidecar and therefore no unknown
+fields to inherit. Do not "fix" it by loading the index.
 
 - [ ] **Step 5: Verify the `with`-based rebuilds need no change**
 
@@ -968,7 +978,7 @@ The gate goes where the entries are already in hand, at zero extra I/O.
         var store = TestHelpers.Store;
         await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["findable body text"]));
         WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
-        store.InvalidateCaches();
+        ((FileMemoryStore)store).InvalidateCaches();   // NOT on IMemoryStore — cast required
 
         store.Invoking(x => x.LoadIndex("local:notes")).Should().NotThrow();
         store.LoadIndex("local:notes").Should().HaveCount(2);
@@ -994,7 +1004,9 @@ The gate goes where the entries are already in hand, at zero extra I/O.
 Add `internal void InvokeWriteSidecarForTest(...)` and `internal void InvokeWriteSidecarsForTest(...)`
 to `FileMemoryStore`, matching the existing `InvokeWithExclusiveLockForTest` convention.
 `TestHelpers.Store` is typed `IMemoryStore`, so tests calling concrete-only members need a
-`(FileMemoryStore)` cast.
+`(FileMemoryStore)` cast. **`InvalidateCaches()` is one of them** — it is not on the interface,
+and calling it uncast is a CS1061 build break. `StoreAsync`, `AppendAsync`, `LoadIndex`,
+`Remove` and `ArtifactPath` ARE on the interface.
 
 - [ ] **Step 2: Run and watch them fail**
 
@@ -1043,19 +1055,40 @@ At the top of `WriteSidecarCore`, before the `NormalizeAttributesKey` call:
 `WriteSidecarCore` is static and takes a directory rather than a scope, so it reports the
 directory. `Upsert`'s gate is what produces the memory-named message in the common case.
 
-- [ ] **Step 6: Confirm `Remove` is NOT gated**
+- [ ] **Step 6: Pre-check `ImportTopicEntries`'s commit loop**
+
+Not optional. That loop (`FileMemoryStore.cs:2523-2527`) renames a body and writes its sidecar
+**per entry**, calling `WriteSidecar` directly — so `WriteSidecars`' pre-check does not cover it,
+and a refusal from the backstop would abort mid-loop after N bodies had already been renamed.
+That is the exact partial-restore failure class the transactional-restore work closed, re-created
+by its own successor. Add the same whole-list pre-check over `staged`, **before the first
+`File.Move`**.
+
+- [ ] **Step 7: Make `TryUpdateEntry` SKIP rather than throw**
+
+`TryUpdateEntry` (`:1440`) writes a sidecar directly at `:1488`, bypassing `Upsert`, and its
+callers are detached background handlers — `MaintenanceEventSink.cs:109,162`,
+`EntityTypingEventHandler.cs:82` — where a thrown `ScopeReadOnlyException` has no handler and
+becomes an unobserved fault.
+
+**Ruling: derived, best-effort writes SKIP; user-initiated writes REFUSE.** `TryUpdateEntry`
+returns `false` and writes nothing when `ArtifactSidecarPolicy.IsReadOnly(updated)`, exactly as
+it already does when the entry is missing. Its contract is already "may not have updated"; a
+newer sidecar is one more reason. This is the same rule Task 3's forward-fill skip follows.
+
+- [ ] **Step 8: Confirm `Remove` is NOT gated**
 
 `Remove` deletes `.meta.json` files rather than writing them, so it never reaches
 `WriteSidecarCore` and needs no change. Verify by reading it — do not assume.
 
-- [ ] **Step 7: Run the tests, then the full suite**
+- [ ] **Step 9: Run the tests, then the full suite**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats`
 then `dotnet test Scrinia.sln`
 Expected: 0 failures. A failure in an unrelated write test means a path writes a list containing
 an entry it should not — investigate rather than relaxing the gate.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 Commit message subject: `fix(store): refuse writes that would overwrite a sidecar from a newer build`.
 Body must record where the gate sits and why it is not inside `WithExclusiveLock` (H5's O(N²),
