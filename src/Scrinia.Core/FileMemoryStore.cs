@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
@@ -765,6 +766,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (AttributeMigration.MigratesTo(entries[i], out var upgraded))
             {
                 entries[i] = upgraded;
+
+                // The in-memory upgrade above stands; only the PERSIST is skipped. A sidecar
+                // written by a newer build must not be rewritten by this one, and the check
+                // has to happen HERE rather than as a refusal thrown from WriteSidecar: this
+                // loop's catch is filtered to IOException and UnauthorizedAccessException, so
+                // a ScopeReadOnlyException would propagate out of a plain read and break
+                // search() for the whole scope. Attempting a write already known to be refused
+                // and then widening the catch to swallow it is the worse repair.
+                if (ArtifactSidecarPolicy.IsReadOnly(upgraded)) continue;
+
                 try { WriteSidecar(upgraded, storeDir); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort; see above */ }
             }

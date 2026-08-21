@@ -1,6 +1,8 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Tests.Formats;
@@ -133,5 +135,127 @@ public sealed partial class SidecarVersioningTests
             .ToList();
 
         keys.Should().Equal("Alpha", "alpha", "zeta");
+    }
+
+    // ── Read path: a newer sidecar loads, and forward-fill leaves it alone ──────────────
+
+    [Fact]
+    public async Task NewerSidecar_IsNotDroppedFromTheIndex()
+    {
+        // The C1-class regression guard. If the version gate is evaluated INSIDE
+        // ReadSidecarRaw's blanket `catch { return null; }`, a newer sidecar is silently
+        // dropped from the index -- which is the previous Critical's failure mode, rebuilt
+        // by hand inside the fix for this one.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["body"]));
+
+        WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
+
+        ((FileMemoryStore)store).InvalidateCaches();   // NOT on IMemoryStore -- cast required
+        store.LoadIndex("local:notes").Select(e => e.Name)
+            .Should().Contain("from-the-future");
+    }
+
+    [Fact]
+    public void NewerSidecar_IsStillReadable_WithItsUnknownFieldsIntact()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        WriteRawSidecar(scope, "local:notes", "from-the-future",
+            schemaVersion: 2, extraKey: "futureThing");
+
+        store.LoadIndex("local:notes").Single(e => e.Name == "from-the-future")
+            .Unknown.Should().ContainKey("futureThing");
+    }
+
+    [Fact]
+    public void ForwardFill_DoesNotRewriteANewerSidecar_AndDoesNotThrow()
+    {
+        // The sidecar MUST be legacy-shaped (a "fields" key rather than "attributes") so
+        // AttributeMigration.MigratesTo returns true. That is the only condition under which
+        // the forward-fill loop reaches a write at all -- without it this test passes
+        // vacuously and proves nothing.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        string path = WriteRawSidecar(scope, "local:notes", "legacy-and-newer",
+            schemaVersion: 2, legacyShaped: true);
+
+        byte[] before = File.ReadAllBytes(path);
+
+        var act = () => store.LoadIndex("local:notes");
+        act.Should().NotThrow("a version refusal must never escape a plain read path");
+
+        File.ReadAllBytes(path).Should().Equal(before);
+    }
+
+    [Fact]
+    public void ForwardFill_StillRewritesALegacySidecarAtTheCurrentVersion()
+    {
+        // The control for the test above: prove the skip is conditional on the VERSION, not
+        // on the migration having quietly stopped working.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        string path = WriteRawSidecar(scope, "local:notes", "legacy-only",
+            schemaVersion: null, legacyShaped: true);
+
+        byte[] before = File.ReadAllBytes(path);
+        store.LoadIndex("local:notes");
+
+        File.ReadAllBytes(path).Should().NotEqual(before);
+    }
+
+    [Fact]
+    public async Task CorruptSidecar_IsStillSkipped_NotRefused()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["body"]));
+        File.WriteAllText(SidecarPath(scope, "local:notes", "broken"), "{ not json");
+
+        store.LoadIndex("local:notes").Select(e => e.Name).Should().Contain("ordinary");
+    }
+
+    /// <summary>
+    /// Composes a <c>.meta.json</c> sidecar BY HAND, bypassing <see cref="ArtifactEntry"/>
+    /// entirely. That is deliberate: the typed model cannot emit a legacy "fields" key
+    /// alongside a "v" key (LegacyFields and SchemaVersion coexist fine on the type, but
+    /// nothing in production ever constructs that combination), and this suite needs exactly
+    /// that combination to reach the forward-fill write path under a version the current
+    /// build must not touch.
+    /// </summary>
+    private static string WriteRawSidecar(
+        TestHelpers.StoreScope scope, string storeScope, string name,
+        int? schemaVersion = null, string? extraKey = null, bool legacyShaped = false)
+    {
+        var obj = new JsonObject
+        {
+            ["name"] = name,
+            ["uri"] = $"file:///{name}.nmp2",
+            ["originalBytes"] = 5,
+            ["chunkCount"] = 1,
+            ["createdAt"] = "2026-01-01T00:00:00+00:00",
+        };
+        if (schemaVersion is not null)
+            obj["v"] = schemaVersion.Value;
+        if (legacyShaped)
+            obj["fields"] = new JsonObject { ["tag"] = new JsonArray("legacy-tag") };
+        if (extraKey is not null)
+            obj[extraKey] = "present";
+
+        string path = SidecarPath(scope, storeScope, name);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, obj.ToJsonString());
+        return path;
+    }
+
+    /// <summary>Where a sidecar for <paramref name="name"/> in <paramref name="storeScope"/>
+    /// lives on disk, without going through the store at all -- <c>local:notes</c> maps to
+    /// <c>{TempDir}/notes/&lt;name&gt;.meta.json</c>.</summary>
+    private static string SidecarPath(TestHelpers.StoreScope scope, string storeScope, string name)
+    {
+        int colon = storeScope.IndexOf(':');
+        string sub = colon >= 0 ? storeScope[(colon + 1)..] : storeScope;
+        return Path.Combine(scope.TempDir, sub, name + ".meta.json");
     }
 }
