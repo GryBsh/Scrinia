@@ -1633,7 +1633,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         await WriteArtifactAsync(subject, scope, artifact, ct: ct);
 
-        var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount, createdAt, updatedAt, derived);
+        var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount, createdAt, updatedAt, derived,
+            prior: existingEntry);
 
         try
         {
@@ -1748,7 +1749,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount,
             createdAt: existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow,
             updatedAt: DateTimeOffset.UtcNow,
-            derived);
+            derived,
+            prior: existingEntry);
 
         try
         {
@@ -1774,10 +1776,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// <summary>Assembles the index entry from the derived half plus the store's own bookkeeping.
     /// <see cref="AttributeMigration.Forward"/> is the same safety net both pre-collapse write paths
     /// ran: idempotent here (the pipeline already folds file hashes and routes <c>key:value</c>
-    /// keywords), and load-bearing for a pre-attributes entry appended to for the first time.</summary>
+    /// keywords), and load-bearing for a pre-attributes entry appended to for the first time.
+    ///
+    /// <para><b>This is the sole assembler, and it builds a BRAND-NEW entry every call</b> — no
+    /// ordinary write is a round-trip. <paramref name="prior"/> is therefore the only thing
+    /// carrying <see cref="ArtifactEntry.SchemaVersion"/> and <see cref="ArtifactEntry.Unknown"/>
+    /// across a rewrite; without it, the first <c>remember</c> on an existing memory deletes both.
+    /// Required, not optional — an optional parameter would let a future write path omit it and
+    /// quietly resume deleting unknown fields.</para></summary>
     private ArtifactEntry BuildDerivedEntry(
         string subject, string scope, long originalBytes, int chunkCount,
-        DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived) =>
+        DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived,
+        ArtifactEntry? prior) =>
         AttributeMigration.Forward(new ArtifactEntry(
             Name: subject,
             Uri: ArtifactUri(subject, scope),
@@ -1791,7 +1801,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             ChunkEntries: derived.ChunkEntries,
             FileHashes: derived.FileHashes,
             Attributes: derived.Attributes,
-            AgentKeywords: derived.AgentKeywords));
+            AgentKeywords: derived.AgentKeywords,
+            // Carried forward, not re-derived: this build has no member to re-derive the version
+            // from, and re-deriving it would silently downgrade a v2 sidecar to v1 on the first
+            // rewrite — the exact bug this task exists to close.
+            SchemaVersion: prior?.SchemaVersion)
+        {
+            // COPIED, never aliased: LoadIndex hands cached entries out BY REFERENCE, so assigning
+            // prior.Unknown directly would make this entry and the cached one share one Dictionary,
+            // and WriteSidecarCore's ordinal sort would then mutate the cache in place.
+            Unknown = prior?.Unknown is { } u ? new Dictionary<string, JsonElement>(u) : null
+        });
 
     /// <summary>Persists an ephemeral write and projects it back as an <see cref="ArtifactEntry"/>,
     /// the way <see cref="ListEphemeral"/> does — through the same

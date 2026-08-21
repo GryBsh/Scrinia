@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Tests.Formats;
@@ -218,6 +219,182 @@ public sealed partial class SidecarVersioningTests
         File.WriteAllText(SidecarPath(scope, "local:notes", "broken"), "{ not json");
 
         store.LoadIndex("local:notes").Select(e => e.Name).Should().Contain("ordinary");
+    }
+
+    // ── Write path: inheritance on overwrite ─────────────────────────────────────────────
+    //
+    // Task 2's round-trip tests above prove one OBJECT round-trips. No ordinary write is a
+    // round-trip: StoreAsync/AppendAsync re-derive everything and hand BuildDerivedEntry a
+    // brand-new ArtifactEntry. Without `prior` threaded through, the first `remember` on an
+    // existing memory silently deletes both SchemaVersion and Unknown — and every test above
+    // stays green while it happens. These tests go through the real write path with entirely
+    // new content, which is the only thing that can catch that.
+
+    [Fact]
+    public async Task ReStoringAMemory_WithEntirelyNewContent_KeepsItsUnknownKeys()
+    {
+        // NOT a round-trip: StoreAsync re-derives and builds a NEW entry. This is the test that
+        // separates a working extension bucket from a decorative one.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
+
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["totally new content"]));
+
+        ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
+    }
+
+    [Fact]
+    public async Task AppendingToAMemory_KeepsItsUnknownKeys()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
+
+        await store.AppendAsync(new MemoryWrite("seed", "local:notes", ["second"]));
+
+        ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
+    }
+
+    [Fact]
+    public async Task ReStoringAMemory_WithEntirelyNewContent_KeepsItsSchemaVersion()
+    {
+        // The discrimination-proof partner to the Unknown-keys test above, exercised without
+        // depending on Task 4's write-path refusal (nothing throws ScopeReadOnlyException yet —
+        // see ReStoringAV2Memory_IsRefused below). WriteSidecarCore has no version gate today,
+        // so the overwrite succeeds; what this pins is that the version it writes is the PRIOR
+        // entry's, not null.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["totally new content"]));
+
+        ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(2);
+    }
+
+    [Fact]
+    public async Task AppendingToAMemory_KeepsItsSchemaVersion()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        await store.AppendAsync(new MemoryWrite("seed", "local:notes", ["second"]));
+
+        ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(2);
+    }
+
+    [Fact(Skip = "activates with Task 4's write gate — nothing throws ScopeReadOnlyException " +
+                 "from a write path yet, so this cannot pass until Task 4 lands the refusal.")]
+    public async Task ReStoringAV2Memory_IsRefused_BecauseTheRebuiltEntryInheritsItsVersion()
+    {
+        // This is the mechanism that makes a PER-ENTRY gate sufficient in place of a whole-scope
+        // lockout: the refusal follows the memory, because the version is inherited. Task 3b
+        // (this task) only wires the inheritance; ReStoringAMemory_..._KeepsItsSchemaVersion
+        // above is the enabled proof that the inheritance itself works. This test documents the
+        // consequence Task 4 is expected to wire up, and should be un-skipped there.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        var act = async () => await store.StoreAsync(
+            new MemoryWrite("seed", "local:notes", ["overwrite attempt"]));
+
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+    }
+
+    [Fact(Skip = "activates with Task 4's write gate — depends on the refusal in the test " +
+                 "above actually being thrown; see that test's Skip reason.")]
+    public async Task AfterThatRefusal_TheBodyOnDiskIsUnchanged()
+    {
+        // The property that makes leaving body writes ungated safe: StoreAsync's rollback puts
+        // the previous content back, so content and metadata still agree after the refusal.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+        byte[] before = File.ReadAllBytes(store.ArtifactPath("seed", "local:notes"));
+
+        try { await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["overwrite"])); }
+        catch (ScopeReadOnlyException) { }
+
+        File.ReadAllBytes(store.ArtifactPath("seed", "local:notes")).Should().Equal(before);
+    }
+
+    [Fact]
+    public void TryUpdateEntry_OnAMemoryWithAnUnknownKey_PreservesIt()
+    {
+        // Step 5's verification, not an assumption: TryUpdateEntry rebuilds with `with`, which
+        // copies every member it does not name, so Unknown should survive untouched without any
+        // change to TryUpdateEntry itself. This proves that rather than taking it on faith.
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+
+        var entry = new ArtifactEntry("tracked", "file:///tracked.nmp2", 5, 1,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero))
+        {
+            Unknown = new Dictionary<string, JsonElement>
+            {
+                ["futureThing"] = JsonDocument.Parse("1").RootElement,
+            }
+        };
+        store.Upsert(entry, "local:notes");
+
+        bool updated = store.TryUpdateEntry("tracked", "local:notes",
+            current => current with { ContentPreview = "updated preview" });
+
+        updated.Should().BeTrue();
+        ReadSidecarJson(scope, "local:notes", "tracked").Should().Contain("futureThing");
+    }
+
+    /// <summary>
+    /// Edits an EXISTING on-disk sidecar to add a key this build's <see cref="ArtifactEntry"/>
+    /// has no member for, then invalidates the store's in-process index cache so the next read
+    /// goes back to disk. Without the invalidation, <c>LoadIndex</c> would keep serving the
+    /// warm <see cref="FileMemoryStore.CachedIndex"/> populated by the seeding
+    /// <c>StoreAsync</c> above — which predates this edit — and the write-path test using this
+    /// helper would fail for a caching reason that has nothing to do with
+    /// <c>BuildDerivedEntry</c>.
+    /// </summary>
+    private static void AddUnknownKeyToSidecarOnDisk(
+        TestHelpers.StoreScope scope, string storeScope, string name, string key)
+    {
+        string path = SidecarPath(scope, storeScope, name);
+        var node = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        node[key] = "present";
+        File.WriteAllText(path, node.ToJsonString());
+        ((FileMemoryStore)TestHelpers.Store).InvalidateCaches();
+    }
+
+    /// <summary>Same on-disk-edit-plus-invalidate shape as <see cref="AddUnknownKeyToSidecarOnDisk"/>,
+    /// for the <c>"v"</c> key instead of an unknown one.</summary>
+    private static void SetSidecarVersionOnDisk(
+        TestHelpers.StoreScope scope, string storeScope, string name, int version)
+    {
+        string path = SidecarPath(scope, storeScope, name);
+        var node = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        node["v"] = version;
+        File.WriteAllText(path, node.ToJsonString());
+        ((FileMemoryStore)TestHelpers.Store).InvalidateCaches();
+    }
+
+    /// <summary>Raw sidecar bytes as text, straight off disk — no cache, no re-parse through
+    /// <see cref="ArtifactEntry"/> — so an assertion on it reflects exactly what got written.</summary>
+    private static string ReadSidecarJson(TestHelpers.StoreScope scope, string storeScope, string name)
+        => File.ReadAllText(SidecarPath(scope, storeScope, name));
+
+    /// <summary>The sidecar's <c>"v"</c> value, parsed rather than string-matched so the
+    /// assertion does not depend on JSON whitespace formatting.</summary>
+    private static int? ReadSidecarSchemaVersion(TestHelpers.StoreScope scope, string storeScope, string name)
+    {
+        var root = JsonDocument.Parse(ReadSidecarJson(scope, storeScope, name)).RootElement;
+        return root.TryGetProperty("v", out var v) ? v.GetInt32() : null;
     }
 
     /// <summary>
