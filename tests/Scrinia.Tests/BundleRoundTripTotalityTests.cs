@@ -7,6 +7,7 @@ using FluentAssertions.Execution;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -891,7 +892,14 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             ["file"] = ["src/x.cs"],
         },
         AgentKeywords: ["alpha"],
-        SchemaVersion: 7)
+        // NOT an arbitrary distinctive value. The write gate refuses any entry declaring a
+        // version above DurableFormats.ArtifactSidecar.Current, so a fixture using 7 (as this
+        // did before the gate landed) makes the pin's own probe entry unwritable and fails five
+        // tests in this class with ScopeReadOnlyException. Current is the HIGHEST version this
+        // build can persist, and it is non-null, so it still satisfies the pin's "must differ
+        // from the default" rule. Written as the constant rather than a literal 1 so the fixture
+        // follows the contract automatically when the version is next bumped.
+        SchemaVersion: DurableFormats.ArtifactSidecar.Current)
     {
         // Unknown is not a positional member (it cannot be — see ArtifactEntry.cs's remarks on
         // why [JsonExtensionData] forces `{ get; set; }`), so it is populated via initializer
