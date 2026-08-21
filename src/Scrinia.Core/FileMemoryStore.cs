@@ -603,10 +603,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// write lock, materialising the store first. Every write goes through here so that
     /// "writes materialize, reads do not" holds in one place.
     /// </summary>
-    private T WithExclusiveLock<T>(string scope, Func<T> body)
+    private T WithExclusiveLock<T>(string scope, Func<T> body, TimeSpan? timeout = null)
     {
         EnsureMaterialized(scope);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout);
         var lk = GetIndexLock(scope);
         lk.EnterWriteLock();
         try
@@ -619,8 +619,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private void WithExclusiveLock(string scope, Action body) =>
-        WithExclusiveLock(scope, () => { body(); return true; });
+    private void WithExclusiveLock(string scope, Action body, TimeSpan? timeout = null) =>
+        WithExclusiveLock(scope, () => { body(); return true; }, timeout);
+
+    /// <summary>
+    /// Test-only seam for <see cref="WithExclusiveLock(string, Action, TimeSpan?)"/>, which is
+    /// private because every production write reaches it through a named store operation. Exists
+    /// so the timeout-forwarding contract can be pinned without widening the real API.
+    /// </summary>
+    internal void InvokeWithExclusiveLockForTest(string scope, Action body, TimeSpan? timeout = null)
+        => WithExclusiveLock(scope, body, timeout);
 
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
@@ -1192,30 +1200,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
     {
-        // Normalize BEFORE anything else reads this list, because this list becomes the cache.
-        // WriteSidecarCore normalizes a LOCAL copy on its way to disk, so disk is always
-        // "attributes"-keyed; without this, the cache below would keep whatever the caller handed
-        // over. And a LegacyFields-bearing entry is exactly what a caller can hand over:
-        // LoadIndexUnsafe caches an entry RAW when AttributeMigration.MigratesTo reports no change
-        // (which it does whenever Attributes is already non-null, since NormalizeAttributesKey's
-        // coalesce is then a no-op — the footgun documented at ArtifactEntry.cs:63-68), and
-        // ImportTopicEntries — the only production caller of SaveIndex — builds its list from
-        // LoadIndex(topicScope).ToList(). Leaving it raw is the same cache-diverges-from-disk
-        // defect the load seam and Upsert's/TryUpdateEntry's cache writes exist to prevent, at the
-        // one write path that had not closed it.
-        //
-        // In place rather than into a copy: this method already takes ownership of the list per
-        // SaveIndex's contract, and the list is not yet reachable through _indexCache, so the
-        // never-mutate-a-published-list rule is not in play. No-op for an already-normalized or
-        // freshly-constructed entry.
-        for (int i = 0; i < entries.Count; i++)
-            entries[i] = entries[i].NormalizeAttributesKey();
-
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
-        // Delete orphaned sidecars: any *.meta.json whose entry is no longer present. Runs under the
-        // caller's write lock; storeDir holds only artifact sidecars, so this is scope-local and safe.
+        // Delete orphaned sidecars: any *.meta.json whose entry is no longer present.
+        //
+        // Correctness of this sweep depends on something the lock cannot supply: the entry list
+        // must have been READ under the same exclusive lock that commits it. Holding the write
+        // lock here says nothing about how old `entries` is. ImportTopicEntries used to hand over
+        // a list read before any lock was taken, and this loop deleted whatever had landed since
+        // (finding C1) — which is why import no longer calls this method at all.
         var expected = new HashSet<string>(
             entries.Select(e => SanitizeName(e.Name) + ".meta.json"),
             StringComparer.OrdinalIgnoreCase);
@@ -1223,13 +1217,37 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (!expected.Contains(Path.GetFileName(metaFile)))
                 File.Delete(metaFile);
 
-        // Write per-artifact sidecar metadata files
+        PublishIndexUnsafe(entries, scope);
+    }
+
+    /// <summary>
+    /// Commits <paramref name="entries"/> as the scope's index WITHOUT deleting anything: writes
+    /// each sidecar, then refreshes the caches that derive from the index.
+    ///
+    /// <para>Split out of <see cref="SaveIndexUnsafe"/> so an ADDITIVE writer can commit without
+    /// inheriting the orphan sweep. Taking ownership of the list instance is unchanged — it
+    /// becomes the cache, so the caller must not retain a reference or mutate it afterwards.</para>
+    ///
+    /// <para>Caller must already hold the scope's exclusive lock.</para>
+    /// </summary>
+    private void PublishIndexUnsafe(List<ArtifactEntry> entries, string scope)
+    {
+        // Normalize BEFORE anything else reads this list, because this list becomes the cache.
+        // WriteSidecarCore normalizes a LOCAL copy on its way to disk, so disk is always
+        // "attributes"-keyed; without this, the cache below would keep whatever the caller handed
+        // over — the same cache-diverges-from-disk defect the load seam and Upsert's cache writes
+        // exist to prevent. In place rather than into a copy: this method takes ownership per its
+        // summary, and the list is not yet reachable through _indexCache.
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = entries[i].NormalizeAttributesKey();
+
+        string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+
         WriteSidecars(entries, storeDir);
 
-        // Update the in-memory cache
         _indexCache[scope] = new CachedIndex(entries);
 
-        // Invalidate topic discovery cache when saving a topic scope
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
 
@@ -2372,51 +2390,181 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Cross-process lock budget for a restore. A restore holds its scope's lock for the whole
+    /// import, which is unbounded in the bundle's size, so the 5s default that suits a single
+    /// write would fail a large one against itself.
+    ///
+    /// <para>Fixed rather than scaled to entry count: this is a ceiling that exists so a
+    /// legitimate long restore does not fail spuriously, not a correctness parameter. A formula
+    /// would be one more thing to get wrong. The accepted cost is that a genuine deadlock on an
+    /// import surfaces in five minutes rather than five seconds.</para>
+    /// </summary>
+    private static readonly TimeSpan ImportLockTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Suffix for a bundle body staged but not yet committed.
+    ///
+    /// <para>Deliberately carries NO <c>.nmp2</c> segment: <c>DiscoverMemoriesRecursive</c> decides
+    /// whether a directory is a v2 scope with <c>EnumerateFiles(dir, "*.nmp2")</c>, and a staging
+    /// file that registered as an artifact would make a half-restored scope discoverable as a
+    /// topic. Keeping <c>.nmp2</c> out of the name removes the question rather than answering
+    /// it.</para>
+    /// </summary>
+    private const string ImportStagingSuffix = ".staging";
+
     public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, string> artifactContents, bool overwrite)
     {
-        string storeDir = GetStoreDirForScope(topicScope);
-        Directory.CreateDirectory(storeDir);
-
-        // ToList() because this method mutates the list below and hands it to SaveIndex, which
-        // takes ownership of the instance it is given (it becomes the cache). Mutating the
-        // cache's own backing list here would corrupt every other reader's live view.
-        var existingEntries = LoadIndex(topicScope).ToList();
-
-        foreach (var entry in entries)
+        try
         {
-            bool exists = existingEntries.Any(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-            if (exists && !overwrite)
-                continue;
-
-            if (artifactContents.TryGetValue(entry.Name, out string? content))
-            {
-                string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
-                AtomicWriteAllText(filePath, content);
-            }
-
-            // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
-            // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the memory
-            // as it was, and overwriting it reset every memory's creation date on every restore
-            // (design review finding M4). A bundle carrying no "createdAt" key deserializes to
-            // default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that specific value is
-            // the only one rewritten to "now" here. Any OTHER unparseable createdAt is refused
-            // earlier, in ImportTopicsFromZip's deserialize (InvalidOperationException) — this is
-            // not a general malformed-timestamp fallback, only the default a missing key produces.
-            var updatedEntry = entry with
-            {
-                Uri = ArtifactUri(entry.Name, topicScope),
-                CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
-            };
-
-            int idx = existingEntries.FindIndex(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-            if (idx >= 0)
-                existingEntries[idx] = updatedEntry;
-            else
-                existingEntries.Add(updatedEntry);
+            ImportTopicEntriesCore(topicScope, entries, artifactContents, overwrite);
         }
+        catch (FileLockTimeoutException ex)
+        {
+            // WithExclusiveLock's own exception names only the lock file path
+            // (".../{scope-dir}/.lock") — useful for a human staring at the filesystem, useless for
+            // a caller trying to report which operation failed. Name both here instead.
+            throw new TimeoutException(
+                $"Import into topic scope '{topicScope}' timed out waiting for its exclusive lock.",
+                ex);
+        }
+    }
 
-        SaveIndex(existingEntries, topicScope);
+    private void ImportTopicEntriesCore(string topicScope, List<ArtifactEntry> entries,
+        Dictionary<string, string> artifactContents, bool overwrite)
+    {
+        WithExclusiveLock(topicScope, () =>
+        {
+            string storeDir = GetStoreDirForScope(topicScope);
+            Directory.CreateDirectory(storeDir);
+            SweepStaleStagingUnsafe(storeDir);
+
+            // Drop the cached index so the snapshot below is read from disk. LoadIndexUnsafe is
+            // cache-first, and PublishIndexUnsafe writes a sidecar for EVERY entry it is handed —
+            // so a warm entry that another process has since rewritten would be reverted to the
+            // cached version over the newer body. Holding the exclusive lock is not enough: the
+            // lock says nothing about how old the CACHE is. One cold read per bulk import.
+            _indexCache.TryRemove(topicScope, out _);
+
+            // Read under the lock that will commit it. The snapshot and the commit used to sit on
+            // opposite sides of an unlocked write loop, which is what let a concurrent write land
+            // in between and then be swept as an orphan (finding C1).
+            //
+            // ToList() because this method mutates the list below and hands it to
+            // PublishIndexUnsafe, which takes ownership of the instance it is given (it becomes
+            // the cache). LoadIndexUnsafe returns the cache's own backing list, so mutating it
+            // here would corrupt every other reader's live view.
+            var existingEntries = LoadIndexUnsafe(topicScope).ToList();
+
+            var staged = new List<(string StagedPath, string FinalPath, ArtifactEntry Entry)>();
+            try
+            {
+                foreach (var entry in entries)
+                {
+                    bool exists = existingEntries.Any(
+                        e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                    if (exists && !overwrite)
+                        continue;
+
+                    // An entry listed in the bundle with no matching body in artifactContents
+                    // cannot be applied: there is nothing to stage, and splicing its metadata into
+                    // existingEntries anyway would leave the trailing PublishIndexUnsafe writing
+                    // that metadata over whatever body actually sits on disk locally (or over
+                    // nothing at all) — the same content/metadata divorce this branch closes.
+                    // Skip the entry entirely: no staging, no splice.
+                    if (!artifactContents.TryGetValue(entry.Name, out string? content))
+                        continue;
+
+                    // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
+                    // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
+                    // memory as it was, and overwriting it reset every memory's creation date on
+                    // every restore (design review finding M4). A bundle carrying no "createdAt" key
+                    // deserializes to default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that
+                    // specific value is the only one rewritten to "now" here. Any OTHER unparseable
+                    // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
+                    var updatedEntry = entry with
+                    {
+                        Uri = ArtifactUri(entry.Name, topicScope),
+                        CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
+                    };
+
+                    // Stage beside the destination — same directory, so the commit below is a
+                    // rename rather than a copy. The live artifact is not touched until every
+                    // body in this bundle is durably on disk.
+                    //
+                    // Token is 8 hex characters, not a full Guid ("N" is 32) — combined with the
+                    // atomic-write temp suffix, a full Guid here cut the maximum importable memory
+                    // name by ~48 characters for no benefit: collisions are impossible regardless
+                    // of width, since the caller holds the scope's exclusive lock (no concurrent
+                    // import can be staging into this directory) and SweepStaleStagingUnsafe clears
+                    // any leftovers from a prior run before this loop starts.
+                    string sanitized = SanitizeName(entry.Name);
+                    string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
+                    string token = Guid.NewGuid().ToString("N")[..8];
+                    string stagedPath = Path.Combine(
+                        storeDir, $"{sanitized}.import-{token}{ImportStagingSuffix}");
+                    AtomicWriteAllText(stagedPath, content);
+                    staged.Add((stagedPath, finalPath, updatedEntry));
+
+                    int idx = existingEntries.FindIndex(
+                        e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                    if (idx >= 0)
+                        existingEntries[idx] = updatedEntry;
+                    else
+                        existingEntries.Add(updatedEntry);
+                }
+
+                // COMMIT. Per entry, content then that entry's sidecar, so a crash leaves a PREFIX
+                // of fully-applied entries rather than the whole bundle sitting under stale
+                // sidecars. WriteSidecarCore is itself atomic per file (temp name + File.Move),
+                // so the exposure inside one iteration is a single rename.
+                foreach (var (stagedPath, finalPath, entry) in staged)
+                {
+                    FileRetry.Run(() => File.Move(stagedPath, finalPath, overwrite: true));
+                    WriteSidecar(entry, storeDir);
+                }
+
+                // PublishIndexUnsafe, not SaveIndexUnsafe: import ADDS and OVERWRITES, and never
+                // removes. The orphan sweep is not a capability it needs — it is the mechanism that
+                // destroyed data here, so it is gone from this path rather than locked around.
+                PublishIndexUnsafe(existingEntries, topicScope);
+            }
+            catch
+            {
+                // Roll back what is still staged. Anything already renamed is committed and
+                // consistent; rolling that back would need the previous content, which staging
+                // deliberately did not retain.
+                foreach (var (stagedPath, _, _) in staged)
+                    TryDeleteStagingFile(stagedPath);
+                throw;
+            }
+        }, ImportLockTimeout);
+    }
+
+    /// <summary>Best-effort removal of a staging file. A leftover is inert litter, not
+    /// corruption — it is invisible to every enumerator in the store — so a failure to delete
+    /// must not mask the exception that caused the rollback.</summary>
+    private static void TryDeleteStagingFile(string path)
+    {
+        try { File.Delete(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// Removes staging files left by an import that died before committing or rolling back.
+    ///
+    /// <para>Unconditional rather than age-based: the caller holds the scope's exclusive lock, so
+    /// no other import can be staging into this directory, and every staging file present is
+    /// therefore abandoned by definition.</para>
+    ///
+    /// <para>Caller must already hold the scope's exclusive lock.</para>
+    /// </summary>
+    private void SweepStaleStagingUnsafe(string storeDir)
+    {
+        if (!Directory.Exists(storeDir)) return;
+        foreach (string stale in Directory.EnumerateFiles(storeDir, "*" + ImportStagingSuffix).ToList())
+            TryDeleteStagingFile(stale);
     }
 
     // ── Display helpers ──────────────────────────────────────────────────────
