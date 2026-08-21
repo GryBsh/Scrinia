@@ -774,6 +774,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 // a ScopeReadOnlyException would propagate out of a plain read and break
                 // search() for the whole scope. Attempting a write already known to be refused
                 // and then widening the catch to swallow it is the worse repair.
+                //
+                // Consequence, stated because it is the next question a reader has: a
+                // legacy-shaped sidecar from a newer build is therefore NEVER migrated on disk
+                // by this build, and re-pays AttributeMigration.Forward on every cold load. That
+                // is intended -- the durable rewrite is left to the newer build that owns the
+                // file, which has already migrated its own shape anyway.
                 if (ArtifactSidecarPolicy.IsReadOnly(upgraded)) continue;
 
                 try { WriteSidecar(upgraded, storeDir); }

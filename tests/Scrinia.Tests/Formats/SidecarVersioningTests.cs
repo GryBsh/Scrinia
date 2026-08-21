@@ -184,6 +184,10 @@ public sealed partial class SidecarVersioningTests
         byte[] before = File.ReadAllBytes(path);
 
         var act = () => store.LoadIndex("local:notes");
+        // NOTE: this half of the assertion is dormant until the write-path refusal lands --
+        // nothing throws ScopeReadOnlyException yet, so it cannot currently fail. The
+        // byte-equality assertion below is what carries this test today. Kept because the
+        // moment a refusal exists, this is the line that catches it escaping a plain read.
         act.Should().NotThrow("a version refusal must never escape a plain read path");
 
         File.ReadAllBytes(path).Should().Equal(before);
@@ -218,7 +222,7 @@ public sealed partial class SidecarVersioningTests
 
     /// <summary>
     /// Composes a <c>.meta.json</c> sidecar BY HAND, bypassing <see cref="ArtifactEntry"/>
-    /// entirely. That is deliberate: the typed model cannot emit a legacy "fields" key
+    /// entirely. That is deliberate: the typed model never CONSTRUCTS a legacy "fields" key
     /// alongside a "v" key (LegacyFields and SchemaVersion coexist fine on the type, but
     /// nothing in production ever constructs that combination), and this suite needs exactly
     /// that combination to reach the forward-fill write path under a version the current
