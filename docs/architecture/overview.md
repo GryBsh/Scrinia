@@ -207,6 +207,13 @@ Recorded here so neither is mistaken for an oversight or "fixed" without a delib
   conformance suite that exercises the default arguments is testing the case least likely to be
   wrong.
 
+  `ListScopedCompletenessTests` replaces the half of that suite that was not about two stores: the
+  promise that `ListScoped` returns a COMPLETE listing, which four default interface methods rest
+  on. It cannot prove those defaults safe — they are exactly as complete as the listing is, by
+  construction — so it runs each through a double that pages correctly and an identical one that
+  stops after the first page, making the blast radius executable. The next paged source is what
+  it is there for.
+
 ## Further Reading
 
 - **[Core Architecture](core.md)** -- IMemoryStore, FileMemoryStore, NMP/2 encoding, search algorithms, models

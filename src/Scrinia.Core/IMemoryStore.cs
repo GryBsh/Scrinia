@@ -155,9 +155,13 @@ public interface IMemoryStore : IPluginStore
     /// <c>HttpMemoryStore</c>, which sent no <c>limit</c> against a server defaulting to 200 rows;
     /// all three defaults inherited the truncation, including the one that makes whole topic scopes
     /// disappear rather than merely lose entries. The rule is written down here because the next
-    /// paged source will inherit it the same way — and <b>nothing tests it any more</b>:
-    /// <c>PagedListingConformanceTests</c> drove it through the remote store and was deleted with
-    /// it. The one surviving implementation reads a directory, which cannot page.</para>
+    /// paged source will inherit it the same way; the one surviving implementation reads a
+    /// directory, which cannot page.</para>
+    ///
+    /// <para><c>ListScopedCompletenessTests</c> holds it. Not by proving the four defaults are
+    /// safe — they cannot be — but by running each of them through a double that pages correctly
+    /// and an identical one that stops after the first page, so the blast radius of a truncating
+    /// listing is executable rather than asserted here in prose.</para>
     /// </summary>
     List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null);
 
