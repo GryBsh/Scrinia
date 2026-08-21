@@ -1031,6 +1031,30 @@ Expected: the refusal tests FAIL — no refusal happens.
     }
 ```
 
+- [ ] **Step 3b: The user-facing check at the top of `StoreAsync`**
+
+**Ruling, from the Task 3b review.** `StoreAsync` binds `existingEntry` at `:1588` and calls
+`ArchiveVersion` at `:1631`. Without a check between them, a write destined to be refused at
+`Upsert` has already deposited a `versions/` archive entry for a memory it never changed, and
+relies on the rollback path to restore the body — a rollback that decodes and re-encodes rather
+than restoring bytes, so byte-identity becomes a property of the encoder rather than of the
+refusal.
+
+Refuse immediately after `existingEntry` is bound, before `ArchiveVersion`:
+
+```csharp
+        if (existingEntry is not null && ArtifactSidecarPolicy.IsReadOnly(existingEntry))
+            throw new ScopeReadOnlyException(
+                scope, existingEntry.Name, existingEntry.SchemaVersion ?? 1,
+                DurableFormats.ArtifactSidecar.Current);
+```
+
+Same principle as `WriteSidecars`' whole-list pre-check — refuse before the first side effect
+rather than partway through a sequence of them — applied at the outermost caller. `Upsert`'s
+check (Step 4) stays: it is the backstop for every other route into a sidecar write.
+
+Do the equivalent in `AppendAsync` if it archives too — check, do not assume.
+
 - [ ] **Step 4: The single-entry check in `Upsert`**
 
 Immediately before `Upsert`'s `WriteSidecar(entry, storeDir)` call, refuse when

@@ -295,6 +295,18 @@ So the gate goes where the entries are already in hand, at zero additional I/O:
   path, and a mid-loop refusal would leave a partial write, which is the failure
   class Stream A just closed.
 - **`Upsert`** — checks its single entry.
+- **`StoreAsync`, before any side effect.** This is the *user-facing* gate and it is
+  the earliest one. `StoreAsync` binds `existingEntry` at `:1588` and calls
+  `ArchiveVersion` at `:1631` — so without a check between them, a write that is
+  going to be refused at `Upsert` has already deposited a `versions/` entry for a
+  memory it never changed, and then depends on the rollback path to put the body
+  back. Refusing at the top removes both: no archive, no body write, no rollback,
+  and the exception names the memory before anything on disk has moved.
+
+  This is the same principle as `WriteSidecars`' whole-list pre-check — refuse
+  before the first side effect, not partway through a sequence of them — applied
+  to the outermost caller rather than the innermost.
+
 - **`ImportTopicEntries`'s commit loop** — pre-checks `staged` before the first
   `File.Move`. This one is not optional: that loop renames a body and writes its
   sidecar per entry, so a refusal raised from the backstop mid-loop would abort
@@ -517,6 +529,11 @@ Each of these is a required test, not a suggestion.
    any of it** — assert a writable sibling in that same list was not written. A
    mid-loop refusal leaving a partial write is the failure class Stream A closed.
 8b. `forget` on the `v: 2` memory **succeeds** — deletion is allowed.
+8e. A refused re-store leaves **no `versions/` archive entry** for that memory, and
+   leaves its body byte-identical. Both follow from refusing at the top of
+   `StoreAsync`; if the gate is placed lower, the archive assertion fails and the
+   body assertion starts testing the encoder's round-trip fidelity rather than the
+   refusal.
 8c. `ImportTopicEntries` on a bundle containing one newer entry refuses **before
    the first body is renamed** — assert an earlier entry's body on disk is
    unchanged. Without the pre-check this fails from the backstop mid-commit.
