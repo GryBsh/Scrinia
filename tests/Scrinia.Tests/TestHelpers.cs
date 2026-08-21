@@ -77,13 +77,14 @@ internal static class TestHelpers
 
     // ── Store isolation ───────────────────────────────────────────────────────
 
-    /// <summary>The ambient store, narrowed to the local contract. StoreScope always installs a
-    /// FileMemoryStore, so this is total inside a StoreScope. Exists so that tests reaching a
-    /// path member do so through one named helper rather than ~20 inline casts.</summary>
-    internal static ILocalMemoryStore LocalStore =>
-        MemoryStoreContext.Current as ILocalMemoryStore
+    /// <summary>The ambient store. Exists so that tests reaching a path member do so through one
+    /// named helper rather than ~20 inline null-checks; it was <c>LocalStore</c>, and narrowed to a
+    /// separate local-filesystem interface, until the remote store was dropped and that interface
+    /// merged back into <see cref="IMemoryStore"/>.</summary>
+    internal static IMemoryStore Store =>
+        MemoryStoreContext.Current
         ?? throw new InvalidOperationException(
-            "No local store is installed. Is this test inside a StoreScope?");
+            "No store is installed. Is this test inside a StoreScope?");
 
     /// <summary>
     /// Builds an isolated <see cref="FileMemoryStore"/> over a fresh temp directory and installs

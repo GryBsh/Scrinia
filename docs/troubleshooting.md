@@ -61,6 +61,11 @@ Config resolution order (highest priority first):
 
 **Fix:** Check `scri config` to see current values. Environment variables override config file values.
 
+Config is read once per process and cached, so a change written by another process is not seen by
+an already-running one. That costs nothing for CLI commands, where every invocation is a fresh
+process, but a long-running `scri serve` keeps the values it started with — restart it after
+`scri config set`.
+
 ## Plugin Issues
 
 ### Vulkan plugin not loading
@@ -94,90 +99,22 @@ scri config plugins:embeddings    # Check current setting
 ls $(dirname $(which scri))/plugins/  # List discovered plugins
 ```
 
-## Server Issues
-
-### Bootstrap key not working
-
-On first startup, the server writes a bootstrap key to `{dataDir}/BOOTSTRAP_KEY`. This key has full permissions for all stores.
-
-**Checklist:**
-1. Read the key from the file (not the server logs — it's never logged)
-2. Use it as `Authorization: Bearer {key}` (include the `scri_` prefix)
-3. Key may have been revoked if you created scoped keys and revoked it
-
-**Fix:** If the bootstrap key was revoked and you have no other admin keys, delete `{dataDir}/scrinia-keys.db` to reset. The server will create a new bootstrap key on next startup.
-
-### "Address already in use" / Port conflict
-
-The server defaults to port 5000.
-
-**Fix:**
-```bash
-# Use a different port
-dotnet run --project src/Scrinia.Server --urls http://localhost:5001
-```
-
-Or set in `appsettings.json`:
-```json
-{
-  "Kestrel": {
-    "Endpoints": {
-      "Http": { "Url": "http://localhost:5001" }
-    }
-  }
-}
-```
-
-### SQLite "database is locked"
-
-The API key database (`scrinia-keys.db`) uses SQLite. Lock errors can occur if multiple server instances access the same data directory.
-
-**Fix:** Ensure only one server instance runs per data directory. For high-availability, use separate data directories or a reverse proxy with sticky sessions.
-
-### Health check returning 503
-
-`GET /health/ready` checks SQLite connectivity, storage backend availability, per-store health, and loaded plugins.
-
-**Diagnostic:** The response body includes per-check results:
-```json
-{
-  "status": "unhealthy",
-  "checks": [
-    { "name": "sqlite", "status": "healthy" },
-    { "name": "store:default", "status": "unhealthy", "error": "..." }
-  ]
-}
-```
-
-**Fix:** Address the specific failing check. Common causes:
-- Store path doesn't exist or has wrong permissions
-- SQLite file corrupted (delete and restart for fresh bootstrap)
-- Plugin failed to load (check `{dataDir}/plugins/` DLLs)
-
-### Web UI shows blank page
-
-The React SPA must be built into `src/Scrinia.Server/wwwroot/`:
-
-```bash
-cd web && npm ci && npm run build
-```
-
-If `wwwroot/index.html` doesn't exist, the MSBuild target auto-runs `npm ci && npm run build` during `dotnet build`. Check that Node.js is installed.
-
 ## Memory Issues
 
-### Version bloat in .scrinia/store/versions/
+### Version bloat in .scrinia/memories/{scope}/versions/
 
-Every memory overwrite archives the previous version. For frequently updated memories, this can accumulate.
+Every write to an existing memory archives the previous version — `store`, `append` and
+`compact` alike. Each memory keeps its 10 most recent versions, so the archive grows with the
+number of frequently-edited memories rather than with the number of writes.
 
 **Fix:** Periodically clean old versions:
 ```bash
 # Remove versions older than 30 days
-find .scrinia/store/versions/ -name "*.nmp2" -mtime +30 -delete
-find .scrinia/topics/*/versions/ -name "*.nmp2" -mtime +30 -delete
+find .scrinia/memories -path "*/versions/*.nmp2" -mtime +30 -delete
 ```
 
-Note: append-only memories that update frequently (e.g., session logs) skip archiving by design to prevent version bloat.
+Archived copies exist for manual recovery only; nothing reads them back, so deleting them is
+safe. See [Version retention](#version-retention) below for what is kept and for how long.
 
 ### Search returns unexpected results
 
@@ -189,28 +126,50 @@ Scrinia uses hybrid scoring: `fieldScore + bm25*5 + semanticScore`. If results s
 
 ### Cross-process conflicts
 
-Multiple CLI processes or a CLI and server accessing the same workspace use OS-enforced file locks (`.lock` files per scope). If you see stale `.lock` files after a crash:
+Multiple processes against one workspace — several CLI invocations, or a CLI alongside a running
+`scri serve` — use OS-enforced file locks (`.lock` files per scope). If you see stale `.lock` files
+after a crash:
 
 **Fix:** Delete `.lock` files in `.scrinia/store/` and `.scrinia/topics/*/`. They are recreated automatically.
 
-## Docker Issues
+### Version retention
 
-### Container can't write to data volume
+There is **no limit on the number of memories** you can store, and the currently-active body of
+every memory is preserved indefinitely. The retention below is the size of the **rollback history**
+kept beside each memory — used for recovery after an accidental overwrite, not for steady-state
+reads.
 
-**Fix:** Ensure the volume mount has correct permissions:
+Every overwrite / append to a memory `foo` copies the *prior* body to a sibling `versions/`
+directory before the new body is written. The active file (`foo.nmp2`, `foo.md`) is never touched by
+the retention logic.
+
+| Memory class | Active file (kept forever) | Rollback history location | History size |
+|---|---|---|---|
+| NMP/2 memory body | `{scope}/{name}.nmp2` | `{scope}/versions/{name}_{ts}.nmp2` plus its `.meta.json` | Capped at 10 newest per memory (oldest archives auto-deleted on each overwrite). |
+| Skill markdown (`/skill/*`) | `.scrinia/skills/{name}.md` | `.scrinia/skills/versions/{name}_{ts}.md` | Unbounded — every prior version is retained until you prune manually. |
+| Agent config markdown (`/agent/*`) | `.scrinia/agent/{name}.md` | `.scrinia/agent/versions/{name}_{ts}.md` | Unbounded — every prior version is retained until you prune manually. |
+
+`{ts}` is `yyyyMMdd-HHmmss-fff` for an NMP/2 archive, and a `-2`, `-3` … suffix is appended if that
+millisecond is already taken. An archive is never overwritten: two writes to the same memory inside
+one second are the ordinary shape of an agent correcting itself mid-turn, and a coarser stamp used
+to let the second one silently replace the first.
+
+The NMP/2 archive carries the memory's `.meta.json` sidecar alongside the body, so a restored
+version arrives with the keywords, attributes and drift baseline it had at the time.
+
+The `versions/` directories are gitignored by default (`.scrinia/.gitignore` includes
+`**/versions/`) so they don't pollute commits. Bundles produced by `scri bundle export` /
+`bundle('export')` do not include `versions/`.
+
+**Manual prune** for skill and agent rollback history (NMP/2 history is already self-managing):
+
 ```bash
-docker compose down
-docker volume rm scrinium-data
-docker compose up -d
+# Keep the 5 newest skill rollback snapshots per skill name
+for f in $(ls .scrinia/skills/versions/ | sed 's/_[0-9]*-[0-9]*\.md//' | sort -u); do
+    ls -1t .scrinia/skills/versions/${f}_*.md | tail -n +6 | xargs -r rm
+done
 ```
 
-### Container health check failing
-
-The Docker health check hits `/health/live`. If it fails, the container may not have started correctly.
-
-**Fix:** Check logs:
-```bash
-docker compose logs scrinium
-```
-
-Common causes: missing environment variables, port conflicts within Docker network.
+The equivalent for `agent/versions/` is the same with the directory swapped. Pruning rollback
+history is safe — only the currently-active file is read at load time; archived copies exist solely
+for human recovery.

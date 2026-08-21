@@ -45,7 +45,7 @@ public sealed partial class ScriniaMcpTools
     /// JSON options for MCP tool parameter marshalling. The tool surface exposes
     /// <c>Dictionary&lt;string, string[]&gt;</c> parameters (<c>attributes</c> / <c>attributeFilter</c> on
     /// remember/search/append). The trimmed single-file <c>scri serve</c> publish has no reflection
-    /// metadata, so the server must marshal them via source generation — compose the SDK defaults
+    /// metadata, so the host must marshal them via source generation — compose the SDK defaults
     /// (primitives, arrays, MCP protocol types) with <see cref="ScriniaMcpJsonContext"/>, which supplies
     /// the attribute-dictionary metadata. Pass to <c>WithTools&lt;ScriniaMcpTools&gt;(...)</c>; without it,
     /// tool construction throws <see cref="System.NotSupportedException"/> at server startup under trimming.
@@ -130,14 +130,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/my-helper', content: [...] })");
 
-        // Guarded after validation: an invalid name is an invalid name whether the store is
-        // local or remote, and must come back as its own structured error either way.
-        if (!TryGetLayout(out var store))
-            return ResponseBuilder.Error(
-                "Skills are stored as .scrinia/skills/*.md in the local workspace, and the active store is remote.",
-                ErrorCodes.NotSupported,
-                "Create the skill in a local workspace, export it as a bundle, then import it "
-                + "through the server's bundle import endpoint.");
+        var store = CurrentStore;
 
         string promptContent;
         string role;
@@ -253,13 +246,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "forget({ path: '/skill/my-helper' })"));
 
-        // Guarded after validation, per TryGetLayout's contract: an invalid name is an invalid
-        // name whether the store is local or remote.
-        if (!TryGetLayout(out var store))
-            return Task.FromResult(ResponseBuilder.Error(
-                "Skills are stored as .scrinia/skills/*.md in the local workspace, and the active store is remote.",
-                ErrorCodes.NotSupported,
-                "Run this against a local workspace to forget a stored skill."));
+        var store = CurrentStore;
 
         if (!PathRouter.TryToFileEntityPath("skill", name, store.WorkspaceRoot, out string filePath))
             return Task.FromResult(ResponseBuilder.Error(
@@ -315,13 +302,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Set to true to show both built-in and override side-by-side for merging.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
     {
-        // Both branches read the workspace skills directory — the list branch to enumerate it,
-        // the load branch on its first statement inside LoadSkillAsync — so neither can degrade.
-        if (!TryGetLayout(out var store))
-            return Task.FromResult(ResponseBuilder.Error(
-                "Skills are read from .scrinia/skills/ in the local workspace, and the active store is remote.",
-                ErrorCodes.NotSupported,
-                "Run this against a local workspace to list or load stored skills."));
+        var store = CurrentStore;
 
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -392,7 +373,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     private static async Task<McpResponse> LoadSkillAsync(
-        ILocalMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
+        IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
         if (!PathRouter.TryToFileEntityPath("skill", skillName, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error(

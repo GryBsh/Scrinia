@@ -119,9 +119,9 @@ public sealed class EmbeddingOptions
     ///
     /// <para>Without it, an out-of-range config value reaches <see cref="MemoryVectorIndexer"/>'s
     /// constructor and throws from wherever that construction happens: swallowed into a generic
-    /// init failure on the CLI, a 500 on every request from the server's DI factory, and a leaked
-    /// GPU context per retry in the plugin. A clamp plus a warning is the same treatment the
-    /// sibling <see cref="ChunkOverlap"/>/<see cref="ChunkSize"/> invariant already gets.</para>
+    /// init failure on the CLI, and a leaked GPU context per retry in the plugin. A clamp plus a
+    /// warning is the same treatment the sibling <see cref="ChunkOverlap"/>/<see cref="ChunkSize"/>
+    /// invariant already gets.</para>
     /// </summary>
     public bool ClampChunkCapBelowStride()
     {
@@ -132,8 +132,7 @@ public sealed class EmbeddingOptions
 
     /// <summary>
     /// Applies every config guardrail, returning one message per correction made. Hosts report
-    /// these their own way (the CLI writes stderr, the server logs) — this method only corrects
-    /// the values and describes what it did.
+    /// these their own way — this method only corrects the values and describes what it did.
     ///
     /// <para>Binding raw config straight into <see cref="MemoryVectorIndexer"/>'s constructor (or
     /// <c>TextChunker.SliceWindows</c>) lets any of three out-of-range values reach it undetected:

@@ -23,62 +23,28 @@ public partial class ScriniaCommands
 {
     /// <summary>Start the MCP server (stdio transport).</summary>
     /// <param name="workspaceRoot">Workspace root for local memory store. Defaults to current working directory.</param>
-    /// <param name="remote">Scrinia.Server URL for remote mode (e.g. http://localhost:5000).</param>
-    /// <param name="apiKey">API key for remote server authentication.</param>
-    /// <param name="store">Target store name on the remote server (default: "default").</param>
-    /// <param name="allowInsecureTransport">Permit sending the API key over a non-HTTPS connection to a non-loopback host (insecure).</param>
     /// <param name="noAutoSetup">Skip the first-run embedding model download. Without the model the server still runs but falls back to BM25-only search.</param>
     public async Task<int> Serve(
         string? workspaceRoot = null,
-        string? remote = null,
-        string? apiKey = null,
-        string? store = null,
-        bool allowInsecureTransport = false,
         bool noAutoSetup = false,
         CancellationToken cancellationToken = default)
     {
-        if (!string.IsNullOrEmpty(remote))
-        {
-            // Remote mode → HttpMemoryStore. The server owns embeddings for remote memories;
-            // do NOT load local CLI plugins here — that would spin up a local embeddings
-            // pipeline (and write a stray .scrinia/ into cwd) for memories that don't live
-            // in a local store.
-            try
-            {
-                RemoteTransportGuard.Validate(
-                    new Uri(remote),
-                    hasApiKey: !string.IsNullOrWhiteSpace(apiKey),
-                    allowInsecure: allowInsecureTransport,
-                    warn: msg => Console.Error.WriteLine(msg));
-            }
-            catch (InsecureTransportException ex)
-            {
-                Console.Error.WriteLine($"[scrinia:error] {ex.Message}");
-                return 1;
-            }
-            var httpClient = new HttpClient { BaseAddress = new Uri(remote) };
-            httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            MemoryStoreContext.Current = new HttpMemoryStore(
-                httpClient, store ?? "default",
-                workspaceRoot: WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory()));
-        }
-        else
-        {
-            // Local mode (default) → FileMemoryStore
-            WorkspaceSetup.Configure(workspaceRoot);
-            WorkspaceSetup.WarnOnOrphanStores();
+        // One store, always local. `--remote` and its HttpMemoryStore were removed with
+        // Scrinia.Server: a second IMemoryStore implementation is what forced the
+        // IMemoryStore split, the NOT_SUPPORTED branches on a third of the tool
+        // surface, and the parity suite that held the two honest.
+        WorkspaceSetup.Configure(workspaceRoot);
+        WorkspaceSetup.WarnOnOrphanStores();
 
-            // First-run convenience: if the embedding model isn't on disk yet, fetch it
-            // before the MCP server starts up. Writes status to stderr only — stdout is
-            // the JSON-RPC channel once the host begins. If download fails we degrade to
-            // BM25-only search rather than blocking startup.
-            if (!noAutoSetup)
-                await EnsureEmbeddingModelAsync(cancellationToken);
+        // First-run convenience: if the embedding model isn't on disk yet, fetch it
+        // before the MCP server starts up. Writes status to stderr only — stdout is
+        // the JSON-RPC channel once the host begins. If download fails we degrade to
+        // BM25-only search rather than blocking startup.
+        if (!noAutoSetup)
+            await EnsureEmbeddingModelAsync(cancellationToken);
 
-            // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
-            await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
-        }
+        // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var builder = Host.CreateApplicationBuilder();
 

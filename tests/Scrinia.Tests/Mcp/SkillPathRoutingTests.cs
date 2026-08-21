@@ -42,7 +42,7 @@ public class SkillPathRoutingTests
     public async Task Forget_RemovesTheSkillFileAndItsSidecarFromDisk()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         await Tools().MemoryRemember(path: "/skill/temp-helper", content: ["do the thing"]);
         string filePath = Path.Combine(

@@ -23,7 +23,7 @@ namespace Scrinia.Core;
 /// to this ~subject form at the surfaces — MemoryTools.cs and ScriniaCommands.Memory.cs — before
 /// the store is ever reached; this store only ever sees the ~subject spelling.
 /// </summary>
-public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
+public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
     private const int MaxEphemeralEntries = 1000;
     private readonly string _workspaceRoot;
@@ -1055,12 +1055,38 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// this class's own <see cref="EnsureGitIgnore"/> writes), so that write goes through the same
     /// atomic-temp-then-move convention as every other artifact write in this codebase rather than
     /// a bare <c>File.WriteAllText</c>.</summary>
+    /// <summary>
+    /// Writes text and forces it to physical media before returning, so the temp file the
+    /// caller is about to rename holds real bytes rather than page-cache promises.
+    /// </summary>
+    /// <remarks>
+    /// The temp-then-rename convention around this call buys ATOMICITY — a concurrent reader
+    /// never sees a half-written file. It does not buy DURABILITY: without this flush, a crash
+    /// or power loss can leave an atomically-renamed file whose contents the OS never wrote,
+    /// which presents as a present-but-empty or truncated artifact. Every atomic writer in this
+    /// class funnels through here, so the flush lands once.
+    /// <para>Scope, stated so nobody assumes more than this does: the FILE's contents are
+    /// synced. The containing DIRECTORY entry created by the rename is not — .NET exposes no
+    /// portable directory fsync, and Windows offers no equivalent. So the rename itself can
+    /// still be lost on power failure, leaving the previous body intact. That is the safe
+    /// direction to fail in, and it is why the write order (artifact, then sidecar) matters.</para>
+    /// <para>Encoding is deliberately left to <see cref="StreamWriter"/>'s default, which is
+    /// UTF-8 with no BOM — byte-identical to the <c>File.WriteAllText</c> this replaced.</para>
+    /// </remarks>
+    private static void WriteAllTextDurable(string path, string content)
+    {
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        using (var writer = new StreamWriter(fs, leaveOpen: true))
+            writer.Write(content);
+        fs.Flush(flushToDisk: true);
+    }
+
     internal static void AtomicWriteAllText(string path, string content)
     {
         string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
-            FileRetry.Run(() => File.WriteAllText(tmp, content));
+            FileRetry.Run(() => WriteAllTextDurable(tmp, content));
             FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
         }
         catch
@@ -1070,12 +1096,28 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         }
     }
 
+    /// <summary>Async twin of <see cref="WriteAllTextDurable"/>. The final flush is synchronous
+    /// because <see cref="FileStream.Flush(bool)"/> has no async form — the fsync blocks either
+    /// way, and pretending otherwise would only hide it.</summary>
+    private static async Task WriteAllTextDurableAsync(string path, string content, CancellationToken ct)
+    {
+        var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None,
+                                bufferSize: 4096, useAsync: true);
+        await using (fs.ConfigureAwait(false))
+        {
+            var writer = new StreamWriter(fs, leaveOpen: true);
+            await using (writer.ConfigureAwait(false))
+                await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
+            fs.Flush(flushToDisk: true);
+        }
+    }
+
     private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
     {
         string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await FileRetry.RunAsync(() => File.WriteAllTextAsync(tmp, content, ct), ct: ct);
+            await FileRetry.RunAsync(() => WriteAllTextDurableAsync(tmp, content, ct), ct: ct);
             FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
         }
         catch
@@ -1118,6 +1160,31 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// <para>Ownership includes normalizing: the elements are replaced in place with their
     /// <see cref="ArtifactEntry.NormalizeAttributesKey"/> form before anything reads them.</para>
     /// </summary>
+    /// <summary>
+    /// Drops every cached view of the store, so the next read comes from disk.
+    /// </summary>
+    /// <remarks>
+    /// For callers that repair store files OUT OF BAND — <c>reconcile</c> writes merged bytes
+    /// straight to an absolute path rather than going through <see cref="Upsert"/>, because a
+    /// git-conflict repair is not a well-formed store write and forcing it through one would
+    /// change the merge semantics the driver and the auto-resolver share.
+    /// <para>Blanket rather than per-scope, deliberately: the caller holds a filesystem path,
+    /// not a scope, and a conflict repair is a rare heavyweight operation where re-reading
+    /// everything is proportionate. The narrow per-scope invalidation stays where the hot path
+    /// is, inside <see cref="Upsert"/>.</para>
+    /// <para>Why this is needed at all: <c>_indexCache</c> is not keyed by mtime — only
+    /// <c>_artifactCache</c> is — so a long-lived process (an MCP <c>scri serve</c> session)
+    /// went on serving the pre-repair sidecar for its whole lifetime, having just reported the
+    /// repair as successful.</para>
+    /// </remarks>
+    public void InvalidateCaches()
+    {
+        _indexCache.Clear();
+        _cachedTopics = null;
+        _artifactCache.Invalidate(string.Empty);
+        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+    }
+
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         WithExclusiveLock(scope, () => SaveIndexUnsafe(entries, scope));
@@ -1397,9 +1464,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             if (updated is null) return false;
 
             // The store owns derivation, including on a metadata-only write — see
-            // IMemoryStore.TryUpdateEntry. This is the local half of "whichever side holds the
-            // store applies it"; the remote half is this same call, reached through the server's
-            // PATCH handler, on the server's own FileMemoryStore.
+            // IMemoryStore.TryUpdateEntry.
             updated = MemoryDerivation.ForMetadataUpdate(current, updated);
 
             WriteSidecar(updated, storeDir);
@@ -1539,8 +1604,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // existing one is RESTORED instead: Upsert does real file I/O and can fail transiently,
             // and deleting would make that permanent — nothing reads versions/ back, so the user
             // would have no recovery path for a memory they only asked to overwrite. Same rule as
-            // AppendAsync below. The destructive form of this block — an unconditional delete — is
-            // what the server's own store path used to do; it was deleted, not ported.
+            // AppendAsync below. The destructive form of this block — an unconditional delete —
+            // is what the server's own store path did; it was deleted, not ported.
             // CancellationToken.None: a cancelled store must still be rolled back.
             try
             {
@@ -1725,10 +1790,9 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// The pipeline's one contact with the filesystem (D-04): resolves a <c>file</c> attribute value
     /// against this store's workspace root and hashes it, or returns null when it cannot — outside
     /// the workspace, missing, or unreadable.
-    /// <para>Supplying this is what gives a REMOTE write a drift baseline. The old rule was "hash
-    /// only when the store is local", so a write through <c>HttpMemoryStore</c> got none at all;
-    /// derivation now runs inside whichever store owns the workspace, and the server's own store is
-    /// a <see cref="FileMemoryStore"/> with one.</para>
+    /// <para>Supplying it here is what makes the baseline unconditional. The old rule was "hash
+    /// only when the store is local", which the remote store failed, so those writes got no
+    /// baseline at all; derivation runs inside whoever owns the workspace instead.</para>
     /// </summary>
     private string? HashWorkspaceFile(string relativePath)
     {
@@ -1786,11 +1850,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // RULING (remote-mode-leftovers, final fixes, Finding 2): this fallback is the exact
             // counterpart of the one in Remove above.
             //
-            // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs, and
-            // MemoryOrchestrator.ForgetAsync). Remove's name match is case-insensitive; this one was
-            // not. On a case-sensitive filesystem forget("mixedcase") against a memory stored as
-            // "MixedCase" therefore returned removed=true, deleted=false — the caller reported
-            // "Forgot: mixedcase." and the server answered success, while MixedCase.nmp2 stayed on
+            // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs). Remove's
+            // name match is case-insensitive; this one was not. On a case-sensitive filesystem
+            // forget("mixedcase") against a memory stored as "MixedCase" therefore returned
+            // removed=true, deleted=false — the caller reported "Forgot: mixedcase." and the tool
+            // answered success, while MixedCase.nmp2 stayed on
             // disk with its sidecar gone: orphaned, unreachable through list() or search(), and
             // invisible to the next forget(). Before the sidecar lookup became case-insensitive both
             // halves returned false and the user got a clean "no artifact found"; fixing one half
@@ -2167,243 +2231,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         return resolved.Where(s => !excluded.Contains(s)).ToArray();
     }
 
-    // ── Copy & Archive ───────────────────────────────────────────────────────
-
-    /// <inheritdoc />
-    public bool WriteCarriedCopy(
-        string destinationName, string artifact, CarriedMetadata carried, bool overwrite,
-        out string message)
-    {
-        ArgumentNullException.ThrowIfNull(carried);
-
-        var (dstScope, dstSubject) = ParseQualifiedName(destinationName);
-
-        // Adopt the existing memory's casing. The promotion branch this serves did NOT do this — it went
-        // straight to ArtifactPath — so on a case-sensitive volume it could write a twin. The resolved
-        // subject decides three things: whether the collision check below sees a collision, where the
-        // bytes land, and what the entry is called.
-        ArtifactEntry? existing = LoadIndex(dstScope).FirstOrDefault(
-            e => e.Name.Equals(dstSubject, StringComparison.OrdinalIgnoreCase));
-        if (existing is not null)
-            dstSubject = existing.Name;
-
-        string destPath = ArtifactPath(dstSubject, dstScope);
-        if (File.Exists(destPath) && !overwrite)
-        {
-            message = $"Error: destination memory '{destinationName}' already exists. Set overwrite=true to replace it.";
-            return false;
-        }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-        AtomicWriteAllText(destPath, artifact);
-
-        Upsert(new ArtifactEntry(
-            Name: dstSubject,
-            Uri: ArtifactUri(dstSubject, dstScope),
-            OriginalBytes: carried.OriginalBytes,
-            ChunkCount: Nmp2ChunkedEncoder.GetChunkCount(artifact),
-            CreatedAt: DateTimeOffset.UtcNow,
-            ContentPreview: carried.ContentPreview,
-            Keywords: carried.Keywords,
-            TermFrequencies: carried.TermFrequencies,
-            UpdatedAt: carried.UpdatedAt,
-            ChunkEntries: carried.ChunkEntries,
-            FileHashes: carried.FileHashes,
-            Attributes: carried.Attributes,
-            AgentKeywords: carried.AgentKeywords), dstScope);
-
-        message = $"Wrote '{destinationName}'.";
-        return true;
-    }
-
-    public bool CopyMemory(string sourceName, string destinationName, bool overwrite, out string message)
-    {
-        bool srcEphemeral = IsEphemeral(sourceName);
-        bool dstEphemeral = IsEphemeral(destinationName);
-        string srcKey = srcEphemeral ? MemoryNaming.StripEphemeralPrefix(sourceName) : sourceName;
-        string dstKey = dstEphemeral ? MemoryNaming.StripEphemeralPrefix(destinationName) : destinationName;
-
-        // ── Ephemeral source ─────────────────────────────────────────────
-        if (srcEphemeral)
-        {
-            var entry = GetEphemeral(srcKey);
-            if (entry is null)
-            {
-                message = $"Error: source memory '{sourceName}' was not found.";
-                return false;
-            }
-
-            if (dstEphemeral)
-            {
-                if (srcKey.Equals(dstKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    message = "Error: source and destination are the same.";
-                    return false;
-                }
-                if (!overwrite && GetEphemeral(dstKey) is not null)
-                {
-                    message = $"Error: destination memory '{destinationName}' already exists. Set overwrite=true to replace it.";
-                    return false;
-                }
-                RememberEphemeral(dstKey, entry with { Name = dstKey });
-                message = $"Copied '{sourceName}' to '{destinationName}'.";
-                return true;
-            }
-
-            // Ephemeral → Persistent (promotion). The write is WriteCarriedCopy's, so the in-process
-            // path and the one a remote client reaches over `copy-from-client` cannot drift: the
-            // carry rule has one implementation.
-            if (!WriteCarriedCopy(
-                    dstKey,
-                    entry.Artifact,
-                    new CarriedMetadata(
-                        OriginalBytes: entry.OriginalBytes,
-                        UpdatedAt: entry.UpdatedAt,
-                        ContentPreview: entry.ContentPreview,
-                        Attributes: entry.Attributes,
-                        Keywords: entry.Keywords,
-                        TermFrequencies: entry.TermFrequencies,
-                        ChunkEntries: entry.ChunkEntries,
-                        FileHashes: entry.FileHashes,
-                        AgentKeywords: entry.AgentKeywords),
-                    overwrite,
-                    out message))
-                return false;
-
-            message = $"Copied '{sourceName}' to '{destinationName}'.";
-            return true;
-        }
-
-        // ── Persistent source ────────────────────────────────────────────
-        var (srcScope, srcSubject) = ParseQualifiedName(srcKey);
-
-        if (!dstEphemeral)
-        {
-            var (dstScopeCheck, dstSubjectCheck) = ParseQualifiedName(dstKey);
-            if (srcScope.Equals(dstScopeCheck, StringComparison.OrdinalIgnoreCase)
-                && srcSubject.Equals(dstSubjectCheck, StringComparison.OrdinalIgnoreCase))
-            {
-                message = "Error: source and destination are the same.";
-                return false;
-            }
-        }
-
-        // Resolve the source entry ONCE, case-insensitively, before the artifact path is built
-        // from its name. Both branches below used to run this lookup themselves with an ordinal
-        // `e.Name == srcSubject`, so a source stored as "SrcMixed" and copied as "srcmixed" found
-        // its file (NTFS folds case) and not its entry — and the copy silently fell through to the
-        // synthesized-defaults branch, carrying the bytes and dropping the attributes, keywords and
-        // curated preview. Adopting the entry's own casing here fixes the path as well as the
-        // match: FindArtifactPath below is a plain Path.Combine over SanitizeName, and would
-        // otherwise still be relying on the filesystem to fold case on this code's behalf.
-        ArtifactEntry? sourceEntry = LoadIndex(srcScope).FirstOrDefault(
-            e => e.Name.Equals(srcSubject, StringComparison.OrdinalIgnoreCase));
-        if (sourceEntry is not null)
-            srcSubject = sourceEntry.Name;
-
-        string sourcePath = FindArtifactPath(srcSubject, srcScope);
-        if (!File.Exists(sourcePath))
-        {
-            message = $"Error: source memory '{sourceName}' was not found.";
-            return false;
-        }
-
-        if (dstEphemeral)
-        {
-            if (!overwrite && GetEphemeral(dstKey) is not null)
-            {
-                message = $"Error: destination memory '{destinationName}' already exists. Set overwrite=true to replace it.";
-                return false;
-            }
-
-            string artifact = File.ReadAllText(sourcePath);
-
-            // Same rule as the promotion branch above: a copy carries, it does not re-derive.
-            // The `sourceEntry?.` null-tolerance stays — the source index entry can be absent
-            // when only the artifact file exists, and the copy still has to succeed with
-            // synthesized defaults in that case.
-            var ephEntry = new EphemeralEntry(
-                Name: dstKey,
-                Artifact: artifact,
-                OriginalBytes: sourceEntry?.OriginalBytes ?? 0,
-                ChunkCount: sourceEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
-                CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: sourceEntry?.ContentPreview ?? $"Loaded from {sourceName}",
-                Keywords: sourceEntry?.Keywords,
-                TermFrequencies: sourceEntry?.TermFrequencies,
-                UpdatedAt: sourceEntry?.UpdatedAt,
-                ChunkEntries: sourceEntry?.ChunkEntries,
-                FileHashes: sourceEntry?.FileHashes,
-                Attributes: sourceEntry?.Attributes,
-                AgentKeywords: sourceEntry?.AgentKeywords);
-            RememberEphemeral(dstKey, ephEntry);
-            message = $"Copied '{sourceName}' to '{destinationName}'.";
-            return true;
-        }
-
-        // Persistent → Persistent
-        var (persistDstScope, persistDstSubject) = ParseQualifiedName(dstKey);
-
-        // Resolve the DESTINATION through the index and adopt its casing, exactly as the source side
-        // does above — and for the same reason, which is not only the comparison. `persistDstSubject`
-        // decides three things: whether the existence check below sees a collision, where the bytes
-        // land, and what the new entry is called. This check used to ask the filesystem
-        // (`File.Exists(ArtifactPath(...))`), which reads case-insensitively on an ordinary NTFS
-        // volume and case-sensitively elsewhere; on a case-sensitive filesystem, copying onto
-        // "Archive" while "archive" existed reported no collision and wrote a SECOND memory, and
-        // with overwrite=true wrote a twin instead of replacing. Fixing only the check would have
-        // left the twin. The memory that already exists keeps its own casing, as every other
-        // resolved name in this store now does.
-        //
-        // This settles the last open question of the case-sensitivity class: "archive" and "Archive"
-        // are ONE memory. The alternative — case-sensitive names everywhere — is a coherent design,
-        // but it is a storage-format decision (two names differing only in case need two files, which
-        // an ordinary NTFS volume cannot hold), not a change to this line.
-        ArtifactEntry? destinationExisting = LoadIndex(persistDstScope).FirstOrDefault(
-            e => e.Name.Equals(persistDstSubject, StringComparison.OrdinalIgnoreCase));
-        if (destinationExisting is not null)
-            persistDstSubject = destinationExisting.Name;
-
-        string destPathP = ArtifactPath(persistDstSubject, persistDstScope);
-        if (File.Exists(destPathP) && !overwrite)
-        {
-            message = $"Error: destination memory '{destinationName}' already exists. Set overwrite=true to replace it.";
-            return false;
-        }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(destPathP)!);
-        AtomicFileCopy(sourcePath, destPathP, overwrite);
-
-        ArtifactEntry destinationEntry;
-
-        if (sourceEntry is not null)
-        {
-            destinationEntry = sourceEntry with
-            {
-                Name = persistDstSubject,
-                Uri = ArtifactUri(persistDstSubject, persistDstScope),
-                CreatedAt = DateTimeOffset.UtcNow
-            };
-        }
-        else
-        {
-            string artifactText = File.ReadAllText(destPathP);
-            int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifactText);
-            long originalBytes = Nmp2Strategy.Instance.Decode(artifactText).LongLength;
-
-            destinationEntry = new ArtifactEntry(
-                Name: persistDstSubject,
-                Uri: ArtifactUri(persistDstSubject, persistDstScope),
-                OriginalBytes: originalBytes,
-                ChunkCount: chunkCount,
-                CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: $"Copied from {sourceName}");
-        }
-
-        Upsert(destinationEntry, persistDstScope);
-        message = $"Copied '{sourceName}' to '{destinationName}'.";
-        return true;
-    }
+    // ── Archive ──────────────────────────────────────────────────────────────
 
     public void ArchiveVersion(string subject, string scope = "local")
     {
@@ -2415,20 +2243,46 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         string versionsDir = Path.Combine(storeDir, "versions");
         Directory.CreateDirectory(versionsDir);
 
-        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        string archiveName = $"{SanitizeName(subject)}_{timestamp}.nmp2";
-        string archivePath = Path.Combine(versionsDir, archiveName);
+        // Stamped to the MILLISECOND, and never overwriting. A second-granularity stamp copied
+        // with overwrite:true meant two archives of one subject inside the same second silently
+        // replaced each other — losing a prior body from the only directory backing the promise
+        // that a write never destroys what was already there. Two overwrites in a row is the
+        // ordinary shape of an agent correcting itself mid-turn, not a contrived race.
+        // Milliseconds still collide under a tight loop, so the counter is a floor, not a
+        // flourish: the invariant is that this method never replaces an existing archive.
+        string safe = SanitizeName(subject);
+        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+        string baseName = $"{safe}_{stamp}";
+        string archivePath = Path.Combine(versionsDir, $"{baseName}.nmp2");
+        for (int n = 2; File.Exists(archivePath); n++)
+            archivePath = Path.Combine(versionsDir, $"{baseName}-{n}.nmp2");
 
-        AtomicFileCopy(currentPath, archivePath);
+        AtomicFileCopy(currentPath, archivePath, overwrite: false);
 
-        // Prune old versions — keep only the 10 most recent
-        var versionFiles = Directory.GetFiles(versionsDir, $"{SanitizeName(subject)}_*.nmp2")
-            .OrderByDescending(f => f)
+        // The sidecar travels WITH the body. Archiving the artifact alone made the documented
+        // recovery in docs/server-admin.md corrupting rather than restoring: copying a body back
+        // left the .meta.json describing the newer content, and StoreAsync's own comment records
+        // where that lands — a later append reads the stale ChunkEntries and numbers the appended
+        // chunk from the real count, yielding non-contiguous indices. Best-effort: a missing or
+        // unreadable sidecar must not fail the write this archive is protecting.
+        string metaPath = MetaPath(subject, scope);
+        if (File.Exists(metaPath))
+        {
+            try { AtomicFileCopy(metaPath, Path.ChangeExtension(archivePath, null) + ".meta.json", overwrite: false); }
+            catch (IOException) { /* body is archived; metadata is a best-effort companion */ }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        // Prune old versions — keep only the 10 most recent, and take each body's sidecar with it
+        // so pruning cannot leave a .meta.json describing an artifact that is gone.
+        var stale = Directory.GetFiles(versionsDir, $"{safe}_*.nmp2")
+            .OrderByDescending(f => f, StringComparer.Ordinal)
             .Skip(10)
             .ToList();
-        foreach (var old in versionFiles)
+        foreach (var old in stale)
         {
             try { File.Delete(old); } catch { /* best-effort cleanup */ }
+            try { File.Delete(Path.ChangeExtension(old, null) + ".meta.json"); } catch { }
         }
     }
 

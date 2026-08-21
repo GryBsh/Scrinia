@@ -2,7 +2,7 @@ namespace Scrinia.Core.Embeddings;
 
 /// <summary>
 /// What the embeddings REST endpoints need, independent of which implementation provides it.
-/// Implemented by the server's built-in Model2Vec service and by the Vulkan plugin, so one
+/// Implemented by the built-in Model2Vec service and by the Vulkan plugin, so one
 /// endpoint file serves both and the plugin no longer maps a second copy of the same routes.
 ///
 /// <para>Finding H6: the previous arrangement had each implementation map its own routes into

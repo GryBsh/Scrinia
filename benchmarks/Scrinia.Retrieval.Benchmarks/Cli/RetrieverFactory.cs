@@ -30,7 +30,7 @@ internal static class RetrieverFactory
     /// only; <see cref="SentenceMaxSim"/> applies sentence-level MaxSim reranking on
     /// top-K candidates using the existing embedding model (the bench default);
     /// <see cref="CrossEncoder"/> runs an ONNX BERT cross-encoder over the top-N
-    /// candidates (bench experiment — see docs/research/cross-encoding-reranking.md).
+    /// candidates (bench experiment — see docs/findings/cross-encoding-reranking.md).
     /// </summary>
     public enum RerankMode { None, SentenceMaxSim, CrossEncoder }
 
@@ -376,6 +376,8 @@ internal static class RetrieverFactory
         Console.WriteLine($"  judged:   {judge.JudgedCount}");
         Console.WriteLine($"  no gold:  {judge.NoGoldCount}");
         Console.WriteLine($"  failed:   {judge.FailedCount}");
+        if (judge.UnparseableCount > 0)
+            Console.WriteLine($"  unparseable verdict: {judge.UnparseableCount}  (excluded — grader replied off-contract)");
         if (judge.FailedCount > 0 && judge.FailuresPath is not null)
             Console.WriteLine($"  failures logged: {judge.FailedCount} → {judge.FailuresPath}  (full prompt + raw per attempt)");
     }

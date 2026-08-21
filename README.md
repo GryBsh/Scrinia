@@ -4,7 +4,7 @@
 
 Persistent, portable memory for AI agents. Scrinia is a local-first MCP server that stores what agents save and serves it back — **agents bring the intelligence; scrinia provides the substrate**.
 
-Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + the `anchor` attribute (query-vocabulary phrases the agent supplies at write time), weighted field scoring over attributes, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), and a sentence-MaxSim reranker on top. **There is no LLM consultation at write or read time on the server side** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (supplying the `anchor` attribute, query refinement, summarization); scrinia just stores and surfaces.
+Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + the `anchor` attribute (query-vocabulary phrases the agent supplies at write time), weighted field scoring over attributes, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), re-ranked by cosine similarity over the BM25 + attribute candidate set. **There is no LLM consultation at write or read time** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (supplying the `anchor` attribute, query refinement, summarization); scrinia just stores and surfaces.
 
 Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
@@ -138,7 +138,8 @@ Add to your MCP client config (Claude Code, Cursor, Copilot, etc.):
 its working directory; passing `--workspace-root` explicitly makes the server independent
 of whatever directory the client launches it from.
 
-For HTTP transport via the API server, see [Server Administration](docs/server-admin.md).
+To share memories with other people, commit `.scrinia/` and install the merge driver — see
+[Multi-User Setup](docs/multi-user-setup.md).
 
 ## CLI quick reference
 
@@ -228,14 +229,12 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 ### User Guides
 - **[Getting Started](docs/getting-started.md)** — overview, installation, quick start
 - **[CLI Reference](docs/cli-reference.md)** — commands, configuration, embedding providers, MCP client setup
-- **[Server Administration](docs/server-admin.md)** — deployment, authentication, REST API, web UI, Docker
-- **[Web UI](docs/web-ui-guide.md)** — React SPA component architecture, dev setup, deployment
+- **[Multi-User Setup](docs/multi-user-setup.md)** — sharing a workspace through git, merge driver setup
 - **[Troubleshooting](docs/troubleshooting.md)** — common issues, plugin failures, recovery
 
 ### Architecture
 - **[Overview](docs/architecture/overview.md)** — system design, project structure, dependency graph
 - **[CLI Architecture](docs/architecture/cli.md)** — workspace discovery, plugin host, MCP tools
-- **[Server Architecture](docs/architecture/server.md)** — startup, middleware, auth, multi-store, plugins
 - **[Core Internals](docs/architecture/core.md)** — IMemoryStore, NMP/2 encoding, search algorithms
 - **[Embeddings Architecture](docs/architecture/embeddings.md)** — providers, vector store, hybrid scoring
 
@@ -245,10 +244,11 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests                   # CLI + MCP + storage + embeddings + reindex tests
-dotnet test tests/Scrinia.Server.Tests            # server tests
-dotnet test tests/Scrinia.Merge.Tests             # merge-conflict tests
-dotnet test tests/Scrinia.Plugin.Embeddings.Tests # Vulkan embeddings plugin tests
+dotnet test Scrinia.sln                                 # everything
+dotnet test tests/Scrinia.Tests                         # CLI + MCP + storage + embeddings + reindex
+dotnet test tests/Scrinia.Merge.Tests                   # merge driver, including the parity suites
+dotnet test tests/Scrinia.Plugin.Embeddings.Tests       # Vulkan embeddings plugin
+dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests    # retrieval harness and judge
 ```
 
 ## Running benchmarks

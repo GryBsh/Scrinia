@@ -1,6 +1,6 @@
 # Getting Started with Scrinia
 
-Scrinia gives LLMs persistent, portable memory. It compresses text into compact NMP/2 artifacts, stores them as named memories in a `.scrinia/` workspace, and exposes them through MCP tools, a CLI, an HTTP API, and a web UI.
+Scrinia gives LLMs persistent, portable memory. It compresses text into compact NMP/2 artifacts, stores them as named memories in a `.scrinia/` workspace, and exposes them through MCP tools and a CLI.
 
 ## How It Works
 
@@ -11,13 +11,14 @@ Scrinia gives LLMs persistent, portable memory. It compresses text into compact 
 
 Memories persist in a `.scrinia/` directory alongside your project (like `.git/`), travel with the code, and work across sessions.
 
-## Deployment Modes
+## How it runs
 
-| Mode | Best for | Transport |
-|------|----------|-----------|
-| **CLI + MCP** | Single developer, local AI coding tools | stdio |
-| **HTTP API Server** | Teams, multi-user, remote access | HTTP REST + MCP over HTTP |
-| **Docker** | Production deployment | HTTP (containerized) |
+One way: `scri` is both a command-line tool and an MCP server over stdio. Your AI coding tool
+launches it; it reads and writes `.scrinia/` on disk.
+
+Sharing memories with other people is a git question, not a deployment one — `.scrinia/` is
+committed like any other directory, and a merge driver resolves what conflicts. See
+[Multi-User Setup](multi-user-setup.md).
 
 ## Installation
 
@@ -51,15 +52,7 @@ For optional Vulkan GPU acceleration:
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
-### Docker (Server)
-
-```bash
-docker compose up -d
-```
-
-See [Server Administration](server-admin.md) for full deployment options.
-
-## Quick Start: CLI + MCP
+## Quick Start
 
 ### 1. Initialize a Workspace
 
@@ -107,47 +100,6 @@ its working directory; passing `--workspace-root` explicitly makes the server in
 of whatever directory the client launches it from.
 
 Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
-
-## Quick Start: HTTP API Server
-
-### 1. Start the Server
-
-```bash
-dotnet run --project src/Scrinia.Server
-```
-
-The server starts on `http://localhost:5000`. A bootstrap API key is written to `BOOTSTRAP_KEY` in the data directory on first run.
-
-### 2. Authenticate
-
-```bash
-# Read the bootstrap key
-cat $LOCALAPPDATA/scrinium/BOOTSTRAP_KEY
-
-# Use it to create a scoped key
-curl -X POST http://localhost:5000/api/v1/keys \
-  -H "Authorization: Bearer <bootstrap-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"userId": "dev", "stores": ["default"], "permissions": ["read","search","store","append","forget"]}'
-```
-
-### 3. Store and Search via API
-
-```bash
-KEY="scri_..."
-
-# Store
-curl -X POST http://localhost:5000/api/v1/stores/default/memories \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "notes", "content": ["My project notes..."], "description": "Project notes"}'
-
-# Search
-curl "http://localhost:5000/api/v1/stores/default/search?q=project" \
-  -H "Authorization: Bearer $KEY"
-```
-
-See [Server Administration](server-admin.md) for full API reference.
 
 ## Memory Naming
 
@@ -208,5 +160,5 @@ Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [.
 ## What's Next
 
 - **[CLI Reference](cli-reference.md)** -- Full command reference, configuration, embedding providers, MCP client setup
-- **[Server Administration](server-admin.md)** -- Deployment, authentication, REST API, Web UI, Docker
+- **[Multi-User Setup](multi-user-setup.md)** -- Sharing a workspace through git, and the merge driver
 - **[Architecture Overview](architecture/overview.md)** -- System design, project structure, dependency graph

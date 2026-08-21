@@ -186,238 +186,6 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task CopyMemory_persistent_to_persistent()
-    {
-        string artifact = Nmp2ChunkedEncoder.Encode("Copy content");
-        await _store.WriteArtifactAsync("src", "local", artifact);
-        var updatedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
-        _store.Upsert(new ArtifactEntry("src", "", 100, 1, DateTimeOffset.UtcNow,
-            UpdatedAt: updatedAt,
-            TermFrequencies: new Dictionary<string, int> { ["widget"] = 3 },
-            ChunkEntries: [new ChunkEntry(0, "chunk preview", ["widget"], new Dictionary<string, int> { ["widget"] = 1 })],
-            FileHashes: new Dictionary<string, string> { ["src/thing.cs"] = "abc123" },
-            AgentKeywords: ["widget"]));
-
-        bool ok = _store.CopyMemory("src", "dst", false, out string msg);
-        ok.Should().BeTrue();
-
-        var dstEntries = _store.LoadIndex();
-        dstEntries.Should().Contain(e => e.Name == "dst");
-
-        // Widened at Task 11 to cover what CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata
-        // does not: TermFrequencies, FileHashes, ChunkEntries, AgentKeywords, UpdatedAt. (That test
-        // already covers Attributes, Keywords, ContentPreview, OriginalBytes — duplicating those here
-        // would only prove what it already guarantees.)
-        var copied = dstEntries.Single(e => e.Name == "dst");
-        copied.TermFrequencies.Should().BeEquivalentTo(new Dictionary<string, int> { ["widget"] = 3 });
-        copied.FileHashes.Should().BeEquivalentTo(new Dictionary<string, string> { ["src/thing.cs"] = "abc123" });
-        copied.ChunkEntries.Should().BeEquivalentTo(
-            new[] { new ChunkEntry(0, "chunk preview", ["widget"], new Dictionary<string, int> { ["widget"] = 1 }) });
-        copied.AgentKeywords.Should().BeEquivalentTo(new[] { "widget" });
-        copied.UpdatedAt.Should().Be(updatedAt);
-    }
-
-    /// <summary>
-    /// <c>CopyMemory</c> resolves the source artifact through the filesystem (case-insensitive on
-    /// NTFS) but looked its index entry up with an ordinal <c>e.Name == srcSubject</c>
-    /// (<c>FileMemoryStore.cs:1620-1621</c>). A source named "SrcMixed" copied as "srcmixed" therefore
-    /// found its file and not its entry, and the copy silently fell through to the
-    /// synthesized-defaults branch: the destination kept the bytes and lost the attributes,
-    /// keywords and curated preview the source carried. The pre-existing
-    /// <see cref="CopyMemory_persistent_to_persistent"/> uses one casing throughout — even though
-    /// Task 11 widened it to assert carried metadata, it never takes the mismatched-casing branch
-    /// this test exists to cover, so it still cannot see this.
-    /// </summary>
-    [Fact]
-    public async Task CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata()
-    {
-        string artifact = Nmp2ChunkedEncoder.Encode("Copy content");
-        await _store.WriteArtifactAsync("SrcMixed", "local", artifact);
-        _store.Upsert(new ArtifactEntry("SrcMixed", "", 100, 1, DateTimeOffset.UtcNow,
-            ContentPreview: "a curated description",
-            Keywords: ["portcullis"],
-            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["person"] = ["maria"],
-            }));
-
-        bool ok = _store.CopyMemory("srcmixed", "dst-mixed", false, out string msg);
-        ok.Should().BeTrue(because: msg);
-
-        var copied = _store.LoadIndex().Single(e => e.Name == "dst-mixed");
-        copied.Attributes.Should().ContainKey("person",
-            because: "the copy carries the source entry's metadata; falling back to defaults means " +
-                     "the source entry was never found");
-        copied.Attributes!["person"].Should().Contain("maria");
-        copied.Keywords.Should().Contain("portcullis");
-        copied.ContentPreview.Should().Be("a curated description");
-        copied.OriginalBytes.Should().Be(100);
-    }
-
-    [Fact]
-    public void CopyMemory_PromotingAnEphemeral_CarriesEveryMetadataField()
-    {
-        // The defect: promotion built a fresh ArtifactEntry populated with a subset of fields,
-        // dropping Keywords, TermFrequencies, AgentKeywords and UpdatedAt. TermFrequencies is what
-        // BM25 scores against, so a promoted memory kept its bytes and preview and became
-        // UNFINDABLE BY SEARCH.
-        string artifact = Nmp2ChunkedEncoder.Encode("Ephemeral source content");
-        var sourceEntry = new EphemeralEntry(
-            Name: "source",
-            Artifact: artifact,
-            OriginalBytes: 123,
-            ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow,
-            ContentPreview: "a curated preview",
-            Keywords: ["alpha", "beta"],
-            TermFrequencies: new Dictionary<string, int> { ["alpha"] = 2, ["beta"] = 1 },
-            UpdatedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
-            ChunkEntries: [new ChunkEntry(0, "chunk preview", ["alpha"], new Dictionary<string, int> { ["alpha"] = 1 })],
-            FileHashes: new Dictionary<string, string> { ["src/thing.cs"] = "abc123" },
-            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { ["file"] = ["src/thing.cs"] },
-            AgentKeywords: ["alpha"]);
-        _store.RememberEphemeral("source", sourceEntry);
-
-        _store.CopyMemory("~source", "promoted", overwrite: false, out _).Should().BeTrue();
-
-        var source = _store.GetEphemeral("source")!;
-        var promoted = _store.LoadIndex("local").Single(e => e.Name == "promoted");
-
-        promoted.Keywords.Should().BeEquivalentTo(source.Keywords);
-        promoted.TermFrequencies.Should().BeEquivalentTo(source.TermFrequencies,
-            because: "this is what BM25 scores against — dropping it makes the copy unfindable");
-        promoted.AgentKeywords.Should().BeEquivalentTo(source.AgentKeywords,
-            because: "null means UNKNOWN, so losing a recorded list demotes curated keywords later");
-        promoted.UpdatedAt.Should().Be(source.UpdatedAt);
-        promoted.FileHashes.Should().BeEquivalentTo(source.FileHashes);
-        promoted.ContentPreview.Should().Be(source.ContentPreview);
-        promoted.Attributes.Should().BeEquivalentTo(source.Attributes);
-        promoted.ChunkEntries.Should().BeEquivalentTo(source.ChunkEntries);
-        promoted.OriginalBytes.Should().Be(source.OriginalBytes);
-        promoted.ChunkCount.Should().Be(source.ChunkCount);
-    }
-
-    /// <summary>
-    /// <c>WriteCarriedCopy</c> indexes the metadata it is handed rather than deriving any of it. The
-    /// distinguishing field is <c>FileHashes</c>: derivation hashes `file` attribute values against the
-    /// workspace, so a baseline naming a path that does not exist here is one that can ONLY have been
-    /// carried. A test asserting a re-derivable field would pass either way. <c>ChunkEntries</c> is
-    /// asserted for the same reason: its carried preview/keywords/frequencies do not match the
-    /// artifact's actual chunk text, so a derive-instead-of-carry defect fails this assertion too,
-    /// not just <c>FileHashes</c>'s.
-    /// </summary>
-    [Fact]
-    public void WriteCarriedCopy_IndexesTheCarriedMetadataWithoutDeriving()
-    {
-        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["notes about src/Absent.cs"]);
-        var carried = new CarriedMetadata(
-            OriginalBytes: 4242,
-            UpdatedAt: new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero),
-            ContentPreview: "carried preview",
-            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-                { ["file"] = ["src/Absent.cs"] },
-            Keywords: ["carried-keyword"],
-            TermFrequencies: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-                { ["carried"] = 9 },
-            ChunkEntries: [new ChunkEntry(0, "carried chunk preview", ["carried-keyword"],
-                new Dictionary<string, int> { ["carried"] = 9 })],
-            FileHashes: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                { ["src/Absent.cs"] = "carried-hash-not-from-this-workspace" },
-            AgentKeywords: ["carried-keyword"]);
-
-        bool ok = _store.WriteCarriedCopy("promoted", artifact, carried, overwrite: false, out string msg);
-
-        ok.Should().BeTrue(msg);
-        var entry = _store.LoadIndex("local").Single(e => e.Name == "promoted");
-        entry.OriginalBytes.Should().Be(4242);
-        entry.UpdatedAt.Should().Be(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero));
-        entry.ContentPreview.Should().Be("carried preview");
-        entry.Keywords.Should().BeEquivalentTo(["carried-keyword"]);
-        entry.AgentKeywords.Should().BeEquivalentTo(["carried-keyword"]);
-        entry.TermFrequencies!["carried"].Should().Be(9);
-        entry.ChunkEntries.Should().BeEquivalentTo(carried.ChunkEntries);
-        entry.FileHashes!["src/Absent.cs"].Should().Be("carried-hash-not-from-this-workspace");
-        entry.Attributes!["file"].Should().BeEquivalentTo(["src/Absent.cs"]);
-        // Destination-owned and artifact-derived, never carried:
-        entry.Name.Should().Be("promoted");
-        entry.ChunkCount.Should().Be(1);
-        entry.CreatedAt.Should().BeAfter(DateTimeOffset.UtcNow.AddMinutes(-1));
-    }
-
-    [Fact]
-    public void WriteCarriedCopy_RefusesAnExistingDestinationWithoutOverwrite()
-    {
-        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first"]);
-        var carried = new CarriedMetadata(1, null, null, null, null, null, null, null);
-        _store.WriteCarriedCopy("taken", artifact, carried, overwrite: false, out _).Should().BeTrue();
-
-        bool second = _store.WriteCarriedCopy("taken", artifact, carried, overwrite: false, out string msg);
-
-        second.Should().BeFalse();
-        msg.Should().Contain("already exists");
-    }
-
-    /// <summary>
-    /// Promotion now resolves its destination through the index and adopts the existing entry's casing.
-    /// The branch this replaces did NOT — it went straight to <c>ArtifactPath</c> — so on a
-    /// case-sensitive volume, promoting onto "Archive" while "archive" existed wrote a second memory.
-    /// This is the promotion-side variant of what CaseSensitiveFileStoreTests pins for
-    /// persistent→persistent, and nothing covered it before.
-    /// </summary>
-    [Fact]
-    public void WriteCarriedCopy_AdoptsTheExistingDestinationsCasing()
-    {
-        var carried = new CarriedMetadata(1, null, null, null, null, null, null, null);
-        _store.WriteCarriedCopy("Archive", Nmp2ChunkedEncoder.EncodeChunks(["first"]),
-            carried, overwrite: false, out _).Should().BeTrue();
-
-        _store.WriteCarriedCopy("archive", Nmp2ChunkedEncoder.EncodeChunks(["second"]),
-            carried, overwrite: true, out _).Should().BeTrue();
-
-        _store.LoadIndex("local").Where(e => e.Name.Equals("archive", StringComparison.OrdinalIgnoreCase))
-            .Should().ContainSingle().Which.Name.Should().Be("Archive");
-    }
-
-    [Fact]
-    public async Task CopyMemory_DemotingToAnEphemeral_CarriesEveryMetadataField()
-    {
-        // Same defect, opposite direction, same subset dropped.
-        string artifact = Nmp2ChunkedEncoder.Encode("Persistent source content");
-        await _store.WriteArtifactAsync("source", "local", artifact);
-        var sourceEntry = new ArtifactEntry(
-            Name: "source",
-            Uri: _store.ArtifactUri("source", "local"),
-            OriginalBytes: 456,
-            ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow,
-            ContentPreview: "a curated preview",
-            Keywords: ["gamma", "delta"],
-            TermFrequencies: new Dictionary<string, int> { ["gamma"] = 3 },
-            UpdatedAt: DateTimeOffset.UtcNow.AddMinutes(-10),
-            ChunkEntries: [new ChunkEntry(0, "chunk preview", ["gamma"], new Dictionary<string, int> { ["gamma"] = 1 })],
-            FileHashes: new Dictionary<string, string> { ["src/other.cs"] = "def456" },
-            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { ["file"] = ["src/other.cs"] },
-            AgentKeywords: ["gamma"]);
-        _store.Upsert(sourceEntry, "local");
-
-        _store.CopyMemory("source", "~demoted", overwrite: false, out _).Should().BeTrue();
-
-        var source = _store.LoadIndex("local").Single(e => e.Name == "source");
-        var demoted = _store.GetEphemeral("demoted")!;
-
-        demoted.Keywords.Should().BeEquivalentTo(source.Keywords);
-        demoted.TermFrequencies.Should().BeEquivalentTo(source.TermFrequencies,
-            because: "this is what BM25 scores against — dropping it makes the copy unfindable");
-        demoted.AgentKeywords.Should().BeEquivalentTo(source.AgentKeywords,
-            because: "null means UNKNOWN, so losing a recorded list demotes curated keywords later");
-        demoted.UpdatedAt.Should().Be(source.UpdatedAt);
-        demoted.FileHashes.Should().BeEquivalentTo(source.FileHashes);
-        demoted.ContentPreview.Should().Be(source.ContentPreview);
-        demoted.Attributes.Should().BeEquivalentTo(source.Attributes);
-        demoted.ChunkEntries.Should().BeEquivalentTo(source.ChunkEntries);
-    }
-
-    [Fact]
     public void DiscoverTopics_finds_topic_dirs()
     {
         // v3: DiscoverTopics scans .scrinia/memories/ directly (the old .scrinia/topics/ v1 scan
@@ -1291,6 +1059,55 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         string versionsDir = Path.Combine(_tempDir, ".scrinia", "store", "versions");
         Directory.Exists(versionsDir).Should().BeFalse();
+    }
+
+    // Archive names were stamped to the SECOND and copied with overwrite:true, so two
+    // archives of the same memory inside one second silently replaced each other --
+    // losing the older body from the only directory backing "a write never destroys
+    // what was already there". Two overwrites in a row is not a contrived case: it is
+    // an agent correcting itself mid-turn.
+    [Fact]
+    public void ArchiveVersion_TwiceWithinOneSecond_KeepsBothBodies()
+    {
+        string artifactPath = _store.ArtifactPath("rapid");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+
+        File.WriteAllText(artifactPath, "NMP/2 first body");
+        _store.ArchiveVersion("rapid");
+        File.WriteAllText(artifactPath, "NMP/2 second body");
+        _store.ArchiveVersion("rapid");
+
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "memories", "versions");
+        string[] archives = Directory.GetFiles(versionsDir, "rapid_*.nmp2");
+
+        archives.Should().HaveCount(2, "each archive is a distinct prior body, not a slot to overwrite");
+        archives.Select(File.ReadAllText).Should()
+            .Contain("NMP/2 first body")
+            .And.Contain("NMP/2 second body");
+    }
+
+    // The archive held the artifact only. docs/server-admin.md documents versions/ as the
+    // human recovery path, but copying a body back left the sidecar describing the NEWER
+    // content -- and FileMemoryStore's own comment records where that leads: a later
+    // append reads the stale ChunkEntries and yields non-contiguous chunk indices. A
+    // recovery path that corrupts the store is not a recovery path.
+    [Fact]
+    public void ArchiveVersion_ArchivesTheSidecarBesideTheArtifact()
+    {
+        string artifactPath = _store.ArtifactPath("with-meta");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllText(artifactPath, "NMP/2 body");
+        File.WriteAllText(_store.MetaPath("with-meta"), """{"name":"with-meta","chunkCount":1}""");
+
+        _store.ArchiveVersion("with-meta");
+
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "memories", "versions");
+        string artifact = Directory.GetFiles(versionsDir, "with-meta_*.nmp2").Should().ContainSingle().Subject;
+
+        string sidecar = Path.ChangeExtension(artifact, null) + ".meta.json";
+        File.Exists(sidecar).Should().BeTrue(
+            because: "a body without its metadata cannot be restored without corrupting the entry");
+        File.ReadAllText(sidecar).Should().Contain("with-meta");
     }
 
     // ── ResolveReadScopes / NormalizeScopeFilters ────────────────────────────

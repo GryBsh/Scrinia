@@ -28,7 +28,7 @@ public static class ErrorCodes
     public const string Internal = "INTERNAL";
 
     /// <summary>The operation needs a capability the active store does not have — in practice,
-    /// local filesystem access against a remote store.</summary>
+    /// an operation the active store cannot perform.</summary>
     public const string NotSupported = "NOT_SUPPORTED";
 }
 

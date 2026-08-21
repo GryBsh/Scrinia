@@ -1,6 +1,4 @@
-using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
@@ -11,10 +9,10 @@ using Scrinia.Plugin.Abstractions;
 namespace Scrinia.Plugin.Embeddings;
 
 /// <summary>
-/// Vulkan GPU-accelerated embeddings plugin for the server path.
+/// Vulkan GPU-accelerated embeddings plugin.
 ///
 /// Implements three interfaces:
-/// - <see cref="IMemoryOperationHook"/>: REST path hooks (via PluginPipeline)
+/// - <see cref="IMemoryOperationHook"/>: hooks the deleted REST path invoked; no caller today
 /// - <see cref="ISearchScoreContributor"/>: supplemental search scores for both REST and MCP
 /// - <see cref="IMemoryEventSink"/>: MCP path event notifications
 ///
@@ -66,10 +64,23 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
     }
 
-    // -- IScriniaPlugin (server path) --
-
-    public override void ConfigureServices(IServiceCollection services, IConfiguration configuration)
+    /// <summary>
+    /// Binds <c>Scrinia:Embeddings</c> into this plugin's options and applies the guardrails.
+    ///
+    /// <para>This was <c>ConfigureServices(IServiceCollection, IConfiguration)</c>, an
+    /// <see cref="IScriniaPlugin"/> member the HTTP host called before building its container. It
+    /// did two things: bound config, and registered this instance into DI under four service
+    /// types. The registrations are gone with the container that consumed them — a plugin reaches
+    /// Scrinia by implementing the contracts, not by being handed over through a service
+    /// collection. The binding is real work and stays, under a name that describes it and a
+    /// signature that does not require a web framework to call.</para>
+    ///
+    /// <para>Optional: a plugin constructed without it runs on <see cref="EmbeddingOptions"/>
+    /// defaults, which is what every path outside the deleted server already did.</para>
+    /// </summary>
+    public void Configure(IConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(configuration);
         var section = configuration.GetSection("Scrinia:Embeddings");
 
         try
@@ -99,40 +110,14 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         int requestedCap = _options.MaxChunksPerMemory;
         if (_options.ClampChunkCapBelowStride())
         {
-            // _logger is not wired until ConfigureMiddleware; stderr is the only channel that
-            // exists this early, and it is where the CLI reports the identical clamp.
+            // _logger is not wired until EnsureInitialized builds one; stderr is the only channel
+            // that exists this early, and it is where the CLI reports the identical clamp.
             Console.Error.WriteLine(
                 $"[scrinia:warn] MaxChunksPerMemory ({requestedCap}) must be below " +
                 $"{MemoryVectorIndexer.ChunkIndexStride}; clamping to {_options.MaxChunksPerMemory}.");
         }
 
         _semanticWeight = _options.SemanticWeight;
-
-        // Compose with PathSegmentScoreContributor so a memory's qualified path also
-        // contributes to relevance — embeddings carry semantic similarity, the path
-        // contributor adds a small lift when the agent filed the memory under a
-        // path that overlaps the query (e.g. /findings/auth-refactor matched on "auth").
-        services.AddSingleton<ISearchScoreContributor>(_ =>
-            new CompositeSearchScoreContributor(this, new PathSegmentScoreContributor()));
-        services.AddSingleton<IMemoryEventSink>(this);
-        services.AddSingleton<IMemoryOperationHook>(this);
-        services.AddSingleton<IEmbeddingsAdmin>(this);
-    }
-
-    /// <summary>
-    /// Captures the real, host-built <see cref="ILoggerFactory"/> — its actual configured sinks,
-    /// levels and formatters — once one exists. <see cref="ConfigureServices"/> runs before
-    /// <c>WebApplicationBuilder.Build()</c>, so it only has the DI graph's *description*
-    /// (<see cref="IServiceCollection"/>), not a working container; building a throwaway provider
-    /// there just to read a logger would mean owning and disposing an entire separate container
-    /// for one service. <see cref="ConfigureMiddleware"/> runs once at startup, after
-    /// <c>Build()</c>, with the actual root <see cref="IServiceProvider"/> the rest of the app
-    /// uses — this is the first point a real one is available.
-    /// </summary>
-    public override void ConfigureMiddleware(IApplicationBuilder app)
-    {
-        _logger = app.ApplicationServices.GetService<ILoggerFactory>()?.CreateLogger<EmbeddingsPlugin>()
-            ?? _logger;
     }
 
     /// <summary>
@@ -150,9 +135,11 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             if (_logger is null)
             {
-                // ConfigureMiddleware never ran (e.g. this plugin was constructed directly,
-                // outside the server's DI wiring — every test in this project does this): fall
-                // back to a private console logger and own its disposal (see Dispose).
+                // No logger has been handed in. There used to be one route for that — the HTTP
+                // host called ConfigureMiddleware with a built IServiceProvider and this plugin
+                // took the ILoggerFactory out of it — and this was its fallback for every other
+                // caller. It is now the only path: build a private console logger and own its
+                // disposal (see Dispose).
                 _ownedLoggerFactory = LoggerFactory.Create(b => b.AddConsole());
                 _logger = _ownedLoggerFactory.CreateLogger<EmbeddingsPlugin>();
             }
@@ -231,11 +218,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
     }
 
-    // MapEndpoints override removed: the /status, /reindex and /settings routes it used to map
-    // under an inline /embeddings group (with no {store} route value — finding H6) are now served
-    // for both this plugin and the built-in service by Scrinia.Server.Endpoints.EmbeddingsEndpoints,
-    // resolving IEmbeddingsAdmin from DI. ScriniaPluginBase.MapEndpoints is virtual with a no-op
-    // default body, so no override is needed here at all.
+    // This class once mapped /status, /reindex and /settings under an inline /embeddings group.
+    // Those routes moved to the server's own endpoint class, and then the server was deleted;
+    // IScriniaPlugin.MapEndpoints went with it. IEmbeddingsAdmin, which the routes resolved to,
+    // is still implemented below — it is the contract, the HTTP surface was only ever one caller.
 
     // -- ISearchScoreContributor (both REST + MCP) --
 
@@ -267,7 +253,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         return scores.Count > 0 ? scores : null;
     }
 
-    // -- IMemoryOperationHook (REST path via PluginPipeline) --
+    // -- IMemoryOperationHook: implemented, and currently uninvoked (see the interface) --
 
     public async Task OnAfterStoreAsync(AfterStoreContext ctx, CancellationToken ct)
     {

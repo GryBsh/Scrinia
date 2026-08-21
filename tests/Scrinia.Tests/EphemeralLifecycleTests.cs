@@ -215,28 +215,6 @@ public sealed class EphemeralLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task HttpMemoryStore_HashesEphemeralFileRefsAgainstTheSuppliedWorkspaceRoot()
-    {
-        // HttpMemoryStore derives its own ephemeral writes in-process via a FileMemoryStore helper
-        // (WriteEphemeralInProcessAsync). Before Step 3, that helper was always rooted at a throwaway
-        // temp directory, so a `file` reference resolved to nothing no matter what the caller passed
-        // — the write would succeed with a baseline recording the file as unhashable. Passing the
-        // real workspace root is what makes the hash correct rather than merely present.
-        using var http = new HttpClient { BaseAddress = new Uri("http://localhost:5000") };
-        using var remote = new HttpMemoryStore(http, "default",
-            retryOptions: new RetryOptions(MaxRetries: 0), workspaceRoot: _workspace);
-
-        var written = await remote.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"]));
-
-        string expectedHash = Convert.ToHexStringLower(
-            System.Security.Cryptography.SHA256.HashData(
-                await File.ReadAllBytesAsync(Path.Combine(_workspace, "src", "thing.cs"))));
-
-        written.FileHashes.Should().ContainKey("src/thing.cs")
-            .WhoseValue.Should().Be(expectedHash);
-    }
-
-    [Fact]
     public async Task DriftList_NamesAnEphemeralWithItsTildePrefix()
     {
         // BuildDriftList skips entries with no FileHashes, so before this branch gave ephemerals a

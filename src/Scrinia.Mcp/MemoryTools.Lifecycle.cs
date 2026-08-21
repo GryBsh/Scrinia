@@ -71,13 +71,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Content for 'merged' resolution.")] string? content = null,
         CancellationToken cancellationToken = default)
     {
-        // Both branches — scan and resolve — walk .scrinia/ on disk for conflict markers. A
-        // remote store has no such directory, so there is no partial answer to give.
-        if (!TryGetLayout(out var store))
-            return Task.FromResult(ResponseBuilder.Error(
-                "Reconcile reads and rewrites conflicted files under .scrinia/ on disk, and the active store is remote.",
-                ErrorCodes.NotSupported,
-                "Resolve merge conflicts in the workspace checkout, then retry there."));
+        var store = CurrentStore;
 
         if (conflictId is null && !string.IsNullOrWhiteSpace(choice))
             return Task.FromResult(ResponseBuilder.Error(
@@ -135,7 +129,7 @@ public sealed partial class ScriniaMcpTools
                 double threshold = GetJaccardThreshold(scriniaDir);
                 if (TryComputeAutoResolvedMetaJson(fileContent, threshold, out string? autoResolvedJson))
                 {
-                    try { File.WriteAllText(absolutePath, autoResolvedJson!); }
+                    try { WriteResolved(absolutePath, autoResolvedJson!); }
                     catch (Exception ex)
                     {
                         return ResponseBuilder.Error(
@@ -239,7 +233,7 @@ public sealed partial class ScriniaMcpTools
         try
         {
             string toWrite = type == "nmp2" ? Nmp2ChunkedEncoder.Encode(resolvedContent) : resolvedContent;
-            File.WriteAllText(absolutePath, toWrite);
+            WriteResolved(absolutePath, toWrite);
         }
         catch (Exception ex)
         {
@@ -250,6 +244,67 @@ public sealed partial class ScriniaMcpTools
         }
 
         return ResponseBuilder.Success($"Resolved {conflictId} ({type}) with '{choice}'.").WithAction("reconciled");
+    }
+
+    /// <summary>
+    /// Writes conflict-resolved bytes back into the store and drops the store's cached views.
+    /// </summary>
+    /// <remarks>
+    /// A repair is not a well-formed store write — it produces bytes for whichever path the
+    /// conflict scan found, a <c>.nmp2</c> body or a <c>.meta.json</c> sidecar — so it does not
+    /// go through <c>Upsert</c>, and forcing it through one would change the merge semantics the
+    /// git driver and this auto-resolver deliberately share. But it must still behave like a
+    /// store write in two respects a bare <c>File.WriteAllText</c> did not.
+    /// <para>ATOMIC AND DURABLE: routed through the store's own temp-then-rename writer, so a
+    /// concurrent reader never observes a half-repaired sidecar and the bytes reach media before
+    /// the rename.</para>
+    /// <para>VISIBLE: <c>_indexCache</c> is not keyed by mtime (only the artifact cache is), so
+    /// without an explicit invalidation a long-lived MCP session went on serving the PRE-repair
+    /// sidecar for the rest of the process — having just reported the resolve as successful.
+    /// Both write sites go through this one helper rather than each remembering to do the same
+    /// two things.</para>
+    /// </remarks>
+    /// <summary>Reads an <c>attributes</c>-shaped node — an object whose every value is an array
+    /// of strings. ABSENT returns true with a null map; MALFORMED returns false so the caller
+    /// escalates, matching <c>TryReadIntMap</c>'s contract and the driver's
+    /// <c>TryGetStringArrayMap</c>.</summary>
+    private static bool TryReadStringArrayMap(JsonNode? node, string key, out Dictionary<string, string[]>? map)
+    {
+        map = null;
+        if (node is not JsonObject obj || !obj.TryGetPropertyValue(key, out var n))
+            return true; // absent
+        if (n is not JsonObject inner)
+            return false; // malformed: present but not an object
+
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in inner)
+        {
+            if (value is not JsonArray arr) return false;
+            var values = new List<string>(arr.Count);
+            foreach (var element in arr)
+            {
+                if (element is JsonValue ev && ev.TryGetValue<string>(out string? s) && s is not null)
+                    values.Add(s);
+                else
+                    return false;
+            }
+            result[name] = [.. values];
+        }
+        map = result;
+        return true;
+    }
+
+    private static JsonObject ToJsonAttributeObject(Dictionary<string, string[]> map) =>
+        new(map.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+               .Select(kv => KeyValuePair.Create(
+                   kv.Key,
+                   (JsonNode?)new JsonArray(kv.Value.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()))));
+
+    private static void WriteResolved(string absolutePath, string content)
+    {
+        FileMemoryStore.AtomicWriteAllText(absolutePath, content);
+        if (MemoryStoreContext.Current is FileMemoryStore store)
+            store.InvalidateCaches();
     }
 
     private static McpResponse ScanForConflicts(string scriniaDir)
@@ -766,6 +821,26 @@ public sealed partial class ScriniaMcpTools
             else
                 baseNode["termFrequencies"] = ToJsonObject(mergedTf);
 
+            // Union the attributes through the ONE rule (Scrinia.Core.Merge.SidecarAttributeMerge).
+            // This resolver never looked at attributes at all, so whichever side lost the timestamp
+            // selection lost its attributes with it — and `ref` is an attribute, so a link written
+            // on one branch simply disappeared when that branch merged.
+            //
+            // Same ABSENT/MALFORMED contract as termFrequencies above. A false return from TryUnion
+            // is a different thing: a scalar key both sides set to different values, which nothing
+            // here can order, so it escalates to manual resolution rather than picking a winner.
+            if (!TryReadStringArrayMap(baseNode, "attributes", out var baseAttrs) ||
+                !TryReadStringArrayMap(otherNode, "attributes", out var otherAttrs))
+                return false;
+
+            if (!SidecarAttributeMerge.TryUnion(baseAttrs, otherAttrs, out var mergedAttrs))
+                return false;
+
+            if (mergedAttrs is null)
+                (baseNode as JsonObject)?.Remove("attributes");
+            else
+                baseNode["attributes"] = ToJsonAttributeObject(mergedAttrs);
+
             var writeOptions = new JsonSerializerOptions { WriteIndented = true };
             resolvedJson = baseNode.ToJsonString(writeOptions);
 
@@ -1110,10 +1185,9 @@ public sealed partial class ScriniaMcpTools
         }
         else
         {
-            // Case-insensitive match plus canonical-casing carry-forward — see
-            // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
-            // the whole class's reasoning. Here an ordinal match sent the write out with no metadata
-            // at all, which is precisely the reset this read exists to prevent.
+            // Case-insensitive match plus canonical-casing carry-forward, the same rule every
+            // other name lookup in this codebase follows. Here an ordinal match sent the write out
+            // with no metadata at all, which is precisely the reset this read exists to prevent.
             var entries = store.LoadIndex(scope);
             var existingEntry = entries.FirstOrDefault(
                 e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -1229,13 +1303,11 @@ public sealed partial class ScriniaMcpTools
         var followUpNames = new List<string>();
         string? instruction = null;
 
-        // Check for unresolved merge conflicts in .scrinia/ — local stores only; a remote store
-        // has no working copy to conflict.
-        if (store is ILocalMemoryStore conflictLayout)
+        // Check for unresolved merge conflicts in .scrinia/.
         {
             try
             {
-                string resumeScriniaDir = Path.Combine(conflictLayout.WorkspaceRoot, ".scrinia");
+                string resumeScriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
                 if (Directory.Exists(resumeScriniaDir))
                 {
                     bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
@@ -1257,14 +1329,11 @@ public sealed partial class ScriniaMcpTools
             catch { /* best-effort check */ }
         }
 
-        // Available skills (built-in + disk overrides). Skipped entirely for a remote store:
-        // the built-in names alone, with no disk overrides to reconcile them against, would
-        // report a skill set the agent cannot actually load remotely.
-        if (store is ILocalMemoryStore skillsLayout)
+        // Available skills (built-in + disk overrides).
         {
             try
             {
-                string skillsDir = PathRouter.ToFileEntityDir("skill", skillsLayout.WorkspaceRoot);
+                string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
                 var diskSkills = Directory.Exists(skillsDir)
                     ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
                     : [];
@@ -1282,14 +1351,10 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Collect agent/* names for followUp — .md files first, NMP/2 fallback.
-        // The whole section is local-only, fallback included: remotely the workspace-root read
-        // threw into the catch below and took the fallback with it. Preserved deliberately —
-        // widening it to run the NMP/2 branch remotely is a behaviour change, not a tidy-up.
-        if (store is ILocalMemoryStore agentLayout)
         {
             try
             {
-                string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
+                string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
                 bool usedMdFiles = false;
 
                 if (Directory.Exists(agentDir))

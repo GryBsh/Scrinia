@@ -6,14 +6,16 @@ namespace Scrinia.TestDoubles;
 
 /// <summary>
 /// A do-nothing <see cref="IMemoryStore"/> — every member returns an empty or default result.
-/// <para>It implements <see cref="IMemoryStore"/> and deliberately <b>not</b>
-/// <see cref="ILocalMemoryStore"/>, which is the point: after the store split the compiler will
-/// not let it be mistaken for a store with a workspace on disk. Any tool path that reaches for a
-/// local filesystem member has to deal with its absence, and a test can pin what it does.</para>
 /// <para>Members are <c>virtual</c> so a test can subclass and override just the one or two it
-/// cares about, rather than hand-writing 23 member bodies per double.</para>
-/// <para>Shared by <c>Scrinia.Tests</c> and <c>Scrinia.Server.Tests</c> — both reference this
-/// project so neither has to keep its own copy in sync with the other.</para>
+/// cares about, rather than hand-writing a full member set per double.</para>
+/// <para><b>The filesystem-layout members throw</b> rather than answering with a plausible path.
+/// This double has no workspace, and a fabricated one would be worse than a refusal: a test that
+/// reached <see cref="WorkspaceRoot"/> unnoticed would read and write real files under whatever
+/// directory was invented for it. Until the remote store was dropped these members lived on a
+/// separate <c>ILocalMemoryStore</c> that this type deliberately did not implement, so the
+/// compiler caught the same mistake; with one interface it is caught on the first call instead.
+/// A test that needs them overrides them, or uses a real <c>FileMemoryStore</c> over a temp
+/// directory.</para>
 /// </summary>
 public class FakeMemoryStore : IMemoryStore
 {
@@ -37,7 +39,6 @@ public class FakeMemoryStore : IMemoryStore
     public virtual void RememberEphemeral(string key, EphemeralEntry entry) { }
     public virtual bool ForgetEphemeral(string key) => false;
     public virtual EphemeralEntry? GetEphemeral(string key) => null;
-    public virtual bool CopyMemory(string src, string dst, bool overwrite, out string message) { message = ""; return false; }
     public virtual void ArchiveVersion(string subject, string scope = "local") { }
     public virtual string ArtifactUri(string name, string scope = "local") => "";
     public virtual Task WriteArtifactAsync(string subject, string scope, string artifactText,
@@ -47,4 +48,18 @@ public class FakeMemoryStore : IMemoryStore
     public virtual string[] DiscoverTopics() => [];
     public virtual List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null) => [];
     public virtual IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null) => ["local"];
+
+    // ── Filesystem layout: no workspace, so no answer. See the type summary. ──
+
+    public virtual string WorkspaceRoot => throw NoWorkspace(nameof(WorkspaceRoot));
+    public virtual string ArtifactPath(string name, string scope = "local") => throw NoWorkspace(nameof(ArtifactPath));
+    public virtual string FindArtifactPath(string subject, string normalizedScope) => throw NoWorkspace(nameof(FindArtifactPath));
+    public virtual string GetStoreDirForScope(string scope) => throw NoWorkspace(nameof(GetStoreDirForScope));
+    public virtual List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) => throw NoWorkspace(nameof(ListTopicArtifacts));
+    public virtual void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
+        Dictionary<string, string> artifactContents, bool overwrite) => throw NoWorkspace(nameof(ImportTopicEntries));
+
+    private static NotSupportedException NoWorkspace(string member) => new(
+        $"{nameof(FakeMemoryStore)}.{member} has no workspace on disk. Override it on a subclass, "
+        + "or drive this path through a real FileMemoryStore over a temp directory.");
 }

@@ -102,9 +102,9 @@ public static class MetaJsonMerger
         var (createdAt, updatedAt) = SelectTimestamps(oursCreated, oursUpdated, theirsCreated, theirsUpdated);
 
         // Overlay the merged fields onto OURS' full object — preserves every unknown property
-        // (contentPreview, chunkEntries, codeRefs, attributes, …) verbatim. termFrequencies is NOT
-        // among them: it is merged below, because preserving it verbatim silently dropped theirs'
-        // contribution on every merge.
+        // (contentPreview, chunkEntries, codeRefs, …) verbatim. termFrequencies and attributes are
+        // NOT among them: both are merged below, because preserving either verbatim silently
+        // dropped theirs' contribution on every merge.
         SetString(ours, "name", name);
         SetString(ours, "uri", uri);
         SetString(ours, "description", description);
@@ -148,8 +148,76 @@ public static class MetaJsonMerger
                 mergedTf.OrderBy(kv => kv.Key, StringComparer.Ordinal)
                         .Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value))));
 
+        // ATTRIBUTES. Same shape of hole termFrequencies had, and the same fix: carried verbatim
+        // from OURS, this field silently dropped theirs' contribution on every auto-resolved
+        // merge. `ref` is an attribute, so a link written on one branch vanished when it merged —
+        // and this repository keeps its own .scrinia/ in git, so that path is live, not
+        // theoretical. MALFORMED escalates, exactly as the two gates above do.
+        if (!TryGetStringArrayMap(ours, "attributes", out var oursAttrs)
+            || !TryGetStringArrayMap(theirs, "attributes", out var theirsAttrs))
+            return MergeResult.Conflict;
+
+        // A false return is a scalar key both sides set to different values. Nothing here can tell
+        // which is newer, so it asks a human rather than picking one.
+        if (!SidecarAttributeMerge.TryUnion(oursAttrs, theirsAttrs, out var mergedAttrs))
+            return MergeResult.Conflict;
+
+        if (mergedAttrs is null)
+            ours.Remove("attributes");
+        else
+            ours["attributes"] = new JsonObject(
+                mergedAttrs.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                           .Select(kv => KeyValuePair.Create(
+                               kv.Key,
+                               (JsonNode?)new JsonArray(kv.Value.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()))));
+
         File.WriteAllText(oursPath, ours.ToJsonString(WriteOptions));
         return MergeResult.Resolved;
+    }
+
+    /// <summary>Reads an <c>attributes</c>-shaped JSON value — an object whose every value is an
+    /// array of strings. ABSENT returns true with a null map (a normal side, not an error).
+    /// MALFORMED returns false: present but not an object, a value that is not an array, or an
+    /// array element that is not a string. Mirrors <see cref="TryGetIntMap"/>'s contract exactly,
+    /// so a foreign writer's malformed attributes escalate instead of being read as absent and
+    /// silently discarding the other side.</summary>
+    private static bool TryGetStringArrayMap(JsonObject? o, string key, out Dictionary<string, string[]>? map)
+    {
+        if (o is null || !o.TryGetPropertyValue(key, out var n))
+        {
+            map = null;
+            return true; // absent
+        }
+        if (n is not JsonObject obj)
+        {
+            map = null;
+            return false; // malformed: present but not an object
+        }
+
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in obj)
+        {
+            if (value is not JsonArray arr)
+            {
+                map = null;
+                return false; // malformed: a value isn't an array
+            }
+
+            var values = new List<string>(arr.Count);
+            foreach (var element in arr)
+            {
+                if (element is JsonValue ev && ev.TryGetValue<string>(out string? s) && s is not null)
+                    values.Add(s);
+                else
+                {
+                    map = null;
+                    return false; // malformed: an element isn't a string
+                }
+            }
+            result[name] = [.. values];
+        }
+        map = result;
+        return true;
     }
 
     private static JsonObject? Parse(string path)

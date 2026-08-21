@@ -209,7 +209,7 @@ public partial class ScriniaCommands
             // Wire the embedding pipeline before compacting so the merged single-chunk entry
             // can be re-embedded through the same event-sink path a normal store/append uses —
             // otherwise vectors stay keyed to the pre-compaction chunk layout (stale/orphaned).
-            ILocalMemoryStore store = WorkspaceSetup.LocalStore;
+            IMemoryStore store = WorkspaceSetup.Store;
             if (compactionCandidates.Count > 0)
                 await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -291,7 +291,7 @@ public partial class ScriniaCommands
     /// <remarks>Internal (rather than private) so tests can exercise the re-embed wiring directly
     /// without going through <c>WorkspaceSetup.LoadPluginsAsync</c>'s real provider discovery,
     /// which is environment-dependent (model files may or may not be present on disk).</remarks>
-    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, ILocalMemoryStore store, CancellationToken ct)
+    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)
     {
         string path = store.FindArtifactPath(item.Entry.Name, item.Scope);
         if (!File.Exists(path)) return;

@@ -1,0 +1,4 @@
+- [.superpowers/ SDD tree is gitignored](project_superpowers_sdd_gitignored.md) — report edits under .superpowers/ never land in commits; write the report after committing code, no git add needed.
+- [Falsify pins by mutation](feedback_falsify_pins_by_mutation.md) — every new test/pin must break-fail-restore-pass before it's trusted; two Task 9 tests looked right but couldn't fail.
+- [sed line-ending gotcha on Windows](gotcha_sed_line_endings_windows.md) — sed -i flips a CRLF file to LF-only; git status flags it modified with empty git diff; fix with unix2dos or git checkout --.
+- [published-surface-coherence branch CLOSED](project_published_surface_coherence_closed.md) — Parts A+B done as of Task 10; Part C split to a future M3 branch, not a loose end here.

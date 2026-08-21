@@ -51,7 +51,7 @@ public sealed class ConsolidateReembedTests : IDisposable
     public async Task CompactEntryToSingleChunk_ReembedsThroughSink_NoOrphanedChunkVectors()
     {
         WorkspaceSetup.Configure(_root);
-        var store = TestHelpers.LocalStore;
+        var store = TestHelpers.Store;
 
         const string name = "long-session";
         // Bare "sessions" (no "memory/" namespace prefix) round-trips cleanly through

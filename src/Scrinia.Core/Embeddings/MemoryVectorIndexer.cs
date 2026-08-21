@@ -39,7 +39,7 @@ namespace Scrinia.Core.Embeddings;
 /// and its compaction, which is a larger change than this branch should carry.</para>
 ///
 /// <para>Replaces six divergent copies (finding H3): EmbeddingReindexer.ReindexAsync,
-/// CoreEmbeddingEventHandler, BuiltInEmbeddingsService's write and reindex paths, and
+/// CoreEmbeddingEventHandler, the reindex paths, and
 /// EmbeddingsPlugin's write and reindex paths — the last two of which never windowed at all.</para>
 /// </summary>
 public sealed class MemoryVectorIndexer

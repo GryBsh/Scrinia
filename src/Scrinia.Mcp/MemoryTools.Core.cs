@@ -29,7 +29,7 @@ public sealed partial class ScriniaMcpTools
         // ── Agent config: read .md file first, NMP/2 fallback ────────────
         if (artifactOrName.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
-            var agentStore = MemoryStoreContext.Current as ILocalMemoryStore;
+            var agentStore = MemoryStoreContext.Current;
             if (agentStore is not null)
             {
                 string agentSubject = artifactOrName["/agent/".Length..].Trim();
@@ -135,9 +135,6 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
-        // The whole store, not a narrowed one: only the /agent/ branch below needs local files, and
-        // it is guarded where it is reached. A remote store implements everything else — ephemeral
-        // storage included — so narrowing here would break remember() in remote mode.
         var store = CurrentStore;
 
         // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
@@ -145,33 +142,26 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["/agent/".Length..].Trim();
 
-            // Validate before the guard, so /agent/ and /skill/ answer the same way for the same
-            // bad input. SkillCreate validates its name first; without this hoist, a remote
-            // remember({ path: '/agent/bad name' }) reported NOT_SUPPORTED while the /skill/
-            // sibling reported INVALID_PARAMETER. The path check below stays as defence in depth.
+            // Validated first, so /agent/ and /skill/ answer the same way for the same bad input:
+            // a bad name is INVALID_PARAMETER on both, never whatever the next guard would have
+            // said. The path check below stays as defence in depth.
             if (!FileEntityName.IsValid(agentSubject))
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.",
                     ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.");
 
-            // The /agent/ branch is genuinely local-only — it writes a .md file plus a JSON
-            // sidecar into the workspace — so it is guarded here, where it is actually reached.
-            // Guarding at the method entry instead would refuse every remote remember().
-            // Narrowed from the local `store`, not re-read from the ambient context: only part
-            // of this method needs local files.
-            if (store is not ILocalMemoryStore agentLayout)
-                return ResponseBuilder.Error(
-                    "An /agent/ config is written as a file in the local workspace, and the active store is remote.",
-                    ErrorCodes.NotSupported,
-                    "remember() to a regular memory path, which a remote store persists server-side.");
-
-            string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
-            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, agentLayout.WorkspaceRoot, out string filePath))
+            // The /agent/ branch writes a .md file plus a JSON sidecar into the workspace. It used
+            // to be guarded here, at the point of use rather than at the method entry, so that a
+            // remote store refused only THIS path and still served every other remember(). With one
+            // store the guard could no longer fail, so it is gone and the branch reads `store`
+            // directly.
+            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
+            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.");
-            FileMemoryStore.EnsureGitIgnore(agentLayout.WorkspaceRoot);
+            FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
@@ -313,11 +303,11 @@ public sealed partial class ScriniaMcpTools
     /// arrives as a plain keyword is unioned into <c>Keywords</c> UNCAPPED, and
     /// <see cref="MemoryDerivation.ForMetadataUpdate"/> unions the same terms into
     /// <c>AgentKeywords</c> uncapped. Keep the entry's total at or under
-    /// <see cref="TextAnalysis.DefaultMaxMergedKeywords"/> (30) — past it the memory can no longer
-    /// be promoted to a remote store, because <c>MemoryEndpoints.MaxCarriedKeywords</c> is that same
-    /// constant and answers 400, which <see cref="Copy"/> surfaces as
-    /// <see cref="ErrorCodes.Internal"/>. See the comment on the union itself in
-    /// <see cref="ApplyMetadataMutation"/>.</para>
+    /// <see cref="TextAnalysis.DefaultMaxMergedKeywords"/> (30), which is where every other write
+    /// path caps. Nothing FAILS past it any more — the bound that used to be enforced was the
+    /// promotion wire's, and it went with the server — so an over-long list now just grows,
+    /// diluting the entry's own term weights with no error to notice. See the comment on the union
+    /// itself in <see cref="ApplyMetadataMutation"/>.</para>
     /// </summary>
     internal Task<McpResponse> UpdateMeta(
         [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] string name,
@@ -340,10 +330,9 @@ public sealed partial class ScriniaMcpTools
 
         // The ephemeral branch sits AHEAD of ParseQualifiedName, where the refusal it replaces sat:
         // ParseQualifiedName does not strip `~`, so a ~name reaching it resolves to a persistent
-        // address that is not this memory. An ephemeral lives in this process in both store modes
-        // (FileMemoryStore's map locally, HttpMemoryStore's own map remotely — nothing about it goes
-        // over the wire), so the same three members serve both: GetEphemeral, the projection pair on
-        // EphemeralEntry, and RememberEphemeral.
+        // address that is not this memory. An ephemeral lives in this process — never on disk — so
+        // three members serve it: GetEphemeral, the projection pair on EphemeralEntry, and
+        // RememberEphemeral.
         if (ephemeral)
         {
             string key = MemoryNaming.StripEphemeralPrefix(name);
@@ -385,13 +374,11 @@ public sealed partial class ScriniaMcpTools
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
             // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
-            // used to have. Remotely, Upsert is a deliberate no-op, so that shape mutated a copy,
-            // handed it to a method that discards it, and still reported "updated" — link() said
-            // "Linked 'a' <-> 'b'" while the `ref` attribute never reached the server. TryUpdateEntry
-            // is the seam that already fails closed there (HttpMemoryStore overrides it precisely so a
-            // mutation it cannot persist is refused rather than silently dropped), and locally it
-            // additionally runs under FileMemoryStore's per-scope write lock, so load→mutate→persist
-            // is atomic instead of a racy read-modify-write. `found`/`changes` are captured out of the
+            // used to have: it runs under FileMemoryStore's per-scope write lock, so
+            // load→mutate→persist is atomic instead of a racy read-modify-write. (The shape it
+            // replaced was also how link() came to report "Linked 'a' <-> 'b'" while the `ref`
+            // attribute reached nothing — on the remote store Upsert was a deliberate no-op, so the
+            // mutated copy was handed to a method that discards it.) `found`/`changes` are captured out of the
             // callback because a false return has three distinct causes the caller must tell apart:
             // no such entry, nothing to change, and "found but not persistable".
             //
@@ -415,12 +402,12 @@ public sealed partial class ScriniaMcpTools
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, attributes, description, reviewAfter, reviewWhen."));
 
-        // Found, had something to change, and the store still would not persist it. Remotely that
-        // now means the server REFUSED the metadata write rather than that no channel exists —
-        // most often because the change touches keywords, which are derived from content the
-        // metadata endpoint does not have. Reporting success here is the defect this branch exists
-        // to close, so say so plainly instead. Unreachable for an ephemeral: the write is a
-        // dictionary assignment in this process, and the only other way out of that branch is the
+        // Found, had something to change, and the store still would not persist it. Reporting
+        // success here is the defect this branch exists to close, so it says so plainly instead.
+        // It was reachable when a metadata-only write could be refused for touching keywords, which
+        // are derived from content a metadata endpoint does not carry; against a filesystem store
+        // it is a genuine fault rather than a contract. Unreachable for an ephemeral: the write is
+        // a dictionary assignment in this process, and the only other way out of that branch is the
         // null mutation the warning above already answered.
         if (!persisted)
             return Task.FromResult(ResponseBuilder.Error(
@@ -428,7 +415,7 @@ public sealed partial class ScriniaMcpTools
                 "metadata-only change. Changing keywords is the usual cause — they are derived " +
                 "from the memory's content, so they can only change through a write that carries it.",
                 ErrorCodes.NotSupported,
-                "remember({ path: '...', content: [...] }) — a full write does carry attributes, keywords and description to a remote store"));
+                "remember({ path: '...', content: [...] }) — a full write carries attributes, keywords and description together"));
 
         // An ephemeral write touches no file, so it reports no file changes.
         var success = ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.");
@@ -451,9 +438,9 @@ public sealed partial class ScriniaMcpTools
     /// <para><paramref name="changes"/> is an accumulator, appended to in place, and it is how the
     /// caller renders the response. <b>It is the caller's job to make sure it describes one
     /// mutation.</b> On the persistent path that is free — <c>TryUpdateEntry</c> invokes its
-    /// mutation exactly once in all three implementations
-    /// (<see cref="IMemoryStore.TryUpdateEntry"/>'s default, <c>FileMemoryStore</c>'s locked
-    /// override, and <c>HttpMemoryStore</c>'s GET-mutate-PATCH override). On the ephemeral path it
+    /// mutation exactly once in both implementations
+    /// (<see cref="IMemoryStore.TryUpdateEntry"/>'s default and <c>FileMemoryStore</c>'s locked
+    /// override). On the ephemeral path it
     /// is not: <see cref="IMemoryStore.TryUpdateEphemeral"/> is a compare-and-swap that re-runs its
     /// mutation against the newer entry when a concurrent writer wins the swap, so
     /// <c>UpdateMeta</c>'s ephemeral callback clears the list on entry.</para>
@@ -485,17 +472,17 @@ public sealed partial class ScriniaMcpTools
             routedAttributes, KnownAttributes.Normalize(attributes));
 
         // NO CAP HERE, BY RULING — and this is the constraint a new caller has to respect, because
-        // nothing downstream will enforce it. A caller that drives an entry's total past
-        // TextAnalysis.DefaultMaxMergedKeywords (30) makes that memory UNPROMOTABLE: a `~name` is
-        // promoted by HttpMemoryStore.CopyMemory, which puts Keywords and AgentKeywords straight
-        // onto the wire, and MemoryEndpoints.CarriedEntryBoundsError refuses more than
-        // MemoryEndpoints.MaxCarriedKeywords of either — that constant IS
-        // TextAnalysis.DefaultMaxMergedKeywords, so the two cannot drift. The 400 it answers with
-        // then reaches the agent as ErrorCodes.Internal (MemoryTools.Copy), naming nothing
-        // actionable. Every OTHER write path merges through TextAnalysis.MergeKeywordsWithSource,
-        // which caps at that same constant; this union and ForMetadataUpdate's AgentKeywords union
-        // downstream of it are the only two that do not. link() used to be the one production
-        // caller that got here, by minting a ref:-shaped keyword that degraded past
+        // nothing downstream will enforce it. Every OTHER write path merges through
+        // TextAnalysis.MergeKeywordsWithSource, which caps at TextAnalysis.DefaultMaxMergedKeywords
+        // (30); this union and ForMetadataUpdate's AgentKeywords union downstream of it are the only
+        // two that do not.
+        //
+        // Until the server was dropped, exceeding that count had a VISIBLE consequence: the entry
+        // became unpromotable, because the promotion wire refused more than the same constant and
+        // answered 400. That failure is gone, and its absence is the reason to state the bound here
+        // rather than assume something catches it — an over-long list now grows silently, diluting
+        // the entry's own term weights against every other entry's. link() used to be the one
+        // production caller that got here, by minting a ref:-shaped keyword that degraded past
         // AttributeExtractor.MaxValueLength; it writes the attribute directly now, so today the
         // only callers are tests.
         string[]? mergedKeywords = entry.Keywords;
@@ -584,12 +571,11 @@ public sealed partial class ScriniaMcpTools
         // boost for the added keywords and attributes itself — caller-side derivation, at a
         // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
         // strings rather than index tokens (against D-14), and reachable only through UpdateMeta
-        // — no caller outside link() and the tests. Over HTTP it could not persist at all: PATCH
-        // refuses TermFrequencies from a body, correctly, so this write reported full success
-        // while silently discarding the boost, and a remote corpus ranked differently from a
-        // local one forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside
-        // TryUpdateEntry on the persistent path, and at UpdateMeta's ephemeral branch, which IS
-        // the store for a ~name. Either way nothing derived crosses the wire.
+        // — no caller outside link() and the tests. (It could not persist over HTTP at all, so
+        // this write reported full success while discarding the boost, and a remote corpus ranked
+        // differently from a local one forever.) MemoryDerivation.ForMetadataUpdate re-derives it —
+        // inside TryUpdateEntry on the persistent path, and at UpdateMeta's ephemeral branch, which
+        // IS the store for a ~name.
         var updated = entry with
         {
             Keywords = mergedKeywords,
@@ -613,9 +599,6 @@ public sealed partial class ScriniaMcpTools
                      "An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        // The whole store, not a narrowed one: only the drift branch is unconditionally local.
-        // Summary mode, the empty-store early return, and full mode over entries without file
-        // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
 
         // A caller can send "mode": null over JSON-RPC, distinct from omitting the field.
@@ -635,18 +618,10 @@ public sealed partial class ScriniaMcpTools
                 "list({ mode: 'full' })"));
         }
 
-        // Only this branch is refused: drift detection re-hashes files on disk, so it needs the
-        // workspace. The guard sits here rather than at the method entry so a remote list() in
-        // any other mode still returns its listing.
+        // Drift detection re-hashes files on disk. This used to be the one mode a remote store
+        // refused, guarded here rather than at the method entry so every other mode still listed.
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
-        {
-            if (store is not ILocalMemoryStore driftStore)
-                return Task.FromResult(ResponseBuilder.Error(
-                    "Drift detection re-hashes referenced files on disk, and the active store is remote.",
-                    ErrorCodes.NotSupported,
-                    "list() without mode='drift' for a plain listing."));
-            return BuildDriftList(driftStore);
-        }
+            return BuildDriftList(store);
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
@@ -783,18 +758,11 @@ public sealed partial class ScriniaMcpTools
         if (limit < 1) limit = 50;
         var page = entries.Skip(offset).Take(limit).ToList();
 
-        // Derive workspace root for the [drift] column (only reached if an entry has FileHashes).
-        // Re-hashing needs files on disk, and a non-local store has none — so the page is returned
-        // without the column rather than the whole listing failing. Same degrade as the remember()
-        // path above (:387), and the same shape a remote store gets here — not because
-        // HttpMemoryStore.ListScoped fails to populate FileHashes (it does: ToArtifactEntry reads it
-        // straight off the wire), but because `store as ILocalMemoryStore` is null for an
-        // HttpMemoryStore, so there is no WorkspaceRoot to resolve `file` attribute values against
-        // regardless of what FileHashes already carries. Reachable for real: the server installs
-        // whatever an IStorageBackend plugin's CreateStore returned as the ambient store, and nothing
-        // obliges that to be an ILocalMemoryStore.
+        // Workspace root for the [drift] column, resolved only when the page actually carries an
+        // entry with FileHashes — the root is cheap, but the column below it is a re-hash per
+        // referenced file, and most pages have none.
         string? workspaceRoot = page.Any(p => p.Entry.FileHashes is { Count: > 0 })
-            ? (store as ILocalMemoryStore)?.WorkspaceRoot
+            ? store.WorkspaceRoot
             : null;
 
         // Build qualified names first to compute dynamic column width (never truncate names)
@@ -918,19 +886,6 @@ public sealed partial class ScriniaMcpTools
         string body = SearchResultRenderer.FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
         return ResponseBuilder.Success(body).WithAction("searched")
             .WithTruncationAdvice(SearchTruncationAdvice);
-    }
-
-    /// <summary>Copies a memory artifact from one scope to another.</summary>
-    internal Task<McpResponse> Copy(
-        [Description("Memory name or file:// URI to copy.")] string nameOrUri,
-        [Description("Destination as qualified name (e.g. '/api/auth-flow' or 'my-notes'). " +
-                     "Use '~name' for ephemeral destination.")] string destination,
-        [Description("When true, replaces destination memory if it already exists.")] bool overwrite = false,
-        CancellationToken cancellationToken = default)
-    {
-        bool ok = CurrentStore.CopyMemory(nameOrUri, destination, overwrite, out string msg);
-        if (!ok) return Task.FromResult(ResponseBuilder.Error(msg, ErrorCodes.Internal));
-        return Task.FromResult(ResponseBuilder.Success(msg).WithAction("copied"));
     }
 
     /// <summary>Removes a stored artifact and its index entry.</summary>
@@ -1153,14 +1108,11 @@ public sealed partial class ScriniaMcpTools
     /// <see cref="IMemoryStore.GetEphemeral"/> for a <c>~name</c>, and
     /// <see cref="IMemoryStore.TryUpdateEntry"/> with a mutation that returns null for everything
     /// else. That member's contract is exactly this probe — the mutation runs if and only if the
-    /// entry exists, and a null return persists nothing — so all three implementations short-circuit
+    /// entry exists, and a null return persists nothing — so both implementations short-circuit
     /// before their write.</para>
     ///
     /// <para>A <c>LoadIndex</c> scan would have been a SECOND resolution rule to keep in step with
-    /// <c>FileMemoryStore.TryUpdateEntry</c>'s sidecar lookup, and remotely a second ENDPOINT: the
-    /// listing route needs the <c>search</c> permission where the metadata route needs <c>read</c>,
-    /// so an API key scoped for <c>link</c> would have begun failing on the precheck — and failing
-    /// by throwing, since a 403 there is deliberately not "not found".</para>
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s sidecar lookup.</para>
     /// </summary>
     private static bool Exists(IMemoryStore store, string name)
     {
@@ -1222,12 +1174,10 @@ public sealed partial class ScriniaMcpTools
         // MemoryDerivation.ForMetadataUpdate unions the same term into AgentKeywords — so linking
         // one memory to enough long-named destinations grew two lists that nothing bounds. Measured
         // on the ephemeral path this reached after Task 8: 31 links to a 134-character name left
-        // Keywords at 33 and AgentKeywords at 31, past the 30 the promotion wire bound
-        // (MemoryEndpoints.MaxCarriedKeywords) allows, so promoting that ephemeral was refused with
-        // a 400 that MemoryTools.Copy reports as an internal fault. The same loop with short names
-        // left both untouched, which is the whole tell: the growth was the DEGRADATION, not the
-        // linking. Writing the attribute directly removes the conversion, so the destination's name
-        // length stops mattering at all.
+        // Keywords at 33 and AgentKeywords at 31, past the 30 every capped write path stops at. The
+        // same loop with short names left both untouched, which is the whole tell: the growth was
+        // the DEGRADATION, not the linking. Writing the attribute directly removes the conversion,
+        // so the destination's name length stops mattering at all.
         McpResponse result1 = await UpdateMeta(
             from, attributes: ReferenceTo(to), cancellationToken: cancellationToken);
         McpResponse result2 = await UpdateMeta(
@@ -1253,7 +1203,7 @@ public sealed partial class ScriniaMcpTools
     private static Dictionary<string, string[]> ReferenceTo(string name) =>
         new(StringComparer.OrdinalIgnoreCase) { ["ref"] = [name] };
 
-    private static Task<McpResponse> BuildDriftList(ILocalMemoryStore store)
+    private static Task<McpResponse> BuildDriftList(IMemoryStore store)
     {
         string workspaceRoot = store.WorkspaceRoot;
 

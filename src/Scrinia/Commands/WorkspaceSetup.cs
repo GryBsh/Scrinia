@@ -37,15 +37,6 @@ internal static class WorkspaceSetup
         MemoryStoreContext.Current ?? throw new InvalidOperationException(
             "WorkspaceSetup.Configure must be called before reading Store.");
 
-    /// <summary>The configured store, narrowed to the local-filesystem contract. CLI commands
-    /// that read or write workspace files use this. Throws when the process is in remote mode
-    /// (<c>scri serve --remote</c>), which is the only configuration that installs a non-local
-    /// store — see ScriniaCommands.Serve.</summary>
-    internal static ILocalMemoryStore LocalStore =>
-        MemoryStoreContext.Current as ILocalMemoryStore
-        ?? throw new InvalidOperationException(
-            "This command needs a local workspace; the configured store is remote.");
-
     internal static void Configure(string? workspaceRoot)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
@@ -605,8 +596,8 @@ internal static class WorkspaceSetup
 
         // NormalizeGuardrails is the one shared rule for every out-of-range EmbeddingOptions
         // value (ChunkOverlap >= ChunkSize, a non-positive MaxChunksPerMemory, a cap at or above
-        // the chunk-index stride) — this host reports each correction to stderr, the server logs
-        // it instead. See EmbeddingOptions.NormalizeGuardrails for why each one matters.
+        // the chunk-index stride) — this host reports each correction to stderr. See
+        // EmbeddingOptions.NormalizeGuardrails for why each one matters.
         foreach (string message in options.NormalizeGuardrails())
             Console.Error.WriteLine($"[scrinia:warn] {message}");
 
@@ -630,8 +621,8 @@ internal static class WorkspaceSetup
     /// A colon-separated key (e.g. "Scrinia:Embeddings:Provider") is accepted in two environment
     /// forms: single-underscore (SCRINIA_EMBEDDINGS_PROVIDER), which is the historically documented
     /// one and keeps priority, and the .NET-standard double-underscore form
-    /// (SCRINIA__EMBEDDINGS__PROVIDER), which the server accepts natively through
-    /// WebApplication.CreateBuilder's environment provider.
+    /// (SCRINIA__EMBEDDINGS__PROVIDER), which is what a .NET configuration host would read
+    /// natively and is accepted here so the two spellings never disagree.
     /// </summary>
     internal static string? GetConfigValue(string key)
     {

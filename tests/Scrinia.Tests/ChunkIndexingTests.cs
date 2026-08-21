@@ -167,23 +167,6 @@ public sealed class ChunkIndexingTests
         output.Should().Contain("chunk");
     }
 
-    // ── Copy preserves chunk entries ─────────────────────────────────────────
-
-    [Fact]
-    public async Task Copy_PreservesChunkEntries()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        string[] chunks = ["Part one content.", "Part two content."];
-        await Tools().Remember(chunks, "copy-src");
-
-        await Tools().Copy("copy-src", "copy-dst", overwrite: true);
-
-        var entries = MemoryStoreContext.Current!.LoadIndex("local");
-        var dst = entries.Should().ContainSingle(e => e.Name == "copy-dst").Which;
-        dst.ChunkEntries.Should().NotBeNull();
-        dst.ChunkEntries.Should().HaveCount(2);
-    }
-
     // ── Chunk scoring with parent metadata (PR 5) ─────────────────────────────
 
     [Fact]

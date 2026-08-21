@@ -256,7 +256,7 @@ Tokenization: split on non-alphanumeric characters, lowercase, filter stop words
 
 ### Attributes
 
-`Attributes` (`ArtifactEntry.Attributes`, `Dictionary<string, string[]>?`, JSON `"attributes"`) is the unified set of typed facets that replaced the older scheme of encoding structured facts as prefixed keywords (`person:maria`, `file:src/Foo.cs`). An attribute key is either an **entity key** (recommended entity vocabulary) or a **reference key** (feeds cross-reference tracking); everything else is scalar state. Both write paths (MCP `Store`/`Append` and the server orchestrator) route agent keywords, mechanical content extraction, and reference extraction into `Attributes` instead of emitting prefixed keywords. Prefixed-keyword *writes* are retired; prefixed-keyword *reads* are preserved everywhere via dual-read (see below), so entries written before this change keep working with no re-index or backfill.
+`Attributes` (`ArtifactEntry.Attributes`, `Dictionary<string, string[]>?`, JSON `"attributes"`) is the unified set of typed facets that replaced the older scheme of encoding structured facts as prefixed keywords (`person:maria`, `file:src/Foo.cs`). An attribute key is either an **entity key** (recommended entity vocabulary) or a **reference key** (feeds cross-reference tracking); everything else is scalar state. The write path (MCP `Store`/`Append`) routes agent keywords, mechanical content extraction, and reference extraction into `Attributes` instead of emitting prefixed keywords. Prefixed-keyword *writes* are retired; prefixed-keyword *reads* are preserved everywhere via dual-read (see below), so entries written before this change keep working with no re-index or backfill.
 
 #### KnownAttributes
 
@@ -302,7 +302,7 @@ Every consumer of typed/prefixed data reads **both** shapes so old entries (whic
 - **Scorer** (`WeightedAttributeScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
 - **Entity graph** (`EntityFactDerivation.Derive`, which `EntityGraphScoreContributor` runs via `EntityFactStore.ScoringAdjacency`; `EntityGraph.Build` was deleted): unions `ParseEntityKeywords(keywords)` (legacy `type:value` keywords) with `ParseEntityAttributes(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownAttributes.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
 - **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownAttributes.Merge`.
-- **FileHashes**: the derivation pipeline (`MemoryDerivation`) unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `FileHashes` — on `ArtifactEntry` for a persistent write and identically on `EphemeralEntry` for an ephemeral one, both local and remote. An append hashes only newly-referenced paths and keeps an already-baselined path's original hash (see CHANGELOG); a plain `remember()`/`Store` hashes every referenced path. Because `Attributes["file"]` is itself fence-aware (`ExtractRefAttributes`, above), a path mentioned only inside a properly closed fenced block no longer reaches `Attributes["file"]` and therefore no longer reaches `FileHashes` either — a drift baseline can only be built from a file reference that reads as a real reference, not a pasted example.
+- **FileHashes**: the derivation pipeline (`MemoryDerivation`) unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `FileHashes` — on `ArtifactEntry` for a persistent write and identically on `EphemeralEntry` for an ephemeral one. An append hashes only newly-referenced paths and keeps an already-baselined path's original hash (see CHANGELOG); a plain `remember()`/`Store` hashes every referenced path. Because `Attributes["file"]` is itself fence-aware (`ExtractRefAttributes`, above), a path mentioned only inside a properly closed fenced block no longer reaches `Attributes["file"]` and therefore no longer reaches `FileHashes` either — a drift baseline can only be built from a file reference that reads as a real reference, not a pasted example.
 
 This is a **forward-only migration**: `Attributes` is `null` for entries written before this change and stays `null` — there is no backfill script. Dual-read at the scorer/graph/orphan layers is what keeps old and new entries behaving the same, permanently, without a re-index.
 
@@ -310,23 +310,22 @@ This is a **forward-only migration**: `Attributes` is `null` for entries written
 
 ### IMemoryStore
 
-The shared contract: **no member of `IMemoryStore` throws for lack of a local filesystem**. 24
-abstract methods a conforming store must implement with no default, plus 5 members with default
-bodies a store may override for efficiency, covering all memory operations:
+The whole storage contract, filesystem layout included. Abstract members a conforming store must
+implement, plus six with default bodies a store may override for efficiency.
 
-That is the property the split actually achieved, and it is narrower than "a remote store honours
-the whole contract in substance". Two members are implemented remotely as silent no-ops rather
-than throws — `Upsert` and `ArchiveVersion` are empty bodies — because the server performs those
-writes, so the client-side call has nothing to do. `HttpMemoryStore.LoadIndex` is not a third: it
-pages through the server's listing endpoint (1000 entries per page) until it has collected the
-reported total, and **throws** `HttpRequestException` on a non-success response rather than
-returning `[]` — its own comment states why: returning `[]` there "would look exactly like 'this
-scope has no entries' — the same lie `LoadIndex` told unconditionally before this fix." A caller
-like the async-typing promotion seam's default `TryUpdateEntry` therefore cannot mistake an
-unreachable or erroring server for "this scope has no entries". `HttpMemoryStore` also overrides
-`TryUpdateEntry` itself — `GET .../entry` then `PATCH`, not the interface's default
-`LoadIndex → mutate → Upsert` — so that default (which would silently do nothing against the no-op
-`Upsert`) never runs on the remote path at all.
+It was two interfaces until the remote store was dropped. `ILocalMemoryStore` carried the six
+members with no meaning off a filesystem — the paths, the workspace root, the bundle export pair —
+so that "this operation needs local files" was a compile-time fact rather than a
+`NotSupportedException` thrown at runtime. With one implementation the split named a distinction
+that no longer divides anything: every store has a workspace root, so each narrowing cast could
+only succeed and the `NOT_SUPPORTED` responses behind them were unreachable. Both halves are now
+one interface, and `FileMemoryStore` is the sole implementation.
+
+One rule from that period is worth keeping, because it is the reason the contract reads the way it
+does: **a store must not answer a failure with an empty result.** `HttpMemoryStore.LoadIndex`
+originally returned `[]` on an unreachable server, which "would look exactly like 'this scope has
+no entries'". Anything reading through `LoadIndex` — the async-typing promotion seam's default
+`TryUpdateEntry` among them — cannot tell those apart, so a store that cannot answer must throw.
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
 
@@ -353,11 +352,14 @@ build."
 
 **File I/O:** `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact`
 
-**Naming / addressing:** `ArtifactUri` — stays on the shared interface (not on `ILocalMemoryStore`
-below) because `HttpMemoryStore` implements it for real, returning a `remote://{store}/{scope}/{name}`
-URI rather than throwing.
+**Naming / addressing:** `ArtifactUri`
 
-**Copy/Archive:** `CopyMemory`, `ArchiveVersion`
+**Archive:** `ArchiveVersion`
+
+**Filesystem layout:** `ArtifactPath`, `FindArtifactPath`, `GetStoreDirForScope`, `WorkspaceRoot`,
+`ListTopicArtifacts`, `ImportTopicEntries` — the six merged back in from `ILocalMemoryStore`.
+`WorkspaceRoot` is the authority for the workspace's on-disk layout: hand-authored file entities,
+bundle export/import, conflict scanning and drift detection all resolve from it.
 
 **Topics:** `DiscoverTopics`, `GatherTopicInfos`
 
@@ -365,7 +367,7 @@ URI rather than throwing.
 
 **Default-bodied members (a store may override for efficiency)** — six of them: `TryUpdateEntry`
 (non-atomic load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart
-— an unsynchronized load→mutate→store unless overridden; both real stores override it as a
+— an unsynchronized load→mutate→store unless overridden; `FileMemoryStore` overrides it as a
 compare-and-swap retry loop instead, so a concurrent writer's change is re-applied to the newer
 entry rather than silently lost), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
 unless overridden), `AnyScoped(scopes, predicate)` — "does any entry match?" without the caller
@@ -382,68 +384,16 @@ among several on the single `SearchAll` method above, not a separate overload. T
 `search` actions accept `excludeTopics` so agents can scope queries to specific topic subsets.
 
 `GenerateContentPreview` is not a store member at all — it moved to the static
-`Scrinia.Core.ContentPreview.Generate(string content, int maxLength = 500)`. Both prior
-implementations (`FileMemoryStore`, `HttpMemoryStore`) had byte-identical bodies that touched no
-store state, so it was never really a storage operation.
+`Scrinia.Core.ContentPreview.Generate(string content, int maxLength = 500)`. The two store
+implementations that existed then had byte-identical bodies that touched no store state, so it was
+never really a storage operation.
 
-### ILocalMemoryStore
-
-```csharp
-public interface ILocalMemoryStore : IMemoryStore
-{
-    string ArtifactPath(string name, string scope = "local");
-    string FindArtifactPath(string subject, string normalizedScope);
-    string GetStoreDirForScope(string scope);
-    string WorkspaceRoot { get; }
-    List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
-    void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite);
-    bool WriteCarriedCopy(
-        string destinationName, string artifact, CarriedMetadata carried, bool overwrite,
-        out string message);
-}
-```
-
-The seven members that only make sense against a local filesystem — six path accessors and
-import/export helpers that a remote store could previously implement only by throwing
-`NotSupportedException` at runtime, plus `WriteCarriedCopy`, a write that only a filesystem-backed
-store can perform rather than forward. `FileMemoryStore` is the sole implementation;
-`HttpMemoryStore` implements only `IMemoryStore` and does not implement this interface at all, so a
-caller that needs a local path now fails to compile against a remote store instead of discovering
-the gap at runtime. `HttpMemoryStore` retains exactly one `NotSupportedException`, unrelated to
-this split: rejecting a `file://`-prefixed input to `ResolveArtifactAsync`, which is a rejection of
-an input value rather than of a capability.
-
-Callers that need a local path narrow to `ILocalMemoryStore` in one of two ways, chosen by how much
-of the method needs the filesystem:
-
-- **Whole-tool refusal** — `ScriniaMcpTools.TryGetLayout` (`Scrinia.Mcp`) reads the ambient store
-  and returns `false` instead of throwing, so a local-only tool answers with a structured
-  `NOT_SUPPORTED` error. Used where the tool needs the workspace end to end: bundle export/import,
-  skill and agent files, conflict scanning, drift detection. `WorkspaceSetup.LocalStore` is the
-  CLI's equivalent — but it throws, because the CLI only ever installs a `FileMemoryStore`.
-- **Per-branch narrowing** — an inline `is`/`as` test at the point the layout member is actually
-  reached, leaving the rest of the method to run. Used where only part of a method needs the
-  filesystem: `recall('/agent/*')` prefers a workspace `.md` file and otherwise falls through to
-  NMP/2 resolution; `remember()` skips drift hashes; `list(mode:'full')` omits the `[drift]` column;
-  `list(mode:'drift')` refuses only that mode; `restore()`'s conflict-scan, skills and agent
-  sections are each skipped individually.
-
-Narrowing at the point of use is deliberate. Before the split, `HttpMemoryStore`'s member threw at
-the moment of use, so an early return upstream still returned, a validation error was still
-returned, and an enclosing best-effort `catch` still swallowed it and skipped just that section.
-Hoisting the check to method entry converts all three into hard failures — which is what
-`RemoteStoreToolTests` now pins. What the split removes is the *hard cast*: no site casts
-`IMemoryStore` to a concrete `FileMemoryStore` to reach a path.
-
-`SaveIndex` left `IMemoryStore` entirely rather than moving to `ILocalMemoryStore` — it has no
-production caller outside the store implementations themselves, so it is a public member of
-`FileMemoryStore` directly, not part of either interface.
+`SaveIndex` is not on the interface either: it has no production caller outside the store itself,
+so it is a public member of `FileMemoryStore` directly.
 
 ### FileMemoryStore
 
-Instance-based implementation of `ILocalMemoryStore` (which extends `IMemoryStore`). One instance
-per workspace (CLI) or per store (server).
+Instance-based implementation of `IMemoryStore`, and the only one. One instance per workspace.
 
 **Scope mapping:**
 - `"local"` → `.scrinia/store/`
@@ -519,7 +469,7 @@ resyncs one entry, not the scope.
 
 ### Cross-Process File Locking
 
-`FileLock` in `Scrinia.Core` provides OS-enforced shared/exclusive file locks for safe multi-process access. Per-scope `.lock` files (`.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) prevent concurrent index corruption when multiple CLI processes (or a CLI and a server) access the same workspace.
+`FileLock` in `Scrinia.Core` provides OS-enforced shared/exclusive file locks for safe multi-process access. Per-scope `.lock` files (`.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) prevent concurrent index corruption when multiple processes access the same workspace.
 
 - **Shared locks** for cold reads (multiple readers allowed) — a `LoadIndex` call that hits the
   in-memory cache takes no file lock at all; see **Keyword-Only Index Scans**, below.
@@ -553,19 +503,20 @@ Index entries carry `Keywords` so consumers can filter without decoding artifact
 
 ### Version Archiving
 
-When a memory is overwritten, the old version is moved to `.scrinia/store/versions/{name}_{timestamp}.nmp2`. This provides a safety net for accidental overwrites.
+When a memory is overwritten, the old version is copied to
+`.scrinia/memories/{scope}/versions/{name}_{yyyyMMdd-HHmmss-fff}.nmp2`, pruned to the 10 most
+recent. This provides a safety net for accidental overwrites.
 
-### IStorageBackend
+The stamp is millisecond-granular and an archive is **never** overwritten — a `-2`, `-3` … suffix
+is appended if that millisecond is already taken. It used to be second-granular and copied with
+`overwrite: true`, so two archives of one subject inside the same second silently replaced each
+other; two overwrites in a row is the ordinary shape of an agent correcting itself mid-turn, not a
+contrived race.
 
-```csharp
-public interface IStorageBackend
-{
-    string BackendId { get; }
-    IMemoryStore CreateStore(string storeName, string storePath);
-}
-```
-
-`FilesystemBackend` is the sole implementation, creating `FileMemoryStore` instances. The interface exists for future storage backends (S3, database, etc.).
+The memory's `.meta.json` sidecar is archived alongside the body under the same base name, so a
+version restored by hand arrives with the keywords, attributes and drift baseline it had at the
+time. Recovery is still manual and unassisted: no CLI verb, MCP tool, or code path reads
+`versions/` back. See [Version retention](../troubleshooting.md#version-retention).
 
 ## MemoryStoreContext
 
@@ -578,7 +529,7 @@ public static class MemoryStoreContext
 }
 ```
 
-Set per-request in the server, at startup in the CLI. MCP tools read `Current` to find the active store.
+Set at startup by the CLI. MCP tools read `Current` to find the active store.
 
 ## SessionBudget
 
@@ -621,15 +572,15 @@ quietly loses its chunk-level signal. Use `VectorScoreProjection.Project`, which
 from stored vectors to these keys, rather than composing them by hand.
 
 Dispatch via `SearchContributorContext`:
-- `.Current` (AsyncLocal): set per-request by the server
-- `.Default` (static): set at startup by the CLI
+- `.Current` (AsyncLocal): what a host serving concurrent callers would set per call
+- `.Default` (static): set at startup by the CLI, and what actually carries today
 
 ### IMemoryEventSink
 
 Plugin hook for reacting to store/append/forget events. Takes `IPluginStore`, not the full
 `IMemoryStore` — the four-member surface (`ParseQualifiedName`, `IsEphemeral`,
 `ResolveArtifactAsync`, `ReadArtifactAsync`) is what the sink path actually uses; a sink needing
-more can cast to `IMemoryStore`, which every concrete store still implements:
+more can cast to `IMemoryStore`:
 
 ```csharp
 public interface IMemoryEventSink
@@ -641,10 +592,11 @@ public interface IMemoryEventSink
 ```
 
 Dispatch via `MemoryEventSinkContext`:
-- `.Current` (AsyncLocal): per-request
-- `.Default` (static): CLI fallback
+- `.Current` (AsyncLocal): per async flow
+- `.Default` (static): CLI fallback, and what actually carries today
 
-This is the MCP path hook mechanism. The server REST path uses `IMemoryOperationHook` instead, preventing double-firing.
+This is the MCP path hook mechanism. `IMemoryOperationHook` is the other one, and the rule that
+kept them apart still stands: a component registered as both must fire exactly once.
 
 ## JSON Serialization
 
@@ -656,7 +608,6 @@ All serialized types use source-generated `JsonSerializerContext` for trimming s
 | `BundleJsonContext` | Core | Export/import bundles |
 | `StoreJsonContext` | CLI | CLI store operations |
 | `ScriniaMcpJsonContext` | Mcp | Skill and agent file sidecar metadata (`SkillFileMeta`, `AgentFileMeta`) |
-| `ServerJsonContext` | Server | API request/response DTOs |
 | `ConfigJsonContext` | CLI | Workspace config file |
 | `PluginClientJsonContext` | CLI | Plugin MCP communication |
 | `CliJsonContext` | CLI | `--json` CLI output |
@@ -701,4 +652,4 @@ public sealed record RetryOptions(int MaxRetries = 3, int BaseDelayMs = 200);
 public sealed record CircuitBreakerOptions(int Threshold = 5, int CooldownSeconds = 30);
 ```
 
-Both `EmbeddingOptions` (Core) and `ChatOptions` (Server) expose `MaxRetries`, `RetryBaseDelayMs`, `CircuitBreakerThreshold`, and `CircuitBreakerCooldownSeconds` properties that map to these records.
+`EmbeddingOptions` (Core) exposes `MaxRetries`, `RetryBaseDelayMs`, `CircuitBreakerThreshold`, and `CircuitBreakerCooldownSeconds` properties that map to these records. They cover the remote embedding providers (Ollama, OpenAI, Voyage AI, Azure, Google); nothing else in the repository makes an outbound HTTP call.
