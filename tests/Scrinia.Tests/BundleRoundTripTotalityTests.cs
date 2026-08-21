@@ -898,6 +898,13 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
         // rather than as a constructor argument like everything above it. See ForComparison()
         // above for why the pin's comparison rewrites this member to raw JSON text rather than
         // comparing JsonElement structs directly.
+        //
+        // NOTE ON WHAT THIS PIN DOES *NOT* COVER: this member's assertion survives deleting the
+        // [JsonExtensionData] attribute entirely. Without it, Unknown is just an ordinary
+        // dictionary property with a public setter — it serialises as a nested "unknown" object
+        // and deserialises straight back, so the round trip still matches. The extension-data
+        // SEMANTICS (unknown keys splicing in as flat top-level keys and surviving a read-write
+        // cycle) are pinned by Scrinia.Tests.Formats.SidecarVersioningTests, not here.
         Unknown = new Dictionary<string, System.Text.Json.JsonElement>
         {
             ["futureField"] = System.Text.Json.JsonSerializer.SerializeToElement(

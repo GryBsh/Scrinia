@@ -85,4 +85,53 @@ public sealed partial class SidecarVersioningTests
         reparsed.EnumerateObject().Select(p => p.Name)
             .Should().BeEquivalentTo("name", "uri", "originalBytes", "chunkCount", "createdAt");
     }
+
+    /// <summary>
+    /// Unknown keys are sorted with <see cref="StringComparer.Ordinal"/> on write, alongside the
+    /// Keywords / TermFrequencies / FileHashes sorting WriteSidecarCore already does for stable
+    /// git diffs.
+    ///
+    /// <para><b>This test distinguishes the two comparers, rather than merely asserting "sorted".</b>
+    /// The three keys are chosen so the expected order is UNREACHABLE under OrdinalIgnoreCase:
+    /// ordinal puts every uppercase letter before every lowercase one, giving Alpha, alpha, zeta;
+    /// case-insensitive compares Alpha and alpha as equal and yields Alpha/alpha in input order
+    /// followed by zeta, so "alpha" before "Alpha" survives. A test using only lowercase keys
+    /// would pass under both comparers and pin nothing.</para>
+    ///
+    /// <para>Ordinal is correct because these keys come from a schema this build cannot reason
+    /// about, and JSON keys are case-sensitive: "Alpha" and "alpha" are two different keys, and a
+    /// comparer that calls them equal makes their relative order depend on dictionary insertion
+    /// order, which is exactly the churn the sorting exists to prevent.</para>
+    /// </summary>
+    [Fact]
+    public void UnknownKeys_AreSortedOrdinally_OnWrite()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+
+        var entry = new ArtifactEntry("sorted", "file:///sorted.nmp2", 5, 1,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero))
+        {
+            Unknown = new Dictionary<string, JsonElement>
+            {
+                ["zeta"] = JsonDocument.Parse("1").RootElement,
+                ["alpha"] = JsonDocument.Parse("2").RootElement,
+                ["Alpha"] = JsonDocument.Parse("3").RootElement,
+            }
+        };
+
+        store.Upsert(entry, "local:notes");
+
+        // Read the RAW sidecar text off disk: key ORDER is a property of the bytes, and any
+        // assertion that goes back through a Dictionary loses it.
+        string raw = File.ReadAllText(
+            Path.Combine(scope.TempDir, "notes", "sorted.meta.json"));
+
+        var keys = JsonDocument.Parse(raw).RootElement.EnumerateObject()
+            .Select(p => p.Name)
+            .Where(n => n is "zeta" or "alpha" or "Alpha")
+            .ToList();
+
+        keys.Should().Equal("Alpha", "alpha", "zeta");
+    }
 }
