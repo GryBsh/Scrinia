@@ -292,7 +292,7 @@ public sealed partial class SidecarVersioningTests
     }
 
     [Fact]
-    public async Task ReStoringAV2Memory_IsRefused_BecauseTheRebuiltEntryInheritsItsVersion()
+    public async Task ReStoringAV2Memory_IsRefused()
     {
         // This is the mechanism that makes a PER-ENTRY gate sufficient in place of a whole-scope
         // lockout: the refusal follows the memory, because the version is inherited. Task 3b
@@ -317,7 +317,7 @@ public sealed partial class SidecarVersioningTests
         // regardless of which one this is testing: Upsert's check alone still throws
         // ScopeReadOnlyException even with StoreAsync's earlier gate removed, because
         // BuildDerivedEntry inherits the version either way -- so
-        // ReStoringAV2Memory_IsRefused_BecauseTheRebuiltEntryInheritsItsVersion above cannot tell
+        // ReStoringAV2Memory_IsRefused above cannot tell
         // the two gates apart. What StoreAsync's own gate buys, specifically, is that
         // ArchiveVersion (called between existingEntry being bound and Upsert) never runs.
         // Without it, a write later refused at Upsert has already deposited a versions/ archive
@@ -524,6 +524,97 @@ public sealed partial class SidecarVersioningTests
             .Should().BeFalse("nothing staged for import may be committed once one entry is refused");
         File.Exists(Path.Combine(scope.TempDir, "notes", "writable-import.meta.json"))
             .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// An import into a scope that ALREADY holds a newer memory is refused before any body moves,
+    /// even when the bundle never mentions that memory.
+    ///
+    /// <para><b>This is the case the sibling test above cannot reach.</b> That one puts the newer
+    /// entry in the bundle. This one puts it in the SCOPE — and the trailing
+    /// <c>PublishIndexUnsafe(existingEntries, ...)</c> hands the entire scope to
+    /// <c>WriteSidecars</c>, which rewrites a sidecar for every one of them. Checking only the
+    /// staged list left that unguarded: the publish threw AFTER the commit loop had moved every
+    /// body and written every sidecar, the rollback deleted only still-staged files, and the
+    /// import was fully applied while the caller was told it failed.</para>
+    /// </summary>
+    [Fact]
+    public async Task ImportIntoAScopeHoldingANewerMemory_RefusesBeforeAnyBodyMoves()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("resident", "local:notes", ["resident body"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "resident", 2);
+
+        // The bundle does not mention "resident" at all.
+        var incoming = new ArtifactEntry("incoming", "file://placeholder", 5, 1, DateTimeOffset.UtcNow);
+        var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["incoming"] = "incoming body",
+        };
+
+        var act = () => store.ImportTopicEntries("local:notes", [incoming], contents, overwrite: true);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+        File.Exists(Path.Combine(scope.TempDir, "notes", "incoming.nmp2"))
+            .Should().BeFalse("the refusal must precede the commit loop, not follow it");
+        File.Exists(Path.Combine(scope.TempDir, "notes", "incoming.meta.json"))
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// <c>SaveIndex</c>'s orphan sweep must not delete before the write is known to be allowed.
+    /// The sweep runs first and <c>PublishIndexUnsafe</c> refuses second, so without an earlier
+    /// check the deletions commit while the writes are refused — a partial sequence of side
+    /// effects at a public API.
+    /// </summary>
+    [Fact]
+    public async Task SaveIndex_OnAListContainingANewerEntry_DeletesNothing()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("keeper", "local:notes", ["keeper body"]));
+        await store.StoreAsync(new MemoryWrite("orphan", "local:notes", ["orphan body"]));
+
+        // A list that omits "orphan" (so the sweep would delete it) and carries a newer entry.
+        var keeper = store.LoadIndex("local:notes").Single(e => e.Name == "keeper");
+        var newer = keeper with { Name = "newer-save", SchemaVersion = 2 };
+
+        var act = () => store.SaveIndex([keeper, newer], "local:notes");
+
+        act.Should().Throw<ScopeReadOnlyException>();
+        File.Exists(Path.Combine(scope.TempDir, "notes", "orphan.meta.json"))
+            .Should().BeTrue("the sweep must not run when the publish is going to be refused");
+    }
+
+    /// <summary>
+    /// Inheritance of a version ABOVE Current, exercised through the build seam rather than the
+    /// public write path.
+    ///
+    /// <para>Needed because the write gate now refuses such a memory BEFORE the rebuild runs, so
+    /// every test that goes through StoreAsync pins the refusal instead. Deleting
+    /// <c>SchemaVersion: prior?.SchemaVersion</c> outright would leave all of them green.</para>
+    /// </summary>
+    [Fact]
+    public void BuildDerivedEntry_CarriesAVersionAboveCurrent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var prior = new ArtifactEntry("seed", "file:///seed.nmp2", 5, 1, DateTimeOffset.UtcNow)
+        {
+            SchemaVersion = 2,
+            Unknown = new Dictionary<string, JsonElement>
+            {
+                ["futureThing"] = JsonDocument.Parse("1").RootElement,
+            }
+        };
+
+        var rebuilt = store.InvokeBuildDerivedEntryForTest(
+            "seed", "local:notes", MemoryDerivation.ForStore(["new content"], null, null, null,
+                isEphemeral: false, fileHasher: null), prior);
+
+        rebuilt.SchemaVersion.Should().Be(2);
+        rebuilt.Unknown.Should().ContainKey("futureThing");
     }
 
     [Fact]

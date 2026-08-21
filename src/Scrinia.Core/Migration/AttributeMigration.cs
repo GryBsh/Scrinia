@@ -2,6 +2,8 @@ using System.Globalization;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
+using Scrinia.Core.Formats;
+
 namespace Scrinia.Core.Migration;
 
 /// <summary>
@@ -164,6 +166,14 @@ public static class AttributeMigration
                 // that lock's parent dir (GetStoreDirForScope(scope)) as a side effect — so an empty
                 // namespaced dir may be materialized here even for a flat-dir write. Harmless:
                 // EnumerateRawForMigration only ever emits a scope whose namespaced dir already exists.
+                // SKIP a sidecar written by a newer build; do not abort the run. This is the
+                // identical operation LoadIndexUnsafe's forward-fill performs, and that path
+                // already skips -- letting this one throw instead would apply two different
+                // policies to one operation, and would abort `scri migrate` partway with N scopes
+                // already rewritten and a MigrateSummary that overstates what happened. Derived,
+                // best-effort writes skip; user-initiated writes refuse.
+                if (ArtifactSidecarPolicy.IsReadOnly(next)) { onProgress?.Invoke(++done, total); continue; }
+
                 if (!dryRun) store.PersistMigratedEntry(next, storeDir, scope);
                 migrated++;
             }

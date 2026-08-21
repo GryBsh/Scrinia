@@ -1005,6 +1005,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// Exist so the version-refusal gates can be pinned directly, matching
     /// <see cref="InvokeWithExclusiveLockForTest"/>'s convention.
     /// </summary>
+    /// <summary>
+    /// Test seam for <see cref="BuildDerivedEntry"/>. Inheritance of a version ABOVE
+    /// <c>Current</c> cannot be observed through <see cref="StoreAsync"/> any more: the write gate
+    /// refuses such a memory before the rebuild runs, so a test going through the public write path
+    /// pins the REFUSAL and would keep passing if the inheritance were deleted outright.
+    /// </summary>
+    internal ArtifactEntry InvokeBuildDerivedEntryForTest(
+        string subject, string scope, DerivedMetadata derived, ArtifactEntry? prior)
+        => BuildDerivedEntry(subject, scope, 0, 1, DateTimeOffset.UtcNow, null, derived, prior);
+
     internal void InvokeWriteSidecarForTest(ArtifactEntry entry, string storeDir)
         => WriteSidecar(entry, storeDir);
 
@@ -1261,6 +1271,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // lock here says nothing about how old `entries` is. ImportTopicEntries used to hand over
         // a list read before any lock was taken, and this loop deleted whatever had landed since
         // (finding C1) — which is why import no longer calls this method at all.
+        // Refuse BEFORE the sweep. PublishIndexUnsafe below routes through WriteSidecars, whose
+        // whole-list gate would throw only after this loop had already deleted files -- deletions
+        // committed, writes refused, at a public API. Refusing first makes SaveIndex all-or-nothing
+        // for this hazard, the same ordering rule the import path follows.
+        if (entries.Find(ArtifactSidecarPolicy.IsReadOnly) is { } blockingSave)
+            throw new ScopeReadOnlyException(
+                scope, blockingSave.Name, blockingSave.SchemaVersion ?? 1,
+                DurableFormats.ArtifactSidecar.Current);
+
         var expected = new HashSet<string>(
             entries.Select(e => SanitizeName(e.Name) + ".meta.json"),
             StringComparer.OrdinalIgnoreCase);
@@ -2643,7 +2662,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 // cover it -- and a refusal raised from WriteSidecarCore's backstop mid-loop would
                 // abort after N bodies had already been renamed, the exact partial-restore failure
                 // class the transactional-restore work closed, re-created by its own successor.
-                var blocking = staged.Find(s => ArtifactSidecarPolicy.IsReadOnly(s.Entry)).Entry;
+                // BOTH lists, and the second one is the whole point. The trailing
+                // PublishIndexUnsafe below hands `existingEntries` -- the ENTIRE scope, not just
+                // what this import touched -- to WriteSidecars, which rewrites a sidecar for every
+                // one of them. So a single pre-existing newer memory anywhere in the target scope
+                // makes the publish throw, and it throws AFTER the commit loop has already moved
+                // every body and written every sidecar. The rollback only deletes still-staged
+                // files, so the import would be fully applied while the caller was told it failed,
+                // naming a memory the user never imported. Checking `staged` alone left that open
+                // four lines below its own guard.
+                var blocking =
+                    staged.Select(s => s.Entry).Concat(existingEntries)
+                          .FirstOrDefault(ArtifactSidecarPolicy.IsReadOnly);
                 if (blocking is not null)
                     throw new ScopeReadOnlyException(
                         topicScope, blocking.Name, blocking.SchemaVersion ?? 1,
