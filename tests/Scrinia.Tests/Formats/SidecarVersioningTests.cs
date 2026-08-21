@@ -617,6 +617,42 @@ public sealed partial class SidecarVersioningTests
         rebuilt.Unknown.Should().ContainKey("futureThing");
     }
 
+    /// <summary>
+    /// `scri migrate` SKIPS a newer sidecar instead of aborting the run.
+    ///
+    /// <para>MigrateStore loops over every scope calling PersistMigratedEntry. Letting the
+    /// WriteSidecarCore backstop throw there would abort the migration partway, with N scopes
+    /// already rewritten and a MigrateSummary that overstates what happened — and it would apply
+    /// a DIFFERENT policy to the same operation LoadIndexUnsafe's forward-fill already skips.
+    /// One operation, one policy: derived best-effort writes skip.</para>
+    ///
+    /// <para>The entry must be legacy-shaped or MigratesTo never returns true and the loop never
+    /// reaches a write, which would make this pass vacuously.</para>
+    /// </summary>
+    [Fact]
+    public void MigrateStore_SkipsANewerSidecar_RatherThanAbortingTheRun()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        string newerPath = WriteRawSidecar(scope, "local:notes", "legacy-and-newer",
+            schemaVersion: 2, legacyShaped: true);
+        WriteRawSidecar(scope, "local:notes", "legacy-only", legacyShaped: true);
+        store.InvalidateCaches();
+        byte[] newerBefore = File.ReadAllBytes(newerPath);
+
+        var act = () => Scrinia.Core.Migration.AttributeMigration.MigrateStore(store);
+
+        var summary = act.Should().NotThrow(
+            "a newer sidecar must not abort a migration that has already rewritten other scopes")
+            .Subject;
+
+        File.ReadAllBytes(newerPath).Should().Equal(newerBefore,
+            "the newer sidecar must be left exactly as the build that owns it wrote it");
+        summary.Migrated.Should().BeGreaterThan(0,
+            "the legacy-only entry must still have been migrated — otherwise this test would " +
+            "pass even if migration had stopped working entirely");
+    }
+
     [Fact]
     public async Task TryUpdateEntry_OnANewerMemory_ReturnsFalseAndWritesNothing()
     {
