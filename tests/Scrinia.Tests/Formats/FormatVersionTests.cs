@@ -51,7 +51,7 @@ public class FormatVersionTests
     {
         // Guard, not trivia: adding a durable format without registering a contract must fail
         // a test rather than pass silently. Bump this deliberately when a format is added.
-        DurableFormats.All.Should().HaveCount(7);
+        DurableFormats.All.Should().HaveCount(8);
     }
 
     // AbsentMeans is pinned here too. It was the column an adversarial pass corrected THREE
@@ -60,6 +60,8 @@ public class FormatVersionTests
     // suite.
     [Theory]
     [InlineData("artifact-sidecar", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
+    // Same bytes as artifact-sidecar, deliberately different OnNewer -- transport, not storage.
+    [InlineData("bundle-entry", 1, 1, FormatDisposition.Load, FormatDisposition.Refuse)]
     [InlineData("entity-facts", 3, 0, FormatDisposition.Rebuild, FormatDisposition.Rebuild)]
     [InlineData("nmp2-body", 2, null, FormatDisposition.Refuse, FormatDisposition.Refuse)]
     [InlineData("bundle-manifest", 2, 1, FormatDisposition.Load, FormatDisposition.Refuse)]

@@ -35,6 +35,24 @@ public static class DurableFormats
         new("nmp2-body", Current: 2, AbsentMeans: null,
             FormatDisposition.Refuse, FormatDisposition.Refuse);
 
+    /// <summary>
+    /// An <c>ArtifactEntry</c> read out of a BUNDLE, as opposed to off disk.
+    ///
+    /// <para>Same bytes as <see cref="ArtifactSidecar"/>, deliberately different OnNewer. Reading
+    /// a newer sidecar in place is <c>LoadReadOnly</c> because discarding is not available for the
+    /// only copy of the data. A bundle entry has no "in place": importing it means writing a fresh
+    /// copy into this store under rules this build cannot know it is reproducing faithfully, and
+    /// refusing costs the user a re-export rather than their data.</para>
+    ///
+    /// <para>This exists as a CONTRACT rather than as a hand-placed <c>&gt; Current</c> comparison
+    /// at the import site, because a policy that lives in one readable table is the entire point
+    /// of this registry. A context whose answer differs declares a contract; it does not bypass
+    /// the gate.</para>
+    /// </summary>
+    public static readonly FormatContract BundleEntry =
+        new("bundle-entry", Current: 1, AbsentMeans: 1,
+            FormatDisposition.Load, FormatDisposition.Refuse);
+
     /// <summary>A bundle's <c>manifest.json</c>. Transport, not storage — refusing a newer
     /// bundle costs the user a re-export, not their data.
     ///
@@ -69,6 +87,6 @@ public static class DurableFormats
 
     public static IReadOnlyList<FormatContract> All { get; } =
     [
-        ArtifactSidecar, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta
+        ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta
     ];
 }

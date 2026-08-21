@@ -324,17 +324,18 @@ public static class BundleFormatService
                         "with a missing or empty name.");
 
                 // Same "refuse before any write" reasoning as the nameless-entry check above.
-                // ArtifactSidecar.OnNewer is LoadReadOnly — right for reading an on-disk sidecar
-                // in place, where discarding is not available for the only copy of the data — but
-                // a bundle entry has no "in place": importing it means writing a fresh copy into
-                // this store, and this build cannot know it is reproducing a newer build's rules
-                // faithfully. So this compares directly against Current rather than routing
-                // through FormatVersion.Evaluate, whose LoadReadOnly answer does not apply here.
-                if (deserialized.SchemaVersion is int sv && sv > DurableFormats.ArtifactSidecar.Current)
+                // Routed through DurableFormats.BundleEntry, NOT ArtifactSidecar: the same bytes
+                // read in a transport context get a different OnNewer (Refuse, not LoadReadOnly),
+                // because a bundle entry has no "in place" -- importing it means writing a fresh
+                // copy under rules this build cannot know it is reproducing faithfully. That
+                // difference is declared as a contract rather than as a `> Current` comparison
+                // here, so the policy stays in the one table instead of being restated at a site.
+                if (FormatVersion.Evaluate(DurableFormats.BundleEntry, deserialized.SchemaVersion)
+                    == FormatDisposition.Refuse)
                     throw new InvalidOperationException(
                         $"Invalid bundle — topic '{topic}' has an entry '{deserialized.Name}' " +
                         $"with schema version {deserialized.SchemaVersion}, but this build of " +
-                        $"scri supports up to {DurableFormats.ArtifactSidecar.Current}. " +
+                        $"scri supports up to {DurableFormats.BundleEntry.Current}. " +
                         "Re-export the bundle with a matching version, or upgrade scri.");
 
                 // Folds a pre-rename "fields" key into Attributes and clears the holder. The old
