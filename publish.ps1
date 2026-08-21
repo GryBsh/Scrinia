@@ -184,11 +184,15 @@ foreach ($rid in $Rids) {
                 # Confirmed as JIT and not something correlated with it: re-running the SAME R2R
                 # binary with DOTNET_ReadyToRun=0 puts hint back to 263ms.
                 #
-                # Read those numbers on a LOCAL disk only. The same measurement against the
-                # workspace in its normal home on a Synology Drive share reported hint at 401ms vs
-                # 388ms — a 13ms difference instead of 167ms — because the sync layer's per-read
-                # cost is larger than the JIT and serializes against it. That tax is also not
-                # constant; it appeared partway through a session after writes into .scrinia/.
+                # Read the DELTA, not the absolute numbers. Wall-clock for a scri invocation on
+                # this machine is bimodal — the same binary against the same workspace measures
+                # ~120ms at some times and ~400ms at others — and the cause is not identified. It
+                # is not the workspace's location (a bare .scrinia measured 120ms under
+                # C:\SynologyDrive and 123ms under a local temp path), not the repository's
+                # contents (.git, a parent .scrinia and a 3,472-file source tree each changed
+                # nothing), and not the corpus (an EMPTY workspace costs the same as a 69-memory
+                # one, which the in-process benchmark independently predicts). Interleaving the two
+                # builds is what makes the comparison survive it.
                 #
                 # Cost: 19.5MB to 42.9MB on win-x64 (linux-x64 47.5MB, osx-arm64 51.3MB). Taken
                 # deliberately — size is paid once per install, the JIT was paid per prompt,

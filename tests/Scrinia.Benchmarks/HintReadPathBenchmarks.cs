@@ -10,12 +10,13 @@ namespace Scrinia.Benchmarks;
 /// startup already paid.
 ///
 /// <para><b>Why this exists.</b> The whole-process cost of <c>hint</c> is measured by
-/// <c>./measure-startup.ps1</c>, which drives the published binary — 118ms on a local-disk
-/// workspace of 69 memories after ReadyToRun. What that number cannot say is how much of it is
-/// Scrinia and how much is .NET starting up, because the script has no way to subtract one from
-/// the other. This benchmark measures the Scrinia half alone. Read the two together: whatever
-/// this reports is the part that scales with the corpus, and the remainder of the 118ms is fixed
-/// startup that no amount of search work will change.</para>
+/// <c>./measure-startup.ps1</c>, which drives the published binary. What that number cannot say is
+/// how much of it is Scrinia and how much is .NET starting up, because the script has no way to
+/// subtract one from the other — and it is an unreliable number in its own right, swinging between
+/// roughly 120ms and 400ms on this machine for reasons that were measured but not explained. This
+/// benchmark measures the Scrinia half alone, in process, where BenchmarkDotNet controls the
+/// conditions. Whatever it reports is the part that scales with the corpus; everything else in the
+/// wall-clock figure is fixed cost that no amount of search work will change.</para>
 ///
 /// <para><b>What it reported, and what that settles.</b> Default job, this machine:</para>
 /// <code>
@@ -24,11 +25,14 @@ namespace Scrinia.Benchmarks;
 ///       250     336 us      311 us
 ///     1,000   1,152 us      945 us
 /// </code>
-/// <para>Microseconds. At this repository's 69 memories the search costs roughly <b>0.07ms</b>
-/// against a measured 118ms for the whole command — about one twentieth of one percent. The read
-/// path is not where <c>hint</c>'s latency is, and optimising it further would buy nothing
-/// measurable; the cost is process startup and workspace I/O. That is the finding this benchmark
-/// exists to keep true, and the reason to run it is to notice if it ever stops being.</para>
+/// <para>Microseconds. At this repository's 69 memories the search costs roughly <b>0.07ms</b>,
+/// against a whole-command wall time that has never been observed below 100ms — under one tenth of
+/// one percent, and that is the generous reading. The read path is not where <c>hint</c>'s latency
+/// is, and optimising it further would buy nothing measurable.</para>
+///
+/// <para>Corroborated from the other direction, by accident: a run against a workspace that turned
+/// out to be <i>empty</i> cost the same as one against all 69 memories. The corpus contributes
+/// nothing detectable to the wall clock, which is exactly what these numbers predict.</para>
 ///
 /// <para><b>Why it seeds through <see cref="IMemoryStore.StoreAsync"/></b> rather than
 /// constructing <see cref="ArtifactEntry"/> values directly the way

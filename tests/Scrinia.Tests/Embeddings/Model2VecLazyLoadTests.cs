@@ -12,10 +12,10 @@ namespace Scrinia.Tests.Embeddings;
 /// provider through <c>WorkspaceSetup.LoadPluginsAsync</c> without ever embedding anything.
 /// <c>restore</c> is the worst case and the one that matters: it is wired as the SessionStart hook,
 /// and it only ever calls <c>LoadIndex</c> and walks directories — it never searches and never
-/// writes, so it has no use for either the reranker or the event sinks. Measured against a
-/// local-disk copy of this repository's workspace, median of 15 runs, by renaming the model
-/// directory away and back: <b>restore paid 67ms</b> for a model it does not use. <c>search</c>
-/// paid 70ms and earns it, because it embeds the query.</para>
+/// writes, so it has no use for either the reranker or the event sinks. Measured by renaming the
+/// model directory away and back — present, absent, present again, median of 15 runs each, so the
+/// two ends bracket any drift in between: <b>restore paid 67ms</b> for a model it does not use.
+/// <c>search</c> paid 70ms and earns it, because it embeds the query.</para>
 ///
 /// <para><b>Why laziness rather than dropping the call from restore.</b> Removing
 /// <c>LoadPluginsAsync</c> from the verbs that do not need it fixes those verbs and leaves the trap

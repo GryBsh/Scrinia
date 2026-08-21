@@ -15,12 +15,24 @@
     Discards the first -Warmup runs. A cold first launch pays page-in for a large single-file
     binary and is not what a hook fires into on the tenth prompt of a session.
 
-    WHERE THE WORKSPACE LIVES DOMINATES EVERYTHING ELSE. A workspace on a synced or network
-    path (Dropbox, OneDrive, Synology Drive, a mapped share) was measured here at ~270ms per
-    invocation more than the same files copied to a local disk — larger than any code change in
-    this repository has been worth, and worse, it is not stable: it changes when the sync client
-    decides to scan. Pass -WorkspaceRoot a LOCAL path when comparing two builds, or the answer is
-    a report on the sync client. The script warns when the workspace does not look local.
+    ONLY TRUST THE DELTA. Absolute wall-clock here is bimodal on at least one machine: the same
+    binary, against the same workspace, measures roughly 120ms at some times and 400ms at others,
+    and flips between the two without warning. That was chased and NOT explained. What it is not,
+    each ruled out by measurement:
+
+      - the workspace's location    a bare .scrinia measured 120ms under C:\SynologyDrive and
+                                    123ms under a local temp path — no difference
+      - the repository's contents   adding .git, a parent .scrinia, or a 3,472-file source tree
+                                    to a bare workspace changed nothing
+      - the corpus                  an EMPTY workspace costs the same as a 69-memory one, which
+                                    HintReadPathBenchmarks independently predicts (the search is
+                                    microseconds)
+      - a machine-wide slowdown     `cmd /c exit` moved 26ms to 35ms across the same window,
+                                    nowhere near 3x
+
+    So: run -Against, always, when the question is "did this change help". Interleaving is what
+    makes a comparison survive a drift nobody has identified. A single-binary run tells you what
+    the machine felt like at that moment and very little else.
 
 .PARAMETER Exe
     Path to a published scri.exe. Publish one with:
@@ -30,16 +42,17 @@
 .PARAMETER Against
     A second scri.exe to compare against. When given, the two are timed INTERLEAVED — one run of
     each, alternating, per iteration — so machine state that drifts mid-run hits both equally.
-    Measuring one build to completion and then the other is how a sequential comparison turns a
-    background sync into a performance result; this script did exactly that once.
+    Measuring one build to completion and then the other is how a sequential comparison reports
+    whatever drifted in between as a performance result; this script did exactly that once, and
+    the drift got written up as a finding before anyone checked.
 
 .PARAMETER WorkspaceRoot
-    Workspace to measure against. Defaults to this repository. See the warning above about synced
-    paths — use -CopyWorkspaceTo to get a local copy automatically.
+    Workspace to measure against. Defaults to this repository.
 
 .PARAMETER CopyWorkspaceTo
-    Copy -WorkspaceRoot's .scrinia/ to this directory first and measure against the copy. The way
-    to get a trustworthy number when the repository itself lives on a synced path.
+    Copy -WorkspaceRoot's .scrinia/ to this directory first and measure against the copy. Useful
+    for measuring against a corpus without writing into the real one — not, as this parameter was
+    originally added to do, for escaping a filesystem penalty that turned out not to exist.
 
 .PARAMETER Runs
     Timed runs per verb per binary (default 20).
@@ -105,22 +118,18 @@ if ($CopyWorkspaceTo) {
     Write-Host "workspace copied to $WorkspaceRoot" -ForegroundColor DarkGray
 }
 
-# A drive that is not a plain local fixed disk puts a filter driver between every read and the
-# result. Cheap to detect, and worth shouting about: it is the largest single term in these
-# timings and it is not constant, so it silently invalidates a comparison run across it.
+# A genuinely remote volume would put a network round trip in front of every read, which is worth
+# knowing about. This check used to be paired with a second one that guessed at sync clients from
+# the directory NAME; that guess was wrong — a bare workspace measured the same under
+# C:\SynologyDrive as under a local temp path — and it is gone.
 $driveRoot = [System.IO.Path]::GetPathRoot($WorkspaceRoot)
 $drive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($driveRoot.TrimEnd('\'))'" -ErrorAction SilentlyContinue
 if ($drive -and $drive.DriveType -ne 3) {
-    Write-Warning "$driveRoot is DriveType $($drive.DriveType), not a local fixed disk. Timings will measure it."
+    Write-Warning "$driveRoot is DriveType $($drive.DriveType), not a local fixed disk. Timings will include whatever that costs."
 }
-else {
-    # Only the first two segments below the drive root. Matching the whole path produces false
-    # positives whenever a scratch directory is NAMED after a synced source tree, which is exactly
-    # what happened the first time this warning fired.
-    $head = ($WorkspaceRoot.Substring($driveRoot.Length) -split '[\\/]' | Select-Object -First 2) -join '\'
-    if ($head -match 'SynologyDrive|OneDrive|Dropbox|Google ?Drive|iCloud') {
-        Write-Warning "$WorkspaceRoot sits under a synced folder ('$head'). A sync client adds a large, VARIABLE per-read cost — measured here at ~270ms per invocation, enough to swamp the difference between two builds. Use -CopyWorkspaceTo for a comparison you can trust."
-    }
+
+if (-not $Against) {
+    Write-Warning "Single-binary run. Absolute numbers here drift by 3x on at least one machine for reasons nobody has pinned down — see the notes at the top of this script. To answer 'did this change help', pass -Against and compare the interleaved delta."
 }
 
 # `hint` takes its prompt as --prompt, not positionally. Passing it positionally is an argument
