@@ -248,7 +248,7 @@ public sealed class TransactionalRestoreTests
     }
 
     [Fact]
-    public async Task Import_ThatFailsMidCommit_LeavesEveryAppliedEntryConsistent()
+    public async Task Import_ThatSucceeds_LeavesEveryEntryConsistentAndNoStagingLeftovers()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
@@ -257,10 +257,14 @@ public sealed class TransactionalRestoreTests
         await store.StoreAsync(new MemoryWrite("alpha", Scope, ["alpha v1"]));
         await store.StoreAsync(new MemoryWrite("beta", Scope, ["beta v1"]));
 
-        // Every committed entry must have content and metadata describing the SAME version.
-        // With a per-entry commit loop that holds however the import ends; with a
-        // rename-all-then-publish loop, a failure between the two phases leaves every renamed
-        // body under its old sidecar.
+        // Every entry must end with content and metadata describing the SAME version.
+        //
+        // This test runs the import to COMPLETION, so it is deliberately NOT the guard for the
+        // per-entry commit ordering: a rename-all-then-publish loop reaches the identical end
+        // state and passes this identically. Its earlier name claimed otherwise. The ordering
+        // is pinned by Import_ThatFailsPartWayThroughTheCommitLoop_... below, which injects a
+        // real fault between two entries' commits.
+        //
         // OriginalBytes matches its own content's length, as a real bundle's export-time
         // metadata would — the assertion below checks that the COMMITTED sidecar still agrees
         // with what was actually staged, not a formula relating it to the pre-import body.
@@ -288,5 +292,76 @@ public sealed class TransactionalRestoreTests
         }
 
         Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The commit loop applies each entry as <c>File.Move(staged → final)</c> immediately
+    /// followed by that entry's <c>WriteSidecar</c>, per entry, before moving to the next.
+    ///
+    /// <para><b>Why this test has to inject a fault.</b> Any test that runs the import to
+    /// completion passes identically under the correct interleave and under
+    /// "rename every body, then publish every sidecar" — the end states are the same. Only a
+    /// failure BETWEEN two entries' commits separates them. Under the interleave, every entry
+    /// committed before the failure has a body and a sidecar that agree. Under
+    /// rename-all-then-publish, the throw happens before any sidecar is written, so every
+    /// already-renamed body sits under its OLD sidecar — which is the exact content/metadata
+    /// mismatch this branch exists to eliminate, reintroduced one level up.</para>
+    ///
+    /// <para>The fault: hold <c>beta.nmp2</c> open with <see cref="FileShare.None"/> so the
+    /// second entry's <c>File.Move</c> cannot land. <c>alpha</c> is committed first and must
+    /// survive intact.</para>
+    ///
+    /// <para><b>Verified to discriminate, not merely to pass.</b> Rewriting the commit loop as
+    /// "rename every body, then write every sidecar" makes this test fail with
+    /// <c>alpha.OriginalBytes</c> = 8 (<c>"alpha v1"</c>) against a body already holding
+    /// <c>"alpha v2 body"</c> — the predicted mismatch, observed. A test asserting an
+    /// end state after a completed import cannot do this, which is why the sibling test above
+    /// is not the guard its earlier name claimed.</para>
+    /// </summary>
+    [Fact]
+    public async Task Import_ThatFailsPartWayThroughTheCommitLoop_LeavesEarlierEntriesConsistent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+
+        await store.StoreAsync(new MemoryWrite("alpha", Scope, ["alpha v1"]));
+        await store.StoreAsync(new MemoryWrite("beta", Scope, ["beta v1"]));
+
+        // Bundle order drives commit order: alpha commits, then beta fails.
+        var bundled = new List<ArtifactEntry>
+        {
+            new("alpha", "file://placeholder", 13, 1, DateTimeOffset.UtcNow),
+            new("beta", "file://placeholder", 12, 1, DateTimeOffset.UtcNow),
+        };
+        var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["alpha"] = "alpha v2 body",
+            ["beta"] = "beta v2 body",
+        };
+
+        Exception? thrown;
+        using (new FileStream(Path.Combine(storeDir, "beta.nmp2"),
+                   FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            thrown = Record.Exception(
+                () => store.ImportTopicEntries(Scope, bundled, contents, overwrite: true));
+        }
+
+        thrown.Should().NotBeNull("holding beta.nmp2 exclusively must make its commit fail");
+
+        // Read from a COLD store: asserting through LoadIndex after a write that installed the
+        // cache proves nothing about disk. The import threw before PublishIndexUnsafe, so there
+        // is no cache to be fooled by here — but the habit is what the branch's other vacuous
+        // test failed on, so it is kept deliberately.
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        var alpha = cold.LoadIndex(Scope).Single(e => e.Name == "alpha");
+        string alphaBody = await cold.ReadArtifactAsync("alpha", Scope);
+
+        alphaBody.Should().Be("alpha v2 body",
+            "alpha's commit completed before beta's failed");
+        alpha.OriginalBytes.Should().Be("alpha v2 body".Length,
+            "alpha's sidecar must have been written in the SAME loop iteration as its body — " +
+            "under rename-all-then-publish it would still describe 'alpha v1'");
     }
 }

@@ -23,7 +23,10 @@ and all assembly attributes.
   unchanged.
 - Bundled bodies are staged and committed per entry, so a failed or interrupted restore can no
   longer leave a memory whose content and sidecar disagree. A restore that dies part-way now
-  leaves a prefix of fully-applied entries; staging leftovers are cleared by the next import.
+  leaves a prefix of fully-applied entries; `.staging` leftovers are cleared by the next import.
+  One narrower case is not covered and is inert: a crash *inside* the staged body's own atomic
+  write leaves a `….staging.{pid}.{guid}.tmp` file, which the sweep's glob does not match. It is
+  never read, never discovered as a memory, and accumulates only across crashed imports.
 - **Behaviour change:** a concurrent writer to a scope being restored now blocks for the duration
   of that scope's import, and fails loudly if it exceeds its own lock timeout. It previously
   appeared to succeed and silently lost the write. The restore itself takes a 5-minute lock
