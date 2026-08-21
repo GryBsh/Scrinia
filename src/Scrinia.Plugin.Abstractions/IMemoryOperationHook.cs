@@ -1,9 +1,13 @@
 namespace Scrinia.Plugin.Abstractions;
 
 /// <summary>
-/// Hook into store, append, and forget operations.
-/// Register as a service via <see cref="IScriniaPlugin.ConfigureServices"/>
-/// or implement on the plugin class itself.
+/// Hook into store, append, and forget operations. Implement it on the plugin class itself.
+///
+/// <para><b>Nothing invokes this today.</b> Its caller was <c>PluginPipeline</c>, which wrapped
+/// the deleted REST API's store, append and forget routes; the MCP path has always used
+/// <c>IMemoryEventSink</c> instead. The contract is kept because it is published, and because the
+/// rule that separated the two is still the rule a second caller would have to honour: a component
+/// registered as both a hook and a sink fires exactly once.</para>
 /// </summary>
 public interface IMemoryOperationHook
 {

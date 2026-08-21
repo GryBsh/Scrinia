@@ -20,6 +20,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Named explicitly. Host.CreateApplicationBuilder used to arrive transitively, through the
+         FrameworkReference on Microsoft.AspNetCore.App that Scrinia.Plugin.Embeddings carried for
+         the deleted server's plugin DI. This project genuinely uses the generic host, the same
+         way the main CLI does, so it references it directly rather than inheriting a web
+         framework to get one type. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
     <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
   </ItemGroup>
 

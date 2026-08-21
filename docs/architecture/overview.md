@@ -65,7 +65,7 @@ Scrinia.Core  <--  Scrinia.Mcp  <--  Scrinia (CLI)
      |                                     |
      |                             scri-plugin-embeddings (child process)
      |
-     +--- Scrinia.Plugin.Abstractions (refs Core, FrameworkRef AspNetCore)
+     +--- Scrinia.Plugin.Abstractions (refs Core)
      |
      +--- Scrinia.Plugin.Embeddings (refs Core + Abstractions)
 
@@ -76,11 +76,13 @@ Key constraints:
 - **Core** has no ASP.NET or native dependencies (only `System.IO.Hashing`). Includes built-in embeddings (Model2Vec, API providers, VectorStore, HybridReranker).
 - **Mcp** depends only on Core and `ModelContextProtocol`. Defines the MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and `facts` — each with its own JSON schema, plus `ScriniaMcpJsonContext` for trimming safety
 - **CLI** is trimmed and single-file; plugins run as separate processes
-- **Plugin.Abstractions** still uses `FrameworkReference` for ASP.NET (no package dependency). That
-  reference exists for the DI and endpoint-mapping half of `IScriniaPlugin`, which the deleted
-  server was the only host for. Nothing left in the repository calls `ConfigureServices` or
-  `MapEndpoints`; the reference and those members are kept because the plugin ABI is published, not
-  because anything consumes them.
+- **Plugin.Abstractions** has no framework reference. It carried one on `Microsoft.AspNetCore.App`
+  for the DI and endpoint-mapping half of `IScriniaPlugin`, which the deleted server was the only
+  host for; those three members and the reference are gone. What remains is identity
+  (`Name`/`Version`/`Order`) plus `IMemoryOperationHook`, which is still published and still has no
+  invoker — its caller was `PluginPipeline`, on the REST routes. Dropping the reference took 27MB
+  out of the published `scri-plugin-embeddings` binary, which as a self-contained publish had been
+  bundling the whole ASP.NET Core runtime.
 
 ## Deployment
 

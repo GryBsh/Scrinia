@@ -1,17 +1,21 @@
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core.Embeddings;
 using Xunit;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
 
 /// <summary>
-/// <c>EmbeddingsPlugin.ConfigureServices</c> used to read only <c>SemanticWeight</c> out of
+/// <c>EmbeddingsPlugin.Configure</c> used to read only <c>SemanticWeight</c> out of
 /// <c>Scrinia:Embeddings</c>, so a configured <c>ChunkSize</c> / <c>ChunkOverlap</c> never
 /// reached the <see cref="ChunkedSignature"/> the vector store is signed with, nor the
 /// <see cref="MemoryVectorIndexer"/> the write path uses. Binding the whole section is the fix;
 /// these tests fail against the un-bound version.
+/// <para>The method was <c>ConfigureServices(IServiceCollection, IConfiguration)</c>, an
+/// <c>IScriniaPlugin</c> member the deleted HTTP host called before building its container. It
+/// also registered the plugin into DI under four service types; those registrations went with the
+/// container. What these tests cover — the binding and the guardrail clamp — is the half that was
+/// always real work, and it is unchanged apart from the name and the dropped parameter.</para>
 /// </summary>
 public class EmbeddingsPluginConfigBindingTests
 {
@@ -33,11 +37,11 @@ public class EmbeddingsPluginConfigBindingTests
     }
 
     [Fact]
-    public void ConfigureServices_BindsTheWholeSection_NotJustSemanticWeight()
+    public void Configure_BindsTheWholeSection_NotJustSemanticWeight()
     {
         using var plugin = new EmbeddingsPlugin();
 
-        plugin.ConfigureServices(new ServiceCollection(), Config(
+        plugin.Configure(Config(
             ("Scrinia:Embeddings:SemanticWeight", "37"),
             ("Scrinia:Embeddings:ChunkSize", "400"),
             ("Scrinia:Embeddings:ChunkOverlap", "40"),
@@ -56,7 +60,7 @@ public class EmbeddingsPluginConfigBindingTests
     public void TheBoundOptions_ReachTheSignatureTheVectorStoreIsSignedWith()
     {
         using var plugin = new EmbeddingsPlugin();
-        plugin.ConfigureServices(new ServiceCollection(), Config(
+        plugin.Configure(Config(
             ("Scrinia:Embeddings:ChunkSize", "400"),
             ("Scrinia:Embeddings:ChunkOverlap", "40")));
 
@@ -74,7 +78,7 @@ public class EmbeddingsPluginConfigBindingTests
     {
         using var plugin = new EmbeddingsPlugin();
 
-        plugin.ConfigureServices(new ServiceCollection(), Config(
+        plugin.Configure(Config(
             ("Scrinia:Embeddings:MaxChunksPerMemory", "5000")));
 
         plugin.BoundOptionsForTests.MaxChunksPerMemory
@@ -90,7 +94,7 @@ public class EmbeddingsPluginConfigBindingTests
     {
         using var plugin = new EmbeddingsPlugin();
 
-        var act = () => plugin.ConfigureServices(new ServiceCollection(), Config(
+        var act = () => plugin.Configure(Config(
             ("Scrinia:Embeddings:SemanticWeight", "not-a-number")));
 
         act.Should().NotThrow();
