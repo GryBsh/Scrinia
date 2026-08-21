@@ -261,36 +261,37 @@ public sealed partial class SidecarVersioningTests
     [Fact]
     public async Task ReStoringAMemory_WithEntirelyNewContent_KeepsItsSchemaVersion()
     {
-        // The discrimination-proof partner to the Unknown-keys test above, exercised without
-        // depending on Task 4's write-path refusal (nothing throws ScopeReadOnlyException yet —
-        // see ReStoringAV2Memory_IsRefused below). WriteSidecarCore has no version gate today,
-        // so the overwrite succeeds; what this pins is that the version it writes is the PRIOR
-        // entry's, not null.
+        // The discrimination-proof partner to the Unknown-keys test above. Deliberately version 1
+        // (== ArtifactSidecar.Current), NOT 2: Task 4's write-path refusal now fires for any
+        // overwrite of a version-2 entry (see ReStoringAV2Memory_IsRefused below), so a version
+        // that collides with the refusal can no longer isolate the inheritance mechanic on its
+        // own -- it would prove the gate, not the carry-forward. What this pins is that the
+        // version BuildDerivedEntry writes is the PRIOR entry's explicit 1, not null.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
         await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
-        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 1);
 
         await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["totally new content"]));
 
-        ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(2);
+        ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(1);
     }
 
     [Fact]
     public async Task AppendingToAMemory_KeepsItsSchemaVersion()
     {
+        // Version 1, not 2, for the same reason as the test above: 2 now hits Task 4's refusal.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
         await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
-        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 1);
 
         await store.AppendAsync(new MemoryWrite("seed", "local:notes", ["second"]));
 
-        ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(2);
+        ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(1);
     }
 
-    [Fact(Skip = "activates with Task 4's write gate — nothing throws ScopeReadOnlyException " +
-                 "from a write path yet, so this cannot pass until Task 4 lands the refusal.")]
+    [Fact]
     public async Task ReStoringAV2Memory_IsRefused_BecauseTheRebuiltEntryInheritsItsVersion()
     {
         // This is the mechanism that makes a PER-ENTRY gate sufficient in place of a whole-scope
@@ -309,8 +310,7 @@ public sealed partial class SidecarVersioningTests
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
     }
 
-    [Fact(Skip = "activates with Task 4's write gate — depends on the refusal in the test " +
-                 "above actually being thrown; see that test's Skip reason.")]
+    [Fact]
     public async Task AfterThatRefusal_TheBodyOnDiskIsUnchanged()
     {
         // The property that makes leaving body writes ungated safe: StoreAsync's rollback puts
@@ -389,6 +389,139 @@ public sealed partial class SidecarVersioningTests
 
         rebuilt.Unknown.Should().NotBeSameAs(prior.Unknown);
         rebuilt.Unknown.Should().BeEquivalentTo(prior.Unknown);
+    }
+
+    // ── Write path: refusal ──────────────────────────────────────────────────────────────
+    //
+    // Two levels: WriteSidecarCore is the unconditional backstop every write funnels through;
+    // everywhere else the gate sits where the entries are ALREADY in hand (StoreAsync, Upsert,
+    // WriteSidecars, ImportTopicEntries' commit loop) rather than re-reading the scope's index
+    // to decide -- see the design doc's B5 for why a scope-resolved gate was rejected.
+
+    [Fact]
+    public void WriteSidecars_RefusesAListContainingANewerEntry_BeforeWritingAnyOfIt()
+    {
+        // The one that matters. A mid-loop refusal would leave a partial write, which is the
+        // failure class the transactional-restore work just closed.
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var writable = new ArtifactEntry("writable", "file:///writable.nmp2", 5, 1, DateTimeOffset.UtcNow);
+        var newer = writable with { Name = "newer", SchemaVersion = 2 };
+
+        var act = () => store.InvokeWriteSidecarsForTest([writable, newer], scope.TempDir);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+        File.Exists(Path.Combine(scope.TempDir, "writable.meta.json"))
+            .Should().BeFalse("nothing in the list may be written once one entry is refused");
+    }
+
+    [Fact]
+    public async Task RememberingAnUnrelatedMemory_IntoTheSameScope_Succeeds()
+    {
+        // Blast radius: a write refuses when it would TOUCH a newer sidecar, not merely because
+        // a sibling is newer. Remembering something unrelated touches nothing.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        var act = async () => await store.StoreAsync(
+            new MemoryWrite("unrelated", "local:notes", ["body"]));
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Forget_OnANewerMemory_Succeeds()
+    {
+        // Deletion is allowed: it loses nothing the newer build wrote unexpectedly, and refusing
+        // it strands the user until they upgrade.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        var act = () => store.Remove("seed", "local:notes");
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task SearchAndRecall_StillWorkAlongsideANewerMemory()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["findable body text"]));
+        WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
+        ((FileMemoryStore)store).InvalidateCaches();   // NOT on IMemoryStore -- cast required
+
+        store.Invoking(x => x.LoadIndex("local:notes")).Should().NotThrow();
+        store.LoadIndex("local:notes").Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void WriteSidecarCore_RefusesANewerEntry_EvenWhenReachedDirectly()
+    {
+        // The backstop. After Task 3 and this task it should be unreachable from any enumerated
+        // path -- which is exactly why it is worth a test. The previous Critical happened because
+        // a trigger was closed and the mechanism behind it was left reachable another way.
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var newer = new ArtifactEntry("direct", "file:///direct.nmp2", 5, 1, DateTimeOffset.UtcNow)
+            { SchemaVersion = 2 };
+
+        var act = () => store.InvokeWriteSidecarForTest(newer, scope.TempDir);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+    }
+
+    [Fact]
+    public void ImportTopicEntries_RefusesAListContainingANewerEntry_BeforeTheFirstFileMove()
+    {
+        // ImportTopicEntriesCore's commit loop calls WriteSidecar directly, per entry, so
+        // WriteSidecars' whole-list pre-check does not cover it -- this loop needs its own,
+        // checked before the first File.Move so a refusal never leaves a prefix of the bundle
+        // committed under a still-staged remainder.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        var writable = new ArtifactEntry("writable-import", "file://placeholder", 5, 1, DateTimeOffset.UtcNow);
+        var newer = writable with { Name = "newer-import", SchemaVersion = 2 };
+        var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["writable-import"] = "writable body",
+            ["newer-import"] = "newer body",
+        };
+
+        var act = () => store.ImportTopicEntries(
+            "local:notes", [writable, newer], contents, overwrite: true);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+        File.Exists(Path.Combine(scope.TempDir, "notes", "writable-import.nmp2"))
+            .Should().BeFalse("nothing staged for import may be committed once one entry is refused");
+        File.Exists(Path.Combine(scope.TempDir, "notes", "writable-import.meta.json"))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TryUpdateEntry_OnANewerMemory_ReturnsFalseAndWritesNothing()
+    {
+        // Derived, best-effort writes SKIP rather than throw: TryUpdateEntry's callers are
+        // detached background handlers (MaintenanceEventSink, EntityTypingEventHandler) where a
+        // thrown ScopeReadOnlyException has no handler and becomes an unobserved fault. Its
+        // contract is already "may not have updated" (the missing-entry case), and a newer
+        // sidecar is one more reason.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+        byte[] before = File.ReadAllBytes(SidecarPath(scope, "local:notes", "seed"));
+
+        bool updated = store.TryUpdateEntry(
+            "seed", "local:notes", current => current with { ContentPreview = "updated preview" });
+
+        updated.Should().BeFalse();
+        File.ReadAllBytes(SidecarPath(scope, "local:notes", "seed")).Should().Equal(before,
+            because: "a skipped update must write nothing");
     }
 
     private static void AddUnknownKeyToSidecarOnDisk(

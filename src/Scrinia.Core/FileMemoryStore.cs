@@ -987,9 +987,29 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
     {
+        // Refuse the WHOLE list before writing any of it. Checking per iteration would refuse
+        // mid-loop and leave a partial write -- the exact failure class the transactional-restore
+        // work closed. This is O(n) over a list already in hand and reads nothing from disk.
+        if (entries.Find(ArtifactSidecarPolicy.IsReadOnly) is { } blocking)
+            throw new ScopeReadOnlyException(
+                storeDir, blocking.Name, blocking.SchemaVersion ?? 1,
+                DurableFormats.ArtifactSidecar.Current);
+
         foreach (var entry in entries)
             WriteSidecar(entry, storeDir);
     }
+
+    /// <summary>
+    /// Test-only seams for <see cref="WriteSidecar"/> and <see cref="WriteSidecars"/>, both
+    /// private because every production write reaches them through a named store operation.
+    /// Exist so the version-refusal gates can be pinned directly, matching
+    /// <see cref="InvokeWithExclusiveLockForTest"/>'s convention.
+    /// </summary>
+    internal void InvokeWriteSidecarForTest(ArtifactEntry entry, string storeDir)
+        => WriteSidecar(entry, storeDir);
+
+    internal void InvokeWriteSidecarsForTest(List<ArtifactEntry> entries, string storeDir)
+        => WriteSidecars(entries, storeDir);
 
     private void WriteSidecar(ArtifactEntry entry, string storeDir) => WriteSidecarCore(entry, storeDir);
 
@@ -1003,6 +1023,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     private static void WriteSidecarCore(ArtifactEntry entry, string storeDir)
     {
+        // Unconditional backstop, deliberately below every caller. After Task 3's forward-fill
+        // skip and this task's two gates it should be unreachable from any path we enumerated --
+        // and the previous Critical is precisely what happens when a trigger is closed and the
+        // mechanism behind it is left reachable by a route nobody listed.
+        if (ArtifactSidecarPolicy.IsReadOnly(entry))
+            throw new ScopeReadOnlyException(
+                storeDir, entry.Name, entry.SchemaVersion ?? 1, DurableFormats.ArtifactSidecar.Current);
+
         // Write chokepoint: guarantees the on-disk sidecar is always keyed "attributes", never
         // the pre-rename "fields", regardless of which caller reached here (read-time forward-fill,
         // PersistMigratedEntry, the legacy-index expansion, or a plain Upsert of an entry that still
@@ -1298,6 +1326,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // that check would never fire.
             bool scopeWasEmpty = !Directory.EnumerateFiles(storeDir, "*.meta.json").Any();
 
+            // Refuse a single entry this build must not rewrite. No index read: `entry` is the
+            // parameter, and BuildDerivedEntry (Task 3b) is what puts the inherited version on it
+            // for a re-derived write, so the check needs nothing beyond what the caller already
+            // handed in. This is the backstop for every route into a sidecar write OTHER than
+            // StoreAsync's own earlier, user-facing check (see StoreAsync) and WriteSidecars'
+            // whole-list pre-check (see WriteSidecars).
+            if (ArtifactSidecarPolicy.IsReadOnly(entry))
+                throw new ScopeReadOnlyException(
+                    scope, entry.Name, entry.SchemaVersion ?? 1, DurableFormats.ArtifactSidecar.Current);
+
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
@@ -1508,6 +1546,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // IMemoryStore.TryUpdateEntry.
             updated = MemoryDerivation.ForMetadataUpdate(current, updated);
 
+            // SKIP, do not throw. This is a DERIVED, best-effort write — the callers are detached
+            // background handlers (MaintenanceEventSink, EntityTypingEventHandler) where a thrown
+            // ScopeReadOnlyException has no handler and becomes an unobserved fault. Its contract
+            // is already "may not have updated" (see the missing-entry case just above); a newer
+            // sidecar is one more reason it did not. Rule: derived, best-effort writes SKIP;
+            // user-initiated writes (StoreAsync, AppendAsync, Upsert) REFUSE.
+            if (ArtifactSidecarPolicy.IsReadOnly(updated)) return false;
+
             WriteSidecar(updated, storeDir);
 
             // Copy-on-write cache update — see the matching comment in Upsert for why this must
@@ -1615,6 +1661,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
         DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
+
+        // The user-facing gate, and the earliest one: refuse BEFORE any side effect. Without this,
+        // a write destined to be refused at Upsert has already deposited a versions/ archive entry
+        // (below) and a new artifact body for a memory it never changed, relying on the rollback
+        // path to restore the body -- a rollback that decodes and re-encodes rather than restoring
+        // bytes, so byte-identity would become a property of the encoder rather than of the
+        // refusal. Same principle as WriteSidecars' whole-list pre-check -- refuse before the
+        // first side effect -- applied at the outermost caller. Upsert's own check stays: it is
+        // the backstop for every other route into a sidecar write.
+        if (existingEntry is not null && ArtifactSidecarPolicy.IsReadOnly(existingEntry))
+            throw new ScopeReadOnlyException(
+                scope, existingEntry.Name, existingEntry.SchemaVersion ?? 1,
+                DurableFormats.ArtifactSidecar.Current);
 
         // Captured BEFORE the overwrite so a failed Upsert can put the memory's previous content
         // back. Leaving the new bytes in place instead is not a benign no-op: the artifact would
@@ -1736,6 +1795,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (ephemeral)
             return PersistEphemeral(write.Name, newArtifact, originalBytes, chunkCount, derived,
                 createdAt: existingEph!.CreatedAt, updatedAt: DateTimeOffset.UtcNow);
+
+        // Same user-facing gate as StoreAsync's, and for the same reason: refuse before any side
+        // effect rather than depend on the rollback path below. `existingEntry` can genuinely be
+        // null here (the orphan case B7 documents -- an artifact with no sidecar), and an orphan
+        // has no version to be newer, so the check is simply skipped for it.
+        if (existingEntry is not null && ArtifactSidecarPolicy.IsReadOnly(existingEntry))
+            throw new ScopeReadOnlyException(
+                scope, existingEntry.Name, existingEntry.SchemaVersion ?? 1,
+                DurableFormats.ArtifactSidecar.Current);
 
         // The bytes to revert to, already in hand from the read above: appending to an existing
         // memory must restore its content on failure, not delete it. Nothing reads versions/ back,
@@ -2569,6 +2637,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     else
                         existingEntries.Add(updatedEntry);
                 }
+
+                // Refuse the WHOLE staged list before the first File.Move. This loop calls
+                // WriteSidecar directly, per entry, so WriteSidecars' whole-list pre-check does not
+                // cover it -- and a refusal raised from WriteSidecarCore's backstop mid-loop would
+                // abort after N bodies had already been renamed, the exact partial-restore failure
+                // class the transactional-restore work closed, re-created by its own successor.
+                var blocking = staged.Find(s => ArtifactSidecarPolicy.IsReadOnly(s.Entry)).Entry;
+                if (blocking is not null)
+                    throw new ScopeReadOnlyException(
+                        topicScope, blocking.Name, blocking.SchemaVersion ?? 1,
+                        DurableFormats.ArtifactSidecar.Current);
 
                 // COMMIT. Per entry, content then that entry's sidecar, so a crash leaves a PREFIX
                 // of fully-applied entries rather than the whole bundle sitting under stale
