@@ -2390,51 +2390,75 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Cross-process lock budget for a restore. A restore holds its scope's lock for the whole
+    /// import, which is unbounded in the bundle's size, so the 5s default that suits a single
+    /// write would fail a large one against itself.
+    ///
+    /// <para>Fixed rather than scaled to entry count: this is a ceiling that exists so a
+    /// legitimate long restore does not fail spuriously, not a correctness parameter. A formula
+    /// would be one more thing to get wrong. The accepted cost is that a genuine deadlock on an
+    /// import surfaces in five minutes rather than five seconds.</para>
+    /// </summary>
+    private static readonly TimeSpan ImportLockTimeout = TimeSpan.FromMinutes(5);
+
     public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, string> artifactContents, bool overwrite)
     {
-        string storeDir = GetStoreDirForScope(topicScope);
-        Directory.CreateDirectory(storeDir);
-
-        // ToList() because this method mutates the list below and hands it to SaveIndex, which
-        // takes ownership of the instance it is given (it becomes the cache). Mutating the
-        // cache's own backing list here would corrupt every other reader's live view.
-        var existingEntries = LoadIndex(topicScope).ToList();
-
-        foreach (var entry in entries)
+        WithExclusiveLock(topicScope, () =>
         {
-            bool exists = existingEntries.Any(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-            if (exists && !overwrite)
-                continue;
+            string storeDir = GetStoreDirForScope(topicScope);
+            Directory.CreateDirectory(storeDir);
 
-            if (artifactContents.TryGetValue(entry.Name, out string? content))
+            // Read under the lock that will commit it. The snapshot and the commit used to sit on
+            // opposite sides of an unlocked write loop, which is what let a concurrent write land
+            // in between and then be swept as an orphan (finding C1).
+            //
+            // ToList() because this method mutates the list below and hands it to
+            // PublishIndexUnsafe, which takes ownership of the instance it is given (it becomes
+            // the cache). LoadIndexUnsafe returns the cache's own backing list, so mutating it
+            // here would corrupt every other reader's live view.
+            var existingEntries = LoadIndexUnsafe(topicScope).ToList();
+
+            foreach (var entry in entries)
             {
-                string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
-                AtomicWriteAllText(filePath, content);
+                bool exists = existingEntries.Any(
+                    e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                if (exists && !overwrite)
+                    continue;
+
+                if (artifactContents.TryGetValue(entry.Name, out string? content))
+                {
+                    string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
+                    AtomicWriteAllText(filePath, content);
+                }
+
+                // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
+                // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
+                // memory as it was, and overwriting it reset every memory's creation date on
+                // every restore (design review finding M4). A bundle carrying no "createdAt" key
+                // deserializes to default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that
+                // specific value is the only one rewritten to "now" here. Any OTHER unparseable
+                // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
+                var updatedEntry = entry with
+                {
+                    Uri = ArtifactUri(entry.Name, topicScope),
+                    CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
+                };
+
+                int idx = existingEntries.FindIndex(
+                    e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                if (idx >= 0)
+                    existingEntries[idx] = updatedEntry;
+                else
+                    existingEntries.Add(updatedEntry);
             }
 
-            // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
-            // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the memory
-            // as it was, and overwriting it reset every memory's creation date on every restore
-            // (design review finding M4). A bundle carrying no "createdAt" key deserializes to
-            // default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that specific value is
-            // the only one rewritten to "now" here. Any OTHER unparseable createdAt is refused
-            // earlier, in ImportTopicsFromZip's deserialize (InvalidOperationException) — this is
-            // not a general malformed-timestamp fallback, only the default a missing key produces.
-            var updatedEntry = entry with
-            {
-                Uri = ArtifactUri(entry.Name, topicScope),
-                CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
-            };
-
-            int idx = existingEntries.FindIndex(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-            if (idx >= 0)
-                existingEntries[idx] = updatedEntry;
-            else
-                existingEntries.Add(updatedEntry);
-        }
-
-        SaveIndex(existingEntries, topicScope);
+            // PublishIndexUnsafe, not SaveIndexUnsafe: import ADDS and OVERWRITES, and never
+            // removes. The orphan sweep is not a capability it needs — it is the mechanism that
+            // destroyed data here, so it is gone from this path rather than locked around.
+            PublishIndexUnsafe(existingEntries, topicScope);
+        }, ImportLockTimeout);
     }
 
     // ── Display helpers ──────────────────────────────────────────────────────
