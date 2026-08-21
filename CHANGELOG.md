@@ -10,6 +10,57 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Removed (breaking) — the HTTP server, remote mode, and the web UI
+
+- The ASP.NET Core HTTP API — API-key auth, multi-store routing, the REST memory endpoints, the
+  chat agent loop — and the React web UI that consumed it are gone, along with `scri serve
+  --remote`, which proxied the same MCP tool surface to a remote instance. `HttpMemoryStore`, the
+  second `IMemoryStore` implementation, is gone with them.
+- **There is now one deployment mode.** `scri` runs as a command-line tool and as an MCP server
+  over stdio, reading and writing a local `.scrinia/` directly. Anyone running the HTTP server has
+  no upgrade path within Scrinia and should pin to `0.5.0`.
+- Sharing a workspace between people is a git question rather than a server one: `.scrinia/` is
+  committed like any other directory and the bundled merge driver resolves conflicts. See
+  [Multi-User Setup](docs/multi-user-setup.md).
+- `docs/server-admin.md`, `docs/architecture/server.md` and `docs/web-ui-guide.md` are removed;
+  `docs/security.md` is rewritten for a local-only tool.
+- Unaffected: every MCP tool, every `scri` verb, the on-disk format, and the embeddings plugin.
+  The MCP surface was never the server's — the CLI has always hosted it over stdio.
+
+### Changed (breaking) — one store interface, and `copy` goes with the server
+
+- `ILocalMemoryStore` is merged into `IMemoryStore`. The split existed so a remote store could
+  decline filesystem-layout members; with one implementation the narrowing casts could only
+  succeed and the `NOT_SUPPORTED` responses behind them were unreachable. Six members —
+  `ArtifactPath`, `FindArtifactPath`, `GetStoreDirForScope`, `WorkspaceRoot`, `ListTopicArtifacts`,
+  `ImportTopicEntries` — now sit on `IMemoryStore`. Anything implementing the interface must
+  answer them.
+- **`copy` is removed, and one capability goes with it:** an ephemeral `~name` can no longer be
+  promoted into the persistent store. Nothing else did that, so there is no replacement. Copying a
+  persistent memory to a new name is still available by `recall` then `remember`.
+- `IStorageBackend`, `FilesystemBackend`, `CarriedMetadata`, `RemoteApiVersion` and
+  `RemoteTransportGuard` are removed — each existed only to let one store behave like the other.
+
+### Changed (breaking) — the plugin ABI drops its web half
+
+- `IScriniaPlugin` and `ScriniaPluginBase` lose `ConfigureServices(IServiceCollection,
+  IConfiguration)`, `ConfigureMiddleware(IApplicationBuilder)` and
+  `MapEndpoints(IEndpointRouteBuilder)`. Their only caller was the deleted server's in-process DLL
+  loader; nothing in the repository loads an assembly any more. What remains is identity —
+  `Name`, `Version`, `Order`.
+- **CLI plugins are unaffected**, and this is the shape that works: a plugin is a standalone
+  executable the CLI launches as a child process and drives over MCP stdio. Discovery, the
+  handshake and `PluginConfigProtocol` are unchanged. A plugin that implemented the three removed
+  members will not compile — but since the only host that ever invoked them is gone, it cannot
+  have been doing anything.
+- Those three members were the sole reason `Scrinia.Plugin.Abstractions` carried a
+  `FrameworkReference` on `Microsoft.AspNetCore.App`, which a program with no HTTP surface has no
+  business requiring of its plugin authors. Dropping it took **27 MB** out of the published
+  `scri-plugin-embeddings` binary — 129 MB to 102 MB — because a self-contained publish had been
+  bundling the entire ASP.NET Core runtime to satisfy it.
+- If your plugin needs configuration, bind it yourself; `EmbeddingsPlugin.Configure(IConfiguration)`
+  is the worked example. See [Plugin Authoring](docs/plugin-authoring.md).
+
 ### Changed (breaking) — `scri migrate` joins the CLI option family
 
 - `scri migrate` took `--workspace` where every other command takes `--workspace-root`. It now
