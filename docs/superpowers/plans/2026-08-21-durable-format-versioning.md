@@ -4,7 +4,7 @@
 
 **Goal:** Give every durable on-disk format one shared version gate, and make the artifact sidecar preserve fields it does not understand instead of deleting them.
 
-**Architecture:** A new `Scrinia.Core.Formats` namespace holds a four-case disposition enum, a `FormatContract` record, one `Evaluate` function, and a registry with one contract per durable format. `ArtifactEntry` gains an `int?` schema version and a `[JsonExtensionData]` bucket. Reads never throw on a version; writes refuse at two levels, scoped to one topic.
+**Architecture:** A new `Scrinia.Core.Formats` namespace holds a four-case disposition enum, a `FormatContract` record, one `Evaluate` function, and a registry with one contract per durable format. `ArtifactEntry` gains an `int?` schema version and a `[JsonExtensionData]` bucket. Reads never throw on a version; writes refuse where the entries are already in hand, and the refusal follows the memory rather than the scope.
 
 **Tech Stack:** .NET 10, C#, System.Text.Json source generation, xunit + FluentAssertions.
 
@@ -18,6 +18,11 @@
 - **Corrupt sidecars keep skipping.** The existing `catch { return null; }` behaviour is unchanged (test D13).
 - **`facts.json` behaviour must not change.** It rebuilds on older *and* newer, and `AbsentMeans = 0` is what preserves that (spec §B2, test D14).
 - **Do not reroute the NMP/2 parser.** It registers a contract and gets a conformance test only (spec §B6/C6).
+- **The extension bucket preserves nothing without Task 3b's inheritance rule.** A round-trip of one object keeps unknown fields; no ordinary write is a round-trip. Any test that only round-trips an object is not evidence (spec §B7).
+- **No write path may read the scope's index.** `Upsert` forbids it by comment — it re-introduces finding H5's O(N²). The gate goes where entries are already in hand (spec §B5).
+- **`FileMemoryStore.Store(...) does not exist.`** Writes are `await store.StoreAsync(new MemoryWrite(name, scope, [body]))` — **Name first, then Scope**. Tests calling it must be `async Task`.
+- **Use `TestHelpers.StoreScope`** (`tests/Scrinia.Tests/TestHelpers.cs:97`, exposes `WorkspaceDir` and `TempDir`). Do not write a new temp-workspace helper.
+- **Tests touching the extension bucket must use a source-generated context**, not hand-built `JsonSerializerOptions` — reflection does not exercise the `{ get; init; }` failure that makes `{ get; set; }` mandatory. `ArtifactEntrySerializationTests.TestCtx` is the existing fixture.
 - Commit after each task. Use a heredoc for multi-line commit messages, never a PowerShell here-string.
 - Run tests synchronously. Do not background a test run.
 
@@ -36,7 +41,7 @@
 
 **Modify:**
 - `src/Scrinia.Core/Models/ArtifactEntry.cs` — two new members.
-- `src/Scrinia.Core/FileMemoryStore.cs` — `CachedIndex` ctor, forward-fill skip, `WithExclusiveLock` gate, `WriteSidecarCore` backstop and bucket sort.
+- `src/Scrinia.Core/FileMemoryStore.cs` — `CachedIndex` ctor, forward-fill skip, `BuildDerivedEntry` inheritance, `WriteSidecars` pre-check, `Upsert` check, `WriteSidecarCore` backstop and bucket sort.
 - `src/Scrinia.Core/Search/EntityFactSidecar.cs` — route through the gate.
 - `src/Scrinia.Core/Bundles/BundleFormatService.cs` — read the manifest version; refuse newer entries.
 - `src/Scrinia.Mcp/MemoryTools.Skills.cs` — version + bucket on `SkillFileMeta` / `AgentFileMeta`.
@@ -116,7 +121,7 @@ public class FormatVersionTests
     [InlineData("artifact-sidecar", 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
     [InlineData("entity-facts", 3, FormatDisposition.Rebuild, FormatDisposition.Rebuild)]
     [InlineData("nmp2-body", 2, FormatDisposition.Refuse, FormatDisposition.Refuse)]
-    [InlineData("bundle-manifest", 1, FormatDisposition.Load, FormatDisposition.Refuse)]
+    [InlineData("bundle-manifest", 2, FormatDisposition.Load, FormatDisposition.Refuse)]
     [InlineData("legacy-index", 3, FormatDisposition.Load, FormatDisposition.Load)]
     [InlineData("skill-meta", 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
     [InlineData("agent-meta", 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
@@ -294,15 +299,25 @@ public static class DurableFormats
             FormatDisposition.Refuse, FormatDisposition.Refuse);
 
     /// <summary>A bundle's <c>manifest.json</c>. Transport, not storage — refusing a newer
-    /// bundle costs the user a re-export, not their data.</summary>
+    /// bundle costs the user a re-export, not their data.
+    ///
+    /// <para><b>Current is 2, not 1.</b> WriteManifest already writes <c>hasFileEntities ? 2 : 1</c>,
+    /// so Current:1 with OnNewer:Refuse would make this build refuse bundles it had itself just
+    /// exported. The 1/2 pair is a CAPABILITY marker — 2 means "carries file entities" — which
+    /// happens to be monotonic, so a linear contract models it. Anything above 2 is genuinely
+    /// newer.</para></summary>
     public static readonly FormatContract BundleManifest =
-        new("bundle-manifest", Current: 1, AbsentMeans: 1,
+        new("bundle-manifest", Current: 2, AbsentMeans: 1,
             FormatDisposition.Load, FormatDisposition.Refuse);
 
     /// <summary>The legacy <c>index.json</c>. No longer written; read only by the layout
-    /// migration. The contract is documentary — a "newer" one cannot exist.</summary>
+    /// migration. The contract is documentary — a "newer" one cannot exist.
+    ///
+    /// <para>AbsentMeans is 3 and is UNREACHABLE: IndexFile.Version is a non-nullable int with a
+    /// `= 3` property initializer, so a missing key deserializes to 3, never to absent. Set to 3
+    /// so the contract states something true.</para></summary>
     public static readonly FormatContract LegacyIndex =
-        new("legacy-index", Current: 3, AbsentMeans: 1,
+        new("legacy-index", Current: 3, AbsentMeans: 3,
             FormatDisposition.Load, FormatDisposition.Load);
 
     /// <summary><c>.scrinia/skills/{name}.meta.json</c>.</summary>
@@ -550,8 +565,14 @@ Expected: 0 failures. `ArtifactEntrySerializationTests` is the one to watch: it 
 
 - [ ] **Step 7: Verify no sidecar on disk changed**
 
-Run: `git status --porcelain .scrinia/`
-Expected: **empty**. The test suite writes to temp workspaces, but if anything in this repo's own `.scrinia/` re-serialized differently, the no-churn constraint is broken and Step 3's `int?` decision has regressed.
+First force a real re-serialize of this repo's own sidecars, or the check passes vacuously — nothing in the earlier steps reads and rewrites them:
+
+```bash
+dotnet run --project src/Scrinia -- list --json > /dev/null
+git status --porcelain .scrinia/
+```
+
+Expected: **empty**. If anything in `.scrinia/` re-serialized differently, the no-churn constraint is broken and the `int?` decision in Step 3 has regressed. Restore `.scrinia/memories/**/facts.json` if only the derived fact caches moved — those rebuild on read and are not evidence either way.
 
 - [ ] **Step 8: Commit**
 
@@ -582,9 +603,12 @@ MSG
 
 **Interfaces:**
 - Consumes: `ArtifactSidecarPolicy.IsReadOnly(ArtifactEntry)` from Task 1; `ArtifactEntry.SchemaVersion` from Task 2.
-- Produces: `CachedIndex.BlockingEntry` (`ArtifactEntry?`) — the first entry in the scope this build may not rewrite, or null. Task 4 reads it.
+- Produces: nothing new.
 
-**Why `CachedIndex` and not a new dictionary:** the flag is a pure function of the entries already being cached, and computing it in the constructor means **every existing `new CachedIndex(entries)` call site is unchanged**. There are three.
+**`CachedIndex` is NOT modified.** An earlier draft of this plan added a computed `BlockingEntry`
+to it, for a scope gate in Task 4 that no longer exists — Task 4's gate reads the entry it is
+about to write, not a cached scope summary. Adding an unread member would be dead code on arrival.
+`CachedIndex` stays exactly as it is.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -592,17 +616,17 @@ Append to `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`. These need a 
 
 ```csharp
     [Fact]
-    public void NewerSidecar_IsNotDroppedFromTheIndex()
+    public async Task NewerSidecar_IsNotDroppedFromTheIndex()
     {
         // The C1-class regression guard. If the version gate is evaluated INSIDE
         // ReadSidecarRaw's blanket `catch { return null; }`, a newer sidecar is silently
         // dropped from the index -- which is the previous Critical's failure mode, rebuilt
         // by hand inside the fix for this one.
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        store.Store("local:notes", "ordinary", "body");
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["body"]));
 
-        WriteRawSidecar(ws, "local:notes", "from-the-future", schemaVersion: 2);
+        WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
 
         store.InvalidateCaches();
         store.LoadIndex("local:notes").Select(e => e.Name)
@@ -612,9 +636,9 @@ Append to `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`. These need a 
     [Fact]
     public void NewerSidecar_IsStillReadable_WithItsUnknownFieldsIntact()
     {
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        WriteRawSidecar(ws, "local:notes", "from-the-future",
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        WriteRawSidecar(scope, "local:notes", "from-the-future",
             schemaVersion: 2, extraKey: "futureThing");
 
         store.LoadIndex("local:notes").Single(e => e.Name == "from-the-future")
@@ -628,9 +652,9 @@ Append to `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`. These need a 
         // AttributeMigration.MigratesTo returns true. That is the only condition under which
         // the forward-fill loop reaches a write at all -- without it this test passes
         // vacuously and proves nothing.
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        string path = WriteRawSidecar(ws, "local:notes", "legacy-and-newer",
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        string path = WriteRawSidecar(scope, "local:notes", "legacy-and-newer",
             schemaVersion: 2, legacyShaped: true);
 
         byte[] before = File.ReadAllBytes(path);
@@ -646,9 +670,9 @@ Append to `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`. These need a 
     {
         // The control for the test above: prove the skip is conditional on the VERSION, not
         // on the migration having quietly stopped working.
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        string path = WriteRawSidecar(ws, "local:notes", "legacy-only",
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        string path = WriteRawSidecar(scope, "local:notes", "legacy-only",
             schemaVersion: null, legacyShaped: true);
 
         byte[] before = File.ReadAllBytes(path);
@@ -658,43 +682,27 @@ Append to `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs`. These need a 
     }
 
     [Fact]
-    public void CorruptSidecar_IsStillSkipped_NotRefused()
+    public async Task CorruptSidecar_IsStillSkipped_NotRefused()
     {
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        store.Store("local:notes", "ordinary", "body");
-        File.WriteAllText(SidecarPath(ws, "local:notes", "broken"), "{ not json");
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["body"]));
+        File.WriteAllText(SidecarPath(scope, "local:notes", "broken"), "{ not json");
 
         store.LoadIndex("local:notes").Select(e => e.Name).Should().Contain("ordinary");
     }
 ```
 
-Write the `TempWorkspace`, `WriteRawSidecar` and `SidecarPath` helpers to match the conventions already in `tests/Scrinia.Tests/Store/`. `WriteRawSidecar` composes the JSON by hand — it must be able to emit a `"v"` key and a legacy `"fields"` key, which the typed model deliberately cannot produce.
+Use the EXISTING `TestHelpers.StoreScope` (`tests/Scrinia.Tests/TestHelpers.cs:97`) — it exposes `WorkspaceDir` and `TempDir` and installs `MemoryStoreContext.Current`, and `TransactionalRestoreTests` uses exactly this pattern. Do not write a new temp-workspace type; the two `TempWorkspace` classes in the migration tests are private nested classes and are not reusable.
+
+Write only `WriteRawSidecar` and `SidecarPath`. `WriteRawSidecar` composes the JSON **by hand** — it must be able to emit a `"v"` key and a legacy `"fields"` key, which the typed model deliberately cannot produce.
 
 - [ ] **Step 2: Run and watch them fail**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats.SidecarVersioningTests`
 Expected: `ForwardFill_DoesNotRewriteANewerSidecar_AndDoesNotThrow` FAILS — the sidecar is rewritten.
 
-- [ ] **Step 3: Add `BlockingEntry` to `CachedIndex`**
-
-In the `CachedIndex` constructor, after `Entries` is assigned:
-
-```csharp
-        // Computed here rather than at the query site so every cache write gets it for free and
-        // no call site can forget. Null when every entry in the scope is writable.
-        BlockingEntry = entries.Find(ArtifactSidecarPolicy.IsReadOnly);
-```
-
-and the property:
-
-```csharp
-        /// <summary>The first entry in this scope written by a build newer than ours, or null.
-        /// A scope with a blocking entry refuses writes; reads are unaffected.</summary>
-        public ArtifactEntry? BlockingEntry { get; }
-```
-
-- [ ] **Step 4: Skip the persist in the forward-fill loop**
+- [ ] **Step 3: Skip the persist in the forward-fill loop**
 
 In `LoadIndexUnsafe`, change the loop body:
 
@@ -720,12 +728,12 @@ In `LoadIndexUnsafe`, change the loop body:
         }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 4: Run the tests**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats.SidecarVersioningTests`
 Expected: all PASS, including the control test that a current-version legacy sidecar IS still rewritten.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/Scrinia.Core/FileMemoryStore.cs tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs
@@ -748,169 +756,312 @@ MSG
 
 ---
 
-## Task 4: Write refusal, at both levels
+## Task 3b: Inheritance on overwrite — without this the bucket preserves nothing
 
 **Files:**
-- Modify: `src/Scrinia.Core/FileMemoryStore.cs` (`WithExclusiveLock`, `WriteSidecarCore`)
+- Modify: `src/Scrinia.Core/FileMemoryStore.cs` (`BuildDerivedEntry` and its two callers)
 - Test: `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs` (append)
 
 **Interfaces:**
-- Consumes: `CachedIndex.BlockingEntry` from Task 3; `ScopeReadOnlyException` and `DurableFormats` from Task 1.
-- Produces: nothing new.
+- Consumes: `ArtifactEntry.SchemaVersion` / `.Unknown` from Task 2.
+- Produces: `BuildDerivedEntry(..., ArtifactEntry? prior)` — a **required** trailing parameter.
+
+**Why this task exists.** Task 2 proves a sidecar round-trips its unknown keys. That is a
+round-trip of one *object*, and no ordinary write is one: `remember` re-derives everything and
+assembles a brand-new `ArtifactEntry` with an empty bucket and a null version. Without this task,
+the first `remember` after the stream ships deletes exactly the fields the stream exists to
+preserve — and every Task 2 test still passes. Read spec §B7 before starting.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```csharp
     [Fact]
-    public void Remember_IntoAScopeWithANewerSidecar_Refuses()
+    public async Task ReStoringAMemory_WithEntirelyNewContent_KeepsItsUnknownKeys()
     {
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        WriteRawSidecar(ws, "local:notes", "from-the-future", schemaVersion: 2);
+        // NOT a round-trip: StoreAsync re-derives and builds a NEW entry. This is the test that
+        // separates a working extension bucket from a decorative one.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
 
-        var act = () => store.Store("local:notes", "anything", "body");
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["totally new content"]));
 
-        act.Should().Throw<ScopeReadOnlyException>()
-           .Which.Should().Match<ScopeReadOnlyException>(e =>
-               e.Scope == "local:notes" &&
-               e.MemoryName == "from-the-future" &&
-               e.DeclaredVersion == 2 &&
-               e.SupportedVersion == 1);
+        ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
     }
 
     [Fact]
-    public void ADifferentScope_StillWritesNormally()
+    public async Task AppendingToAMemory_KeepsItsUnknownKeys()
     {
-        // Blast radius is the topic scope. One stale checkout of one topic must not brick
-        // unrelated work.
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        WriteRawSidecar(ws, "local:notes", "from-the-future", schemaVersion: 2);
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
 
-        var act = () => store.Store("local:other", "fine", "body");
+        await store.AppendAsync(/* match AppendAsync's real signature */);
+
+        ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
+    }
+
+    [Fact]
+    public async Task ReStoringAV2Memory_IsRefused_BecauseTheRebuiltEntryInheritsItsVersion()
+    {
+        // This is the mechanism that makes a PER-ENTRY gate sufficient in place of a whole-scope
+        // lockout: the refusal follows the memory, because the version is inherited.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        var act = async () => await store.StoreAsync(
+            new MemoryWrite("seed", "local:notes", ["overwrite attempt"]));
+
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+    }
+
+    [Fact]
+    public async Task AfterThatRefusal_TheBodyOnDiskIsUnchanged()
+    {
+        // The property that makes leaving body writes ungated safe: StoreAsync's rollback puts
+        // the previous content back, so content and metadata still agree after the refusal.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+        byte[] before = File.ReadAllBytes(ArtifactPath(scope, "local:notes", "seed"));
+
+        try { await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["overwrite"])); }
+        catch (ScopeReadOnlyException) { }
+
+        File.ReadAllBytes(ArtifactPath(scope, "local:notes", "seed")).Should().Equal(before);
+    }
+```
+
+- [ ] **Step 2: Run and watch the first three fail**
+
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats.SidecarVersioningTests`
+Expected: the unknown-key tests FAIL (the key is gone after the re-store) and the refusal test
+FAILS (no refusal — the rebuilt entry has a null version).
+
+- [ ] **Step 3: Thread `prior` through `BuildDerivedEntry`**
+
+```csharp
+    private ArtifactEntry BuildDerivedEntry(
+        string subject, string scope, long originalBytes, int chunkCount,
+        DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived,
+        ArtifactEntry? prior)
+        => AttributeMigration.Forward(new ArtifactEntry(
+            /* ...every existing named argument, unchanged... */
+            AgentKeywords: derived.AgentKeywords,
+            // Carried forward, not re-derived: this build cannot re-derive a field it has no
+            // member for, and re-deriving the version would silently downgrade a v2 sidecar to
+            // v1 on the first rewrite.
+            SchemaVersion: prior?.SchemaVersion)
+        {
+            Unknown = prior?.Unknown
+        });
+```
+
+**`prior` takes no default.** An optional parameter lets a future write path omit it and quietly
+resume deleting unknown fields; a required one forces every new caller to answer the question.
+Same reasoning that kept a `bool sweepOrphans` flag out of the transactional-restore work.
+
+- [ ] **Step 4: Pass `prior` at both call sites**
+
+`FileMemoryStore.cs:1613` (`StoreAsync`) already has `existingEntry` in scope — pass it.
+`:1725` (`AppendAsync`) has the entry it is appending to — pass that. Neither needs a new read.
+
+- [ ] **Step 5: Verify the `with`-based rebuilds need no change**
+
+`TryUpdateEntry`, the CLI's `consolidate`, and `BundleFormatService.cs:327` rebuild entries with
+`with`, which copies every member it does not name — so both new members survive automatically.
+**Verify this rather than assuming it**: add one assertion that a `TryUpdateEntry` on a memory
+with an unknown key preserves the key.
+
+- [ ] **Step 6: Run the tests, then the full suite**
+
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats`
+then `dotnet test Scrinia.sln`
+Expected: all PASS, 0 failures.
+
+- [ ] **Step 7: Commit**
+
+Commit message subject: `fix(store): carry unknown fields and the version across a rewrite`.
+Body must record that the bucket preserves nothing on its own, that no ordinary write is a
+round-trip, that `BuildDerivedEntry` is the sole assembler and both callers already hold the
+prior entry, and that the parameter is required rather than optional so a future write path
+cannot quietly resume deleting.
+
+---
+
+## Task 4: Write refusal, where the entries already are
+
+**Files:**
+- Modify: `src/Scrinia.Core/FileMemoryStore.cs` (`WriteSidecars`, `Upsert`, `WriteSidecarCore`)
+- Test: `tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs` (append)
+
+**Interfaces:**
+- Consumes: `ScopeReadOnlyException`, `DurableFormats`, `ArtifactSidecarPolicy` from Task 1.
+- Produces: nothing new.
+
+**Read spec §B5 first.** An earlier draft of this plan put an `AssertScopeWritableUnsafe` inside
+`WithExclusiveLock`. **Do not do that.** It calls `LoadIndexUnsafe`, which (a) re-introduces
+finding H5's O(N²) that `Upsert`'s own comment explicitly forbids, (b) is not read-only — it runs
+forward-fill sidecar rewrites — and (c) resolves the wrong directory for `PersistMigratedEntry`.
+The gate goes where the entries are already in hand, at zero extra I/O.
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+    [Fact]
+    public void WriteSidecars_RefusesAListContainingANewerEntry_BeforeWritingAnyOfIt()
+    {
+        // The one that matters. A mid-loop refusal would leave a partial write, which is the
+        // failure class the transactional-restore work just closed.
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var writable = new ArtifactEntry("writable", "file:///writable.nmp2", 5, 1, DateTimeOffset.UtcNow);
+        var newer = writable with { Name = "newer", SchemaVersion = 2 };
+
+        var act = () => store.InvokeWriteSidecarsForTest([writable, newer], scope.TempDir);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+        File.Exists(Path.Combine(scope.TempDir, "writable.meta.json"))
+            .Should().BeFalse("nothing in the list may be written once one entry is refused");
+    }
+
+    [Fact]
+    public async Task RememberingAnUnrelatedMemory_IntoTheSameScope_Succeeds()
+    {
+        // Blast radius: a write refuses when it would TOUCH a newer sidecar, not merely because
+        // a sibling is newer. Remembering something unrelated touches nothing.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        var act = async () => await store.StoreAsync(
+            new MemoryWrite("unrelated", "local:notes", ["body"]));
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Forget_OnANewerMemory_Succeeds()
+    {
+        // Deletion is allowed: it loses nothing the newer build wrote unexpectedly, and refusing
+        // it strands the user until they upgrade.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        var act = () => store.Remove("seed", "local:notes");
 
         act.Should().NotThrow();
     }
 
     [Fact]
-    public void SearchAndRecall_StillWorkOnAReadOnlyScope()
+    public async Task SearchAndRecall_StillWorkAlongsideANewerMemory()
     {
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        store.Store("local:notes", "ordinary", "findable body text");
-        WriteRawSidecar(ws, "local:notes", "from-the-future", schemaVersion: 2);
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["findable body text"]));
+        WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
         store.InvalidateCaches();
 
-        store.Invoking(s => s.LoadIndex("local:notes")).Should().NotThrow();
+        store.Invoking(x => x.LoadIndex("local:notes")).Should().NotThrow();
         store.LoadIndex("local:notes").Should().HaveCount(2);
     }
 
     [Fact]
     public void WriteSidecarCore_RefusesANewerEntry_EvenWhenReachedDirectly()
     {
-        // The backstop. After Task 3 this should be unreachable from any enumerated path --
-        // which is exactly why it is worth a test. C1 happened because a trigger was closed
-        // and the mechanism behind it was not.
-        using var ws = new TempWorkspace();
-        var store = new FileMemoryStore(ws.Root);
-        var newer = new ArtifactEntry("direct", "file:///direct.nmp2", 5, 1,
-            DateTimeOffset.UtcNow) { /* set SchemaVersion via `with` */ };
+        // The backstop. After Task 3 and this task it should be unreachable from any enumerated
+        // path -- which is exactly why it is worth a test. The previous Critical happened because
+        // a trigger was closed and the mechanism behind it was left reachable another way.
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var newer = new ArtifactEntry("direct", "file:///direct.nmp2", 5, 1, DateTimeOffset.UtcNow)
+            { SchemaVersion = 2 };
 
-        var act = () => store.InvokeWriteSidecarForTest(newer with { SchemaVersion = 2 }, ws.Root);
+        var act = () => store.InvokeWriteSidecarForTest(newer, scope.TempDir);
 
         act.Should().Throw<ScopeReadOnlyException>();
     }
 ```
 
-Add an `internal void InvokeWriteSidecarForTest(ArtifactEntry entry, string storeDir)` to `FileMemoryStore`, matching the existing `InvokeWithExclusiveLockForTest` convention from Stream A. Note `TestHelpers.Store` is typed `IMemoryStore`, so tests calling concrete-only members need a `(FileMemoryStore)` cast.
+Add `internal void InvokeWriteSidecarForTest(...)` and `internal void InvokeWriteSidecarsForTest(...)`
+to `FileMemoryStore`, matching the existing `InvokeWithExclusiveLockForTest` convention.
+`TestHelpers.Store` is typed `IMemoryStore`, so tests calling concrete-only members need a
+`(FileMemoryStore)` cast.
 
 - [ ] **Step 2: Run and watch them fail**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats.SidecarVersioningTests`
-Expected: the four new tests FAIL — no refusal happens.
+Expected: the refusal tests FAIL — no refusal happens.
 
-- [ ] **Step 3: Level 2 — the scope gate**
-
-Add to `FileMemoryStore`:
+- [ ] **Step 3: The whole-list pre-check in `WriteSidecars`**
 
 ```csharp
-    /// <summary>
-    /// Refuses a write into a scope holding a sidecar this build must not rewrite.
-    ///
-    /// <para>Called from inside <see cref="WithExclusiveLock{T}"/>'s write lock, which is what
-    /// makes the <c>LoadIndexUnsafe</c> call legal here. The load is cache-first, so on a warm
-    /// scope this is a dictionary lookup; on a cold one it costs the index read the write was
-    /// about to perform anyway.</para>
-    ///
-    /// <para>This exists for the error message. <see cref="WriteSidecarCore"/> is the actual
-    /// enforcement — without this gate the refusal would still happen, but from deep inside a
-    /// write, naming nothing useful.</para>
-    /// </summary>
-    private void AssertScopeWritableUnsafe(string scope)
+    private void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
     {
-        LoadIndexUnsafe(scope);
-        if (_indexCache.TryGetValue(scope, out var cached) && cached.BlockingEntry is { } blocking)
+        // Refuse the WHOLE list before writing any of it. Checking per iteration would refuse
+        // mid-loop and leave a partial write -- the exact failure class the transactional-restore
+        // work closed. This is O(n) over a list already in hand and reads nothing from disk.
+        if (entries.Find(ArtifactSidecarPolicy.IsReadOnly) is { } blocking)
             throw new ScopeReadOnlyException(
-                scope, blocking.Name, blocking.SchemaVersion ?? 1,
+                storeDir, blocking.Name, blocking.SchemaVersion ?? 1,
                 DurableFormats.ArtifactSidecar.Current);
+
+        foreach (var entry in entries)
+            WriteSidecar(entry, storeDir);
     }
 ```
 
-Call it in `WithExclusiveLock<T>`, inside the try and before `body()`:
+- [ ] **Step 4: The single-entry check in `Upsert`**
 
-```csharp
-        lk.EnterWriteLock();
-        try
-        {
-            AssertScopeWritableUnsafe(scope);
-            return body();
-        }
-```
+Immediately before `Upsert`'s `WriteSidecar(entry, storeDir)` call, refuse when
+`ArtifactSidecarPolicy.IsReadOnly(entry)`. **No index read** — the entry is the parameter, and
+Task 3b is what puts the inherited version on it.
 
-- [ ] **Step 4: Level 1 — the backstop**
+- [ ] **Step 5: The backstop in `WriteSidecarCore`**
 
 At the top of `WriteSidecarCore`, before the `NormalizeAttributesKey` call:
 
 ```csharp
-        // Unconditional backstop, deliberately below every caller. After the forward-fill skip
-        // this should be unreachable from any path we enumerated -- and the previous Critical
-        // is precisely what happens when a trigger is closed and the mechanism behind it is
-        // left reachable by a route nobody listed.
+        // Unconditional backstop, deliberately below every caller. After Task 3's forward-fill
+        // skip and this task's two gates it should be unreachable from any path we enumerated --
+        // and the previous Critical is precisely what happens when a trigger is closed and the
+        // mechanism behind it is left reachable by a route nobody listed.
         if (ArtifactSidecarPolicy.IsReadOnly(entry))
             throw new ScopeReadOnlyException(
                 storeDir, entry.Name, entry.SchemaVersion ?? 1,
                 DurableFormats.ArtifactSidecar.Current);
 ```
 
-`WriteSidecarCore` is static and takes a directory rather than a scope, so it reports the directory. The scope gate is what produces the scope-named message in the common case.
+`WriteSidecarCore` is static and takes a directory rather than a scope, so it reports the
+directory. `Upsert`'s gate is what produces the memory-named message in the common case.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 6: Confirm `Remove` is NOT gated**
 
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats.SidecarVersioningTests`
-Expected: all PASS.
+`Remove` deletes `.meta.json` files rather than writing them, so it never reaches
+`WriteSidecarCore` and needs no change. Verify by reading it — do not assume.
 
-- [ ] **Step 6: Run the full suite**
+- [ ] **Step 7: Run the tests, then the full suite**
 
-Run: `dotnet test Scrinia.sln`
-Expected: 0 failures. `AssertScopeWritableUnsafe` now runs on **every** exclusive-lock write in the codebase; a failure here means a path that writes to a scope it never loads.
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats`
+then `dotnet test Scrinia.sln`
+Expected: 0 failures. A failure in an unrelated write test means a path writes a list containing
+an entry it should not — investigate rather than relaxing the gate.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
-```bash
-git add src/Scrinia.Core/FileMemoryStore.cs tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs
-git commit -F - <<'MSG'
-fix(store): refuse writes to a scope holding a sidecar from a newer build
-
-Two levels. The scope gate stops the ordinary write verbs early and names
-the scope, the memory and both versions. WriteSidecarCore refuses
-unconditionally underneath, for the path nobody enumerated.
-
-Blast radius is the topic scope, matching the transactional-restore
-atomicity unit and matching the real failure: a git merge brings in one
-topic's newer sidecars, not the whole workspace's. Reads are untouched --
-search and recall work, unknown fields intact.
-MSG
-```
+Commit message subject: `fix(store): refuse writes that would overwrite a sidecar from a newer build`.
+Body must record where the gate sits and why it is not inside `WithExclusiveLock` (H5's O(N²),
+forward-fill on the write path, wrong directory for `PersistMigratedEntry`), that `WriteSidecars`
+refuses the whole list before writing any of it, and that deletion and unrelated writes stay
+allowed because the refusal follows the memory rather than the scope.
 
 ---
 
@@ -964,9 +1115,13 @@ public class RegisteredFormatsTests
     public void FactsSidecarVersionConstant_MatchesItsContract() =>
         EntityFactSidecar.Version.Should().Be(DurableFormats.EntityFacts.Current);
 
+    // CanDecode (Nmp2Strategy.cs:205-207) requires BOTH the "NMP/2 " prefix AND an "NMP/END"
+    // marker, so a fixture carrying only the header is rejected and would make the true case
+    // fail. Build these from a real encode where possible rather than by hand.
     [Theory]
-    [InlineData("NMP/2 5B CRC32:00000000", true)]
-    [InlineData("NMP/1 5B CRC32:00000000", false)]
+    [InlineData("NMP/2 5B CRC32:00000000\n<payload>\nNMP/END", true)]
+    [InlineData("NMP/2 5B CRC32:00000000", false)]
+    [InlineData("NMP/1 5B CRC32:00000000\n<payload>\nNMP/END", false)]
     [InlineData("plain text, no sentinel", false)]
     public void Nmp2Parser_MatchesItsDeclaredContract(string header, bool shouldParse)
     {
@@ -1113,6 +1268,8 @@ In `ReadSidecarMeta<T>`, after a successful deserialize, evaluate the matching c
 
 Refuse to *write* when the disposition is `LoadReadOnly`, mirroring the artifact sidecar. Reads still return the object.
 
+**Do not throw inside `ReadSidecarMeta`.** Unlike `ReadSidecarRaw`'s blanket catch, it catches only `JsonException` (`MemoryTools.Skills.cs:105`) — an `IOException` already escapes it today, so a version throw added there would escape too. Evaluate the disposition after the deserialize returns, exactly as the artifact sidecar does.
+
 - [ ] **Step 5: Run the tests**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~Formats`
@@ -1148,10 +1305,33 @@ MSG
 
 ## Self-Review
 
-**Spec coverage.** §B1 → Task 1. §B2 → Task 1. §B3 → Task 2. §B4 → Task 3. §B5 → Task 4. §B6 → Tasks 5 and 6. §D1–2, D15 → Task 1. D3–7 → Task 2. D11, D11a, D12, D13 → Task 3. D8–10 → Task 4. D14 → Task 5. No spec requirement is unassigned.
+**Spec coverage.** §B1 → Task 1. §B2 → Task 1. §B3 → Task 2. §B4 → Task 3. §B7 → Task 3b.
+§B5 → Task 4. §B6 → Tasks 5 and 6. §F's facts are folded into Global Constraints and the tasks
+that touch them. Verification: D1–2, D15 → Task 1; D3–7 → Task 2; D11, D11a, D12, D13 → Task 3;
+D3a–3e → Task 3b; D8, D8a, D8b, D9, D9a, D10 → Task 4; D14 → Task 5. No spec requirement is
+unassigned.
 
-**Placeholders.** Two steps deliberately leave a body for the implementer rather than prescribing it, both because the exact API is local knowledge the brief cannot fix from here: the NMP/2 accept/reject assertion in Task 5 Step 1, and the `TempWorkspace`/`WriteRawSidecar` helpers in Task 3 Step 1, which must match existing conventions in `tests/Scrinia.Tests/Store/`. Both name what the code must prove. No other step defers work.
+**One defect this review caught.** The revision that moved the gate out of `WithExclusiveLock`
+left Task 3 producing a `CachedIndex.BlockingEntry` that nothing consumed any more — dead code on
+arrival, mandated by the plan. Task 3 no longer touches `CachedIndex` at all.
 
-**Type consistency.** `SchemaVersion` is `int?` everywhere. `Unknown` is `Dictionary<string, JsonElement>?` with `{ get; set; }` in all three records. `ScopeReadOnlyException`'s four-argument constructor is used identically in Tasks 4's two call sites. `CachedIndex.BlockingEntry` is produced in Task 3 and consumed in Task 4 under the same name.
+**Placeholders.** Three steps deliberately leave a body for the implementer, each because the
+exact local API is knowledge the brief cannot fix from here, and each naming what the code must
+prove: the NMP/2 fixtures in Task 5 Step 1 (build them from a real encode — `CanDecode` needs the
+`NMP/END` footer), `AppendAsync`'s real signature in Task 3b Step 1, and the `WriteRawSidecar` /
+`SidecarPath` / `SetSidecarVersionOnDisk` / `AddUnknownKeyToSidecarOnDisk` / `ReadSidecarJson` /
+`ArtifactPath` helpers, which compose sidecar JSON **by hand** because the typed model cannot
+emit a `"v"` key or a legacy `"fields"` key. No other step defers work.
 
-**One ordering hazard, called out rather than left to be discovered.** Task 1's `ArtifactSidecarPolicy.IsReadOnly` takes an `ArtifactEntry` and reads `SchemaVersion`, which Task 2 adds. Task 1 Step 5 says so and gives the resolution: add the member first. This is the only cross-task compile dependency in the plan.
+**Type consistency.** `SchemaVersion` is `int?` everywhere. `Unknown` is
+`Dictionary<string, JsonElement>?` with `{ get; set; }` in all three records.
+`ScopeReadOnlyException`'s four-argument constructor is used identically at Task 4's three call
+sites. `BuildDerivedEntry`'s `prior` parameter is `ArtifactEntry?` and required in Task 3b and in
+both call sites it names.
+
+**Cross-task dependencies, called out rather than left to be discovered.**
+1. Task 1's `ArtifactSidecarPolicy.IsReadOnly` reads `ArtifactEntry.SchemaVersion`, which Task 2
+   adds. Task 1 Step 5 gives the resolution: add the member first.
+2. Task 4's per-entry gate is only sufficient **because** Task 3b makes a rebuilt entry inherit
+   its predecessor's version. Running Task 4 before Task 3b would produce a gate that never fires
+   on the case that matters, and a green suite. Task 3b runs first, and its name says why.
