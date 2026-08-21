@@ -659,7 +659,7 @@ In `ImportTopicEntries`, add the constant beside `ImportLockTimeout`:
 Then replace the write and commit portions of the loop body. The `foreach` now stages only, and a second loop commits:
 
 ```csharp
-            var staged = new List<(string StagedPath, string FinalPath)>();
+            var staged = new List<(string StagedPath, string FinalPath, ArtifactEntry Entry)>();
             try
             {
                 foreach (var entry in entries)
@@ -679,7 +679,7 @@ Then replace the write and commit portions of the loop body. The `foreach` now s
                         string stagedPath = Path.Combine(
                             storeDir, $"{sanitized}.import-{Guid.NewGuid():N}{ImportStagingSuffix}");
                         AtomicWriteAllText(stagedPath, content);
-                        staged.Add((stagedPath, finalPath));
+                        staged.Add((stagedPath, finalPath, updatedEntry));
                     }
 
                     // ... the `updatedEntry` construction and list splice from Task 3, unchanged ...
@@ -689,8 +689,11 @@ Then replace the write and commit portions of the loop body. The `foreach` now s
                 // of fully-applied entries rather than any single entry half-applied. The live
                 // .nmp2 is never new while its sidecar is old, which is the corruption this
                 // ordering exists to prevent.
-                foreach (var (stagedPath, finalPath) in staged)
+                foreach (var (stagedPath, finalPath, entry) in staged)
+                {
                     File.Move(stagedPath, finalPath, overwrite: true);
+                    WriteSidecar(entry, storeDir);
+                }
 
                 PublishIndexUnsafe(existingEntries, topicScope);
             }
