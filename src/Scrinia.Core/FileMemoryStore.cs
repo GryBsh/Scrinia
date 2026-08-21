@@ -2416,11 +2416,36 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, string> artifactContents, bool overwrite)
     {
+        try
+        {
+            ImportTopicEntriesCore(topicScope, entries, artifactContents, overwrite);
+        }
+        catch (FileLockTimeoutException ex)
+        {
+            // WithExclusiveLock's own exception names only the lock file path
+            // (".../{scope-dir}/.lock") — useful for a human staring at the filesystem, useless for
+            // a caller trying to report which operation failed. Name both here instead.
+            throw new TimeoutException(
+                $"Import into topic scope '{topicScope}' timed out waiting for its exclusive lock.",
+                ex);
+        }
+    }
+
+    private void ImportTopicEntriesCore(string topicScope, List<ArtifactEntry> entries,
+        Dictionary<string, string> artifactContents, bool overwrite)
+    {
         WithExclusiveLock(topicScope, () =>
         {
             string storeDir = GetStoreDirForScope(topicScope);
             Directory.CreateDirectory(storeDir);
             SweepStaleStagingUnsafe(storeDir);
+
+            // Drop the cached index so the snapshot below is read from disk. LoadIndexUnsafe is
+            // cache-first, and PublishIndexUnsafe writes a sidecar for EVERY entry it is handed —
+            // so a warm entry that another process has since rewritten would be reverted to the
+            // cached version over the newer body. Holding the exclusive lock is not enough: the
+            // lock says nothing about how old the CACHE is. One cold read per bulk import.
+            _indexCache.TryRemove(topicScope, out _);
 
             // Read under the lock that will commit it. The snapshot and the commit used to sit on
             // opposite sides of an unlocked write loop, which is what let a concurrent write land
@@ -2442,6 +2467,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     if (exists && !overwrite)
                         continue;
 
+                    // An entry listed in the bundle with no matching body in artifactContents
+                    // cannot be applied: there is nothing to stage, and splicing its metadata into
+                    // existingEntries anyway would leave the trailing PublishIndexUnsafe writing
+                    // that metadata over whatever body actually sits on disk locally (or over
+                    // nothing at all) — the same content/metadata divorce this branch closes.
+                    // Skip the entry entirely: no staging, no splice.
+                    if (!artifactContents.TryGetValue(entry.Name, out string? content))
+                        continue;
+
                     // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
                     // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
                     // memory as it was, and overwriting it reset every memory's creation date on
@@ -2455,18 +2489,23 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                         CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                     };
 
-                    if (artifactContents.TryGetValue(entry.Name, out string? content))
-                    {
-                        // Stage beside the destination — same directory, so the commit below is a
-                        // rename rather than a copy. The live artifact is not touched until every
-                        // body in this bundle is durably on disk.
-                        string sanitized = SanitizeName(entry.Name);
-                        string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
-                        string stagedPath = Path.Combine(
-                            storeDir, $"{sanitized}.import-{Guid.NewGuid():N}{ImportStagingSuffix}");
-                        AtomicWriteAllText(stagedPath, content);
-                        staged.Add((stagedPath, finalPath, updatedEntry));
-                    }
+                    // Stage beside the destination — same directory, so the commit below is a
+                    // rename rather than a copy. The live artifact is not touched until every
+                    // body in this bundle is durably on disk.
+                    //
+                    // Token is 8 hex characters, not a full Guid ("N" is 32) — combined with the
+                    // atomic-write temp suffix, a full Guid here cut the maximum importable memory
+                    // name by ~48 characters for no benefit: collisions are impossible regardless
+                    // of width, since the caller holds the scope's exclusive lock (no concurrent
+                    // import can be staging into this directory) and SweepStaleStagingUnsafe clears
+                    // any leftovers from a prior run before this loop starts.
+                    string sanitized = SanitizeName(entry.Name);
+                    string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
+                    string token = Guid.NewGuid().ToString("N")[..8];
+                    string stagedPath = Path.Combine(
+                        storeDir, $"{sanitized}.import-{token}{ImportStagingSuffix}");
+                    AtomicWriteAllText(stagedPath, content);
+                    staged.Add((stagedPath, finalPath, updatedEntry));
 
                     int idx = existingEntries.FindIndex(
                         e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
@@ -2482,7 +2521,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 // so the exposure inside one iteration is a single rename.
                 foreach (var (stagedPath, finalPath, entry) in staged)
                 {
-                    File.Move(stagedPath, finalPath, overwrite: true);
+                    FileRetry.Run(() => File.Move(stagedPath, finalPath, overwrite: true));
                     WriteSidecar(entry, storeDir);
                 }
 

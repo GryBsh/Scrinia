@@ -34,10 +34,16 @@ public sealed class TransactionalRestoreTests
 
         store.SaveIndex(withoutVictim, Scope);
 
-        store.LoadIndex(Scope).Select(e => e.Name).Should()
-            .Contain("keeper").And.NotContain("victim",
-                because: "SaveIndex's orphan sweep is unchanged by this work — only import "
-                       + "stops using it");
+        // Assert against DISK, not LoadIndex: LoadIndex returns the cache PublishIndexUnsafe just
+        // installed, which reflects whatever list was HANDED to it — it would say the same thing
+        // even if the orphan sweep itself were deleted outright. Only checking the sidecar files
+        // exercises the sweep at all.
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+        File.Exists(Path.Combine(storeDir, "victim.meta.json")).Should().BeFalse(
+            because: "SaveIndex's orphan sweep is unchanged by this work — only import "
+                   + "stops using it, and this must fail if the sweep is ever deleted");
+        File.Exists(Path.Combine(storeDir, "keeper.meta.json")).Should().BeTrue(
+            because: "the sweep must delete only what is absent from the list it is handed");
     }
 
     [Fact]
@@ -239,5 +245,48 @@ public sealed class TransactionalRestoreTests
         store.ResolveReadScopes(null).Should().NotContain("local:ghostscope",
             because: "a directory holding only staging litter is not a scope — the suffix "
                    + "carries no .nmp2 segment precisely so DiscoverMemoriesRecursive ignores it");
+    }
+
+    [Fact]
+    public async Task Import_ThatFailsMidCommit_LeavesEveryAppliedEntryConsistent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+
+        await store.StoreAsync(new MemoryWrite("alpha", Scope, ["alpha v1"]));
+        await store.StoreAsync(new MemoryWrite("beta", Scope, ["beta v1"]));
+
+        // Every committed entry must have content and metadata describing the SAME version.
+        // With a per-entry commit loop that holds however the import ends; with a
+        // rename-all-then-publish loop, a failure between the two phases leaves every renamed
+        // body under its old sidecar.
+        // OriginalBytes matches its own content's length, as a real bundle's export-time
+        // metadata would — the assertion below checks that the COMMITTED sidecar still agrees
+        // with what was actually staged, not a formula relating it to the pre-import body.
+        var bundled = new List<ArtifactEntry>
+        {
+            new("alpha", "file://placeholder", 13, 1, DateTimeOffset.UtcNow),
+            new("beta", "file://placeholder", 12, 1, DateTimeOffset.UtcNow),
+        };
+        var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["alpha"] = "alpha v2 body",
+            ["beta"] = "beta v2 body",
+        };
+
+        store.ImportTopicEntries(Scope, bundled, contents, overwrite: true);
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        foreach (string name in new[] { "alpha", "beta" })
+        {
+            var entry = cold.LoadIndex(Scope).Single(e => e.Name == name);
+            string body = await cold.ReadArtifactAsync(name, Scope);
+            entry.OriginalBytes.Should().Be(contents[name].Length, because:
+                $"{name}'s sidecar must describe the body actually on disk after a commit");
+            body.Should().NotBeNullOrEmpty();
+        }
+
+        Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty();
     }
 }
