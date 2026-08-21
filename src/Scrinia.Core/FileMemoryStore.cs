@@ -2431,7 +2431,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // here would corrupt every other reader's live view.
             var existingEntries = LoadIndexUnsafe(topicScope).ToList();
 
-            var staged = new List<(string StagedPath, string FinalPath)>();
+            var staged = new List<(string StagedPath, string FinalPath, ArtifactEntry Entry)>();
             try
             {
                 foreach (var entry in entries)
@@ -2440,19 +2440,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                         e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
                     if (exists && !overwrite)
                         continue;
-
-                    if (artifactContents.TryGetValue(entry.Name, out string? content))
-                    {
-                        // Stage beside the destination — same directory, so the commit below is a
-                        // rename rather than a copy. The live artifact is not touched until every
-                        // body in this bundle is durably on disk.
-                        string sanitized = SanitizeName(entry.Name);
-                        string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
-                        string stagedPath = Path.Combine(
-                            storeDir, $"{sanitized}.import-{Guid.NewGuid():N}{ImportStagingSuffix}");
-                        AtomicWriteAllText(stagedPath, content);
-                        staged.Add((stagedPath, finalPath));
-                    }
 
                     // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
                     // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
@@ -2467,6 +2454,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                         CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                     };
 
+                    if (artifactContents.TryGetValue(entry.Name, out string? content))
+                    {
+                        // Stage beside the destination — same directory, so the commit below is a
+                        // rename rather than a copy. The live artifact is not touched until every
+                        // body in this bundle is durably on disk.
+                        string sanitized = SanitizeName(entry.Name);
+                        string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
+                        string stagedPath = Path.Combine(
+                            storeDir, $"{sanitized}.import-{Guid.NewGuid():N}{ImportStagingSuffix}");
+                        AtomicWriteAllText(stagedPath, content);
+                        staged.Add((stagedPath, finalPath, updatedEntry));
+                    }
+
                     int idx = existingEntries.FindIndex(
                         e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
                     if (idx >= 0)
@@ -2476,11 +2476,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 }
 
                 // COMMIT. Per entry, content then that entry's sidecar, so a crash leaves a PREFIX
-                // of fully-applied entries rather than any single entry half-applied. The live
-                // .nmp2 is never new while its sidecar is old, which is the corruption this
-                // ordering exists to prevent.
-                foreach (var (stagedPath, finalPath) in staged)
+                // of fully-applied entries rather than the whole bundle sitting under stale
+                // sidecars. WriteSidecarCore is itself atomic per file (temp name + File.Move),
+                // so the exposure inside one iteration is a single rename.
+                foreach (var (stagedPath, finalPath, entry) in staged)
+                {
                     File.Move(stagedPath, finalPath, overwrite: true);
+                    WriteSidecar(entry, storeDir);
+                }
 
                 // PublishIndexUnsafe, not SaveIndexUnsafe: import ADDS and OVERWRITES, and never
                 // removes. The orphan sweep is not a capability it needs — it is the mechanism that
@@ -2492,7 +2495,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 // Roll back what is still staged. Anything already renamed is committed and
                 // consistent; rolling that back would need the previous content, which staging
                 // deliberately did not retain.
-                foreach (var (stagedPath, _) in staged)
+                foreach (var (stagedPath, _, _) in staged)
                     TryDeleteStagingFile(stagedPath);
                 throw;
             }
