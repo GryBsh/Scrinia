@@ -311,6 +311,30 @@ public sealed partial class SidecarVersioningTests
     }
 
     [Fact]
+    public async Task ReStoringAV2Memory_IsRefused_BeforeArchivingAVersion()
+    {
+        // Distinguishes StoreAsync's OWN top-of-method gate from Upsert's backstop, which fires
+        // regardless of which one this is testing: Upsert's check alone still throws
+        // ScopeReadOnlyException even with StoreAsync's earlier gate removed, because
+        // BuildDerivedEntry inherits the version either way -- so
+        // ReStoringAV2Memory_IsRefused_BecauseTheRebuiltEntryInheritsItsVersion above cannot tell
+        // the two gates apart. What StoreAsync's own gate buys, specifically, is that
+        // ArchiveVersion (called between existingEntry being bound and Upsert) never runs.
+        // Without it, a write later refused at Upsert has already deposited a versions/ archive
+        // entry for a memory it never actually changed.
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
+
+        try { await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["overwrite attempt"])); }
+        catch (ScopeReadOnlyException) { }
+
+        Directory.Exists(Path.Combine(scope.TempDir, "notes", "versions")).Should().BeFalse(
+            because: "a refusal before any side effect must never have reached ArchiveVersion");
+    }
+
+    [Fact]
     public async Task AfterThatRefusal_TheBodyOnDiskIsUnchanged()
     {
         // The property that makes leaving body writes ungated safe: StoreAsync's rollback puts
