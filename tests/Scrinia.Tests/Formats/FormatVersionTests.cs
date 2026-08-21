@@ -23,10 +23,14 @@ public class FormatVersionTests
 
     [Fact]
     public void Absent_SubstitutesAbsentMeans_ThenEvaluates() =>
-        // AbsentMeans is 1, which is < Current 3, so this must land on OnOlder — NOT on Load
-        // by some separate "absent is fine" shortcut. A contract whose OnOlder is Rebuild
-        // depends on this substitution happening before the comparison.
-        FormatVersion.Evaluate(Sample, null).Should().Be(Sample.OnOlder);
+        // OnOlder is deliberately Rebuild here and NOT Load. Sample.OnOlder is Load, so
+        // asserting against Sample would pass under the very defect this test exists to catch:
+        // `if (declared is null) return AbsentMeans is null ? Refuse : Load;` short-circuits to
+        // Load and never substitutes. Only a contract whose OnOlder differs from Load can tell
+        // the two implementations apart. AbsentMeans (1) is below Current (3), so a real
+        // substitution must land on OnOlder.
+        FormatVersion.Evaluate(Sample with { OnOlder = FormatDisposition.Rebuild }, null)
+            .Should().Be(FormatDisposition.Rebuild);
 
     [Fact]
     public void Absent_WhenAbsentIsInvalid_Refuses()
@@ -50,19 +54,25 @@ public class FormatVersionTests
         DurableFormats.All.Should().HaveCount(7);
     }
 
+    // AbsentMeans is pinned here too. It was the column an adversarial pass corrected THREE
+    // times (legacy-index 1 -> 3, entity-facts null -> 0, and nmp2-body's deliberate null), and
+    // leaving it unasserted meant every one of those could be silently reverted with a green
+    // suite.
     [Theory]
-    [InlineData("artifact-sidecar", 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
-    [InlineData("entity-facts", 3, FormatDisposition.Rebuild, FormatDisposition.Rebuild)]
-    [InlineData("nmp2-body", 2, FormatDisposition.Refuse, FormatDisposition.Refuse)]
-    [InlineData("bundle-manifest", 2, FormatDisposition.Load, FormatDisposition.Refuse)]
-    [InlineData("legacy-index", 3, FormatDisposition.Load, FormatDisposition.Load)]
-    [InlineData("skill-meta", 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
-    [InlineData("agent-meta", 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
+    [InlineData("artifact-sidecar", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
+    [InlineData("entity-facts", 3, 0, FormatDisposition.Rebuild, FormatDisposition.Rebuild)]
+    [InlineData("nmp2-body", 2, null, FormatDisposition.Refuse, FormatDisposition.Refuse)]
+    [InlineData("bundle-manifest", 2, 1, FormatDisposition.Load, FormatDisposition.Refuse)]
+    [InlineData("legacy-index", 3, 3, FormatDisposition.Load, FormatDisposition.Load)]
+    [InlineData("skill-meta", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
+    [InlineData("agent-meta", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
     public void RegisteredContracts_MatchTheSpecTable(
-        string name, int current, FormatDisposition onOlder, FormatDisposition onNewer)
+        string name, int current, int? absentMeans,
+        FormatDisposition onOlder, FormatDisposition onNewer)
     {
         var c = DurableFormats.All.Single(x => x.Name == name);
         c.Current.Should().Be(current);
+        c.AbsentMeans.Should().Be(absentMeans);
         c.OnOlder.Should().Be(onOlder);
         c.OnNewer.Should().Be(onNewer);
     }
