@@ -865,7 +865,8 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             ["topic"] = ["retrieval"],
             ["file"] = ["src/x.cs"],
         },
-        AgentKeywords: ["alpha"]);
+        AgentKeywords: ["alpha"],
+        SchemaVersion: 7);
 
     /// <summary>Seeds one entry, exports it to a zip, imports it into a fresh scope, reads it back.
     /// Returns the importing store's workspace root alongside the entry, so a caller can assert

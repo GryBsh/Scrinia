@@ -50,7 +50,9 @@ public sealed record ArtifactEntry(
     /// indistinguishable after the merge.</para>
     /// </summary>
     [property: System.Text.Json.Serialization.JsonPropertyName("agentKeywords")]
-    string[]? AgentKeywords = null)
+    string[]? AgentKeywords = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("v")]
+    int? SchemaVersion = null)
 {
     // Back-compat ingest: sidecars written before the Fields→Attributes rename stored the
     // dict under JSON key "fields". Deserialization routes that key here so old sidecars load
