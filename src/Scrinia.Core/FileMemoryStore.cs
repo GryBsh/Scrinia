@@ -2402,6 +2402,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     private static readonly TimeSpan ImportLockTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Suffix for a bundle body staged but not yet committed.
+    ///
+    /// <para>Deliberately carries NO <c>.nmp2</c> segment: <c>DiscoverMemoriesRecursive</c> decides
+    /// whether a directory is a v2 scope with <c>EnumerateFiles(dir, "*.nmp2")</c>, and a staging
+    /// file that registered as an artifact would make a half-restored scope discoverable as a
+    /// topic. Keeping <c>.nmp2</c> out of the name removes the question rather than answering
+    /// it.</para>
+    /// </summary>
+    private const string ImportStagingSuffix = ".staging";
+
     public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, string> artifactContents, bool overwrite)
     {
@@ -2420,45 +2431,81 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // here would corrupt every other reader's live view.
             var existingEntries = LoadIndexUnsafe(topicScope).ToList();
 
-            foreach (var entry in entries)
+            var staged = new List<(string StagedPath, string FinalPath)>();
+            try
             {
-                bool exists = existingEntries.Any(
-                    e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-                if (exists && !overwrite)
-                    continue;
-
-                if (artifactContents.TryGetValue(entry.Name, out string? content))
+                foreach (var entry in entries)
                 {
-                    string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
-                    AtomicWriteAllText(filePath, content);
+                    bool exists = existingEntries.Any(
+                        e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                    if (exists && !overwrite)
+                        continue;
+
+                    if (artifactContents.TryGetValue(entry.Name, out string? content))
+                    {
+                        // Stage beside the destination — same directory, so the commit below is a
+                        // rename rather than a copy. The live artifact is not touched until every
+                        // body in this bundle is durably on disk.
+                        string sanitized = SanitizeName(entry.Name);
+                        string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
+                        string stagedPath = Path.Combine(
+                            storeDir, $"{sanitized}.import-{Guid.NewGuid():N}{ImportStagingSuffix}");
+                        AtomicWriteAllText(stagedPath, content);
+                        staged.Add((stagedPath, finalPath));
+                    }
+
+                    // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
+                    // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
+                    // memory as it was, and overwriting it reset every memory's creation date on
+                    // every restore (design review finding M4). A bundle carrying no "createdAt" key
+                    // deserializes to default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that
+                    // specific value is the only one rewritten to "now" here. Any OTHER unparseable
+                    // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
+                    var updatedEntry = entry with
+                    {
+                        Uri = ArtifactUri(entry.Name, topicScope),
+                        CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
+                    };
+
+                    int idx = existingEntries.FindIndex(
+                        e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                    if (idx >= 0)
+                        existingEntries[idx] = updatedEntry;
+                    else
+                        existingEntries.Add(updatedEntry);
                 }
 
-                // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
-                // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
-                // memory as it was, and overwriting it reset every memory's creation date on
-                // every restore (design review finding M4). A bundle carrying no "createdAt" key
-                // deserializes to default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that
-                // specific value is the only one rewritten to "now" here. Any OTHER unparseable
-                // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
-                var updatedEntry = entry with
-                {
-                    Uri = ArtifactUri(entry.Name, topicScope),
-                    CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
-                };
+                // COMMIT. Per entry, content then that entry's sidecar, so a crash leaves a PREFIX
+                // of fully-applied entries rather than any single entry half-applied. The live
+                // .nmp2 is never new while its sidecar is old, which is the corruption this
+                // ordering exists to prevent.
+                foreach (var (stagedPath, finalPath) in staged)
+                    File.Move(stagedPath, finalPath, overwrite: true);
 
-                int idx = existingEntries.FindIndex(
-                    e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-                if (idx >= 0)
-                    existingEntries[idx] = updatedEntry;
-                else
-                    existingEntries.Add(updatedEntry);
+                // PublishIndexUnsafe, not SaveIndexUnsafe: import ADDS and OVERWRITES, and never
+                // removes. The orphan sweep is not a capability it needs — it is the mechanism that
+                // destroyed data here, so it is gone from this path rather than locked around.
+                PublishIndexUnsafe(existingEntries, topicScope);
             }
-
-            // PublishIndexUnsafe, not SaveIndexUnsafe: import ADDS and OVERWRITES, and never
-            // removes. The orphan sweep is not a capability it needs — it is the mechanism that
-            // destroyed data here, so it is gone from this path rather than locked around.
-            PublishIndexUnsafe(existingEntries, topicScope);
+            catch
+            {
+                // Roll back what is still staged. Anything already renamed is committed and
+                // consistent; rolling that back would need the previous content, which staging
+                // deliberately did not retain.
+                foreach (var (stagedPath, _) in staged)
+                    TryDeleteStagingFile(stagedPath);
+                throw;
+            }
         }, ImportLockTimeout);
+    }
+
+    /// <summary>Best-effort removal of a staging file. A leftover is inert litter, not
+    /// corruption — it is invisible to every enumerator in the store — so a failure to delete
+    /// must not mask the exception that caused the rollback.</summary>
+    private static void TryDeleteStagingFile(string path)
+    {
+        try { File.Delete(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     // ── Display helpers ──────────────────────────────────────────────────────

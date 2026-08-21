@@ -151,4 +151,51 @@ public sealed class TransactionalRestoreTests
                        + "concurrent restore — it may block, or fail loudly, but not vanish");
         }
     }
+
+    [Fact]
+    public async Task Import_ThatFailsPartWay_LeavesNoLiveArtifactUnderAStaleSidecar()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+
+        await store.StoreAsync(new MemoryWrite("victim", Scope, ["ORIGINAL BODY"]));
+
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+        var before = store.LoadIndex(Scope).Single(e => e.Name == "victim");
+
+        // Raw artifact text, captured for an exact comparison below. ReadArtifactAsync returns
+        // the NMP/2 envelope (Brotli + URL-safe Base64), NOT the decoded content — so asserting
+        // on a substring of the original prose would never match, before or after the fix.
+        string bodyBefore = await store.ReadArtifactAsync("victim", Scope);
+
+        // A bundle that overwrites `victim` and then fails: the second entry claims content the
+        // dictionary does not carry AND a name that cannot be written, so the import throws after
+        // `victim` would previously have been overwritten in place.
+        var bundled = new List<ArtifactEntry>
+        {
+            new("victim", "file://placeholder", 13, 1, DateTimeOffset.UtcNow),
+            new(new string('n', 300), "file://placeholder", 5, 1, DateTimeOffset.UtcNow),
+        };
+        var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["victim"] = "REPLACEMENT BODY",
+            [new string('n', 300)] = "boom",
+        };
+
+        Action failing = () => store.ImportTopicEntries(Scope, bundled, contents, overwrite: true);
+        failing.Should().Throw<Exception>(because: "the over-length component cannot be written");
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        var after = cold.LoadIndex(Scope).SingleOrDefault(e => e.Name == "victim");
+
+        after.Should().NotBeNull();
+        string bodyAfter = await cold.ReadArtifactAsync("victim", Scope);
+        bodyAfter.Should().Be(bodyBefore, because:
+            "a failed import must not leave new content under a sidecar that still describes the "
+          + "old content — content and metadata must agree, whatever the outcome");
+        after!.OriginalBytes.Should().Be(before.OriginalBytes);
+
+        Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty(
+            because: "a failed import rolls back everything it staged");
+    }
 }
