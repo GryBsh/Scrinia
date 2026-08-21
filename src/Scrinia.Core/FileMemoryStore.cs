@@ -1192,30 +1192,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
     {
-        // Normalize BEFORE anything else reads this list, because this list becomes the cache.
-        // WriteSidecarCore normalizes a LOCAL copy on its way to disk, so disk is always
-        // "attributes"-keyed; without this, the cache below would keep whatever the caller handed
-        // over. And a LegacyFields-bearing entry is exactly what a caller can hand over:
-        // LoadIndexUnsafe caches an entry RAW when AttributeMigration.MigratesTo reports no change
-        // (which it does whenever Attributes is already non-null, since NormalizeAttributesKey's
-        // coalesce is then a no-op — the footgun documented at ArtifactEntry.cs:63-68), and
-        // ImportTopicEntries — the only production caller of SaveIndex — builds its list from
-        // LoadIndex(topicScope).ToList(). Leaving it raw is the same cache-diverges-from-disk
-        // defect the load seam and Upsert's/TryUpdateEntry's cache writes exist to prevent, at the
-        // one write path that had not closed it.
-        //
-        // In place rather than into a copy: this method already takes ownership of the list per
-        // SaveIndex's contract, and the list is not yet reachable through _indexCache, so the
-        // never-mutate-a-published-list rule is not in play. No-op for an already-normalized or
-        // freshly-constructed entry.
-        for (int i = 0; i < entries.Count; i++)
-            entries[i] = entries[i].NormalizeAttributesKey();
-
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
-        // Delete orphaned sidecars: any *.meta.json whose entry is no longer present. Runs under the
-        // caller's write lock; storeDir holds only artifact sidecars, so this is scope-local and safe.
+        // Delete orphaned sidecars: any *.meta.json whose entry is no longer present.
+        //
+        // Correctness of this sweep depends on something the lock cannot supply: the entry list
+        // must have been READ under the same exclusive lock that commits it. Holding the write
+        // lock here says nothing about how old `entries` is. ImportTopicEntries used to hand over
+        // a list read before any lock was taken, and this loop deleted whatever had landed since
+        // (finding C1) — which is why import no longer calls this method at all.
         var expected = new HashSet<string>(
             entries.Select(e => SanitizeName(e.Name) + ".meta.json"),
             StringComparer.OrdinalIgnoreCase);
@@ -1223,13 +1209,37 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (!expected.Contains(Path.GetFileName(metaFile)))
                 File.Delete(metaFile);
 
-        // Write per-artifact sidecar metadata files
+        PublishIndexUnsafe(entries, scope);
+    }
+
+    /// <summary>
+    /// Commits <paramref name="entries"/> as the scope's index WITHOUT deleting anything: writes
+    /// each sidecar, then refreshes the caches that derive from the index.
+    ///
+    /// <para>Split out of <see cref="SaveIndexUnsafe"/> so an ADDITIVE writer can commit without
+    /// inheriting the orphan sweep. Taking ownership of the list instance is unchanged — it
+    /// becomes the cache, so the caller must not retain a reference or mutate it afterwards.</para>
+    ///
+    /// <para>Caller must already hold the scope's exclusive lock.</para>
+    /// </summary>
+    private void PublishIndexUnsafe(List<ArtifactEntry> entries, string scope)
+    {
+        // Normalize BEFORE anything else reads this list, because this list becomes the cache.
+        // WriteSidecarCore normalizes a LOCAL copy on its way to disk, so disk is always
+        // "attributes"-keyed; without this, the cache below would keep whatever the caller handed
+        // over — the same cache-diverges-from-disk defect the load seam and Upsert's cache writes
+        // exist to prevent. In place rather than into a copy: this method takes ownership per its
+        // summary, and the list is not yet reachable through _indexCache.
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = entries[i].NormalizeAttributesKey();
+
+        string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+
         WriteSidecars(entries, storeDir);
 
-        // Update the in-memory cache
         _indexCache[scope] = new CachedIndex(entries);
 
-        // Invalidate topic discovery cache when saving a topic scope
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
 
