@@ -7,17 +7,26 @@ namespace Scrinia.Tests.Formats;
 
 public class RegisteredFormatsTests
 {
-    [Theory]
-    [InlineData(2)]  // older
-    [InlineData(4)]  // newer
-    [InlineData(0)]  // absent -> deserializes to 0
-    public void FactsSidecar_RebuildsOnAnyVersionThatIsNotCurrent(int version)
+    /// <summary>
+    /// facts.json rebuilds on ANY version that is not Current — older as well as newer. That
+    /// asymmetry is deliberate: its version tracks the derivation RULE, not the file shape, so a
+    /// cache written by a previous build is a path around the new rule.
+    ///
+    /// <para>Versions are computed from Current rather than hard-coded. Literal 2 and 4 against a
+    /// Current of 3 turn into a FALSE FAILURE the moment the derivation rule is bumped to 4 —
+    /// the exact event this test exists to keep safe.</para>
+    /// </summary>
+    [Fact]
+    public void FactsSidecar_RebuildsOnAnyVersionThatIsNotCurrent()
     {
-        // Behaviour must be IDENTICAL to the pre-refactor inline `dto.Version != Version`
-        // check. Rebuilding on OLDER is deliberate: this version tracks the derivation rule,
-        // so a cache written by a previous build is a path around the new rule.
-        string json = $$"""{"version":{{version}},"token":"t","memories":[]}""";
-        EntityFactSidecar.TryLoad(json).Should().BeNull();
+        int current = DurableFormats.EntityFacts.Current;
+        foreach (int version in new[] { current - 1, current + 1, 0 })
+        {
+            string json = $$"""{"version":{{version}},"token":"t","memories":[]}""";
+            EntityFactSidecar.TryLoad(json).Should().BeNull(
+                $"version {version} is not {current}, and a cache from any other build " +
+                "predates or postdates this one's derivation rule");
+        }
     }
 
     [Fact]

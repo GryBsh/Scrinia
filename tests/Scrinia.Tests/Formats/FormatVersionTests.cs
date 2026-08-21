@@ -79,6 +79,18 @@ public class FormatVersionTests
         c.OnNewer.Should().Be(onNewer);
     }
 
+    /// <summary>
+    /// A bundle entry IS an artifact sidecar; only OnNewer differs. Export writes the sidecar's
+    /// own version verbatim, so if these two ever drift this build exports a version it then
+    /// refuses to re-import — it would reject its own bundles. Asserted rather than trusted,
+    /// because the coupling is invisible at the point where someone would bump the sidecar.
+    /// </summary>
+    [Fact]
+    public void BundleEntry_TracksTheArtifactSidecarsVersion() =>
+        DurableFormats.BundleEntry.Current.Should().Be(
+            DurableFormats.ArtifactSidecar.Current,
+            "a bundle entry is a sidecar in transit; only its OnNewer policy differs");
+
     [Fact]
     public void EntityFacts_AbsentMeansZero_SoAMissingKeyRebuilds() =>
         // EntityFactSidecar.Dto.Version is a non-nullable int: a missing "version" key

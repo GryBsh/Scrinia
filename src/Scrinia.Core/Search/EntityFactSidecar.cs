@@ -26,6 +26,12 @@ public static class EntityFactSidecar
     /// scope mutated. Verified by loading a pre-fix sidecar — <c>entityToDocs.Keys</c> came back
     /// carrying <c>orphan:true</c>.</para>
     ///
+    /// <para><b>Where this is read now.</b> <see cref="TryLoad"/> no longer compares against this
+    /// constant directly — it asks <c>FormatVersion.Evaluate(DurableFormats.EntityFacts, ...)</c>,
+    /// and the registry is where the rebuild-on-older-too policy is declared. This constant is the
+    /// WRITE side: <see cref="Serialize"/> stamps it. The two are kept equal by a test, because a
+    /// drift would have this build stamping one version and validating against another.</para>
+    ///
     /// <para>The general lesson, worth more than this instance: a cache that predates a rule change
     /// is a path around the new rule. <see cref="TryLoad"/> is a second route into
     /// <see cref="EntityFactStore"/> that bypasses <c>EntityGraph.ParseEntityAttributes</c>
