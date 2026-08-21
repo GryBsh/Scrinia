@@ -2662,15 +2662,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 // cover it -- and a refusal raised from WriteSidecarCore's backstop mid-loop would
                 // abort after N bodies had already been renamed, the exact partial-restore failure
                 // class the transactional-restore work closed, re-created by its own successor.
-                // BOTH lists, and the second one is the whole point. The trailing
-                // PublishIndexUnsafe below hands `existingEntries` -- the ENTIRE scope, not just
-                // what this import touched -- to WriteSidecars, which rewrites a sidecar for every
-                // one of them. So a single pre-existing newer memory anywhere in the target scope
-                // makes the publish throw, and it throws AFTER the commit loop has already moved
-                // every body and written every sidecar. The rollback only deletes still-staged
-                // files, so the import would be fully applied while the caller was told it failed,
-                // naming a memory the user never imported. Checking `staged` alone left that open
-                // four lines below its own guard.
+                // Checking `staged` alone was a Critical: PublishIndexUnsafe below hands
+                // `existingEntries` -- the ENTIRE scope -- to WriteSidecars, so one pre-existing
+                // newer memory made the publish throw AFTER every body had been moved, with the
+                // rollback deleting only still-staged files. Fully applied, reported as failed.
+                //
+                // `staged` is TODAY a subset of `existingEntries` (each is spliced in above), so
+                // the Concat is redundant. Kept deliberately: that subset relation is an invariant
+                // maintained twenty lines away, and this guard must not silently depend on it.
                 var blocking =
                     staged.Select(s => s.Entry).Concat(existingEntries)
                           .FirstOrDefault(ArtifactSidecarPolicy.IsReadOnly);
