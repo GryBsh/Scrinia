@@ -2420,6 +2420,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             string storeDir = GetStoreDirForScope(topicScope);
             Directory.CreateDirectory(storeDir);
+            SweepStaleStagingUnsafe(storeDir);
 
             // Read under the lock that will commit it. The snapshot and the commit used to sit on
             // opposite sides of an unlocked write loop, which is what let a concurrent write land
@@ -2509,6 +2510,22 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         try { File.Delete(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// Removes staging files left by an import that died before committing or rolling back.
+    ///
+    /// <para>Unconditional rather than age-based: the caller holds the scope's exclusive lock, so
+    /// no other import can be staging into this directory, and every staging file present is
+    /// therefore abandoned by definition.</para>
+    ///
+    /// <para>Caller must already hold the scope's exclusive lock.</para>
+    /// </summary>
+    private void SweepStaleStagingUnsafe(string storeDir)
+    {
+        if (!Directory.Exists(storeDir)) return;
+        foreach (string stale in Directory.EnumerateFiles(storeDir, "*" + ImportStagingSuffix).ToList())
+            TryDeleteStagingFile(stale);
     }
 
     // ── Display helpers ──────────────────────────────────────────────────────

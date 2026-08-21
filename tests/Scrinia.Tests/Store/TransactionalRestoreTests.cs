@@ -198,4 +198,46 @@ public sealed class TransactionalRestoreTests
         Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty(
             because: "a failed import rolls back everything it staged");
     }
+
+    [Fact]
+    public async Task Import_SweepsStagingLitterLeftByAPriorCrash()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+
+        await store.StoreAsync(new MemoryWrite("seed", Scope, ["seeded"]));
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+
+        string litter = Path.Combine(storeDir, "ghost.import-deadbeef.staging");
+        File.WriteAllText(litter, "a body from an import that died before committing");
+
+        store.ImportTopicEntries(
+            Scope,
+            [new("fresh", "file://placeholder", 5, 1, DateTimeOffset.UtcNow)],
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["fresh"] = "hello" },
+            overwrite: true);
+
+        File.Exists(litter).Should().BeFalse(because: "a later import clears staging litter");
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        cold.LoadIndex(Scope).Select(e => e.Name).Should()
+            .Contain("fresh").And.Contain("seed").And.NotContain("ghost",
+                because: "litter is discarded, never imported");
+    }
+
+    [Fact]
+    public void StagingFiles_AreInvisibleToScopeDiscovery()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+
+        string ghostScopeDir = Path.Combine(scope.TempDir, "ghostscope");
+        Directory.CreateDirectory(ghostScopeDir);
+        File.WriteAllText(
+            Path.Combine(ghostScopeDir, "x.import-deadbeef.staging"), "staged, never committed");
+
+        store.ResolveReadScopes(null).Should().NotContain("local:ghostscope",
+            because: "a directory holding only staging litter is not a scope — the suffix "
+                   + "carries no .nmp2 segment precisely so DiscoverMemoriesRecursive ignores it");
+    }
 }
