@@ -70,6 +70,24 @@ public sealed record ArtifactEntry(
     // escapes, so no LegacyFields-bearing entry is ever compared. Wired in the load-seam task.
     private readonly Dictionary<string, string[]>? _legacyFields;
 
+    /// <summary>
+    /// Keys present in the sidecar that this build has no member for, preserved verbatim so a
+    /// read-write cycle cannot delete them. System.Text.Json source generation drops unmapped
+    /// members by default; before this bucket existed, an older build reading a newer sidecar
+    /// destroyed the unknown field on its next write — and "its next write" includes read-time
+    /// forward-fill, so a plain search() was enough.
+    ///
+    /// <para><b>Mutable by necessity.</b> STJ refuses an init-only extension-data property on a
+    /// record with a parameterized constructor ("the extension data property cannot bind with a
+    /// parameter in the deserialization constructor"), so this cannot be <c>{ get; init; }</c>.
+    /// It therefore participates in the synthesized Equals/GetHashCode exactly as
+    /// <c>_legacyFields</c> does, with the same defusing argument: ArtifactEntry equality is
+    /// already non-value-semantic (its Dictionary/array members compare by reference) and
+    /// nothing relies on it.</para>
+    /// </summary>
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Unknown { get; set; }
+
     // [JsonInclude] kept intentionally: forces source-gen to emit the ingest metadata even under
     // PublishTrimmed (the trimmed `scri serve` publish has no reflection fallback — cf. the
     // Dictionary<string,string[]> tool-param crash). Defensive, not redundant.

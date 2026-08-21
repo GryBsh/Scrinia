@@ -1010,7 +1010,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 TermFrequencies = ce.TermFrequencies?
                     .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(kv => kv.Key, kv => kv.Value)
-            }).ToArray()
+            }).ToArray(),
+            // Unknown keys come from a schema this build cannot reason about, and JSON keys are
+            // case-sensitive, so Ordinal (not OrdinalIgnoreCase, unlike the members above) is the
+            // only correct comparer here.
+            Unknown = entry.Unknown?
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .ToDictionary(kv => kv.Key, kv => kv.Value)
         };
 
         string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);

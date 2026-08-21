@@ -112,6 +112,31 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             .GetValue(entry);
 
     /// <summary>
+    /// Rewrites a <c>Dictionary&lt;string, JsonElement&gt;</c> (i.e. <see cref="ArtifactEntry.Unknown"/>)
+    /// to its raw JSON text before comparison; every other member passes through untouched.
+    ///
+    /// <para><b>Why this is necessary, not cosmetic.</b> <see cref="JsonElement"/> exposes no
+    /// public property besides <c>ValueKind</c> and implements no <c>IEquatable</c>, so
+    /// FluentAssertions' structural walk falls back to <c>ValueType.Equals</c> — a comparison of
+    /// the struct's own fields, which point at WHICH <see cref="JsonDocument"/> parsed it and
+    /// WHERE in that document's buffer. Two JsonElements parsed from two separately-serialized
+    /// copies of the identical JSON — exactly what export-then-import produces — are never the
+    /// same instance underneath, so that fallback reports a mismatch regardless of content.
+    /// Verified empirically: a standalone probe printed byte-identical <c>GetRawText()</c> for
+    /// the probe and imported values, and the un-normalized pin still failed on Unknown.</para>
+    ///
+    /// <para><b>Why this does not weaken the pin.</b> It swaps a document-IDENTITY comparison for
+    /// a content comparison, which is what "survives a bundle round trip" means for every other
+    /// member already. A key that is dropped, renamed, or whose value's JSON actually changes
+    /// still fails — the raw-text dictionaries differ in keys or values exactly as any other
+    /// <c>Dictionary&lt;string, string&gt;</c> member's comparison would catch it.</para>
+    /// </summary>
+    private static object? ForComparison(object? value)
+        => value is Dictionary<string, JsonElement> unknown
+            ? unknown.ToDictionary(kv => kv.Key, kv => kv.Value.GetRawText())
+            : value;
+
+    /// <summary>
     /// The minimum <see cref="ArtifactEntry"/> the type permits: every member left at its own
     /// declared default. The guard compares the probe against THIS rather than against a
     /// per-type notion of "looks empty", because those two differ precisely where the pin is
@@ -182,8 +207,8 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
                     || NotDeserializable.Contains(name))
                     continue;
 
-                Read(imported, name).Should().BeEquivalentTo(
-                    Read(probe, name),
+                ForComparison(Read(imported, name)).Should().BeEquivalentTo(
+                    ForComparison(Read(probe, name)),
                     $"ArtifactEntry.{name} must survive a bundle round trip");
             }
         }
@@ -866,7 +891,19 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
             ["file"] = ["src/x.cs"],
         },
         AgentKeywords: ["alpha"],
-        SchemaVersion: 7);
+        SchemaVersion: 7)
+    {
+        // Unknown is not a positional member (it cannot be — see ArtifactEntry.cs's remarks on
+        // why [JsonExtensionData] forces `{ get; set; }`), so it is populated via initializer
+        // rather than as a constructor argument like everything above it. See ForComparison()
+        // above for why the pin's comparison rewrites this member to raw JSON text rather than
+        // comparing JsonElement structs directly.
+        Unknown = new Dictionary<string, System.Text.Json.JsonElement>
+        {
+            ["futureField"] = System.Text.Json.JsonSerializer.SerializeToElement(
+                "a value from a schema this build cannot understand yet"),
+        },
+    };
 
     /// <summary>Seeds one entry, exports it to a zip, imports it into a fresh scope, reads it back.
     /// Returns the importing store's workspace root alongside the entry, so a caller can assert
