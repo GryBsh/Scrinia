@@ -10,6 +10,25 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed (breaking) — `scri bundle import` no longer deletes memories written during it
+
+- A restore snapshotted the scope index under a shared lock that released immediately, wrote every
+  bundled artifact with no lock held, then committed through an orphan sweep that deletes any
+  sidecar absent from that snapshot. A memory written while a restore ran was therefore deleted
+  **after its own write reported success** — content orphaned, sidecar gone, absent from the index
+  permanently. Separately, a memory the bundle never mentioned could have its sidecar rewritten
+  from the stale snapshot, leaving its metadata describing an older version than its content.
+- Import is now a single locked, additive operation: it adds and overwrites, and the orphan sweep
+  is gone from this path entirely rather than locked around it. `SaveIndex`'s own behaviour is
+  unchanged.
+- Bundled bodies are staged and committed per entry, so a failed or interrupted restore can no
+  longer leave a memory whose content and sidecar disagree. A restore that dies part-way now
+  leaves a prefix of fully-applied entries; staging leftovers are cleared by the next import.
+- **Behaviour change:** a concurrent writer to a scope being restored now blocks for the duration
+  of that scope's import, and fails loudly if it exceeds its own lock timeout. It previously
+  appeared to succeed and silently lost the write. The restore itself takes a 5-minute lock
+  budget, so a large bundle no longer fails against the 5-second default that suits a single write.
+
 ### Removed (breaking) — the HTTP server, remote mode, and the web UI
 
 - The ASP.NET Core HTTP API — API-key auth, multi-store routing, the REST memory endpoints, the
