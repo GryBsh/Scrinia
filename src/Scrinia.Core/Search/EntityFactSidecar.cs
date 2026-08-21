@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Scrinia.Core.Formats;
 
 namespace Scrinia.Core.Search;
 
@@ -65,7 +66,13 @@ public static class EntityFactSidecar
         Dto? dto;
         try { dto = JsonSerializer.Deserialize(json, SidecarJsonContext.Default.Dto); }
         catch (JsonException) { return null; }
-        if (dto is null || dto.Version != Version) return null;
+        if (dto is null) return null;
+
+        // The rule itself is unchanged; it moves into DurableFormats where it is visible next
+        // to every other format's, instead of living inline where nothing else can see it.
+        if (FormatVersion.Evaluate(DurableFormats.EntityFacts, dto.Version)
+            != FormatDisposition.Load)
+            return null;
 
         var mems = dto.Memories
             .Select(m => new MemoryEntities(

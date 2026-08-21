@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Core.Bundles;
@@ -165,6 +166,16 @@ public static class BundleFormatService
         using var manifestDoc = JsonDocument.Parse(manifestJson);
         var root = manifestDoc.RootElement;
 
+        int? declaredVersion = root.TryGetProperty("version", out var versionEl)
+            && versionEl.TryGetInt32(out int v) ? v : null;
+
+        if (FormatVersion.Evaluate(DurableFormats.BundleManifest, declaredVersion)
+            == FormatDisposition.Refuse)
+            throw new InvalidOperationException(
+                $"Invalid bundle — manifest declares version {declaredVersion}, but this build " +
+                $"of scri supports up to {DurableFormats.BundleManifest.Current}. " +
+                "Re-export the bundle with a matching version, or upgrade scri.");
+
         if (!root.TryGetProperty("topics", out var topicsElement))
             throw new InvalidOperationException("Invalid bundle — no topics in manifest.");
 
@@ -311,6 +322,20 @@ public static class BundleFormatService
                     throw new InvalidOperationException(
                         $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
                         "with a missing or empty name.");
+
+                // Same "refuse before any write" reasoning as the nameless-entry check above.
+                // ArtifactSidecar.OnNewer is LoadReadOnly — right for reading an on-disk sidecar
+                // in place, where discarding is not available for the only copy of the data — but
+                // a bundle entry has no "in place": importing it means writing a fresh copy into
+                // this store, and this build cannot know it is reproducing a newer build's rules
+                // faithfully. So this compares directly against Current rather than routing
+                // through FormatVersion.Evaluate, whose LoadReadOnly answer does not apply here.
+                if (deserialized.SchemaVersion is int sv && sv > DurableFormats.ArtifactSidecar.Current)
+                    throw new InvalidOperationException(
+                        $"Invalid bundle — topic '{topic}' has an entry '{deserialized.Name}' " +
+                        $"with schema version {deserialized.SchemaVersion}, but this build of " +
+                        $"scri supports up to {DurableFormats.ArtifactSidecar.Current}. " +
+                        "Re-export the bundle with a matching version, or upgrade scri.");
 
                 // Folds a pre-rename "fields" key into Attributes and clears the holder. The old
                 // hand-parse never did this, so such a bundle lost its attributes entirely. It is a
