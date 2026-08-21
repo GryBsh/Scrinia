@@ -122,6 +122,21 @@ durable format, and a public `All` collection over them.
 | `EntityFacts` | 3 | 0 | `Rebuild` | `Rebuild` |
 | `Nmp2Body` | 2 | `null` | `Refuse` | `Refuse` |
 
+**`BundleManifest.Current` is 2, not 1**, and getting this wrong would have been
+the single most likely production break in the stream. `BundleFormatService.WriteManifest`
+writes `hasFileEntities ? 2 : 1` — this build already emits version 2 whenever a
+bundle carries disk-based file entities. A contract claiming `Current: 1` with
+`OnNewer: Refuse` would make scri refuse bundles it had just exported itself.
+The 1/2 pair is really a **capability marker** — 2 means "carries file entities" —
+which happens to be monotonic, so a linear contract models it correctly. Anything
+above 2 is genuinely from a newer build and is refused.
+
+**`LegacyIndex.AbsentMeans` is 3, and it is unreachable.** `IndexFile.Version` is
+a non-nullable `int` with a property initializer `= 3`, so an `index.json` with no
+version key deserializes to 3 rather than to absent. `AbsentMeans` can never fire
+for this format. It is set to 3 so the contract states something true; the
+unreachability is recorded here rather than left for a reader to rediscover.
+
 `EntityFacts.AbsentMeans` is **0, not `null`**, and this is load-bearing rather
 than cosmetic. `EntityFactSidecar.Dto.Version` is a non-nullable `int`, so a
 sidecar with no `"version"` key deserializes to `0`, which today falls into
@@ -129,8 +144,8 @@ sidecar with no `"version"` key deserializes to `0`, which today falls into
 through `OnOlder` → `Rebuild` and reproduces that exactly. `AbsentMeans = null`
 would return `Refuse`, which happens to have the same observable effect for a
 cache but states a different contract and would make D14 false as written.
-| `BundleManifest` | 1 | 1 | `Load` | `Refuse` |
-| `LegacyIndex` | 3 | 1 | `Load` | `Load` |
+| `BundleManifest` | **2** | 1 | `Load` | `Refuse` |
+| `LegacyIndex` | 3 | **3** | `Load` | `Load` |
 | `SkillMeta` | 1 | 1 | `Load` | `LoadReadOnly` |
 | `AgentMeta` | 1 | 1 | `Load` | `LoadReadOnly` |
 
@@ -255,18 +270,99 @@ level 2 stops the ordinary write verbs earlier still. It exists for the path
 nobody enumerated — which is the whole lesson of C1, where the sweep was closed
 and the mechanism was not. A test asserts it fires when called directly.
 
-**Level 2 — the scope write gate, for a decent error message.** A `remember`,
-`append`, `forget`, `compact` or `restore` targeting a scope flagged read-only
-throws `ScopeReadOnlyException` naming the scope, the offending memory, its
-declared version, and this build's supported version. Without this, level 1 would
-surface as an opaque failure deep in a write.
+**Level 2 — the gate sits where the entries already are.** An earlier draft put a
+`AssertScopeWritableUnsafe` inside `WithExclusiveLock`, loading the scope's index
+to decide. **That is rejected**, on three separate grounds, each fatal:
 
-Reads are unaffected: `search`, `recall`, `list` and `facts` work normally on a
-read-only scope, with unknown fields intact.
+- `Upsert` carries an explicit comment forbidding exactly that read: *"Never
+  re-read the scope's sidecars here: that made a single write cost a full
+  directory enumeration plus one read and JSON parse per entry, so writing N
+  memories cost O(N^2) reads (finding H5)."* The gate would have re-introduced,
+  verbatim, a defect a previous review already fixed.
+- `LoadIndexUnsafe` is **not read-only** — it performs the forward-fill
+  write-back. Calling it from the write path would run sidecar rewrites on every
+  write, where they previously ran only under a read's shared lock.
+- `PersistMigratedEntry` exists specifically to write to an *explicit* `storeDir`
+  that differs from `GetStoreDirForScope(scope)`. A scope-resolved gate would
+  inspect a different directory than the one being written.
 
-**Blast radius is the topic scope**, matching Stream A's transactional-restore
-atomicity unit and matching the real failure: a git merge brings in one topic's
-newer sidecars, not the whole workspace's. Other scopes stay writable.
+So the gate goes where the entries are already in hand, at zero additional I/O:
+
+- **`WriteSidecars(entries, storeDir)`** — pre-checks the whole list *before*
+  writing any of it. This is the one that matters: it is the whole-list publish
+  path, and a mid-loop refusal would leave a partial write, which is the failure
+  class Stream A just closed.
+- **`Upsert`** — checks its single entry.
+- **`WriteSidecarCore`** — the unconditional backstop, below both.
+
+**What this means for blast radius.** A write refuses when it would *touch* a
+sidecar this build may not rewrite — not merely because a sibling in the same
+scope is newer. Remembering an unrelated memory into that scope succeeds, because
+it genuinely touches nothing the newer build wrote. This is narrower than "the
+whole topic scope refuses writes", and the narrowing is deliberate: the wider rule
+bought no additional data safety and cost an index read per write.
+
+**Deletion is allowed.** `forget` / `Remove` deletes a sidecar rather than
+rewriting one, and deleting a memory the user explicitly named loses nothing the
+newer build wrote *unexpectedly* — it does exactly what was asked. Refusing it
+would leave a user unable to clean up a scope until they upgrade, with no
+data-safety payoff.
+
+Reads are unaffected: `search`, `recall`, `list` and `facts` work normally, with
+unknown fields intact.
+
+**Body writes are deliberately NOT gated, and this is safe only because of §B7.**
+`WriteArtifactAsync`, `DeleteArtifact` and `ArchiveVersion` mutate `.nmp2` bodies
+without passing through `WithExclusiveLock` at all. Gating them is unnecessary:
+under §B7 an overwrite of a v2 memory inherits v2 and is refused at `Upsert`,
+and `StoreAsync` already restores the previous body when `Upsert` throws — a
+rollback path the file documents as existing precisely to stop content and
+metadata diverging. `ArchiveVersion` copies `.meta.json` **bytes** directly rather
+than re-serializing, so it loses no fields and needs no gate; the claim "every
+sidecar write funnels through `WriteSidecarCore`" is therefore true of every
+write that *serializes*, and not of that byte copy.
+
+### B7. Inheritance on overwrite — without this, the bucket preserves nothing
+
+A read → write round-trip of the *same object* preserves unknown fields; that is
+what the extension bucket does and it is easy to test. **But no ordinary write is
+a round-trip of the same object.** `remember` on an existing memory re-derives
+everything and assembles a brand-new `ArtifactEntry`, which has an empty bucket
+and a null version. Without an explicit inheritance rule, the very first `remember`
+after this stream ships deletes exactly the fields it was built to preserve — and
+every test that round-trips one object would still pass.
+
+The rule has one home. `FileMemoryStore.BuildDerivedEntry` is the sole assembler
+of a re-derived entry, with exactly two callers — `StoreAsync` and `AppendAsync` —
+and **both already hold the prior entry**: `StoreAsync` loads `existingEntry` to
+carry `CreatedAt` forward, and `AppendAsync` must have it to append at all. So:
+
+```csharp
+private ArtifactEntry BuildDerivedEntry(
+    string subject, string scope, long originalBytes, int chunkCount,
+    DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived,
+    ArtifactEntry? prior)          // ← new, and REQUIRED, not optional
+=> AttributeMigration.Forward(new ArtifactEntry(
+       /* ...existing named arguments, unchanged... */
+       AgentKeywords: derived.AgentKeywords,
+       SchemaVersion: prior?.SchemaVersion)
+   { Unknown = prior?.Unknown });
+```
+
+`prior` is deliberately **not** given a default. An optional parameter would let a
+future caller omit it and silently resume deleting unknown fields; a required one
+forces every new write path to answer the question. This is the same reasoning that
+kept a `bool sweepOrphans` flag out of Stream A.
+
+Paths that rebuild an entry with `with` — `TryUpdateEntry`, the CLI's
+`consolidate`, `BundleFormatService`'s `ChunkCount` adjustment — already carry both
+members forward automatically, because `with` copies every member it does not name.
+Those need no change, and that is a property to verify rather than assume.
+
+**Note what inheritance implies for §B5.** An overwrite of a v2 memory inherits
+`SchemaVersion = 2`, so `Upsert`'s check refuses it. That is the mechanism by which
+a per-entry gate protects a newer memory from being clobbered by an old build —
+the refusal follows the *memory*, not the scope.
 
 ### B6. Per-format application
 
@@ -283,8 +379,12 @@ newer sidecars, not the whole workspace's. Other scopes stay writable.
 - **`SkillFileMeta` / `AgentFileMeta`** — add `[JsonPropertyName("v")] int?
   SchemaVersion` and a `[JsonExtensionData]` bucket, same shape as the artifact
   sidecar, gated through `ReadSidecarMeta` / `WriteSidecarMeta`.
-- **NMP/2** — **deliberately not rerouted.** Its sentinel check
-  (`Nmp2Strategy.cs:167`) already enforces the contract correctly, and it is a
+- **NMP/2** — **deliberately not rerouted.** Its sentinel check is
+  `Nmp2Strategy.CanDecode` (`:205-207`), which requires **both** the `"NMP/2 "`
+  prefix **and** an `"NMP/END"` marker — a test fixture carrying only the header
+  is rejected, so any conformance test must include the footer. (An earlier draft
+  of this spec cited `:167`, which is a `continue` inside the Base64 collection
+  loop, not enforcement.) It already enforces the contract correctly, and it is a
   hot, heavily-tested encoder. It registers its contract and gets a conformance
   test asserting the parser's behaviour matches the declared policy. Rewriting a
   working parser to route through a gate that would produce the same answer buys
@@ -334,6 +434,21 @@ Each of these is a required test, not a suggestion.
    newer}, asserting the disposition matrix above.
 2. `AbsentMeans is null` + absent version → `Refuse`.
 
+**Inheritance on overwrite (§B7) — the tests that stop this stream being decorative**
+3a. A memory with an unknown key, **re-stored with entirely new content**, still
+    carries the unknown key afterwards. A round-trip test cannot substitute for
+    this: it exercises one object, and `remember` builds a new one.
+3b. The same for `append`.
+3c. Re-storing a memory whose sidecar declares `v: 2` is **refused**, because the
+    rebuilt entry inherits version 2. This is the mechanism that protects a newer
+    memory from an older build, and it is what makes §B5's per-entry gate
+    sufficient in place of a whole-scope lockout.
+3d. After that refusal, the memory's **body on disk is unchanged** — `StoreAsync`'s
+    rollback put the previous content back, so content and metadata still agree.
+    This is the property that makes leaving body writes ungated safe.
+3e. `BuildDerivedEntry`'s `prior` parameter is required, not optional — a compile
+    check, asserted by the absence of a default in the signature.
+
 **Round-trip preservation**
 3. A sidecar carrying an unknown key survives read → write with the key intact.
 4. Specifically `"description"` — the live `MetaJsonMerger` instance — survives.
@@ -347,9 +462,16 @@ Each of these is a required test, not a suggestion.
    for the same entry.
 
 **Read-only enforcement**
-8. A scope containing a `v: 2` sidecar refuses `remember`; the exception names the
-   scope, the memory and both versions.
-9. A *different* scope in the same workspace still writes normally.
+8. Re-storing the `v: 2` memory itself refuses; the exception names the memory and
+   both versions.
+8a. `WriteSidecars` refuses a **list** containing one newer entry **before writing
+   any of it** — assert a writable sibling in that same list was not written. A
+   mid-loop refusal leaving a partial write is the failure class Stream A closed.
+8b. `forget` on the `v: 2` memory **succeeds** — deletion is allowed.
+9. Remembering an *unrelated* memory into the same scope succeeds, and a
+   *different* scope writes normally.
+9a. Writing N memories into one scope performs no per-write index read, guarding
+   against re-introducing finding H5's O(N²).
 10. `search` and `recall` still return the `v: 2` memory, with its unknown fields
     present.
 11. **Read-time forward-fill does not rewrite a `v: 2` sidecar** — the file's bytes
@@ -377,6 +499,42 @@ Each of these is a required test, not a suggestion.
     fails a test rather than passing silently.
 
 ---
+
+## Part F — Facts checked against the code, not assumed
+
+An adversarial pass over this spec and its plan found seven wrong claims and
+eleven hazards before any implementer ran. The corrections are folded in above;
+these are the remaining facts an implementer will otherwise get wrong.
+
+- **`ArtifactEntry` appears in four `JsonSerializerContext`s**, not two:
+  `FileStoreJsonContext`, `ScriniaMcpJsonContext` (`MemoryTools.Skills.cs:39`),
+  `BundleJsonContext` (transitively, via `BundleIndex`), and the tests' `TestCtx`.
+  Source generation regenerates all four from the type, so none *drops* the new
+  members — but `ScriniaMcpJsonContext`'s options differ, so the no-churn check
+  must cover it.
+- **Any test of the extension bucket must use a source-generated context.** A
+  hand-built reflection `JsonSerializerOptions` does not exercise the
+  `{ get; init; }` failure that makes this design's `{ get; set; }` mandatory, so
+  a reflection-based test would let the whole constraint ship untested.
+  `ArtifactEntrySerializationTests.TestCtx` is the existing source-gen fixture.
+- **`CachedIndex` is constructed at five sites**, not three, and its constructor is
+  **expression-bodied** — it must be converted to a block before anything can be
+  added. The conclusion that no call site changes still holds.
+- **`ReadSidecarMeta<T>` catches only `JsonException`**, unlike `ReadSidecarRaw`'s
+  blanket catch, so an `IOException` already escapes it today. The skill/agent
+  gate must not add a throw there.
+- **`BundleLegacyKeys.NormalizeIndex` mutates the raw `JsonObject` before
+  deserialization.** Once the bucket exists, any pre-Merge-3 key it does not
+  rewrite will be captured and then written into the user's store on import —
+  new behaviour, and it needs a decision at implementation time rather than a
+  surprise.
+- **`TestHelpers.StoreScope`** (`tests/Scrinia.Tests/TestHelpers.cs:97`) is the
+  existing temp-workspace helper, exposing `WorkspaceDir` and `TempDir`. Do not
+  write a new one; the two `TempWorkspace` types in the migration tests are
+  private nested classes and are not reusable.
+- **There is no `FileMemoryStore.Store(...)`.** Writes are
+  `await StoreAsync(new MemoryWrite(Name, Scope, Content))` — note **Name first,
+  then Scope**.
 
 ## Part E — Explicitly out of scope
 
