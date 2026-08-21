@@ -603,10 +603,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// write lock, materialising the store first. Every write goes through here so that
     /// "writes materialize, reads do not" holds in one place.
     /// </summary>
-    private T WithExclusiveLock<T>(string scope, Func<T> body)
+    private T WithExclusiveLock<T>(string scope, Func<T> body, TimeSpan? timeout = null)
     {
         EnsureMaterialized(scope);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout);
         var lk = GetIndexLock(scope);
         lk.EnterWriteLock();
         try
@@ -619,8 +619,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private void WithExclusiveLock(string scope, Action body) =>
-        WithExclusiveLock(scope, () => { body(); return true; });
+    private void WithExclusiveLock(string scope, Action body, TimeSpan? timeout = null) =>
+        WithExclusiveLock(scope, () => { body(); return true; }, timeout);
+
+    /// <summary>
+    /// Test-only seam for <see cref="WithExclusiveLock(string, Action, TimeSpan?)"/>, which is
+    /// private because every production write reaches it through a named store operation. Exists
+    /// so the timeout-forwarding contract can be pinned without widening the real API.
+    /// </summary>
+    internal void InvokeWithExclusiveLockForTest(string scope, Action body, TimeSpan? timeout = null)
+        => WithExclusiveLock(scope, body, timeout);
 
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {

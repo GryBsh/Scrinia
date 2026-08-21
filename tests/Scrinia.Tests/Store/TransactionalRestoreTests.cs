@@ -39,4 +39,27 @@ public sealed class TransactionalRestoreTests
                 because: "SaveIndex's orphan sweep is unchanged by this work — only import "
                        + "stops using it");
     }
+
+    [Fact]
+    public void WithExclusiveLock_ForwardsAnExplicitTimeoutToFileLock()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+
+        // Hold the scope's cross-process lock from outside the store, so the store's own
+        // acquisition must wait and then give up.
+        string lockPath = Path.Combine(scope.TempDir, "notes", ".lock");
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+
+        using var held = FileLock.AcquireExclusive(lockPath);
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        Action tooSlow = () => store.InvokeWithExclusiveLockForTest(
+            Scope, () => { }, TimeSpan.FromMilliseconds(300));
+
+        tooSlow.Should().Throw<FileLockTimeoutException>(
+            because: "an explicit timeout must reach FileLock rather than being ignored");
+        elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3),
+            because: "it must have used the 300ms timeout, not FileLock's 5s default");
+    }
 }
