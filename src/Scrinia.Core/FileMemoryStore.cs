@@ -1807,9 +1807,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // rewrite — the exact bug this task exists to close.
             SchemaVersion: prior?.SchemaVersion)
         {
-            // COPIED, never aliased: LoadIndex hands cached entries out BY REFERENCE, so assigning
-            // prior.Unknown directly would make this entry and the cached one share one Dictionary,
-            // and WriteSidecarCore's ordinal sort would then mutate the cache in place.
+            // COPIED, never aliased.
+            //
+            // An earlier version of this comment justified the copy by claiming WriteSidecarCore's
+            // ordinal sort would mutate the cache in place. THAT IS FALSE and is corrected here
+            // rather than deleted, because the false version is the more dangerous artefact: a
+            // reader who checks it finds it wrong and removes the copy as cargo cult. The sort
+            // does `entry with { Unknown = ...ToDictionary() }`, allocating a new dictionary on a
+            // new record; it cannot mutate anything in place.
+            //
+            // The real reason: Unknown is `{ get; set; }` (System.Text.Json refuses an init-only
+            // extension-data property on a record with a parameterized constructor), and Upsert
+            // installs the rebuilt entry into _indexCache while LoadIndex hands cached entries out
+            // BY REFERENCE. An alias would therefore put one mutable Dictionary in two places, one
+            // of which is shared cache state, and the setter makes writing to it legal. No caller
+            // does that today. The copy is what keeps it from becoming a bug when one does.
             Unknown = prior?.Unknown is { } u ? new Dictionary<string, JsonElement>(u) : null
         });
 

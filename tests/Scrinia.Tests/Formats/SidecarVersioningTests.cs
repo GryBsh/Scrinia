@@ -362,6 +362,35 @@ public sealed partial class SidecarVersioningTests
     /// helper would fail for a caching reason that has nothing to do with
     /// <c>BuildDerivedEntry</c>.
     /// </summary>
+    /// <summary>
+    /// The rebuilt entry's Unknown dictionary must be a COPY of the prior entry's, not the same
+    /// instance.
+    ///
+    /// <para>This constraint was deliberate, commented, load-bearing — and completely untested:
+    /// replacing the copy with a plain alias left the entire suite green (1862 passed, 0 failed).
+    /// <c>NotBeSameAs</c> is the assertion that discriminates; <c>BeEquivalentTo</c> alone passes
+    /// under both.</para>
+    ///
+    /// <para>Why it matters: Unknown is <c>{ get; set; }</c> and Upsert installs the rebuilt entry
+    /// into <c>_indexCache</c>, which LoadIndex hands out BY REFERENCE. An alias puts one mutable
+    /// Dictionary in two places, one of them shared cache state.</para>
+    /// </summary>
+    [Fact]
+    public async Task ReStoring_DoesNotAliasThePriorEntrysUnknownDictionary()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
+        var prior = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
+
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["new content"]));
+        var rebuilt = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
+
+        rebuilt.Unknown.Should().NotBeSameAs(prior.Unknown);
+        rebuilt.Unknown.Should().BeEquivalentTo(prior.Unknown);
+    }
+
     private static void AddUnknownKeyToSidecarOnDisk(
         TestHelpers.StoreScope scope, string storeScope, string name, string key)
     {
