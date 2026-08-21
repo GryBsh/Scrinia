@@ -26,15 +26,19 @@ namespace Scrinia.Core;
 /// (<c>WeightedAttributeScorer.ScoreEntryTerm</c> matches attribute VALUES, never keys), so an entry
 /// with demonstrable inbound refs outranked the real orphans.</para>
 ///
-/// <para><b>The clear is two writes, not one</b> — and its reason has expired. Bundling the
-/// keyword removal into the same mutation as the attribute removal made the remote store refuse
-/// BOTH, leaving a non-orphan marked <c>orphan:true</c> indefinitely; splitting them guaranteed the
-/// attribute cleared even when the keyword could not. With one store, both carriers live in the
-/// same sidecar and one mutation could clear them together, atomically, for one write instead of
-/// two on what is the COMMON path (marking deliberately leaves a legacy entry's keyword alone, so
-/// dual-marked entries are the normal migration outcome). Left as two deliberately, rather than
-/// merged in passing: it is a behaviour change to a sink that fires on every store event, not
-/// dead-code removal, and it belongs in its own change with its own tests.</para>
+/// <para><b>The clear is one write.</b> It was two, and the reason was entirely remote: the
+/// metadata endpoint refused a body that changed <c>Keywords</c>, so bundling the keyword removal
+/// into the attribute's mutation made the server refuse BOTH and leave a non-orphan marked
+/// <c>orphan:true</c> indefinitely. Splitting them guaranteed the attribute cleared even when the
+/// keyword could not. With one store there is one sidecar and the entry is already in hand inside
+/// the callback, so both carriers come off together — which matters because this is the COMMON
+/// path, not a corner: marking deliberately leaves a legacy entry's keyword alone, so dual-marked
+/// entries are the normal outcome of migration.</para>
+///
+/// <para>Merging them also retired the pre-gate that stood in front of the second write. It read
+/// one scope's index to decide whether a legacy keyword was there at all, which was worth doing
+/// when the alternative was a wasted lock acquisition and entry read; inside a callback that
+/// already holds the entry, the same question is a field access.</para>
 ///
 /// <para>The marker is a <see cref="KnownAttributes.StateMarkerKeys">state marker</see>, so it is
 /// excluded from the entity graph: every entry sharing one boolean value would otherwise form a
@@ -81,25 +85,6 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
     public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask; // no-op for now
-
-    /// <summary>True when the source entry still carries the pre-attribute <c>orphan</c> KEYWORD.
-    ///
-    /// <para>Reads the ONE scope that can hold the answer. This is a question about a named entry
-    /// in a known scope, so <see cref="IMemoryStore.LoadIndex"/> answers it at one-scope cost —
-    /// normally a warm-cache hit. It previously ran
-    /// <see cref="IMemoryStore.AnyScoped"/> over every scope with a predicate that then filtered
-    /// back down to this one scope and name. <c>AnyScoped</c> short-circuits on a MATCH, so the
-    /// no-legacy-entries case — the one every migrated workspace is in, and the one the old
-    /// comment here claimed was cheap — was precisely the case that always scanned the entire
-    /// store to completion.</para>
-    ///
-    /// <para>The write that follows re-checks against its own freshly-read entry, so this is a
-    /// gate, not the correctness condition.</para></summary>
-    private static bool CarriesLegacyOrphanKeyword(IMemoryStore store, string scope, string subject) =>
-        store.LoadIndex(scope).Any(entry =>
-            store.SanitizeName(entry.Name)
-                .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase)
-            && entry.Keywords?.Any(k => k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase)) == true);
 
     private static Task AutoLinkAndDetectOrphans(string qualifiedName, string content, IMemoryStore store)
     {
@@ -163,24 +148,27 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                     && sa.Entry.Attributes.TryGetValue("ref", out var refs)
                     && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
 
-            // ── Write 1: the attribute, which is the marker on both backends ──────────
+            // ── One write, covering both carriers ─────────────────────────────────────
             //
-            // Deliberately does NOT touch Keywords, and that separation is the point. Marking
-            // leaves a legacy entry's keyword in place, so dual-marked entries are the NORMAL
-            // migration outcome — which means the clear below is the common case, not a rare one.
-            // Bundling the keyword removal into this same mutation made the remote store refuse
-            // the whole thing, so NEITHER carrier was cleared and a non-orphan kept `orphan:true`
-            // forever. That store is gone; see the type summary for why the split is still here.
-            bool attributeWriteAttempted = false;
+            // MARKING adds the attribute and deliberately does NOT touch Keywords: an entry that
+            // still qualifies keeps the spelling every pre-migration entry uses, so it stays
+            // findable while it migrates onto the new carrier. That is what makes the dual-marked
+            // state the normal outcome, and therefore what makes CLEARING the common path.
+            //
+            // CLEARING removes whichever carriers are present, together. It used to be two writes
+            // because a remote PATCH refused Keywords changes; see the type summary.
+            bool writeAttempted = false;
             bool markerDroppedByTheKeyCap = false;
-            bool attributeWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
+            bool writePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
             {
                 bool markedByAttribute = sourceEntry.Attributes is not null
                     && sourceEntry.Attributes.ContainsKey(OrphanKey);
 
-                if (!hasInboundRefs && !markedByAttribute)
+                if (!hasInboundRefs)
                 {
-                    attributeWriteAttempted = true;
+                    if (markedByAttribute) return null; // already marked — nothing to change
+
+                    writeAttempted = true;
                     var merged = KnownAttributes.Merge(
                         sourceEntry.Attributes, new() { [OrphanKey] = [OrphanValue] });
 
@@ -196,83 +184,61 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                     return sourceEntry with { Attributes = merged };
                 }
 
-                if (hasInboundRefs && markedByAttribute)
+                // Has inbound refs: strip every marker carrier the entry still holds. Both
+                // conditions are checked against THIS entry rather than a gate computed outside,
+                // so the decision is made against the value about to be written.
+                bool carriesLegacyKeyword = sourceEntry.Keywords is not null
+                    && sourceEntry.Keywords.Any(k => k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase));
+
+                if (!markedByAttribute && !carriesLegacyKeyword)
+                    return null; // not marked either way — nothing to change
+
+                writeAttempted = true;
+                var updated = sourceEntry;
+
+                if (markedByAttribute)
                 {
-                    attributeWriteAttempted = true;
                     var cleared = new Dictionary<string, string[]>(
                         sourceEntry.Attributes!, StringComparer.OrdinalIgnoreCase);
                     cleared.Remove(OrphanKey);
-                    return sourceEntry with { Attributes = cleared.Count > 0 ? cleared : null };
+                    updated = updated with { Attributes = cleared.Count > 0 ? cleared : null };
                 }
-                return null; // nothing to change
-            });
 
-            // ── Write 2: the legacy keyword carrier, best-effort ──────────────────────
-            //
-            // Only ever a REMOVAL, only when the entry has inbound refs, and only for an entry that
-            // actually carries the pre-attribute marker. Leaving it is not inert:
-            // WeightedAttributeScorer.ScoreEntryTerm matches attribute VALUES and never keys, so a
-            // stale "orphan" keyword scores above a genuine attribute-era orphan on a bare "orphan"
-            // query — an entry with demonstrable inbound refs outranking the real ones.
-            //
-            // Gated on hasInboundRefs, not on a listing shared with the check above. The two
-            // questions are not the same shape: "does ANYTHING reference this memory?" spans the
-            // store, while "does THIS entry carry the legacy keyword?" is about one entry in one
-            // known scope, so CarriesLegacyOrphanKeyword reads that scope alone instead of
-            // re-walking everything. The hasInboundRefs gate means a store with no inbound refs —
-            // the common case — never asks the second question at all.
-            //
-            // Cost, honestly: the whole-store pass short-circuits and the scope read is a
-            // warm-cache hit, so this is strictly cheaper than the single ListScoped(null) it
-            // replaced. The gate is what keeps every OTHER store event from attempting a write;
-            // dropping it and letting the callback decline would trade that for a lock acquisition
-            // and an entry read on every such event.
-            //
-            // The callback re-checks against the freshly-read entry, so the gate is an
-            // optimization and not the correctness condition.
-            bool keywordWriteAttempted = false;
-            bool keywordWritePersisted = true;
-            if (hasInboundRefs && CarriesLegacyOrphanKeyword(store, sourceScope, sourceSubject))
-            {
-                keywordWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
+                if (carriesLegacyKeyword)
                 {
-                    if (sourceEntry.Keywords is null
-                        || !sourceEntry.Keywords.Any(k => k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase)))
-                        return null;
-
-                    keywordWriteAttempted = true;
-                    return sourceEntry with
+                    // Only the marker goes. Leaving it is not inert:
+                    // WeightedAttributeScorer.ScoreEntryTerm matches attribute VALUES and never
+                    // keys, so a stale "orphan" keyword scores above a genuine attribute-era orphan
+                    // on a bare "orphan" query — an entry with demonstrable inbound refs
+                    // outranking the real ones.
+                    updated = updated with
                     {
-                        Keywords = sourceEntry.Keywords
-                            .Where(k => !k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase))
-                            .ToArray(),
+                        Keywords = [.. sourceEntry.Keywords!.Where(
+                            k => !k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase))],
                     };
-                });
-            }
+                }
+
+                return updated;
+            });
 
             // A refusal must not be silent. Everything else this sink does is best-effort by
             // design, but "the store would not take the write" is a different thing from "there
             // was nothing to write", and the two used to be indistinguishable because the result
-            // was discarded. Same channel this class already reports its own failures on. The two
-            // writes report separately, from when a refused keyword clean-up was the EXPECTED
-            // remote outcome and must not read as the attribute having failed. Against the one
-            // surviving store either refusal is a genuine fault, and both are still worth
-            // distinguishing: the attribute is the marker, the keyword is only legacy residue.
+            // was discarded. Same channel this class already reports its own failures on.
+            //
+            // One message now, because there is one write. There were two, reporting separately,
+            // from when a refused keyword clean-up was the EXPECTED remote outcome and must not
+            // read as the attribute having failed. With one store a refusal is a refusal, and it
+            // leaves every carrier the entry had exactly as it was.
             if (markerDroppedByTheKeyCap)
                 Console.Error.WriteLine(
                     $"[scrinia:warn] MaintenanceEventSink: '{sourceQualified}' already carries " +
                     $"{KnownAttributes.MaxAttributes} attribute keys, so its '{OrphanKey}' marker " +
                     "could not be added.");
-            else if (attributeWriteAttempted && !attributeWritePersisted)
+            else if (writeAttempted && !writePersisted)
                 Console.Error.WriteLine(
                     $"[scrinia:warn] MaintenanceEventSink: the store refused the orphan update for " +
                     $"'{sourceQualified}'. Its '{OrphanKey}' marker is now out of date.");
-
-            if (keywordWriteAttempted && !keywordWritePersisted)
-                Console.Error.WriteLine(
-                    $"[scrinia:warn] MaintenanceEventSink: the store refused to remove the legacy " +
-                    $"'{OrphanKey}' keyword from '{sourceQualified}'. Its '{OrphanKey}' attribute is " +
-                    "correct; the stale keyword remains until the memory is re-stored.");
         }
         catch
         {

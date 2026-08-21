@@ -1,7 +1,9 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
@@ -512,14 +514,16 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     }
 
     /// <summary>
-    /// The local half of the two-write split. A dual-marked entry — the normal outcome of migration,
-    /// since marking adds the attribute and leaves the keyword — must come out of a clear with
-    /// BOTH carriers gone when the store can take both writes. The remote half, where the keyword
-    /// write is refused and the attribute clear must land anyway, is pinned in
-    /// <c>Scrinia.Server.Tests.RemoteLoadIndexTests.MaintenanceSink_ClearsTheOrphanAttributeRemotely_…</c>.
+    /// A dual-marked entry — the normal outcome of migration, since marking adds the attribute and
+    /// leaves the keyword — must come out of a clear with BOTH carriers gone. Driven end to end
+    /// through a real store here; that it happens in a SINGLE mutation is pinned separately by
+    /// <see cref="ClearingBothCarriers_IsASinglePersistedWrite"/>, which counts the writes.
+    /// <para>This used to be named for taking "both writes", and paired with a deleted server test
+    /// covering the remote case where the keyword write was refused and the attribute clear had to
+    /// land anyway. There is one write and one store now.</para>
     /// </summary>
     [Fact]
-    public async Task DualMarkedEntry_HasBothCarriersCleared_WhenTheStoreTakesBothWrites()
+    public async Task DualMarkedEntry_HasBothCarriersCleared()
     {
         var store = MemoryStoreContext.Current!;
         await _tools.Remember(["Content of the dual-marked entry."], "/test/dualmarked");
@@ -540,10 +544,9 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
         (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
-            "the attribute clear is the first write and must always land");
+            "the entry has an inbound ref, so the attribute marker must go");
         entry.Keywords.Should().NotContain("orphan",
-            "and the second write cleans up the legacy carrier — locally both succeed, so splitting " +
-            "them costs nothing here while being the only thing that works remotely");
+            "and the legacy carrier goes with it, in the same mutation");
     }
 
     /// <summary>The other half, so the clearing above cannot be implemented as "always strip the
@@ -614,5 +617,114 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         captured.ToString().Should().Contain(KnownAttributes.MaxAttributes.ToString(
             System.Globalization.CultureInfo.InvariantCulture),
             "and the report must name the cap, or it sends the reader looking for a store fault");
+    }
+
+    /// <summary>
+    /// Clearing an orphan marker is ONE persisted mutation, not two.
+    ///
+    /// <para>It used to be two, and the reason was entirely remote: the metadata endpoint refused a
+    /// body that changed <c>Keywords</c>, so bundling the keyword removal into the attribute's
+    /// mutation made the server refuse BOTH and leave a non-orphan marked <c>orphan:true</c>
+    /// forever. Splitting them guaranteed the attribute cleared even when the keyword could not.
+    /// With one store there is one sidecar, and the entry is already in hand inside the callback,
+    /// so both carriers come off together.</para>
+    ///
+    /// <para>This is the common path, not a corner: marking deliberately leaves a legacy entry's
+    /// keyword alone, so dual-marked entries are the normal outcome of migration.</para>
+    ///
+    /// <para>Counted through <c>Upsert</c> rather than <c>TryUpdateEntry</c> on purpose.
+    /// <c>TryUpdateEntry</c>'s interface default is what a <see cref="FakeMemoryStore"/> subclass
+    /// inherits, and the interface mapping is fixed at <see cref="FakeMemoryStore"/> — a derived
+    /// re-declaration would not intercept a call made through <c>IMemoryStore</c>, so a counter
+    /// there would read zero and pass for the wrong reason. <c>Upsert</c> is virtual, is what the
+    /// default calls once per mutation that returns a value, and is therefore an honest count of
+    /// the writes that actually landed.</para>
+    /// </summary>
+    [Fact]
+    public async Task ClearingBothCarriers_IsASinglePersistedWrite()
+    {
+        var store = new CountingStore();
+        store.Upsert(new ArtifactEntry("target", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Keywords: ["orphan", "notes"],
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["orphan"] = ["true"],
+            }));
+        store.Upsert(new ArtifactEntry("referrer", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["ref"] = ["local:target"],
+            }));
+        store.Writes.Clear();
+
+        await _sink.OnStoredAsync("target", ["Content with no outbound references."], store,
+            CancellationToken.None);
+
+        var entry = store.LoadIndex().Single(e => e.Name == "target");
+
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
+            because: "the entry has an inbound ref, so the attribute marker must go");
+        entry.Keywords.Should().NotContain("orphan",
+            because: "and the legacy carrier must go with it — leaving it lets a demonstrably " +
+                     "non-orphan entry outrank the real orphans on a bare \"orphan\" query");
+        entry.Keywords.Should().Contain("notes",
+            because: "only the marker is removed; the entry's own keywords are not collateral");
+
+        store.Writes.GetValueOrDefault("target").Should().Be(1,
+            because: "both carriers live in one sidecar, so clearing them is one mutation. The " +
+                     "second write existed because a remote PATCH refused Keywords changes, and " +
+                     "that store is gone");
+    }
+
+    /// <summary>
+    /// The counterpart, so the single write above cannot be implemented as "always strip both":
+    /// an entry that is STILL an orphan gains the attribute and KEEPS its legacy keyword, which is
+    /// what makes the dual-marked state the normal migration outcome in the first place.
+    /// </summary>
+    [Fact]
+    public async Task MarkingAnOrphan_LeavesTheLegacyKeyword_AndIsAlsoOneWrite()
+    {
+        var store = new CountingStore();
+        store.Upsert(new ArtifactEntry("lonely", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Keywords: ["orphan"]));
+        store.Writes.Clear();
+
+        await _sink.OnStoredAsync("lonely", ["Nothing points at this."], store,
+            CancellationToken.None);
+
+        var entry = store.LoadIndex().Single(e => e.Name == "lonely");
+
+        entry.Attributes.Should().ContainKey("orphan",
+            because: "nothing references it, so it migrates onto the attribute carrier");
+        entry.Keywords.Should().Contain("orphan",
+            because: "marking does not strip the legacy keyword — the entry still qualifies for " +
+                     "the marker, and dropping one carrier while adding another would make it " +
+                     "briefly unfindable by the spelling every pre-migration entry uses");
+        store.Writes.GetValueOrDefault("lonely").Should().Be(1);
+    }
+
+    /// <summary>
+    /// A <see cref="FakeMemoryStore"/> that persists and counts what it persisted. Overrides the
+    /// three members the orphan path reaches — <c>LoadIndex</c> for the entry, <c>ListScoped</c>
+    /// for the whole-store inbound-ref question that <c>AnyScoped</c>'s default reads through, and
+    /// <c>Upsert</c> for the write itself — and leaves the rest of the shared double alone.
+    /// </summary>
+    private sealed class CountingStore : FakeMemoryStore
+    {
+        private readonly List<ArtifactEntry> _entries = [];
+
+        public Dictionary<string, int> Writes { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public override IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => _entries;
+
+        public override List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null) =>
+            [.. _entries.Select(e => new ScopedArtifact("local", e))];
+
+        public override void Upsert(ArtifactEntry entry, string scope = "local")
+        {
+            Writes[entry.Name] = Writes.GetValueOrDefault(entry.Name) + 1;
+            _entries.RemoveAll(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+            _entries.Add(entry);
+        }
     }
 }
