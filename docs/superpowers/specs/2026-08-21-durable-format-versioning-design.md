@@ -202,18 +202,41 @@ a newer sidecar is silently dropped from the index — which is Critical C1's
 failure class, rebuilt by hand inside the fix for C2. The gate is evaluated after
 the try/catch, on the successfully-deserialized entry.
 
-`ReadSidecarRaw` returns the entry plus its disposition, and **both** of its
-callers handle it — the whole-scope load (`LoadEntriesFromSidecarsRaw`) and the
-single-entry one (`LoadSidecar`). That method's own doc comment states it is "the
-single read rule shared by" the two "so the two cannot drift"; adding a
-disposition that only one caller reads would break exactly the property it
-claims. `LoadEntriesFromSidecarsRaw`
-folds "any entry in this scope disposed `LoadReadOnly`" into a per-scope flag,
-recorded alongside the offending memory's name and declared version so the error
-message can name them. A `LoadReadOnly` entry **is still loaded** — read-only
-means readable.
+**`ReadSidecarRaw` keeps its `ArtifactEntry?` signature.** An earlier draft of this
+spec had it return the entry *plus* a disposition, threaded outward. That is
+rejected: `ArtifactSidecar.OnNewer` is `LoadReadOnly`, never `Refuse`, so the
+disposition has exactly one non-`Load` value, every consumer would derive it
+identically, and it is already recoverable from a field on the entry itself.
+Threading it through three call layers — `LoadEntriesFromSidecarsRaw`,
+`LoadEntriesFromSidecars`, `EnumerateRawForMigration` — two of which do not care,
+is ceremony that buys nothing.
+
+Instead, one helper owns the question:
+
+```csharp
+// Scrinia.Core.Formats
+public static bool IsReadOnly(ArtifactEntry entry) =>
+    FormatVersion.Evaluate(DurableFormats.ArtifactSidecar, entry.SchemaVersion)
+        == FormatDisposition.LoadReadOnly;
+```
+
+The gate is still evaluated **outside** `ReadSidecarRaw`'s `catch` — nothing in the
+read path may throw on a version — and a `LoadReadOnly` entry **is still loaded**,
+because read-only means readable.
 
 Corrupt sidecars keep their current behaviour exactly: skipped, not refused.
+
+**Read-time forward-fill must skip the persist, not catch its failure.**
+`LoadIndexUnsafe`'s write-back (`:768`) is wrapped in
+`catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)`.
+`ScopeReadOnlyException` is neither, so a level-1 refusal thrown from inside that
+loop would **propagate out of a plain read** and break `search()` on any scope
+holding a newer sidecar — turning a data-preservation fix into a data-availability
+outage. Widening the catch is the wrong repair: it would mean attempting a write
+already known to be refused and then swallowing the result. The loop checks
+`IsReadOnly(entry)` first and skips the `WriteSidecar` call, keeping the in-memory
+upgrade (`entries[i] = upgraded`), which is what makes the current read correct.
+The entry simply stays un-migrated on disk, which is the intended outcome.
 
 ### B5. Write refusal, at two levels
 
@@ -224,9 +247,13 @@ of them holds the exclusive lock.
 sidecar write call sites funnel through it. It refuses any entry whose
 `SchemaVersion > ArtifactSidecar.Current`, throwing
 `Scrinia.Core.Formats.ScopeReadOnlyException` — the same type level 2 throws, so
-a caller has one type to catch regardless of which level fired. This covers read-time
-forward-fill, which reaches `WriteSidecar` from inside `LoadIndex`'s *shared*
-lock (`:768`) and never passes through `WithExclusiveLock`.
+a caller has one type to catch regardless of which level fired.
+
+This is a **backstop, and after B4 it should be unreachable from any enumerated
+path**: forward-fill now checks `IsReadOnly` before calling `WriteSidecar`, and
+level 2 stops the ordinary write verbs earlier still. It exists for the path
+nobody enumerated — which is the whole lesson of C1, where the sweep was closed
+and the mechanism was not. A test asserts it fires when called directly.
 
 **Level 2 — the scope write gate, for a decent error message.** A `remember`,
 `append`, `forget`, `compact` or `restore` targeting a scope flagged read-only
@@ -328,6 +355,13 @@ Each of these is a required test, not a suggestion.
 11. **Read-time forward-fill does not rewrite a `v: 2` sidecar** — the file's bytes
     are unchanged after a `search()` that triggers attribute migration on its
     siblings.
+11a. **That same `search()` does not throw.** The sidecar must be legacy-shaped so
+    `AttributeMigration.MigratesTo` returns true, which is the only condition under
+    which the forward-fill loop reaches a write at all. Without that setup the test
+    passes vacuously and proves nothing — a `v: 2` sidecar in modern shape never
+    enters the branch. This is the regression guard for the `catch (… IOException
+    or UnauthorizedAccessException)` filter that `ScopeReadOnlyException` would
+    otherwise escape.
 12. **A `v: 2` sidecar is not silently dropped from the index** — it appears in
     `LoadIndex`, proving the gate is outside `ReadSidecarRaw`'s catch. This is the
     C1-class regression test.
