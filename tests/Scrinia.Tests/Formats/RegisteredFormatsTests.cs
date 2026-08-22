@@ -248,9 +248,25 @@ public class RegisteredFormatsTests
             Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "newer-probe.meta.json"),
             DurableFormats.SkillMeta.Current + 1);
 
+        string skillPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "newer-probe.md");
+        string versionsDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "versions");
+        string bodyBefore = File.ReadAllText(skillPath);
+        int versionsBefore = Directory.Exists(versionsDir)
+            ? Directory.GetFiles(versionsDir).Length : 0;
+
         var act = async () => await tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]);
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
+
+        // Asserting only that it threw is what let a refuse-AFTER-write ship: the archive and the
+        // body overwrite both happen before the sidecar is touched, and neither has a rollback, so
+        // a late refusal destroyed the previous prompt and still reported failure. These two
+        // assertions are the difference between "it refused" and "it refused before doing damage".
+        File.ReadAllText(skillPath).Should().Be(bodyBefore,
+            "a refused rewrite must not have overwritten the prompt");
+        (Directory.Exists(versionsDir) ? Directory.GetFiles(versionsDir).Length : 0)
+            .Should().Be(versionsBefore,
+                "a refused rewrite must not deposit a versions/ entry for a change it rejected");
     }
 
     /// <summary>
@@ -269,9 +285,21 @@ public class RegisteredFormatsTests
             Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.meta.json"),
             DurableFormats.AgentMeta.Current + 1);
 
+        string agentPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.md");
+        string agentVersions = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "versions");
+        string bodyBefore = File.ReadAllText(agentPath);
+        int versionsBefore = Directory.Exists(agentVersions)
+            ? Directory.GetFiles(agentVersions).Length : 0;
+
         var act = async () => await tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
+
+        File.ReadAllText(agentPath).Should().Be(bodyBefore,
+            "a refused rewrite must not have overwritten the config");
+        (Directory.Exists(agentVersions) ? Directory.GetFiles(agentVersions).Length : 0)
+            .Should().Be(versionsBefore,
+                "a refused rewrite must not deposit a versions/ entry for a change it rejected");
     }
 
     /// <summary>Stamps a "v" onto an existing sidecar by hand. The typed record cannot express a

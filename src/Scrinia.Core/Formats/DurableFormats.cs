@@ -50,7 +50,7 @@ public static class DurableFormats
     /// the gate.</para>
     /// </summary>
     public static readonly FormatContract BundleEntry =
-        new("bundle-entry", Current: 1, AbsentMeans: 1,
+        new("bundle-entry", Current: ArtifactSidecar.Current, AbsentMeans: 1,
             FormatDisposition.Load, FormatDisposition.Refuse);
 
     /// <summary>A bundle's <c>manifest.json</c>. Transport, not storage — refusing a newer

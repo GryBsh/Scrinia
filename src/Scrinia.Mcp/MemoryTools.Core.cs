@@ -164,13 +164,17 @@ public sealed partial class ScriniaMcpTools
             FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 
+            // BEFORE the archive and the body write, not after. Both are side effects with no
+            // rollback, so a refusal raised later leaves the previous config destroyed and its
+            // metadata describing content that no longer exists.
+            var existingMeta = ReadSidecarMetaOrRefuse(filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
+
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
 
             string agentContent = string.Join("\n", content);
             await File.WriteAllTextAsync(filePath, agentContent, cancellationToken);
 
             string now = DateTimeOffset.UtcNow.ToString("o");
-            var existingMeta = ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
             var meta = new AgentFileMeta(
                 CreatedAt: existingMeta?.CreatedAt ?? now,
                 UpdatedAt: now,
