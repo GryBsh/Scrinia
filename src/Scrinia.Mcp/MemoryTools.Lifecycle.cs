@@ -762,8 +762,29 @@ public sealed partial class ScriniaMcpTools
             if (!TryMergeCarriedFields(oursNode, theirsNode))
                 return false;
 
+            // SCHEMA VERSION. Refuse to auto-resolve when the two sides declare different
+            // versions: this resolver picks a base node and overlays onto it, so the loser's
+            // version and any field it carries that this build cannot model are dropped. That is
+            // the cross-machine case the sidecar versioning exists for, and it is why the git
+            // driver escalates here too. The parity suite pins the two against each other.
+            if (ReadSchemaVersion(oursNode) != ReadSchemaVersion(theirsNode))
+                return false;
+
             var baseNode = oursNode;
             var otherNode = theirsNode;
+
+            // Carry over keys that exist only on the OTHER side and that nothing here models.
+            // Without this the base-node overlay silently discards the other machine's unknown
+            // fields on every automatic reconcile -- the same loss the git driver had, reached by
+            // the second of the two implementations this rule is forced to have.
+            //
+            // Only UNMODELLED keys: the merge logic below deliberately REMOVES some modelled ones
+            // (keywords when both sides have none, agentKeywords when only one side recorded it),
+            // and a blanket copy would resurrect exactly those deletions.
+            if (baseNode is JsonObject baseObj && otherNode is JsonObject otherObj)
+                foreach (var kv in otherObj)
+                    if (!baseObj.ContainsKey(kv.Key) && !ModelledSidecarKeys.Contains(kv.Key))
+                        baseObj[kv.Key] = kv.Value?.DeepClone();
 
             // The timestamps come from the ONE rule, not from whichever node won the base
             // selection above. Riding along meant createdAt took the winner's value — so an
@@ -890,6 +911,32 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     /// <returns><see langword="false"/> when the two sides disagree — the caller escalates to
     /// manual resolution.</returns>
+    /// <summary>
+    /// Every sidecar key this build models. A key OUTSIDE this set is one neither end understands,
+    /// which is exactly what must survive an automatic reconcile rather than be dropped.
+    ///
+    /// <para><b>Twin of <c>MetaJsonMerger.ModelledKeys</c>.</b> Change one and you must change the
+    /// other; <c>MetaMergeSymmetricParityTests</c> is what enforces that. The duplication is forced
+    /// — the git driver is AOT with no project references — and is the same duplication the
+    /// keyword and timestamp rules already carry.</para>
+    /// </summary>
+    private static readonly HashSet<string> ModelledSidecarKeys = new(StringComparer.Ordinal)
+    {
+        "name", "uri", "originalBytes", "chunkCount", "createdAt", "updatedAt",
+        "contentPreview", "description", "keywords", "agentKeywords",
+        "termFrequencies", "chunkEntries", "codeRefs", "attributes", "fields", "v"
+    };
+
+    /// <summary>The declared schema version, or null when absent. Absent is NOT normalised to the
+    /// current version here: the comparison this feeds only asks whether the two sides AGREE, and
+    /// normalising would make "absent" and an explicit "1" compare equal in one implementation and
+    /// not the other.</summary>
+    private static int? ReadSchemaVersion(JsonNode? node) =>
+        node is JsonObject obj && obj.TryGetPropertyValue("v", out var v)
+            && v is JsonValue jv && jv.TryGetValue<int>(out int parsed)
+                ? parsed
+                : null;
+
     private static bool TryMergeCarriedFields(JsonNode? oursNode, JsonNode? theirsNode) =>
         // Typed per field, and in the driver's own order: string for name/uri/description, long for
         // originalBytes, int for chunkCount. Reading them all as untyped JSON scalars instead would

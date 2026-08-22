@@ -360,7 +360,10 @@ public sealed class MetaJsonMergerTests : IDisposable
         MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig())
             .Should().Be(MetaJsonMerger.MergeResult.Resolved);
 
-        File.ReadAllText(ours).Should().Contain("futureThing");
+        // The VALUE, not just the key: `ours[kv.Key] = null` would satisfy a Contain check while
+        // still having thrown the other machine's data away.
+        using var merged = JsonDocument.Parse(File.ReadAllText(ours));
+        merged.RootElement.GetProperty("futureThing").GetProperty("a").GetInt32().Should().Be(1);
     }
 
     /// <summary>

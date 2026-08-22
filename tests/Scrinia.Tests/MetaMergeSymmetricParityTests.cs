@@ -141,6 +141,25 @@ public sealed class MetaMergeSymmetricParityTests
     public static TheoryData<string, string, string> Cases() => new()
     {
         {
+            // Added after the two implementations were allowed to diverge on exactly this axis:
+            // the git driver gained a version gate and an unknown-key copy while reconcile did
+            // not, and all twelve existing cases stayed green because NONE of them carried a
+            // differing "v" or a one-sided unmodelled key. A parity suite that cannot see the
+            // axis a change moves on is not enforcing parity on that axis.
+            "differing schema versions",
+            Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-02T00:00:00Z\","
+                  + "\"keywords\":[\"auth\"]"),
+            Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-03T00:00:00Z\","
+                  + "\"keywords\":[\"auth\"],\"v\":2")
+        },
+        {
+            "unknown key on one side only",
+            Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-02T00:00:00Z\","
+                  + "\"keywords\":[\"auth\"]"),
+            Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-03T00:00:00Z\","
+                  + "\"keywords\":[\"auth\"],\"futureThing\":{\"a\":1}")
+        },
+        {
             "disjoint keywords, both sides provenance-tagged",
             Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-03T00:00:00Z\","
                   + "\"keywords\":[\"auth\",\"local\"],\"agentKeywords\":[\"local\"]"),
