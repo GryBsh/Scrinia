@@ -148,7 +148,17 @@ public sealed partial class ScriniaMcpTools
     {
         // Two types, two contracts, chosen here rather than passed in so no caller can pair a
         // type with the wrong contract.
-        var contract = typeof(T) == typeof(SkillFileMeta) ? DurableFormats.SkillMeta : DurableFormats.AgentMeta;
+        //
+        // A THIRD type must not fall through. Before this threw, an unregistered sidecar type got
+        // AgentMeta's contract and a null `declared`, which AbsentMeans resolves to Load -- so it
+        // was silently ungated while this comment claimed otherwise. Registering a format is not
+        // optional; the throw makes forgetting it loud at the first write instead of invisible.
+        var contract =
+            typeof(T) == typeof(SkillFileMeta) ? DurableFormats.SkillMeta :
+            typeof(T) == typeof(AgentFileMeta) ? DurableFormats.AgentMeta :
+            throw new ArgumentOutOfRangeException(
+                nameof(meta),
+                $"No DurableFormats contract is registered for sidecar type {typeof(T).Name}.");
 
         int? declared = meta switch
         {
@@ -159,7 +169,10 @@ public sealed partial class ScriniaMcpTools
 
         if (FormatVersion.Evaluate(contract, declared) == FormatDisposition.LoadReadOnly)
             throw new ScopeReadOnlyException(
-                Path.ChangeExtension(filePath, ".meta.json"),
+                // The DIRECTORY, matching what WriteSidecarCore passes. Passing the .meta.json
+                // path here rendered "Scope 'C:\...oo.meta.json' is read-only", which names a
+                // file as a scope and reads as nonsense in a message a user will actually see.
+                Path.GetDirectoryName(filePath) ?? filePath,
                 Path.GetFileNameWithoutExtension(filePath),
                 declared ?? contract.Current,
                 contract.Current);

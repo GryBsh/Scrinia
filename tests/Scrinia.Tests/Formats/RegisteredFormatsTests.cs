@@ -126,12 +126,20 @@ public class RegisteredFormatsTests
                 SchemaVersion = DurableFormats.SkillMeta.Current + 1
             };
 
+            const string sentinel = "{\"createdAt\":\"sentinel-must-survive\"}";
+            File.WriteAllText(metaPath, sentinel);
+
             var act = () => ScriniaMcpTools.WriteSidecarMeta(
                 tempFile, newer, ScriniaMcpJsonContext.Default.SkillFileMeta);
 
             act.Should().Throw<ScopeReadOnlyException>();
-            File.Exists(metaPath).Should().BeFalse(
-                because: "a refused write must not land bytes on disk at all");
+
+            // Assert the sentinel SURVIVES, not that the file is absent. The old assertion was
+            // File.Exists(metaPath).Should().BeFalse() on a path nothing had ever created,
+            // reached only after the Throw assertion had already passed -- it could not fail,
+            // and it could not tell "refused before writing" from "never attempted".
+            File.ReadAllText(metaPath).Should().Be(sentinel,
+                "a refused write must leave the existing sidecar byte-for-byte untouched");
         }
         finally
         {
@@ -218,5 +226,62 @@ public class RegisteredFormatsTests
 
         File.ReadAllText(metaPath).Should().Contain("futureThing",
             "a rewrite must carry forward fields this build has no member for");
+    }
+
+    /// <summary>
+    /// The SKILL path's version carry-forward, pinned. Re-creating a skill whose sidecar was
+    /// written by a newer build must be REFUSED.
+    ///
+    /// <para>Without <c>SchemaVersion: existingMeta?.SchemaVersion</c> the replacement record
+    /// declares no version, so it is not read-only, so the write gate never fires and the newer
+    /// sidecar is silently clobbered. The sibling unknown-keys test asserts only on the bucket
+    /// half and stayed green through exactly that deletion.</para>
+    /// </summary>
+    [Fact]
+    public async Task ReCreatingASkill_WhoseSidecarIsNewer_IsRefused()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/skill/newer-probe", ["Review carefully."]);
+
+        StampVersion(
+            Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "newer-probe.meta.json"),
+            DurableFormats.SkillMeta.Current + 1);
+
+        var act = async () => await tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]);
+
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+    }
+
+    /// <summary>
+    /// The AGENT path's carry-forward, pinned. It received the identical fix as the skill path
+    /// and had no test of its own -- deleting BOTH of its carry-forwards left the whole suite
+    /// green. A symmetric untested path is where the next defect lives.
+    /// </summary>
+    [Fact]
+    public async Task ReWritingAnAgentConfig_WhoseSidecarIsNewer_IsRefused()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/agent/profile", ["you are helpful"]);
+
+        StampVersion(
+            Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.meta.json"),
+            DurableFormats.AgentMeta.Current + 1);
+
+        var act = async () => await tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
+
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+    }
+
+    /// <summary>Stamps a "v" onto an existing sidecar by hand. The typed record cannot express a
+    /// version above Current, because the write gate refuses to persist one.</summary>
+    private static void StampVersion(string metaPath, int version)
+    {
+        File.Exists(metaPath).Should().BeTrue(
+            "the sidecar must exist before it can be stamped: " + metaPath);
+        var obj = JsonNode.Parse(File.ReadAllText(metaPath))!.AsObject();
+        obj["v"] = JsonValue.Create(version);
+        File.WriteAllText(metaPath, obj.ToJsonString());
     }
 }
