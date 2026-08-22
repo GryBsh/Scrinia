@@ -28,13 +28,16 @@ namespace Scrinia.Core.Embeddings;
 ///
 /// Compaction (deletes &gt; 20% of total ops, &gt;=10 deletes) rewrites in SVF3.
 /// Ephemeral scope vectors are stored in-memory only.
-/// Persistent scopes write to {baseDir}/{scope}/vectors.bin with atomic writes for full rewrites,
-/// direct append for single-entry upserts/removes, and one batched append (all deletes then all
-/// adds, one open/close) for <see cref="ReplaceMemoryVectorsAsync"/>. None of the append paths
-/// are atomic against a crash mid-write — see <see cref="ReplaceMemoryVectorsAsync"/>'s remarks.
+    /// Persistent scopes write to {baseDir}/{scope}/vectors.bin with atomic writes for full rewrites
+    /// and direct append for single-entry upserts/removes. Full-memory replacement always uses an
+    /// atomic rewrite so a failed replacement cannot damage the previous durable snapshot.
 /// </summary>
 public sealed class VectorStore : IDisposable, IVectorStore
 {
+    /// <summary>Health observed for one explicitly requested vector scope.</summary>
+    public sealed record ScopeProbeResult(
+        string Scope, bool HasVectorFile, bool IsStale, IReadOnlyList<VectorEntry> Vectors);
+
     private static readonly byte[] MagicSvf1 = "SVF1"u8.ToArray();
     private static readonly byte[] MagicSvf2 = "SVF2"u8.ToArray();
     private static readonly byte[] MagicSvf3 = "SVF3"u8.ToArray();
@@ -49,6 +52,15 @@ public sealed class VectorStore : IDisposable, IVectorStore
     private readonly ConcurrentDictionary<string, int> _scopeDeleteCount = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _scopeOpCount = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _staleQuarantines = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Test-only fault injection point for the atomic full-rewrite boundary.</summary>
+    private static readonly AsyncLocal<Func<string, Exception?>?> RewriteFailure = new();
+
+    internal static Func<string, Exception?>? RewriteFailureInjector
+    {
+        get => RewriteFailure.Value;
+        set => RewriteFailure.Value = value;
+    }
 
     /// <summary>
     /// True if any scope's vector file was quarantined because its signature did not match
@@ -108,6 +120,44 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             lk.Release();
         }
+    }
+
+    /// <summary>
+    /// Probes exactly the supplied canonical scopes for vector-file health.
+    /// Missing scopes are returned as empty snapshots; existing files are loaded through the
+    /// same migration, locking, signature validation, and stale quarantine path as
+    /// <see cref="GetVectors"/>. This method never discovers scopes from the vector directory.
+    /// </summary>
+    public IReadOnlyCollection<string> ProbeScopes(IEnumerable<string> scopes)
+    {
+        ArgumentNullException.ThrowIfNull(scopes);
+
+        var probes = ProbeScopesDetailed(scopes);
+
+        return probes
+            .Where(probe => probe.IsStale)
+            .Select(probe => probe.Scope)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Probes only the supplied canonical scopes and reports missing, healthy, and quarantined
+    /// files without promoting unrelated files discovered on disk into the result set.
+    /// </summary>
+    public IReadOnlyList<ScopeProbeResult> ProbeScopesDetailed(IEnumerable<string> scopes)
+    {
+        ArgumentNullException.ThrowIfNull(scopes);
+
+        return scopes
+            .Where(scope => !string.IsNullOrWhiteSpace(scope))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(scope =>
+            {
+                var vectors = GetVectors(scope);
+                bool isStale = _staleQuarantines.ContainsKey(scope);
+                return new ScopeProbeResult(scope, File.Exists(GetFilePath(scope)), isStale, vectors);
+            })
+            .ToArray();
     }
 
     /// <summary>Adds or updates vectors for a named memory in a scope.</summary>
@@ -266,17 +316,9 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// loop is the width of that on-disk window — one open/close instead of up to K — not its
     /// existence.</para>
     ///
-    /// <para><b>A retry after a partial flush is a different failure, and not recoverable the same
-    /// way.</b> <see cref="FileRetry.RunAsync"/> re-runs the WHOLE delegate below on a transient
-    /// <see cref="IOException"/>, and the delegate reopens the file in
-    /// <see cref="FileMode.Append"/> — so if the first attempt flushed part of a record before
-    /// failing, the retry writes its ops AFTER that torn fragment rather than over it.
-    /// <c>ReadEntryOps</c> tolerates a torn record only at the TAIL (its
-    /// <see cref="EndOfStreamException"/> catch stops the loop and keeps what it parsed); a torn
-    /// record in the MIDDLE desyncs the record loop and yields garbage entries rather than
-    /// truncating, and nothing detects that. This is called out rather than fixed: it predates
-    /// this method (the <see cref="UpsertAsync"/> loop had the same retry shape per op), and
-    /// narrowing the retry to something crash-safe is a separate change.</para>
+    /// <para>Replacement writes do not retry an append after a partial flush. They serialize the
+    /// complete replacement to a temporary SVF3 file and publish it with the existing atomic move,
+    /// so a failed write or retry leaves the previous durable file untouched.</para>
     /// </summary>
     public async Task ReplaceMemoryVectorsAsync(
         string scope, string name, IReadOnlyList<(int? ChunkIndex, float[] Vector)> vectors, CancellationToken ct = default)
@@ -341,49 +383,21 @@ public sealed class VectorStore : IDisposable, IVectorStore
             }
             foreach (var (chunkIndex, vector) in deduped)
                 replacement.Add(new VectorEntry(name, chunkIndex, vector));
-            _scopeVectors[scope] = replacement;
-
             // Persist if not ephemeral
             if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
             {
                 string path = GetFilePath(scope);
-                var probe = File.Exists(path) ? ProbeAppendable(path) : AppendProbe.NotAppendable;
-                if (probe == AppendProbe.Unknown)
-                    throw new VectorStoreUnavailableException(scope, path);
-
-                if (probe == AppendProbe.Appendable)
-                {
-                    // One open stream for the whole batch instead of one open/close per op —
-                    // that narrows the on-disk window from up to K opens to one; see the class
-                    // remarks above on why that window still exists.
-                    using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
-                    await FileRetry.RunAsync(async () =>
-                    {
-                        await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
-                        await using var writer = new BinaryWriter(fs);
-
-                        foreach (var entry in removed)
-                            WriteDeleteOp(writer, entry.Name, entry.ChunkIndex);
-                        foreach (var (chunkIndex, vector) in deduped)
-                            WriteAddOp(writer, name, chunkIndex, vector);
-                    }, ct: ct);
-
-                    // Track ops for compaction — one delete per superseded entry, one add per
-                    // new (deduped) vector, same accounting as UpsertAsync.
-                    int deletes = removed.Count > 0
-                        ? _scopeDeleteCount.AddOrUpdate(scope, removed.Count, (_, v) => v + removed.Count)
-                        : _scopeDeleteCount.GetOrAdd(scope, 0);
-                    int ops = _scopeOpCount.AddOrUpdate(scope, removed.Count + deduped.Count, (_, v) => v + removed.Count + deduped.Count);
-
-                    if (ops > 0 && (double)deletes / ops > 0.2 && deletes >= 10)
-                        await CompactAsync(scope, replacement, ct);
-                }
-                else
-                {
-                    // First write, or no file present. Always write SVF3.
-                    await SaveAsSvf3Async(scope, replacement, ct);
-                }
+                // Replacements are transactions, not append batches. A temp SVF3 is fully written
+                // before the live path is replaced, so a partial write cannot remove the prior
+                // vectors and FileRetry never appends after a torn record.
+                await SaveAsSvf3Async(scope, replacement, ct);
             }
+
+            // Publish only after the complete durable replacement (including any compaction)
+            // succeeds. A failed write must leave readers on the last known-good snapshot; a
+            // later retry can replay the replacement against that snapshot and converge even if
+            // an append was flushed only partially before the failure.
+            _scopeVectors[scope] = replacement;
         }
         finally
         {
@@ -460,6 +474,9 @@ public sealed class VectorStore : IDisposable, IVectorStore
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+            using var migrationLock = FileLock.AcquireExclusive(GetVectorLockPath(newPath));
+            if (File.Exists(newPath))
+                return;
             FileRetry.Run(() => File.Move(legacyPath, newPath, overwrite: false));
             if (!Directory.EnumerateFileSystemEntries(legacyDir).Any())
                 Directory.Delete(legacyDir);
@@ -611,7 +628,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
         try
         {
             string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-            string stalePath = $"{path}.stale-{stamp}";
+            string stalePath = $"{path}.stale-{stamp}-{Guid.NewGuid():N}";
             File.Move(path, stalePath, overwrite: false);
             _staleQuarantines[scope] = 0;
             Console.Error.WriteLine(
@@ -719,34 +736,44 @@ public sealed class VectorStore : IDisposable, IVectorStore
         string signature = _expectedSignature ?? "";
         byte[] sigBytes = System.Text.Encoding.UTF8.GetBytes(signature);
 
-        await FileRetry.RunAsync(async () =>
+        try
         {
-            await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None);
-            await using var writer = new BinaryWriter(fs);
-            writer.Write(MagicSvf3);
-            ushort dims = vectors.Count > 0 ? (ushort)vectors[0].Vector.Length : (ushort)0;
-            writer.Write(dims);
-            writer.Write((ushort)sigBytes.Length);
-            writer.Write(sigBytes);
-
-            foreach (var entry in vectors)
+            await FileRetry.RunAsync(async () =>
             {
-                writer.Write((byte)0); // Add op
-                byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(entry.Name);
-                writer.Write((ushort)nameBytes.Length);
-                writer.Write(nameBytes);
-                writer.Write(entry.ChunkIndex ?? -1);
-                foreach (float f in entry.Vector)
-                    writer.Write(f);
-            }
-        }, ct: ct);
+                await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None);
+                await using var writer = new BinaryWriter(fs);
+                writer.Write(MagicSvf3);
+                ushort dims = vectors.Count > 0 ? (ushort)vectors[0].Vector.Length : (ushort)0;
+                writer.Write(dims);
+                writer.Write((ushort)sigBytes.Length);
+                writer.Write(sigBytes);
 
-        // File.Move onto the live path — where a transient "file is being used by another
-        // process" failure is most likely. Retry with backoff.
-        FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
+                foreach (var entry in vectors)
+                {
+                    writer.Write((byte)0); // Add op
+                    byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(entry.Name);
+                    writer.Write((ushort)nameBytes.Length);
+                    writer.Write(nameBytes);
+                    writer.Write(entry.ChunkIndex ?? -1);
+                    foreach (float f in entry.Vector)
+                        writer.Write(f);
+                }
+            }, ct: ct);
 
-        _scopeDeleteCount[scope] = 0;
-        _scopeOpCount[scope] = vectors.Count;
+            if (RewriteFailureInjector?.Invoke(path) is { } injectedFailure)
+                throw injectedFailure;
+
+            // File.Move onto the live path — where a transient "file is being used by another
+            // process" failure is most likely. Retry with backoff.
+            FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
+
+            _scopeDeleteCount[scope] = 0;
+            _scopeOpCount[scope] = vectors.Count;
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+        }
     }
 
     /// <summary>Appends a single add operation to an SVF2 file, opening and closing it for this one op.</summary>

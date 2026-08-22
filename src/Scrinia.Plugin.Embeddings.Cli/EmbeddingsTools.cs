@@ -96,6 +96,14 @@ public sealed class EmbeddingsTools(
         if (vector is null)
             return JsonSerializer.Serialize(new { error = "Embedding failed" });
 
+        if (provider.Dimensions > 0 && vector.Length != provider.Dimensions)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                error = $"Embedding returned {vector.Length} dimensions; expected {provider.Dimensions}."
+            });
+        }
+
         try
         {
             await vectorStore.UpsertAsync(scope, name, chunkIndex, vector, ct);

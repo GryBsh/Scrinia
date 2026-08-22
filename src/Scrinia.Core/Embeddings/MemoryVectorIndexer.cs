@@ -128,6 +128,41 @@ public sealed class MemoryVectorIndexer
             return false;
         }
 
+        int expectedDimensions = _provider.Dimensions;
+        if (expectedDimensions < 0)
+            throw new InvalidOperationException(
+                $"Embedding provider '{_provider.Signature}' returned invalid dimensions {expectedDimensions}.");
+
+        int? observedDimensions = null;
+        foreach (var vector in vectors)
+        {
+            if (vector is null || vector.Length == 0)
+            {
+                _logger.LogWarning(
+                    "Embed returned a null or empty vector for '{Scope}/{Name}'; skipping to preserve existing vectors.",
+                    scope, subject);
+                return false;
+            }
+
+            if (vector.Any(float.IsNaN) || vector.Any(float.IsInfinity))
+            {
+                _logger.LogWarning(
+                    "Embed returned a non-finite vector for '{Scope}/{Name}'; skipping to preserve existing vectors.",
+                    scope, subject);
+                return false;
+            }
+
+            observedDimensions ??= vector.Length;
+            if (vector.Length != observedDimensions
+                || (expectedDimensions > 0 && vector.Length != expectedDimensions))
+            {
+                _logger.LogWarning(
+                    "Embed returned inconsistent dimensions for '{Scope}/{Name}'; skipping to preserve existing vectors.",
+                    scope, subject);
+                return false;
+            }
+        }
+
         // One locked file operation for the whole memory, not one per vector — the previous
         // RemoveAsync-then-loop took 1 + K locks and up to P + 2K appends. The in-memory replace
         // is now genuinely atomic (one reference swap under the scope lock; a concurrent

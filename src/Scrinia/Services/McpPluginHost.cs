@@ -315,6 +315,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         try
         {
             var text = await _toolCaller.CallToolAsync(toolName, arguments, ct);
+            ThrowIfPluginReportedFailure(text, toolName);
             _failCount = 0; // success → reset counter
             return text;
         }
@@ -333,6 +334,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             try
             {
                 var text = await _toolCaller!.CallToolAsync(toolName, arguments, ct);
+                ThrowIfPluginReportedFailure(text, toolName);
                 _failCount = 0;
                 return text;
             }
@@ -378,6 +380,32 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    private static void ThrowIfPluginReportedFailure(string? text, string toolName)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        using var document = JsonDocument.Parse(text);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return;
+
+        if (root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
+            throw new InvalidOperationException(
+                $"Plugin tool '{toolName}' reported failure: {GetErrorMessage(root)}");
+
+        if (root.TryGetProperty("error", out var error)
+            && error.ValueKind != JsonValueKind.Null
+            && (error.ValueKind != JsonValueKind.String || !string.IsNullOrWhiteSpace(error.GetString())))
+        {
+            throw new InvalidOperationException(
+                $"Plugin tool '{toolName}' reported failure: {GetErrorMessage(root)}");
+        }
+    }
+
+    private static string GetErrorMessage(JsonElement root) =>
+        root.TryGetProperty("error", out var error)
+            ? error.ToString()
+            : "ok=false";
 
     private static string? GetTextContent(CallToolResult result)
     {

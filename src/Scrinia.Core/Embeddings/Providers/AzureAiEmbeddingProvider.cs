@@ -15,6 +15,7 @@ public sealed class AzureAiEmbeddingProvider : ResilientEmbeddingProvider
     public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : 1536;
     public override string Signature => $"azure:{_model}";
     protected override string ProviderName => "Azure";
+    protected override bool SupportsBatch => true;
 
     public AzureAiEmbeddingProvider(
         string? endpoint, string? apiKey, string deployment, string model,
@@ -57,6 +58,19 @@ public sealed class AzureAiEmbeddingProvider : ResilientEmbeddingProvider
             return result.Data[0].Embedding;
         return null;
     }
+
+    protected override Task<HttpResponseMessage> SendEmbedBatchRequestAsync(
+        IReadOnlyList<string> texts, CancellationToken ct) =>
+        Http.PostAsJsonAsync(_requestUrl, new AzureEmbedBatchRequest(texts, _useV1 ? _model : null),
+            AzureJsonContext.Default.AzureEmbedBatchRequest, ct);
+
+    protected override async Task<float[][]?> ParseEmbeddingBatchResponseAsync(
+        HttpResponseMessage response, CancellationToken ct)
+    {
+        var result = await response.Content.ReadFromJsonAsync(AzureJsonContext.Default.AzureEmbedResponse, ct);
+        return OrderIndexedVectors(result?.Data, result?.Data?.Length ?? 0,
+            item => item.Index, item => item.Embedding);
+    }
 }
 
 internal sealed class AzureEmbedRequest
@@ -75,6 +89,16 @@ internal sealed class AzureEmbedRequest
     public string? Model { get; }
 }
 
+internal sealed class AzureEmbedBatchRequest(IReadOnlyList<string> input, string? model)
+{
+    [JsonPropertyName("input")]
+    public IReadOnlyList<string> Input { get; } = input;
+
+    [JsonPropertyName("model")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Model { get; } = model;
+}
+
 internal sealed class AzureEmbedResponse
 {
     [JsonPropertyName("data")]
@@ -83,10 +107,13 @@ internal sealed class AzureEmbedResponse
 
 internal sealed class AzureEmbeddingData
 {
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
     [JsonPropertyName("embedding")]
     public float[] Embedding { get; set; } = [];
 }
 
 [JsonSerializable(typeof(AzureEmbedRequest))]
+[JsonSerializable(typeof(AzureEmbedBatchRequest))]
 [JsonSerializable(typeof(AzureEmbedResponse))]
 internal partial class AzureJsonContext : JsonSerializerContext;

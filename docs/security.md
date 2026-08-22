@@ -3,10 +3,12 @@
 What Scrinia defends against, what it explicitly does **not**, and where you are expected to
 provide the control yourself.
 
-This document was written for a deployment with an HTTP API, API keys, and multiple tenants. All of
-that is gone. Scrinia is a local process that reads and writes a directory you already own, so most
-of what a security model would have covered is now covered by your operating system's file
-permissions instead. What is left is genuinely Scrinia's problem, and it is a shorter list.
+Scrinia's server surface is the local `scri serve` process, which exposes MCP over stdio and reads
+and writes the configured workspace's `.scrinia/` directory. There is no Scrinia HTTP API,
+server-side API-key authentication, or multi-tenant deployment model. API keys mentioned below are
+only credentials for optional outbound embedding providers. The operating system identity and
+filesystem permissions therefore form the primary isolation boundary; what remains below is
+genuinely Scrinia's problem.
 
 ## Trust boundaries
 

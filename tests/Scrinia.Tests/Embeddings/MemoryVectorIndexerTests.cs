@@ -48,6 +48,23 @@ public sealed class MemoryVectorIndexerTests
         public void Dispose() { }
     }
 
+    private sealed class InvalidVectorProvider : IEmbeddingProvider
+    {
+        public bool IsAvailable => true;
+        public int Dimensions => 2;
+        public string Signature => "test:invalid";
+        public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
+            => Task.FromResult<float[]?>([1f, 0f]);
+        public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
+            => Task.FromResult<float[][]?>(texts.Select((_, i) => i switch
+            {
+                0 => new[] { 1f },
+                1 => (float[]?)null,
+                _ => new[] { float.NaN, 0f }
+            }).ToArray());
+        public void Dispose() { }
+    }
+
     private static (MemoryVectorIndexer Indexer, VectorStore Store, string Dir) NewIndexer(
         IEmbeddingProvider provider, EmbeddingOptions? options = null)
     {
@@ -192,6 +209,20 @@ public sealed class MemoryVectorIndexerTests
     }
 
     [Fact]
+    public async Task InvalidOrInconsistentVectors_LeaveExistingVectorsIntact()
+    {
+        var (good, store, _) = NewIndexer(new CountingProvider());
+        await good.IndexAsync("local", "note", ["alpha", "beta", "gamma"], default);
+        var before = store.GetVectors("local").Select(v => v.Vector).ToArray();
+
+        var bad = new MemoryVectorIndexer(new InvalidVectorProvider(), store, NullLogger.Instance);
+        var indexed = await bad.IndexAsync("local", "note", ["alpha", "beta", "gamma"], default);
+
+        indexed.Should().BeFalse();
+        store.GetVectors("local").Select(v => v.Vector).Should().BeEquivalentTo(before);
+    }
+
+    [Fact]
     public async Task Reindexing_ReplacesRatherThanAccumulates()
     {
         var (indexer, store, _) = NewIndexer(new CountingProvider());
@@ -233,8 +264,7 @@ public sealed class MemoryVectorIndexerTests
     [Fact]
     public async Task RetryOnUnavailableFalse_PropagatesTheExceptionRatherThanRetryingAndSwallowingToFalse()
     {
-        // Bulk reindex loops (EmbeddingReindexer.ReindexAsync, BuiltInEmbeddingsService.
-        // ReindexStoreAsync) pass retryOnUnavailable:false so an unreadable vector file surfaces
+        // Bulk reindex loops pass retryOnUnavailable:false so an unreadable vector file surfaces
         // as VectorStoreUnavailableException to their own catch ladder (counted as "failed"),
         // rather than being retried by VectorWriteRetry for up to 42s and then swallowed to
         // false (which their code would otherwise mis-count as "skipped").

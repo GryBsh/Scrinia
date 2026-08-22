@@ -20,7 +20,6 @@ Thumbs.db
 
 # Web UI
 web/node_modules/
-src/Scrinia.Server/wwwroot/
 
 # Publish output
 publish/

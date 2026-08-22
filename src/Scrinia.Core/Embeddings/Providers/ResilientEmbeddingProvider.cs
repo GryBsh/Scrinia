@@ -40,6 +40,12 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
     /// <summary>Display name for this provider, used in log messages.</summary>
     protected abstract string ProviderName { get; }
 
+    /// <summary>Whether this provider has a genuine batch wire operation.</summary>
+    protected virtual bool SupportsBatch => false;
+
+    /// <summary>Maximum number of inputs sent in one provider-native request.</summary>
+    protected virtual int MaxBatchSize => 64;
+
     /// <summary>Initializes resilience infrastructure shared by all HTTP embedding providers.</summary>
     protected ResilientEmbeddingProvider(HttpClient http, ILogger logger,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
@@ -82,6 +88,23 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
             var vec = await ParseEmbeddingResponseAsync(response, ct);
             if (vec != null)
             {
+                if (Dimensions > 0 && vec.Length != Dimensions)
+                {
+                    Logger.LogWarning(
+                        "{Provider} returned a vector with {ActualDimensions} dimensions; expected {ExpectedDimensions}",
+                        ProviderName, vec.Length, Dimensions);
+                    return null;
+                }
+
+                int observed = Volatile.Read(ref _dimensions);
+                if (observed > 0 && vec.Length != observed)
+                {
+                    Logger.LogWarning(
+                        "{Provider} returned inconsistent vector dimensions: got {ActualDimensions}, previously observed {ObservedDimensions}",
+                        ProviderName, vec.Length, observed);
+                    return null;
+                }
+
                 Interlocked.CompareExchange(ref _dimensions, vec.Length, 0);
                 VectorMath.L2Normalize(vec);
                 _circuitBreaker.RecordSuccess();
@@ -107,6 +130,165 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
             Logger.LogWarning(ex, "{Provider} embedding failed", ProviderName);
             return null;
         }
+    }
+
+    /// <inheritdoc />
+    public virtual async Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(texts);
+        if (texts.Count == 0)
+            return [];
+        if (!SupportsBatch)
+            return await EmbedBatchSequentiallyAsync(texts, ct);
+
+        if (MaxBatchSize <= 0)
+            throw new InvalidOperationException($"{ProviderName} configured an invalid batch limit: {MaxBatchSize}.");
+
+        var allVectors = new List<float[]>(texts.Count);
+        for (int offset = 0; offset < texts.Count; offset += MaxBatchSize)
+        {
+            ct.ThrowIfCancellationRequested();
+            var batch = texts.Skip(offset).Take(MaxBatchSize).ToArray();
+            var vectors = await EmbedNativeBatchAsync(batch, ct);
+            if (vectors is null)
+                return null;
+            allVectors.AddRange(vectors);
+        }
+
+        return allVectors.ToArray();
+    }
+
+    private async Task<float[][]?> EmbedNativeBatchAsync(string[] texts, CancellationToken ct)
+    {
+
+        try
+        {
+            _circuitBreaker.EnsureClosed();
+            using var response = await RetryPolicy.ExecuteAsync(
+                async () => await SendEmbedBatchRequestAsync(texts, ct),
+                resp => TransientDetector.IsTransient(resp),
+                _retryOptions, Logger, ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                Logger.LogWarning("{Provider} batch embedding request failed: HTTP {StatusCode} — {Body}",
+                    ProviderName, (int)response.StatusCode, HttpErrorBody.Truncate(errorBody));
+                if ((int)response.StatusCode is < 400 or >= 500)
+                    _circuitBreaker.RecordFailure();
+                return null;
+            }
+
+            var vectors = await ParseEmbeddingBatchResponseAsync(response, ct);
+            if (vectors is null || vectors.Length != texts.Length)
+                return null;
+
+            int batchDimensions = 0;
+            foreach (var vector in vectors)
+            {
+                if (Dimensions > 0 && vector.Length != Dimensions)
+                {
+                    Logger.LogWarning(
+                        "{Provider} returned a batch vector with {ActualDimensions} dimensions; expected {ExpectedDimensions}",
+                        ProviderName, vector.Length, Dimensions);
+                    return null;
+                }
+
+                int observed = Volatile.Read(ref _dimensions);
+                if (observed > 0 && vector.Length != observed)
+                {
+                    Logger.LogWarning(
+                        "{Provider} returned inconsistent batch vector dimensions: got {ActualDimensions}, previously observed {ObservedDimensions}",
+                        ProviderName, vector.Length, observed);
+                    return null;
+                }
+
+                if (batchDimensions > 0 && vector.Length != batchDimensions)
+                {
+                    Logger.LogWarning(
+                        "{Provider} returned inconsistent dimensions within one batch: got {ActualDimensions}, previously got {BatchDimensions}",
+                        ProviderName, vector.Length, batchDimensions);
+                    return null;
+                }
+
+                VectorMath.L2Normalize(vector);
+                batchDimensions = vector.Length;
+            }
+
+            Interlocked.CompareExchange(ref _dimensions, vectors[0].Length, 0);
+
+            _circuitBreaker.RecordSuccess();
+            return vectors;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (CircuitBreakerOpenException)
+        {
+            Logger.LogWarning("Embedding provider '{Provider}' circuit breaker is open — falling back to keyword search", ProviderName);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (TransientDetector.IsTransient(ex))
+                _circuitBreaker.RecordFailure();
+            Logger.LogWarning(ex, "{Provider} batch embedding failed", ProviderName);
+            return null;
+        }
+    }
+
+    private async Task<float[][]?> EmbedBatchSequentiallyAsync(IReadOnlyList<string> texts, CancellationToken ct)
+    {
+        var vectors = new float[texts.Count][];
+        if (MaxBatchSize <= 0)
+            throw new InvalidOperationException($"{ProviderName} configured an invalid batch limit: {MaxBatchSize}.");
+
+        for (int offset = 0; offset < texts.Count; offset += MaxBatchSize)
+        {
+            ct.ThrowIfCancellationRequested();
+            int count = Math.Min(MaxBatchSize, texts.Count - offset);
+            for (int i = 0; i < count; i++)
+            {
+                var vector = await EmbedAsync(texts[offset + i], ct);
+                if (vector is null)
+                    return null;
+                vectors[offset + i] = vector;
+            }
+        }
+        return vectors;
+    }
+
+    /// <summary>Send one provider-native batch request.</summary>
+    protected virtual Task<HttpResponseMessage> SendEmbedBatchRequestAsync(
+        IReadOnlyList<string> texts, CancellationToken ct) =>
+        throw new NotSupportedException($"{ProviderName} does not support batch requests.");
+
+    /// <summary>Parse one provider-native ordered batch response.</summary>
+    protected virtual Task<float[][]?> ParseEmbeddingBatchResponseAsync(
+        HttpResponseMessage response, CancellationToken ct) =>
+        throw new NotSupportedException($"{ProviderName} does not support batch responses.");
+
+    /// <summary>Validates provider indices and restores the caller's input order.</summary>
+    protected static float[][]? OrderIndexedVectors<T>(
+        IReadOnlyList<T>? items, int expectedCount, Func<T, int> index, Func<T, float[]?> vector)
+    {
+        if (items is null || items.Count != expectedCount)
+            return null;
+
+        var ordered = new float[expectedCount][];
+        var seen = new bool[expectedCount];
+        foreach (var item in items)
+        {
+            int itemIndex = index(item);
+            var itemVector = vector(item);
+            if (itemIndex < 0 || itemIndex >= expectedCount || seen[itemIndex] || itemVector is null)
+                return null;
+            seen[itemIndex] = true;
+            ordered[itemIndex] = itemVector;
+        }
+
+        return seen.All(value => value) ? ordered : null;
     }
 
     /// <summary>Send the HTTP request for a single embedding. Called inside the retry policy.</summary>

@@ -26,6 +26,18 @@ public sealed class McpPluginHostNegotiationTests
         }
     }
 
+    private sealed class FailingCaller(string response) : McpPluginHost.IPluginToolCaller
+    {
+        public int CallCount { get; private set; }
+
+        public Task<string?> CallToolAsync(
+            string tool, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct)
+        {
+            CallCount++;
+            return Task.FromResult<string?>(response);
+        }
+    }
+
     private static FileMemoryStore NewStore()
     {
         string root = Path.Combine(Path.GetTempPath(), $"scrinia_pluginhost_test_{Guid.NewGuid():N}");
@@ -90,5 +102,22 @@ public sealed class McpPluginHostNegotiationTests
         caller.Calls.Should().ContainSingle();
         caller.Calls[0].Tool.Should().Be("index");
         ((string[])caller.Calls[0].Arguments["content"]!).Should().Equal("a", "b", "c");
+    }
+
+    [Theory]
+    [InlineData("{\"ok\":false,\"error\":\"write failed\"}")]
+    [InlineData("{\"error\":\"write failed\"}")]
+    public async Task PluginFailureEnvelope_IsRetriedInsteadOfAcknowledged(string response)
+    {
+        var caller = new FailingCaller(response);
+        var host = new McpPluginHost(caller, ["upsert"]);
+
+        for (int attempt = 0; attempt < 4; attempt++)
+            await host.OnStoredAsync("note", ["content"], NewStore(), default);
+
+        caller.CallCount.Should().Be(4,
+            because: "a structured plugin failure must not reset the host failure counter");
+        host.HasEventSinkCapability.Should().BeFalse(
+            because: "repeated persistence failures must degrade rather than be acknowledged");
     }
 }

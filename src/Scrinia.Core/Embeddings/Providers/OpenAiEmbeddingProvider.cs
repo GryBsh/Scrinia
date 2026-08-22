@@ -14,6 +14,7 @@ public sealed class OpenAiEmbeddingProvider : ResilientEmbeddingProvider
     public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : 1536;
     public override string Signature => $"openai:{_model}";
     protected override string ProviderName => "OpenAI";
+    protected override bool SupportsBatch => true;
 
     public OpenAiEmbeddingProvider(string? apiKey, string model, string baseUrl, ILogger logger,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
@@ -46,11 +47,28 @@ public sealed class OpenAiEmbeddingProvider : ResilientEmbeddingProvider
             return result.Data[0].Embedding;
         return null;
     }
+
+    protected override Task<HttpResponseMessage> SendEmbedBatchRequestAsync(
+        IReadOnlyList<string> texts, CancellationToken ct) =>
+        Http.PostAsJsonAsync("embeddings", new OpenAiBatchRequest(_model, texts),
+            OpenAiJsonContext.Default.OpenAiBatchRequest, ct);
+
+    protected override async Task<float[][]?> ParseEmbeddingBatchResponseAsync(
+        HttpResponseMessage response, CancellationToken ct)
+    {
+        var result = await response.Content.ReadFromJsonAsync(OpenAiJsonContext.Default.OpenAiEmbedResponse, ct);
+        return OrderIndexedVectors(result?.Data, result?.Data?.Length ?? 0,
+            item => item.Index, item => item.Embedding);
+    }
 }
 
 internal sealed record OpenAiEmbedRequest(
     [property: JsonPropertyName("model")] string Model,
     [property: JsonPropertyName("input")] string Input);
+
+internal sealed record OpenAiBatchRequest(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("input")] IReadOnlyList<string> Input);
 
 internal sealed class OpenAiEmbedResponse
 {
@@ -60,10 +78,13 @@ internal sealed class OpenAiEmbedResponse
 
 internal sealed class OpenAiEmbeddingData
 {
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
     [JsonPropertyName("embedding")]
     public float[] Embedding { get; set; } = [];
 }
 
 [JsonSerializable(typeof(OpenAiEmbedRequest))]
+[JsonSerializable(typeof(OpenAiBatchRequest))]
 [JsonSerializable(typeof(OpenAiEmbedResponse))]
 internal partial class OpenAiJsonContext : JsonSerializerContext;

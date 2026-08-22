@@ -220,15 +220,12 @@ public sealed partial class ScriniaMcpTools
 
         string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 
-        // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
-        // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        // CancellationToken.None: the sink runs detached on a background Task —
-        // propagating the per-request CT would abort it the moment the user-facing
-        // response returns, leaving importance unscored or vectors half-written.
+        // Await the event sink after the durable artifact write so indexing has the same
+        // completion and cancellation semantics on MCP and CLI paths.
         // The sink re-parses this name to decide which scope to embed under; under v3
         // FormatQualifiedName is round-trip-safe for every scope, so it is the same value the
         // response displays.
-        FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, CancellationToken.None));
+        await FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, cancellationToken));
 
         return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
     }
@@ -1042,19 +1039,15 @@ public sealed partial class ScriniaMcpTools
 
         string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 
-        // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
-        // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        // CancellationToken.None — see the Remember path above for rationale.
-        //
         // UpdatedAt is the create-vs-append discriminator, the same one MemoryOrchestrator.
         // AppendAsync uses for the same decision: a real append always sets it, and it is null only
         // for a first write. A create answers as a store — the "Remembered:" message and the
         // OnStored sink — which is what append() has always returned for that case, when it
         // returned Remember()'s own response.
         bool created = entry.UpdatedAt is null;
-        FireEventSinkAsync(sink => created
-            ? sink.OnStoredAsync(qualifiedName, [content], store, CancellationToken.None)
-            : sink.OnAppendedAsync(qualifiedName, content, store, CancellationToken.None));
+        await FireEventSinkAsync(sink => created
+            ? sink.OnStoredAsync(qualifiedName, [content], store, cancellationToken)
+            : sink.OnAppendedAsync(qualifiedName, content, store, cancellationToken));
 
         if (created)
             return StoredResponse(entry, qualifiedName, ephemeral, "stored");
@@ -1300,20 +1293,12 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>
-    /// Detach an event-sink call from the response path so embedding latency (which can be
-    /// 100–400 ms for remote providers) never blocks the MCP write response.
-    /// The sink is resolved at fire-time so a concurrent context switch won't bind us to a stale sink.
-    /// Errors are logged to stderr; the on-disk artifact is already durable by the time this runs,
-    /// so a missed embedding only means the entry won't show in semantic search until the next write.
-    ///
-    /// <para>Registered with <see cref="BackgroundWork"/> rather than dropped on the floor: the
-    /// CLI drains outstanding sinks before exiting (so indexing isn't lost when the process ends
-    /// right after a write), and tests can wait for a write's side effects instead of racing them.</para>
+    /// Runs an event-sink call after durable state has been written. Keeping this awaitable ensures
+    /// MCP and CLI writes expose the same completion and cancellation behavior.
     /// </summary>
-    private static void FireEventSinkAsync(Func<IMemoryEventSink, Task> action)
+    private static Task FireEventSinkAsync(Func<IMemoryEventSink, Task> action)
     {
         var sink = MemoryEventSinkContext.Current;
-        if (sink is null) return;
-        BackgroundWork.Fire(_ => action(sink), "event sink");
+        return sink is null ? Task.CompletedTask : action(sink);
     }
 }

@@ -10,7 +10,7 @@ src/Scrinia/
   Program.cs                Entry point (ConsoleAppFramework host)
   Commands/
     ScriniaCommands.cs      11 public methods (CLI commands)
-    WorkspaceSetup.cs       Workspace init, store configuration (Store/LocalStore), plugin discovery
+    WorkspaceSetup.cs       Workspace init, local store configuration, plugin discovery
     WorkspaceConfig.cs      .scrinia/config.json management
     ConfigJsonContext.cs     Source-gen JSON for config
   Services/
@@ -73,7 +73,9 @@ WorkspaceSetup.LoadPluginsAsync()  (commands that need search/embeddings)
       +-- Wires embeddings provider, plugin host
 ```
 
-Once configured, code reads the store back through `WorkspaceSetup.Store`, backed by `MemoryStoreContext.Current`. There was a second property, `WorkspaceSetup.LocalStore`, narrowed to the filesystem half of the store contract and throwing in remote mode; with one store the two were the same thing and it is gone. Both CLI commands and MCP tool handlers reach the store through `MemoryStoreContext.Current`; `WorkspaceSetup` is what populates it.
+Once configured, code reads the local filesystem store back through `WorkspaceSetup.Store`, backed by
+`MemoryStoreContext.Current`. Both CLI commands and MCP tool handlers reach that store through the
+context populated by `WorkspaceSetup`; there is no remote store or remote CLI mode.
 
 ## MCP Server Mode
 
@@ -215,7 +217,8 @@ MemoryEventSinkContext.Default = pluginHost;
 var contributor = SearchContributorContext.Current ?? SearchContributorContext.Default;
 ```
 
-The `.Current` half is what a host serving concurrent callers sets per call, where `AsyncLocal` propagates correctly within one call's async chain. The deleted server did that; nothing does now. It is kept because it is also how tests install a store for one async flow without disturbing another.
+The `.Current` half is available to embedders and tests that need one async flow isolated from
+another; `AsyncLocal` propagates correctly within that flow.
 
 ## Output Rendering
 

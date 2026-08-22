@@ -111,6 +111,30 @@ public sealed class VectorBatchReplaceTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchReplace_WhenAtomicRewriteFails_PreservesPreviousDurableSnapshot()
+    {
+        using (var store = new VectorStore(_dir, expectedSignature: null))
+            await store.ReplaceMemoryVectorsAsync("local", "note", Plan(2));
+
+        VectorStore.RewriteFailureInjector = _ => new IOException("injected rewrite failure");
+        try
+        {
+            using var store = new VectorStore(_dir, expectedSignature: null);
+            var act = () => store.ReplaceMemoryVectorsAsync("local", "note", Plan(1));
+
+            await act.Should().ThrowAsync<IOException>();
+        }
+        finally
+        {
+            VectorStore.RewriteFailureInjector = null;
+        }
+
+        using var reloaded = new VectorStore(_dir, expectedSignature: null);
+        reloaded.GetVectors("local").Where(v => v.Name == "note")
+            .Select(v => v.ChunkIndex).Should().BeEquivalentTo([1, 2]);
+    }
+
+    [Fact]
     public async Task BatchReplace_ShrinkingAMemory_DropsStaleHigherChunkIndices_OnDiskAfterReload()
     {
         // The in-memory shrink test above only reads the live cache, which would pass even if

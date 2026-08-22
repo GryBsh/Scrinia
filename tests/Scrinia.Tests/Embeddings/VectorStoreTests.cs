@@ -108,6 +108,40 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Replace_WhenPersistenceFails_DoesNotPublishReplacement()
+    {
+        await _store.UpsertAsync("local", "memo", 0, [1f, 0f]);
+
+        string scopeDirectory = Path.Combine(_tempDir, "local");
+        Directory.Delete(scopeDirectory, recursive: true);
+        File.WriteAllText(scopeDirectory, "blocking file");
+
+        Func<Task> replace = () => _store.ReplaceMemoryVectorsAsync(
+            "local", "memo", [(1, new[] { 0f, 1f })]);
+
+        await replace.Should().ThrowAsync<Exception>();
+        _store.GetVectors("local").Should().ContainSingle()
+            .Which.Vector.Should().BeEquivalentTo([1f, 0f]);
+    }
+
+    [Fact]
+    public async Task Replace_WhenWriteFailsAfterARecordStarts_PreservesThePriorDurableLog()
+    {
+        await _store.UpsertAsync("local", "memo", 0, [1f, 0f]);
+
+        Func<Task> replace = () => _store.ReplaceMemoryVectorsAsync(
+            "local", "memo", [(1, new[] { 0f, 1f }), (2, null!) ]);
+
+        await replace.Should().ThrowAsync<Exception>();
+
+        using var reopened = new VectorStore(_tempDir);
+        reopened.GetVectors("local").Should().ContainSingle()
+            .Which.Vector.Should().BeEquivalentTo([1f, 0f]);
+        Directory.GetFiles(Path.Combine(_tempDir, "local"), "vectors.bin.*.tmp")
+            .Should().BeEmpty("a failed replacement must not leave a recoverable-looking partial record");
+    }
+
+    [Fact]
     public async Task EphemeralScope_NotPersistedToDisk()
     {
         await _store.UpsertAsync("ephemeral", "temp", null, [0.1f, 0.2f]);
@@ -134,6 +168,35 @@ public class VectorStoreTests : IDisposable
     public void GetVectors_EmptyScope_ReturnsEmpty()
     {
         _store.GetVectors("nonexistent").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ProbeScopesDetailed_DeduplicatesAndReportsMissingNestedScopes()
+    {
+        await _store.UpsertAsync("local:topic/subtopic", "memo", null, [1f]);
+
+        var probes = _store.ProbeScopesDetailed([
+            "local:topic/subtopic", "LOCAL:TOPIC/SUBTOPIC", "local:missing"]);
+
+        probes.Should().HaveCount(2);
+        probes.Should().ContainSingle(probe => probe.Scope == "local:topic/subtopic"
+            && probe.HasVectorFile && !probe.IsStale && probe.Vectors.Count == 1);
+        probes.Should().ContainSingle(probe => probe.Scope == "local:missing"
+            && !probe.HasVectorFile && !probe.IsStale && probe.Vectors.Count == 0);
+    }
+
+    [Fact]
+    public async Task ProbeScopes_DoesNotReturnEarlierQuarantineOutsideRequestedScopes()
+    {
+        using (var oldStore = new VectorStore(_tempDir, expectedSignature: "old"))
+            await oldStore.UpsertAsync("unrelated", "memo", null, [1f]);
+
+        using var currentStore = new VectorStore(_tempDir, expectedSignature: "current");
+        await currentStore.UpsertAsync("requested", "memo", null, [1f]);
+        currentStore.GetVectors("unrelated").Should().BeEmpty();
+
+        currentStore.ProbeScopes(["requested"])
+            .Should().BeEmpty("only stale results from the requested scopes should be returned");
     }
 
     // -- SVF2 append-only format tests --

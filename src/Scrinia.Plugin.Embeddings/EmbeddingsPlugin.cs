@@ -12,9 +12,9 @@ namespace Scrinia.Plugin.Embeddings;
 /// Vulkan GPU-accelerated embeddings plugin.
 ///
 /// Implements three interfaces:
-/// - <see cref="IMemoryOperationHook"/>: hooks the deleted REST path invoked; no caller today
-/// - <see cref="ISearchScoreContributor"/>: supplemental search scores for both REST and MCP
-/// - <see cref="IMemoryEventSink"/>: MCP path event notifications
+/// - <see cref="IMemoryOperationHook"/>: indexes memories after store mutations
+/// - <see cref="ISearchScoreContributor"/>: supplies supplemental search scores
+/// - <see cref="IMemoryEventSink"/>: receives store event notifications
 ///
 /// For the CLI, built-in Model2Vec embeddings are used by default. This plugin
 /// provides optional Vulkan GPU acceleration when installed.
@@ -32,9 +32,9 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
     // Set only when EnsureInitialized had to self-create a fallback console logger (no real
-    // ILoggerFactory was ever captured via ConfigureMiddleware — true for every test in this
-    // project, which constructs the plugin directly instead of going through the server's DI
-    // wiring). Owning it here means Dispose can shut it down instead of leaking it per instance.
+    // ILoggerFactory was ever captured during plugin setup — true for every test in this project,
+    // which constructs the plugin directly instead of going through host wiring. Owning it here
+    // means Dispose can shut it down instead of leaking it per instance.
     private ILoggerFactory? _ownedLoggerFactory;
     private bool _disposed;
     private readonly object _initLock = new();
@@ -67,16 +67,12 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// <summary>
     /// Binds <c>Scrinia:Embeddings</c> into this plugin's options and applies the guardrails.
     ///
-    /// <para>This was <c>ConfigureServices(IServiceCollection, IConfiguration)</c>, an
-    /// <see cref="IScriniaPlugin"/> member the HTTP host called before building its container. It
-    /// did two things: bound config, and registered this instance into DI under four service
-    /// types. The registrations are gone with the container that consumed them — a plugin reaches
-    /// Scrinia by implementing the contracts, not by being handed over through a service
-    /// collection. The binding is real work and stays, under a name that describes it and a
-    /// signature that does not require a web framework to call.</para>
+    /// <para>This method binds configuration without requiring a host-specific service container.
+    /// A plugin reaches Scrinia by implementing its contracts, not by being handed over through a
+    /// service collection.</para>
     ///
     /// <para>Optional: a plugin constructed without it runs on <see cref="EmbeddingOptions"/>
-    /// defaults, which is what every path outside the deleted server already did.</para>
+    /// defaults.</para>
     /// </summary>
     public void Configure(IConfiguration configuration)
     {
@@ -93,7 +89,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             // e.g. SemanticWeight: "not-a-number" throws "Failed to convert configuration value
             // ... to type 'System.Double'") for a single malformed value in the section. The old
             // code's manual double.TryParse silently kept the default in this situation instead
-            // of crashing server startup; this preserves that resilience. Trade-off: because
+            // of failing application startup; this preserves that resilience. Trade-off: because
             // Get<T>() validates the WHOLE section atomically, one bad property discards every
             // other property that would have bound fine too (e.g. a valid ChunkSize alongside a
             // malformed SemanticWeight) — falling back to full defaults rather than a
@@ -135,10 +131,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             if (_logger is null)
             {
-                // No logger has been handed in. There used to be one route for that — the HTTP
-                // host called ConfigureMiddleware with a built IServiceProvider and this plugin
-                // took the ILoggerFactory out of it — and this was its fallback for every other
-                // caller. It is now the only path: build a private console logger and own its
+                // No logger has been handed in. Build a private console logger and own its
                 // disposal (see Dispose).
                 _ownedLoggerFactory = LoggerFactory.Create(b => b.AddConsole());
                 _logger = _ownedLoggerFactory.CreateLogger<EmbeddingsPlugin>();
@@ -195,10 +188,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// AssemblyInfo.cs.
     /// </summary>
     /// <summary>
-    /// Test-only seam: the options <see cref="ConfigureServices"/> actually bound. Exists because
+    /// Test-only seam: the options <see cref="Configure"/> actually bound. Exists because
     /// the only production consumer of them — the signature passed to <c>VectorStore</c> in
     /// <see cref="EnsureInitialized"/> — is null whenever the provider is unavailable, which is
-    /// every test environment (no GGUF model). Without this, "ConfigureServices binds the whole
+    /// every test environment (no GGUF model). Without this, "Configure binds the whole
     /// section, not just SemanticWeight" is unobservable, and that binding is the fix for the
     /// configured chunk settings never reaching the signature.
     /// </summary>
@@ -218,12 +211,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
     }
 
-    // This class once mapped /status, /reindex and /settings under an inline /embeddings group.
-    // Those routes moved to the server's own endpoint class, and then the server was deleted;
-    // IScriniaPlugin.MapEndpoints went with it. IEmbeddingsAdmin, which the routes resolved to,
-    // is still implemented below — it is the contract, the HTTP surface was only ever one caller.
+    // IEmbeddingsAdmin remains the provider administration contract; the plugin host discovers
+    // this implementation through its current plugin interfaces.
 
-    // -- ISearchScoreContributor (both REST + MCP) --
+    // -- ISearchScoreContributor --
 
     public async Task<IReadOnlyDictionary<string, double>?> ComputeScoresAsync(
         string query, IReadOnlyList<ScopedArtifact> candidates,
@@ -253,7 +244,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         return scores.Count > 0 ? scores : null;
     }
 
-    // -- IMemoryOperationHook: implemented, and currently uninvoked (see the interface) --
+    // -- IMemoryOperationHook --
 
     public async Task OnAfterStoreAsync(AfterStoreContext ctx, CancellationToken ct)
     {
@@ -296,13 +287,16 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         {
             // Inside the try: EnsureInitialized can throw (bad config reaching
             // MemoryVectorIndexer's ctor, a provider load failure), and these are detached
-            // event-sink/hook callbacks — on the REST path PluginPipeline awaits them with no
-            // guard of its own, so an escaping throw would land in the caller's request.
+            // event-sink/hook callbacks, so an escaping throw would land in the caller's operation.
             EnsureInitialized();
             if (_indexer is null) return;
 
             var (scope, subject) = store.ParseQualifiedName(qualifiedName);
             await _indexer.IndexAsync(scope, subject, content, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -314,9 +308,8 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// An append mutates the memory. Indexing only the appended fragment would be wrong twice
     /// over: the indexer replaces a memory's vectors atomically, so the rest of the memory would
     /// lose its vectors entirely, and the surviving element indices would not match the memory's
-    /// real content array. Re-read and index the whole thing — shared by both the REST
-    /// (<see cref="OnAfterAppendAsync"/>) and MCP (<see cref="OnAppendedAsync"/>) append paths, and
-    /// mirrored by <c>BuiltInEmbeddingsService.ReembedFullMemoryAsync</c>.
+    /// real content array. Re-read and index the whole thing — shared by both append hooks and
+    /// mirrored by the shared core embedding event handler.
     /// </summary>
     private async Task ReembedFullMemoryAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
     {
@@ -339,6 +332,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             await _indexer.IndexAsync(scope, subject, elements, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
@@ -352,13 +349,16 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         try
         {
             // Inside the try — see EmbedAndIndexAsync. The (qualifiedName, store) overload below
-            // already owns its own parse, but EnsureInitialized does not, and PluginPipeline
-            // awaits OnAfterForgetAsync with no try/catch on the REST path, so a throw here
-            // would otherwise propagate into the forget request itself.
+            // already owns its own parse, but EnsureInitialized does not, so a throw here would
+            // otherwise propagate into the forget operation itself.
             EnsureInitialized();
             if (_indexer is null) return;
 
             await _indexer.RemoveAsync(qualifiedName, store, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -369,7 +369,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     public async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
     {
         EnsureInitialized();
-        var allItems = store.ListScoped();
+        var allItems = store.ListScoped()
+            .Where(item => !item.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .DistinctBy(item => $"{item.Scope}\u001f{item.Entry.Name}", StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         int count = 0;
 
         foreach (var item in allItems)

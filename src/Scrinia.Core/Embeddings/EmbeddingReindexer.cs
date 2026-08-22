@@ -43,6 +43,7 @@ public static class EmbeddingReindexer
 
         var items = store.ListScoped()
             .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .DistinctBy(i => $"{i.Scope}\u001f{i.Entry.Name}", StringComparer.OrdinalIgnoreCase)
             .ToList();
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
@@ -117,7 +118,7 @@ public static class EmbeddingReindexer
     /// Unlike <see cref="ReindexIfStaleAsync"/>, this never gates on quarantine state — it
     /// constructs a fresh signed <see cref="VectorStore"/> and runs <see cref="ReindexAsync"/>
     /// against it directly. Existing vectors are atomically replaced per memory via the
-    /// Remove-then-Upsert sequence inside <see cref="ReindexAsync"/>.
+    /// atomic full-memory replacement inside <see cref="ReindexAsync"/>.
     /// </summary>
     public static async Task<Result> ForceReindexAsync(
         IMemoryStore store,
@@ -167,6 +168,7 @@ public static class EmbeddingReindexer
     {
         var items = store.ListScoped()
             .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .DistinctBy(i => $"{i.Scope}\u001f{i.Entry.Name}", StringComparer.OrdinalIgnoreCase)
             .ToList();
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
@@ -216,11 +218,12 @@ public static class EmbeddingReindexer
 
     /// <summary>
     /// Detect-and-reindex entry point used by <c>WorkspaceSetup</c> on startup and by the
-    /// <c>scri config Scrinia:Embeddings:*</c> command after a settings write. Walks each
-    /// scope directory under <paramref name="embeddingsDir"/> to force <c>LoadFromDisk</c>
-    /// (which quarantines signature-mismatched files); if anything was quarantined, runs
-    /// <see cref="ReindexAsync"/> against the same store. Returns the result when work
-    /// happened, or <c>null</c> when everything was already in-sync.
+    /// <c>scri config Scrinia:Embeddings:*</c> command after a settings write. Enumerates the
+    /// canonical persistent memories from <see cref="IMemoryStore.ListScoped"/>, then explicitly
+    /// probes each corresponding scope in the <see cref="VectorStore"/> under
+    /// <paramref name="embeddingsDir"/>. Missing or signature-mismatched vector files trigger
+    /// <see cref="ReindexAsync"/> against the same store. Returns the result when work happened,
+    /// or <c>null</c> when everything was already in-sync.
     /// </summary>
     public static async Task<Result?> ReindexIfStaleAsync(
         IMemoryStore store,
@@ -231,14 +234,11 @@ public static class EmbeddingReindexer
         CancellationToken ct,
         EmbeddingOptions? options = null)
     {
-        if (!Directory.Exists(embeddingsDir))
-            return null;
-
         options ??= new EmbeddingOptions();
         string expectedSignature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
 
         var probeStore = new VectorStore(embeddingsDir, expectedSignature);
-        var stale = ProbeStaleScopes(probeStore, embeddingsDir, logger);
+        var stale = ProbeStaleScopes(probeStore, store, logger);
         if (stale.Count == 0)
             return null;
 
@@ -250,10 +250,12 @@ public static class EmbeddingReindexer
     }
 
     /// <summary>
-    /// Forces a header read on every scope under <paramref name="embeddingsDir"/> by enumerating
-    /// its subdirectories, so <c>VectorStore.LoadFromDisk</c>'s signature check runs and
-    /// quarantines any file written under a different provider or chunk configuration. Returns
-    /// the scopes that were quarantined — empty when everything is already in-sync.
+    /// Enumerates canonical persistent memories through <see cref="IMemoryStore.ListScoped"/>
+    /// and explicitly probes each distinct scope in <paramref name="probeStore"/>. This forces
+    /// <c>VectorStore.LoadFromDisk</c>'s signature check and quarantines any file written under a
+    /// different provider or chunk configuration. Returns missing or quarantined scopes — empty
+    /// when everything is already in-sync. It does not discover scopes by enumerating the vector
+    /// directory.
     ///
     /// <para>Separate from <see cref="ReindexIfStaleAsync"/> because detection and remediation
     /// are not always the same decision. The CLI reindexes immediately (a one-shot startup cost
@@ -262,18 +264,31 @@ public static class EmbeddingReindexer
     /// its stores the operator wants rebuilt first.</para>
     /// </summary>
     public static IReadOnlyCollection<string> ProbeStaleScopes(
-        VectorStore probeStore, string embeddingsDir, ILogger logger)
+        VectorStore probeStore, IMemoryStore store, ILogger logger)
     {
-        if (!Directory.Exists(embeddingsDir)) return [];
+        var scopes = store.ListScoped()
+            .Select(item => item.Scope)
+            .Where(scope => !scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(scope => scope, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
-        foreach (string scopeDir in Directory.EnumerateDirectories(embeddingsDir))
+        var missing = new List<string>();
+        foreach (string scope in scopes)
         {
-            string scope = Path.GetFileName(scopeDir);
-            if (string.IsNullOrEmpty(scope)) continue;
-            try { probeStore.GetVectors(scope); }
+            try
+            {
+                var probe = probeStore.ProbeScopesDetailed([scope])[0];
+                if (!probe.HasVectorFile)
+                    missing.Add(scope);
+            }
             catch (Exception ex) { logger.LogDebug(ex, "Probe failed for scope {Scope}", scope); }
         }
 
-        return probeStore.HasStaleQuarantines ? probeStore.StaleQuarantineScopes : [];
+        return missing
+            .Concat(probeStore.StaleQuarantineScopes)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(scope => scope, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 }

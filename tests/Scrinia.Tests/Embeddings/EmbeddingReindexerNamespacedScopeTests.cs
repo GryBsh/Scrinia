@@ -99,11 +99,55 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
         parsedSubject.Should().Be("notes");
     }
 
+    [Fact]
+    public async Task ReindexIfStaleAsync_ProbesCanonicalNestedScopes()
+    {
+        const string scope = "local:memory/api";
+        SeedEntry(scope, "notes", "auth flow notes");
+
+        string embeddingsDir = Path.Combine(_root, ".scrinia", "embeddings");
+        Directory.CreateDirectory(embeddingsDir);
+        const string activeSignature = "fake:active";
+        using (var seed = new VectorStore(embeddingsDir, expectedSignature: "fake:old"))
+            await seed.UpsertAsync(scope, "notes", null, [99f, 0f, 0f]);
+
+        using var vectorStore = new VectorStore(embeddingsDir, expectedSignature: null);
+        var provider = new FakeProvider(activeSignature);
+        var result = await EmbeddingReindexer.ReindexIfStaleAsync(
+            _store, provider, embeddingsDir, NullLogger.Instance, progress: null,
+            CancellationToken.None, new EmbeddingOptions());
+
+        result.Should().NotBeNull();
+        result!.Embedded.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ReindexIfStaleAsync_RebuildsCurrentScopeWithMissingVectorFile()
+    {
+        const string scope = "local:memory/missing";
+        SeedEntry(scope, "notes", "auth flow notes");
+
+        string embeddingsDir = Path.Combine(_root, ".scrinia", "embeddings");
+        Directory.CreateDirectory(embeddingsDir);
+        using var provider = new FakeProvider("fake:missing");
+
+        var result = await EmbeddingReindexer.ReindexIfStaleAsync(
+            _store, provider, embeddingsDir, NullLogger.Instance, progress: null,
+            CancellationToken.None, new EmbeddingOptions());
+
+        result.Should().NotBeNull();
+        result!.Embedded.Should().Be(1);
+    }
+
     private sealed class FakeProvider : IEmbeddingProvider
     {
+        private readonly string _signature;
+
+        public FakeProvider(string signature = "fake:test") => _signature = signature;
+
         public bool IsAvailable => true;
         public int Dimensions => 3;
-        public string Signature => "fake:test";
+        public string Signature => _signature;
 
         public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default) =>
             Task.FromResult<float[]?>([(float)text.Length, 0f, 0f]);

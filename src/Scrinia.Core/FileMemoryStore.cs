@@ -63,6 +63,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly object _factStoreLock = new();
     private EntityFactStore? _factStore;
     private long _factStoreGeneration;
+    private bool _factStoreDirty;
+    private bool _factStoreFlushFailed;
+    private int _pendingFactWrites;
+    private readonly Dictionary<string, PendingFactWrite> _queuedFactWrites = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record PendingFactWrite(string Content, long Generation);
+
+    /// <summary>Whether the materialized facts view still has a sidecar flush pending or failed.</summary>
+    internal bool HasDirtyFactCache
+    {
+        get { lock (_factStoreLock) return _factStoreDirty; }
+    }
 
     /// <summary>
     /// In-memory cache of a scope's index entries, handed out by reference on a
@@ -374,7 +386,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             if (_ephemeralStore.TryUpdate(key, updated, current))
             {
-                lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+                lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; _factStoreDirty = true; }
                 return true;
             }
         }
@@ -1251,7 +1263,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         _indexCache.Clear();
         _cachedTopics = null;
         _artifactCache.Invalidate(string.Empty);
-        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; _factStoreDirty = true; }
     }
 
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
@@ -1321,7 +1333,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
 
-        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; _factStoreDirty = true; }
     }
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
@@ -1419,7 +1431,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (scopeWasEmpty && scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
 
-            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; _factStoreDirty = true; }
         });
     }
 
@@ -1496,7 +1508,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 && !Directory.EnumerateFiles(storeDir, "*.meta.json").Any())
                 _cachedTopics = null;
 
-            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; _factStoreDirty = true; }
 
             return true;
         });
@@ -1621,7 +1633,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // memory the stored content references plus once or twice for the orphan marker, on
             // every store event. H5's own shape, on the branch that removes H5.
 
-            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; _factStoreDirty = true; }
 
             return true;
         });
@@ -2209,7 +2221,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             {
                 mems = items.Select(EntityFactDerivation.Derive).Where(m => m is not null).Select(m => m!).ToArray();
                 if (sidecarPath is not null)
-                    TryWriteAllText(sidecarPath, EntityFactSidecar.Serialize(token, mems));
+                    QueueFactSidecarWrite(sidecarPath, token, mems, gen);
             }
 
             merged.AddRange(mems);
@@ -2220,6 +2232,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             if (_factStore is not null) return _factStore;          // another thread published while we built
             if (_factStoreGeneration == gen) _factStore = built;    // no mutation during build -> safe to cache
+            if (_factStoreGeneration == gen && _pendingFactWrites == 0 && !_factStoreFlushFailed)
+                _factStoreDirty = false;
             return built;                                           // else return fresh but don't cache a stale snapshot
         }
     }
@@ -2255,9 +2269,130 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try { return File.ReadAllText(path); } catch { return string.Empty; }
     }
 
-    private static void TryWriteAllText(string path, string content)
+    private static bool TryWriteAllText(string path, string content)
     {
-        try { File.WriteAllText(path, content); } catch { /* in-memory store is still correct */ }
+        try
+        {
+            File.WriteAllText(path, content);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private void QueueFactSidecarWrite(
+        string path, string token, IReadOnlyList<MemoryEntities> memories, long generation)
+    {
+        string content = EntityFactSidecar.Serialize(token, memories);
+        lock (_factStoreLock)
+        {
+            _factStoreDirty = true;
+            _factStoreFlushFailed = false;
+            _queuedFactWrites[path] = new PendingFactWrite(content, generation);
+        }
+
+        // Publish the derived sidecar synchronously when possible so readers and short-lived
+        // callers see a durable cache immediately. The tracked drain work below is still required:
+        // it records completion and retries a write that was unavailable at build time.
+        bool writtenImmediately = TryWriteAllText(path, content);
+        bool schedule = false;
+        lock (_factStoreLock)
+        {
+            if (writtenImmediately
+                && _queuedFactWrites.TryGetValue(path, out var queued)
+                && queued.Content == content
+                && queued.Generation == generation)
+            {
+                _queuedFactWrites.Remove(path);
+                if (generation == _factStoreGeneration && _pendingFactWrites == 0)
+                {
+                    _factStoreDirty = false;
+                    _factStoreFlushFailed = false;
+                }
+            }
+            else if (!writtenImmediately && !_queuedFactWrites.ContainsKey(path))
+            {
+                _queuedFactWrites[path] = new PendingFactWrite(content, generation);
+            }
+
+            if (!writtenImmediately && _pendingFactWrites == 0)
+            {
+                _pendingFactWrites = 1;
+                schedule = true;
+            }
+        }
+
+        if (!schedule) return;
+
+        StartFactFlushWorker();
+    }
+
+    private void StartFactFlushWorker()
+    {
+        BackgroundWork.Fire(async shutdownToken =>
+        {
+            while (true)
+            {
+                string pendingPath;
+                PendingFactWrite? pending;
+                lock (_factStoreLock)
+                {
+                    var next = _queuedFactWrites.FirstOrDefault();
+                    if (next.Key is null)
+                    {
+                        _pendingFactWrites--;
+                        return;
+                    }
+                    pendingPath = next.Key;
+                    pending = next.Value;
+                    _queuedFactWrites.Remove(pendingPath);
+                }
+
+                if (!TryWriteAllText(pendingPath, pending.Content))
+                {
+                    lock (_factStoreLock)
+                    {
+                        if (!_queuedFactWrites.ContainsKey(pendingPath))
+                            _queuedFactWrites[pendingPath] = pending;
+                        _factStoreFlushFailed = true;
+                    }
+
+                    // Keep the newest failed write queued and retry it. This is deliberately
+                    // cancellable so an unavailable filesystem cannot prevent shutdown forever.
+                    try { await Task.Delay(50, shutdownToken); }
+                    catch (OperationCanceledException)
+                    {
+                        bool restart;
+                        lock (_factStoreLock)
+                        {
+                            if (!_queuedFactWrites.ContainsKey(pendingPath))
+                                _queuedFactWrites[pendingPath] = pending;
+                            _factStoreFlushFailed = true;
+                            _pendingFactWrites--;
+                            restart = _queuedFactWrites.Count > 0 && _pendingFactWrites == 0;
+                            if (restart) _pendingFactWrites = 1;
+                        }
+
+                        if (restart)
+                            StartFactFlushWorker();
+                        return;
+                    }
+                    continue;
+                }
+
+                lock (_factStoreLock)
+                {
+                    if (_queuedFactWrites.Count == 0
+                        && pending.Generation == _factStoreGeneration
+                        && _pendingFactWrites == 1)
+                    {
+                        _pendingFactWrites--;
+                        _factStoreFlushFailed = false;
+                        _factStoreDirty = false;
+                        return;
+                    }
+                }
+            }
+        }, "facts cache flush");
     }
 
     private static List<TopicInfo> BuildTopicInfosFromCandidates(IReadOnlyList<ScopedArtifact> candidates)

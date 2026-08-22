@@ -132,6 +132,27 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
                 because: "CompositeEventSink's catch handler dereferences the same null sink via "
                        + "sink.GetType(), so the NRE escapes the catch and aborts every later sink");
 
+    [Fact]
+    public async Task InstallDefault_DuplicateSinkInstance_PublishesOnlyOnce()
+    {
+        var prior = MemoryEventSinkContext.Default;
+        try
+        {
+            var order = new List<string>();
+            var sink = new RecordingSink("one", order);
+            MemoryEventSinkContext.InstallDefault(sink, sink);
+
+            await MemoryEventSinkContext.Default!.OnStoredAsync(
+                "test", ["content"], null!, CancellationToken.None);
+
+            order.Should().Equal("one");
+        }
+        finally
+        {
+            MemoryEventSinkContext.Default = prior;
+        }
+    }
+
     private sealed class RecordingSink(string name, List<string> order) : IMemoryEventSink
     {
         public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)

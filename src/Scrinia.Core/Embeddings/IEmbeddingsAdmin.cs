@@ -1,13 +1,9 @@
 namespace Scrinia.Core.Embeddings;
 
 /// <summary>
-/// What the embeddings REST endpoints need, independent of which implementation provides it.
-/// Implemented by the built-in Model2Vec service and by the Vulkan plugin, so one
-/// endpoint file serves both and the plugin no longer maps a second copy of the same routes.
-///
-/// <para>Finding H6: the previous arrangement had each implementation map its own routes into
-/// an inline /api/v1/plugins group that carried no {store} route value, so no request could
-/// ever resolve a store and every reindex returned 400.</para>
+/// Administrative capabilities exposed by an embeddings provider, independent of which
+/// implementation provides them. The interface is consumed by the active embeddings integration
+/// and keeps provider status and reindexing consistent across implementations.
 /// </summary>
 public interface IEmbeddingsAdmin
 {
@@ -26,7 +22,7 @@ public interface IEmbeddingsAdmin
     /// <summary>Total vectors held across all scopes.</summary>
     int TotalVectorCount { get; }
 
-    /// <summary>Free-text hardware label surfaced in the web UI, e.g. "CPU" or "Vulkan GPU".</summary>
+    /// <summary>Free-text hardware label for the active provider, e.g. "CPU" or "Vulkan GPU".</summary>
     string Hardware { get; }
 
     /// <summary>Re-embeds every persistent memory in the store. Returns the number reindexed.</summary>

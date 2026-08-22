@@ -55,6 +55,12 @@ public static class MemoryEventSinkContext
                 + "sink to name it, so a null escapes the catch and aborts every later sink.",
                 nameof(sinks));
 
-        Default = new CompositeEventSink(sinks);
+        var uniqueSinks = new List<IMemoryEventSink>(sinks.Length);
+        var seen = new HashSet<IMemoryEventSink>(ReferenceEqualityComparer.Instance);
+        foreach (var sink in sinks)
+            if (seen.Add(sink))
+                uniqueSinks.Add(sink);
+
+        Default = new CompositeEventSink([.. uniqueSinks]);
     }
 }

@@ -16,6 +16,9 @@ public sealed class GoogleGeminiEmbeddingProvider : ResilientEmbeddingProvider
     public override string Signature => $"google:{_model}";
     protected override string ProviderName => "Google Gemini";
 
+    /// <summary>Gemini's single-input compatibility path uses the shared bounded fallback.</summary>
+    protected override int MaxBatchSize => 32;
+
     public GoogleGeminiEmbeddingProvider(string? apiKey, string model, string baseUrl, int dimensions, ILogger logger,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
         : base(CreateHttpClient(apiKey), logger, circuitBreaker, retryOptions)

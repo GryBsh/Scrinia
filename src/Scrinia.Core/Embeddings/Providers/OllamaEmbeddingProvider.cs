@@ -19,6 +19,9 @@ public sealed class OllamaEmbeddingProvider : ResilientEmbeddingProvider
     public override string Signature => $"ollama:{_model}";
     protected override string ProviderName => "Ollama";
 
+    /// <summary>Ollama's single-input compatibility path uses the shared bounded fallback.</summary>
+    protected override int MaxBatchSize => 32;
+
     public OllamaEmbeddingProvider(string baseUrl, string model, ILogger logger,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
         : base(CreateHttpClient(baseUrl), logger, circuitBreaker, retryOptions)

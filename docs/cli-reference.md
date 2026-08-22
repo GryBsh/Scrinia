@@ -35,7 +35,7 @@ scri serve [--workspace-root <path>] [--no-auto-setup]
 
 Reads and writes directly to `.scrinia/` on disk. On first launch, `serve` checks for the built-in embedding model (`m2v-MiniLM-L6-v2`) and downloads it if missing (~50MB, one-time). Download progress goes to stderr to keep the JSON-RPC stdout clean. If the download fails, the server still starts — semantic search degrades to BM25-only until you run `scri setup` manually.
 
-There was a `--remote` mode that proxied every MCP tool call to an HTTP server, with `--api-key` and `--store`. It is gone, along with the server it talked to. Sharing memories between people is a git question now: `.scrinia/` is committed like any other directory and the merge driver resolves what conflicts — see [Multi-User Setup](multi-user-setup.md).
+The repository currently ships one server surface: `scri serve`, a local stdio MCP server. The former `--remote` mode, HTTP server, `--api-key`, and `--store` options are no longer present in the solution or source tree. Sharing memories between people is a git question now: `.scrinia/` is committed like any other directory and the merge driver resolves what conflicts — see [Multi-User Setup](multi-user-setup.md).
 
 ### scri list
 
@@ -403,10 +403,11 @@ Force a full rebuild of every vector file in the workspace. Use when:
 scri reindex [--workspace-root <path>] [--json]
 ```
 
-Moves every `vectors.bin` to a timestamped `vectors.bin.pre-reindex-{stamp}`
-backup, then runs `WorkspaceSetup.LoadPluginsAsync` which sees the missing files
-and rebuilds from sidecars. The backup files are kept on disk — delete them
-manually once you've confirmed the new vectors work.
+Enumerates the canonical memories from the store, probes their vector scopes explicitly,
+and rebuilds the vectors from sidecars through the active embedding pipeline. Each memory's
+replacement is written to a temporary SVF3 file and atomically replaces its existing
+`vectors.bin`; no backup tree is created or retained. A failed replacement
+leaves the prior durable vector snapshot untouched.
 
 For background context on the auto-quarantine flow that handles 95% of model
 switches without needing this command, see

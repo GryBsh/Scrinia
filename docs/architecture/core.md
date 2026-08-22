@@ -313,19 +313,14 @@ This is a **forward-only migration**: `Attributes` is `null` for entries written
 The whole storage contract, filesystem layout included. Abstract members a conforming store must
 implement, plus six with default bodies a store may override for efficiency.
 
-It was two interfaces until the remote store was dropped. `ILocalMemoryStore` carried the six
-members with no meaning off a filesystem — the paths, the workspace root, the bundle export pair —
-so that "this operation needs local files" was a compile-time fact rather than a
-`NotSupportedException` thrown at runtime. With one implementation the split named a distinction
-that no longer divides anything: every store has a workspace root, so each narrowing cast could
-only succeed and the `NOT_SUPPORTED` responses behind them were unreachable. Both halves are now
-one interface, and `FileMemoryStore` is the sole implementation.
+`IMemoryStore` is the single local filesystem store contract. `FileMemoryStore` is its sole
+implementation, so paths, the workspace root, and bundle operations are part of the same contract
+instead of being split behind a local-versus-remote distinction.
 
-One rule from that period is worth keeping, because it is the reason the contract reads the way it
-does: **a store must not answer a failure with an empty result.** `HttpMemoryStore.LoadIndex`
-originally returned `[]` on an unreachable server, which "would look exactly like 'this scope has
-no entries'". Anything reading through `LoadIndex` — the async-typing promotion seam's default
-`TryUpdateEntry` among them — cannot tell those apart, so a store that cannot answer must throw.
+The store contract preserves the rule that a store must not answer a failure with an empty result:
+an unavailable or corrupt scope is an error, not an empty search result. Anything reading through
+`LoadIndex` cannot distinguish an unavailable or corrupt scope from one with no entries, so a store
+that cannot answer must throw. `FileMemoryStore` is the current filesystem implementation.
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
 

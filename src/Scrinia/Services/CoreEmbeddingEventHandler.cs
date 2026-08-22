@@ -53,6 +53,10 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
 
             await _indexer.IndexAsync(scope, subject, elements, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
@@ -76,6 +80,10 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         {
             var (scope, subject) = memoryStore.ParseQualifiedName(qualifiedName);
             await _indexer.IndexAsync(scope, subject, content, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

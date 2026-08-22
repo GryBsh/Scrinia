@@ -12,8 +12,8 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// Regression coverage for the qualifiedName round-trip loss in
 /// <see cref="EmbeddingsPlugin.ReindexStoreAsync"/> (docs task "F", part 2 — the "duplicated
 /// reindex logic" half of the bug already fixed for <c>EmbeddingReindexer</c> in commit 1e81666
-/// and covered by <c>EmbeddingReindexerNamespacedScopeTests</c>, and mirrored for the built-in
-/// service by <c>BuiltInEmbeddingsServiceReindexTests</c>).
+/// and covered by <c>EmbeddingReindexerNamespacedScopeTests</c>, and mirrored by the shared core
+/// reindex tests).
 ///
 /// <see cref="IMemoryStore.FormatQualifiedName"/> intentionally strips the "memory/"/"entity/"
 /// namespace prefix for human-friendly display. Re-parsing that display string via

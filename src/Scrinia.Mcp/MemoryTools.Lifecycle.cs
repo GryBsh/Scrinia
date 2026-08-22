@@ -1286,6 +1286,7 @@ public sealed partial class ScriniaMcpTools
             cancellationToken);
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
+        await FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, compacted, store, cancellationToken));
         int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no
@@ -1294,8 +1295,11 @@ public sealed partial class ScriniaMcpTools
         // archives — it has no versions/ directory — so hadIndexedEntry is unconditionally false
         // for that branch above.
         string archived = hadIndexedEntry ? " Original archived." : "";
-        return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}")
-            .WithFileChanges().WithAction("compacted");
+        var response = ResponseBuilder.Success(
+            $"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}");
+        if (!ephemeral)
+            response = response.WithFileChanges();
+        return response.WithAction("compacted");
     }
 
     /// <summary>Resume agent context — agent profile, patterns, session log, available skills.</summary>

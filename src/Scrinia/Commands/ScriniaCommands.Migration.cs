@@ -321,7 +321,7 @@ public partial class ScriniaCommands
         // Merging chunks collapses the chunk layout (e.g. indices 0-7 -> just 0), so any
         // vectors keyed to the old per-chunk indices are now orphaned/stale. Re-embed through
         // the same event-sink path a normal store/append uses (CoreEmbeddingEventHandler.
-        // EmbedAndIndexAsync does an atomic Remove-then-Upsert per entry) so stale higher-index
+        // EmbedAndIndexAsync does an atomic full-memory replacement per entry) so stale higher-index
         // vectors are cleared and the merged single chunk gets a fresh vector. If no sink is
         // wired (embeddings unavailable in this process), there's nothing to clear or rebuild —
         // a subsequent `scri reindex` will repopulate.

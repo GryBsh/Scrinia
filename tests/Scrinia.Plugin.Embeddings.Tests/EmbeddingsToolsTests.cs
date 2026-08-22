@@ -51,6 +51,16 @@ public class EmbeddingsToolsTests : IDisposable
         public void Dispose() { }
     }
 
+    private sealed class MalformedProvider : IEmbeddingProvider
+    {
+        public bool IsAvailable => true;
+        public int Dimensions => 2;
+        public string Signature => "test:malformed";
+        public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
+            => Task.FromResult<float[]?>([1f]);
+        public void Dispose() { }
+    }
+
     private EmbeddingsTools ToolsWith(IEmbeddingProvider provider, EmbeddingOptions? options = null)
     {
         options ??= new EmbeddingOptions { ChunkSize = 100, ChunkOverlap = 20 };
@@ -115,6 +125,16 @@ public class EmbeddingsToolsTests : IDisposable
 
         root.TryGetProperty("error", out _).Should().BeFalse();
         root.GetProperty("ok").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Upsert_RejectsMalformedVectorBeforeStorage()
+    {
+        var tools = ToolsWith(new MalformedProvider());
+
+        Parse(await tools.Upsert("local", "note", "alpha"))
+            .TryGetProperty("error", out _).Should().BeTrue();
+        _store.GetVectors("local").Should().BeEmpty();
     }
 
     [Fact]

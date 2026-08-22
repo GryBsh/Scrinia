@@ -7,28 +7,21 @@
 //
 // $$__SCRI__$$ is replaced at install time with the absolute path to the scri executable
 // (the plugin runs in a child process whose PATH may not contain scrinia).
-import { spawnSync } from "node:child_process"
-import type { Plugin } from "@opencode-ai/plugin";
+//import { spawnSync } from "node:child_process"
+import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
 const SCRI = "$$__SCRI__$$"
 
-function log (client: any, message: string, extra: Record<string, any> = {}) {
+function log (client: any, message: string, level: string = "info", extra: Record<string, any> = {}) {
   client.app.log({
     body: {
       service: "scrinia",
-      level: "info",
-      message,
+      level: level,
+      message: `scrinia: ${message}`,
       extra,
     },
   })
 }
-
-function log_debug (client: any, message: string, extra: Record<string, any> = {}) {
-  if (process.env.SCRINIA_DEBUG) {
-    log(client, "DEBUG: " + message, extra)
-  }
-}
-
 
 export const Scrinia: Plugin = async ({ project, client, $, directory, worktree }) => {
   log(client, "Plugin initialized")
@@ -38,11 +31,8 @@ export const Scrinia: Plugin = async ({ project, client, $, directory, worktree 
         const messages = output?.messages
         if (!Array.isArray(messages) || messages.length === 0) return
         
-        const res = spawnSync(SCRI, ["restore", "--hook", "--client", "opencode"], {
-          encoding: "utf8",
-          timeout: 5000,
-        })
-        const restored = (res.stdout ?? "").trim()
+        const res = await $`${SCRI} restore --hook --client opencode`.quiet()
+        const restored = (res?.text() ?? "").trim()
         if (!restored) {
           return
         }
@@ -73,12 +63,15 @@ export const Scrinia: Plugin = async ({ project, client, $, directory, worktree 
         }
         if (!prompt) return
 
-        const res = spawnSync(SCRI, ["hint", "--client", "opencode"], {
-          input: prompt,
-          encoding: "utf8",
-          timeout: 5000,
-        })
-        const hint = (res.stdout ?? "").trim()
+        const res = await $`${SCRI} save --hook --client opencode < ${prompt}`.quiet()
+
+        //const res = spawnSync(SCRI, ["hint", "--client", "opencode"], {
+        //  input: prompt,
+        //  encoding: "utf8",
+        //  timeout: 5000,
+        //})
+
+        const hint = (res?.text() ?? "").trim()
         if (!hint) {
           //log("No hint generated")
            return

@@ -11,9 +11,9 @@
     runs that pass are deleted, runs that fail are kept and their failures printed with the
     assertion message and stack trace.
 
-    Rates observed here are low: the event-sink tripwire failed roughly 2 runs in 12, and a
-    Scrinia.Server.Tests failure seen once did not recur in 83 runs. Choose -Times accordingly —
-    a clean 10-run sweep is weak evidence, and 30+ is a reasonable overnight setting.
+    Rates observed here are low: the event-sink tripwire failed roughly 2 runs in 12, and an
+    intermittent failure seen once did not recur in 83 runs. Choose -Times accordingly — a clean
+     10-run sweep is weak evidence, and 30+ is a reasonable overnight setting.
 
 .PARAMETER Times
     How many times to run. Default 20.
@@ -35,7 +35,7 @@
     Runs the whole solution 30 times and prints every failure it catches.
 
 .EXAMPLE
-    ./scripts/find-flaky-test.ps1 -Times 40 -Project tests/Scrinia.Server.Tests
+    ./scripts/find-flaky-test.ps1 -Times 40 -Project tests/Scrinia.Tests
     Narrows to one assembly. Faster per run, so more samples per hour — but it cannot
     reproduce anything caused by cross-assembly contention.
 #>
@@ -135,7 +135,7 @@ Write-Host ("Runs: $Times   Runs with a failure: $failedRuns") -ForegroundColor 
 
 if ($seen.Count -eq 0) {
     # State this precisely. A clean sweep bounds the rate, it does not prove the suite sound —
-    # the Server.Tests failure this script was written for survived 83 clean runs.
+    # the original intermittent failure this script was written for survived 83 clean runs.
     Write-Host "No failures caught. That bounds the rate below roughly 1 in $Times; it is not proof there is none." -ForegroundColor Green
     exit 0
 }

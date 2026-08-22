@@ -36,38 +36,34 @@ scrinia/
       MemoryTools.Skills.cs       <- SkillCreate/SkillLoad + shared sidecar helpers
       EmbeddedPrompts.cs          <- loads embedded skills, scaffolds, guide.md
       McpResponse.cs              <- structured response builder (YAML output)
-    Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
+    Scrinia/                      <- CLI + local stdio MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- ConsoleAppFramework v5 host
       Commands/ScriniaCommands.cs <- CLI commands (serve, list, search, store, show, forget, append, copy, export, import, setup, config)
-      Commands/WorkspaceSetup.cs <- configures the store per command (Configure/Store/LocalStore), plugin discovery
-    Scrinia.Server/               <- HTTP API server (net10.0 web, refs Core + Mcp)
-      Endpoints/MemoryEndpoints.cs <- REST: store, list, show, append, search, export, import
-      Endpoints/HealthEndpoints.cs <- /health, /health/live, /health/ready, /health/details
-      Endpoints/KeyEndpoints.cs    <- API key management
-      Endpoints/ChatEndpoints.cs   <- general-purpose LLM chat (OpenAI/Anthropic/Gemini providers)
-      Auth/                        <- ApiKeyStore (SQLite), bearer-token auth handler, RequestContext
-      Services/StoreManager.cs     <- multi-store factory keyed by name
+      Commands/WorkspaceSetup.cs <- configures the local filesystem store per command, plugin discovery
     Scrinia.Plugin.Abstractions/  <- IScriniaPlugin + extension hooks
     Scrinia.Plugin.Embeddings/    <- optional Vulkan GPU plugin (LLamaSharp, GGUF model)
     Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport)
     Scrinia.Merge/                <- merge driver for .scrinia .meta.json conflicts
-    Scrinia.AppHost/              <- .NET Aspire orchestrator
   tests/
     Scrinia.Tests/                <- core + MCP unit tests
-    Scrinia.Server.Tests/         <- WebApplicationFactory tests (memory, auth, health, chat)
+    Scrinia.TestDoubles/           <- shared test doubles
+    Scrinia.Benchmarks/            <- retrieval benchmarks
+    Scrinia.Retrieval.Benchmarks.Tests/ <- benchmark test harness
     Scrinia.Plugin.Embeddings.Tests/ <- Vulkan plugin tests
     Scrinia.Merge.Tests/          <- merge handler tests
-  web/                            <- React + Vite + Tailwind SPA
-    src/pages/                    <- Login, Dashboard, MemoryBrowser, MemoryDetail, KeyManagement, AgentChat, Settings
-    src/components/               <- Layout, MemoryList, MemoryContent, ChunkViewer, SearchBar
   docs/
-    getting-started.md, cli-reference.md, server-admin.md, multi-user-setup.md,
-    troubleshooting.md, web-ui-guide.md, architecture/{overview,cli,server,core,embeddings}.md
+    getting-started.md, cli-reference.md, multi-user-setup.md, troubleshooting.md,
+    security.md, architecture/{overview,cli,core,embeddings}.md
   AGENTS.md                       <- this file (canonical contributor doc for agents)
   NMP_SPEC.md                     <- NMP/2 format specification
 ```
 
-## MCP Tools
+## MCP Tools and server mode
+
+`scri serve` is the only server surface: it runs the MCP tools over local stdio and reads and
+writes the local `.scrinia/` workspace. The repository has no HTTP/REST server, server project,
+server test project, web UI, Aspire AppHost, or remote CLI mode. The removed `--remote`,
+`--api-key`, and `--store` options must not be added to new CLI guidance.
 
 Twelve tools are exposed — `guide()`, one per memory operation, and `facts`:
 
@@ -112,7 +108,8 @@ public interface IEncodingStrategy
 
 ### `IMemoryStore`
 
-The store abstraction. `FileMemoryStore` is the filesystem implementation. MCP tools dispatch through `MemoryStoreContext.Current`, an `AsyncLocal<IMemoryStore>` that the CLI (set once at startup) and server (set per-request in middleware) both populate.
+The store abstraction. `FileMemoryStore` is the filesystem implementation. MCP tools dispatch through
+`MemoryStoreContext.Current`, an `AsyncLocal<IMemoryStore>` populated by the CLI during local workspace setup.
 
 ### `MemoryNaming`
 
@@ -139,7 +136,7 @@ Memory paths are free-form. A small set has first-class behavior:
 ## Pitfalls to Avoid
 
 - Do not assume `MemoryStoreContext.Current` is always set — the AsyncLocal does not propagate across the .NET generic host's thread boundary in CLI mode. The CLI uses `*.Default` static fallbacks for `SearchContributorContext` and `MemoryEventSinkContext` to bridge that gap.
-- Use source-generated JSON contexts (`ScriniaMcpJsonContext`, `ServerJsonContext`, `CliJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`) — `JsonSerializer` reflection is incompatible with trimming.
+- Use source-generated JSON contexts (`ScriniaMcpJsonContext`, `CliJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`) — `JsonSerializer` reflection is incompatible with trimming.
 - `WithTools<T>()` registers ALL public methods on the type as MCP tools. Keep helper methods `internal` or `private`.
 - Skills write to `.scrinia/skills/` first, fall back to NMP/2 `skill:{name}` legacy entries, then to embedded built-ins. Don't bypass this lookup chain.
 - File I/O for skill / agent sidecars uses `ReadSidecarMeta<T>` / `WriteSidecarMeta<T>` on `ScriniaMcpTools`, not raw `JsonSerializer` calls — they use the source-gen context.
@@ -157,7 +154,7 @@ Use `TestHelpers.StoreScope` for test isolation — it redirects workspace, stor
 
 - All commits should keep the build green (`dotnet build Scrinia.sln`) and tests passing (`dotnet test Scrinia.sln`).
 - New JSON-serialized types must be registered in the appropriate source-gen context.
-- New CLI commands go in `ScriniaCommands.cs` and inherit `--workspace-root` / `--remote` / `--api-key` patterns.
+- New CLI commands go in `ScriniaCommands.cs` and follow the existing `--workspace-root` pattern; there is no remote CLI surface.
 - Plugin authors implement `IScriniaPlugin` (lifecycle), and any combination of `ISearchScoreContributor`, `IMemoryEventSink`, `IMemoryOperationHook`.
 
 ## Docs maintenance — known gaps

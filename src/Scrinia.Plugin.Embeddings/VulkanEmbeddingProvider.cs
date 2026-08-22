@@ -12,11 +12,12 @@ namespace Scrinia.Plugin.Embeddings;
 /// </summary>
 public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
 {
-    private readonly LLamaEmbedder _embedder;
-    private readonly LLamaWeights _weights;
+    private readonly LLamaEmbedder? _embedder;
+    private readonly LLamaWeights? _weights;
     private readonly int _dimensions;
     private readonly string _signature;
     private readonly ILogger _logger;
+    private readonly Func<string, CancellationToken, Task<float[]>> _embed;
     private bool _disposed;
 
     public bool IsAvailable => !_disposed;
@@ -30,7 +31,25 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
         _dimensions = dimensions;
         _signature = signature;
         _logger = logger;
+        _embed = async (text, ct) => (await embedder.GetEmbeddings(text, ct)).Single().ToArray();
     }
+
+    private VulkanEmbeddingProvider(
+        Func<string, CancellationToken, Task<float[]>> embed,
+        int dimensions,
+        ILogger logger)
+    {
+        _embed = embed;
+        _dimensions = dimensions;
+        _signature = "test:vulkan";
+        _logger = logger;
+    }
+
+    internal static VulkanEmbeddingProvider ForTesting(
+        Func<string, CancellationToken, Task<float[]>> embed,
+        int dimensions,
+        ILogger logger) =>
+        new(embed, dimensions, logger);
 
     /// <summary>Creates a Vulkan-accelerated embedding provider from a GGUF model.</summary>
     public static VulkanEmbeddingProvider Create(string modelPath, int dimensions, ILogger logger)
@@ -65,10 +84,21 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
 
         try
         {
-            var embeddings = await _embedder.GetEmbeddings(text, ct);
-            var vec = embeddings.Single().ToArray();
+            var vec = await _embed(text, ct);
+            if (_dimensions > 0 && vec.Length != _dimensions)
+            {
+                _logger.LogWarning(
+                    "Vulkan embedding returned {ActualDimensions} dimensions; expected {ExpectedDimensions}",
+                    vec.Length, _dimensions);
+                return null;
+            }
+
             VectorMath.L2Normalize(vec);
             return vec;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -93,7 +123,7 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
     {
         if (_disposed) return;
         _disposed = true;
-        _embedder.Dispose();
-        _weights.Dispose();
+        _embedder?.Dispose();
+        _weights?.Dispose();
     }
 }
