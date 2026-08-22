@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core.Encoding;
@@ -186,5 +187,36 @@ public class RegisteredFormatsTests
         {
             File.Delete(metaPath);
         }
+    }
+
+    /// <summary>
+    /// A skill rewrite carries its sidecar's unknown fields and version forward.
+    ///
+    /// <para><b>Through the real production path, not a round-trip.</b> SkillCreate builds a
+    /// FRESH SkillFileMeta on every call — it already carries CreatedAt across, and before this
+    /// it dropped everything else. So the extension bucket added for these formats was
+    /// decorative: the first re-create after versioning shipped would delete exactly the fields
+    /// versioning exists to preserve, and the fresh record's null version would sail past the
+    /// write gate while doing it. Identical defect to the one BuildDerivedEntry closes for the
+    /// artifact sidecar; a round-trip test cannot see either.</para>
+    /// </summary>
+    [Fact]
+    public async Task ReCreatingASkill_KeepsItsSidecarsUnknownKeys()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/skill/versioned-probe", ["Review carefully."]);
+
+        string metaPath = Path.Combine(
+            scope.WorkspaceDir, ".scrinia", "skills", "versioned-probe.meta.json");
+        var obj = JsonNode.Parse(File.ReadAllText(metaPath))!.AsObject();
+        obj["futureThing"] = JsonValue.Create(42);
+        File.WriteAllText(metaPath, obj.ToJsonString());
+
+        await tools.MemoryRemember("/skill/versioned-probe", ["Review even more carefully."]);
+
+        File.ReadAllText(metaPath).Should().Contain("futureThing",
+            "a rewrite must carry forward fields this build has no member for");
     }
 }

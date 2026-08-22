@@ -268,7 +268,20 @@ public sealed partial class ScriniaMcpTools
             Capabilities: capabilities,
             Scaffold: scaffoldLower,
             CreatedAt: existingMeta?.CreatedAt ?? now,
-            UpdatedAt: now);
+            UpdatedAt: now,
+            // Carried forward, exactly as CreatedAt above is. Without this the extension bucket
+            // is decorative: every skill rewrite builds a FRESH record with an empty bucket and a
+            // null version, so the first rewrite after versioning shipped would delete the unknown
+            // fields versioning exists to preserve -- and, declaring no version, it would sail
+            // past the write gate while doing it. Same defect BuildDerivedEntry closes for the
+            // artifact sidecar; same fix.
+            SchemaVersion: existingMeta?.SchemaVersion)
+        {
+            // COPIED, never aliased -- same rule as ArtifactEntry.Unknown.
+            Unknown = existingMeta?.Unknown is { } u
+                ? new Dictionary<string, System.Text.Json.JsonElement>(u)
+                : null
+        };
         WriteSidecarMeta(filePath, meta, ScriniaMcpJsonContext.Default.SkillFileMeta);
 
         var response = ResponseBuilder.Success($"Stored as .scrinia/skills/{name}.md.")
