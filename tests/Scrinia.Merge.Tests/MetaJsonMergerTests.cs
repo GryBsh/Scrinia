@@ -316,4 +316,73 @@ public sealed class MetaJsonMergerTests : IDisposable
         using var doc = JsonDocument.Parse(File.ReadAllText(ours));
         doc.RootElement.TryGetProperty("keywords", out _).Should().BeFalse();
     }
+
+    /// <summary>
+    /// Different schema versions on the two sides ESCALATE rather than auto-resolve.
+    ///
+    /// <para>This resolver overlays merged fields onto OURS and writes ours, so theirs' version
+    /// and theirs' unknown keys never reach the result. Machine A on a newer build writes v:2 and
+    /// fields this build has no member for; machine B edits the same memory and merges. A silent
+    /// resolve would hand back a sidecar with no version and none of A's data, which B's store
+    /// would then rewrite freely. Cross-machine merge is the designed workflow.</para>
+    /// </summary>
+    [Fact]
+    public void Merge_SidesDeclaringDifferentSchemaVersions_Conflicts()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json"), ours = Path.Combine(dir, "ours.meta.json"), theirs = Path.Combine(dir, "theirs.meta.json");
+        string oursJson = """{"name":"m","keywords":["auth","jwt"]}""";
+        File.WriteAllText(a, oursJson);
+        File.WriteAllText(ours, oursJson);
+        File.WriteAllText(theirs, """{"name":"m","keywords":["auth","jwt"],"v":2}""");
+
+        MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig())
+            .Should().Be(MetaJsonMerger.MergeResult.Conflict);
+        File.ReadAllText(ours).Should().Be(oursJson);
+    }
+
+    /// <summary>
+    /// A key only THEIRS carries, that neither this driver nor ArtifactEntry models, survives the
+    /// merge. Without this the driver silently deleted the other machine's data on every
+    /// auto-resolve — the exact loss the sidecar extension bucket exists to prevent, one layer up.
+    /// </summary>
+    [Fact]
+    public void Merge_PreservesAnUnknownKeyThatOnlyTheirsCarries()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json"), ours = Path.Combine(dir, "ours.meta.json"), theirs = Path.Combine(dir, "theirs.meta.json");
+        File.WriteAllText(a, """{"name":"m","keywords":["auth","jwt"]}""");
+        File.WriteAllText(ours, """{"name":"m","keywords":["auth","jwt"],"contentPreview":"OURS"}""");
+        File.WriteAllText(theirs, """{"name":"m","keywords":["auth","jwt"],"futureThing":{"a":1}}""");
+
+        MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig())
+            .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        File.ReadAllText(ours).Should().Contain("futureThing");
+    }
+
+    /// <summary>
+    /// The control for the test above: a key the merge logic deliberately REMOVES must stay
+    /// removed. A first version of the preservation copied every theirs-only key and resurrected
+    /// exactly these deliberate deletions, breaking four tests.
+    /// </summary>
+    [Fact]
+    public void Merge_DoesNotResurrectAModelledKeyTheMergeLogicRemoved()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json"), ours = Path.Combine(dir, "ours.meta.json"), theirs = Path.Combine(dir, "theirs.meta.json");
+        File.WriteAllText(a, """{"name":"m","keywords":["auth","jwt"]}""");
+        File.WriteAllText(ours, """{"name":"m","keywords":["auth","jwt"]}""");
+        File.WriteAllText(theirs, """{"name":"m","keywords":["auth","jwt"],"agentKeywords":["auth"]}""");
+
+        MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig())
+            .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        File.ReadAllText(ours).Should().NotContain("agentKeywords",
+            "one-sided agentKeywords is deliberately left absent; the unknown-key copy must not " +
+            "reach back in and undo that");
+    }
 }

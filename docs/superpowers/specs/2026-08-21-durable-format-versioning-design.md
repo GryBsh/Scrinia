@@ -360,11 +360,20 @@ rollback path the file documents as existing precisely to stop content and
 metadata diverging. `ArchiveVersion` copies `.meta.json` **bytes** directly rather
 than re-serializing, so it loses no fields and needs no gate.
 
-**Two writers sit outside `FileMemoryStore` entirely** and no gate in this design
-reaches them: `ArchiveVersion`'s byte copy, and `MetaJsonMerger` (`:174`), the git
-merge driver, which composes a `.meta.json` from `JsonNode` and writes it directly.
-Neither loses unknown fields — the merge driver is in fact the component that
-*preserves* `"description"` today — but the claim "every sidecar write funnels
+**THREE writers sit outside `FileMemoryStore` entirely** — the count was wrong, and
+so was the claim about them. They are `ArchiveVersion`'s byte copy, `MetaJsonMerger`
+(the git merge driver), and `reconcile()`'s auto-resolver
+(`MemoryTools.Lifecycle.cs:303`), which composes a `.meta.json` from `JsonNode` and
+writes it through `AtomicWriteAllText`, bypassing `WriteSidecarCore` entirely.
+
+`ArchiveVersion` copies bytes and loses nothing. **The other two DO lose data**, and
+the merge driver's loss is now fixed: it overlaid merged fields onto `ours` and wrote
+`ours`, so theirs' version and theirs' unknown keys never reached the result. It now
+escalates to `Conflict` when the two sides declare different versions, and copies over
+any theirs-only key that neither end models. `reconcile()` has the same shape and is
+NOT yet gated — recorded here as a known gap rather than left to be rediscovered.
+
+The merge driver is also the component that *preserves* `"description"` today — but the claim "every sidecar write funnels
 through `WriteSidecarCore`" is true only of writes that go through the store and
 *serialize*. Stated plainly here rather than left as an assumption a later reader
 would find false.

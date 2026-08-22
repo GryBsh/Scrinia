@@ -171,9 +171,53 @@ public static class MetaJsonMerger
                                kv.Key,
                                (JsonNode?)new JsonArray(kv.Value.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()))));
 
+        // SCHEMA VERSION, and THEIRS' unknown keys. Both are dropped by construction otherwise:
+        // this resolver overlays merged fields onto OURS and writes ours, so anything that exists
+        // only on theirs' side never reaches the result. The class comment's claim that the
+        // overlay "preserves every unknown property verbatim" is true only of OURS'.
+        //
+        // That is precisely the case the sidecar versioning work exists for. Machine A, on a newer
+        // build, writes v:2 plus fields this build has no member for. Machine B edits the same
+        // memory and merges. A silent auto-resolve would hand back a sidecar carrying no version
+        // and none of A's data -- and B's store, seeing no version, would then rewrite it freely.
+        // Cross-machine merge is the designed workflow, not an edge case.
+        //
+        // Two rules, in order of preference: PRESERVE what can be preserved, ESCALATE what cannot.
+        //
+        // Note this driver deliberately does not reference Scrinia.Core, so it cannot know the
+        // current supported version. It does not need to: a difference BETWEEN the two sides is
+        // sufficient to refuse, and equal versions are no worse to merge than they were before
+        // versioning existed.
+        if (GetInt(ours, "v") != GetInt(theirs, "v"))
+            return MergeResult.Conflict;
+
+        // Carry over keys that exist only on theirs AND that neither side's model knows about.
+        //
+        // The exclusion list is not decoration. A first attempt copied every theirs-only key and
+        // broke four existing tests, because this method deliberately REMOVES some keys -- it
+        // drops "keywords" when both sides have none, and leaves "agentKeywords" absent when only
+        // one side recorded it. A blanket copy resurrected exactly those deliberate deletions.
+        // The rule is "preserve what nobody models", not "preserve whatever ours lacks".
+        foreach (var kv in theirs)
+            if (!ours.ContainsKey(kv.Key) && !ModelledKeys.Contains(kv.Key))
+                ours[kv.Key] = kv.Value?.DeepClone();
+
         File.WriteAllText(oursPath, ours.ToJsonString(WriteOptions));
         return MergeResult.Resolved;
     }
+
+    /// <summary>
+    /// Every sidecar key this driver or <c>ArtifactEntry</c> models. A key OUTSIDE this set is one
+    /// neither end understands, which is precisely what must survive a merge rather than be
+    /// dropped; a key INSIDE it is already decided by the merge logic above, including the cases
+    /// where that logic deliberately removes it.
+    /// </summary>
+    private static readonly HashSet<string> ModelledKeys = new(StringComparer.Ordinal)
+    {
+        "name", "uri", "originalBytes", "chunkCount", "createdAt", "updatedAt",
+        "contentPreview", "description", "keywords", "agentKeywords",
+        "termFrequencies", "chunkEntries", "codeRefs", "attributes", "fields", "v"
+    };
 
     /// <summary>Reads an <c>attributes</c>-shaped JSON value — an object whose every value is an
     /// array of strings. ABSENT returns true with a null map (a normal side, not an error).
