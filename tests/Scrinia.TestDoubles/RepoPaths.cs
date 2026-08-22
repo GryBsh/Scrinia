@@ -4,9 +4,9 @@ namespace Scrinia.TestDoubles;
 /// Resolves paths relative to the repository root from a test assembly's output directory,
 /// for tests that read source files on disk rather than reflecting over loaded assemblies.
 ///
-/// <para>This lived in three places — <c>Scrinia.Server.Tests/TestPaths.cs</c>, a private copy
-/// in <c>Scrinia.Tests/StoreBoundaryTests.cs</c>, and <c>Scrinia.Merge.Tests/GitMergeHarness.cs</c>.
-/// The first two now delegate here. <c>Scrinia.Merge.Tests</c> keeps its copy deliberately: it
+/// <para>This lived in three places — a private copy in <c>Scrinia.Tests/StoreBoundaryTests.cs</c>
+/// and <c>Scrinia.Merge.Tests/GitMergeHarness.cs</c>, plus this shared helper. The former now
+/// delegates here. <c>Scrinia.Merge.Tests</c> keeps its copy deliberately: it
 /// does not reference this project, and a ProjectReference for six lines costs more than the
 /// duplication does.</para>
 /// </summary>

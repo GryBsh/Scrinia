@@ -6,11 +6,11 @@ namespace Scrinia.Tests.Naming;
 
 /// <summary>
 /// Pins the ephemeral-alias policy at every surface that accepts an address as text.
-/// Three of the five canonicalize and proceed; two deliberately refuse. Both answers
+/// Two of the three canonicalize and proceed; one deliberately refuses. Both answers
 /// are correct for their surface — what this fixture catches is a surface that does
 /// NEITHER, which is how three sites were missed on the ephemeral-addressing branch.
 ///
-/// <para>The five surfaces and where each is pinned:</para>
+/// <para>The three surfaces and where each is pinned:</para>
 /// <list type="table">
 ///   <item><term>MCP facade</term><description><c>ScriniaMcpTools</c> — canonicalize and
 ///     proceed. Pinned here (<see cref="McpFacade_TreatsTempPathAsTheEphemeralMemory"/>) and,
@@ -18,19 +18,13 @@ namespace Scrinia.Tests.Naming;
 ///   <item><term>MCP resource</term><description><c>ScriniaMcpResources.ReadMemory</c> —
 ///     canonicalize and proceed. Pinned here, and nowhere else: this surface reaches
 ///     <c>IMemoryStore.ResolveArtifactAsync</c> directly, bypassing the tool methods.</description></item>
-///   <item><term>Agent loop</term><description><c>AgentLoop.ExecuteRecallAsync</c> —
-///     canonicalize and proceed. Lives in Scrinia.Server, which this project does not
-///     reference; pinned by <c>Scrinia.Server.Tests.AgentLoopEphemeralAliasTests</c>.</description></item>
 ///   <item><term>CLI</term><description><c>ScriniaCommands.RefuseEphemeral</c> —
 ///     canonicalize then REFUSE, because the process exits before an ephemeral memory could
 ///     be read back. Pinned by <c>CliEphemeralRefusalTests</c>; not duplicated here.</description></item>
-///   <item><term>REST</term><description><c>MemoryEndpoints.NameRefusal</c> — REFUSE, because
-///     the alias would otherwise resolve to the persistent scope <c>local:temp</c>. Pinned by
-///     <c>Scrinia.Server.Tests.EphemeralAliasRefusalTests</c>; not duplicated here.</description></item>
 /// </list>
 ///
-/// <para>Deliberately NOT one shared helper across all five: the three policies are considered
-/// answers to three different process lifetimes, not an inconsistency to unify.</para>
+/// <para>Deliberately NOT one shared helper across all three: the two policies are considered
+/// answers to different process lifetimes, not an inconsistency to unify.</para>
 /// </summary>
 public class AddressSurfaceCoverageTests
 {
