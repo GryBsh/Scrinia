@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol;
 using Scrinia.Core;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
@@ -17,12 +18,29 @@ public record SkillFileMeta(
     string[]? Capabilities,
     string? Scaffold,
     string? CreatedAt,
-    string? UpdatedAt);
+    string? UpdatedAt,
+    [property: JsonPropertyName("v")] int? SchemaVersion = null)
+{
+    /// <summary>
+    /// Keys present in the sidecar that this build has no member for, preserved verbatim so a
+    /// read-write cycle cannot delete them. Same rationale and the same mutability constraint as
+    /// <see cref="ArtifactEntry.Unknown"/>: STJ refuses an init-only extension-data property on a
+    /// record with a parameterized constructor, so this cannot be <c>{ get; init; }</c>.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unknown { get; set; }
+}
 
 /// <summary>Metadata sidecar for an agent config file on disk.</summary>
 public record AgentFileMeta(
     string? CreatedAt,
-    string? UpdatedAt);
+    string? UpdatedAt,
+    [property: JsonPropertyName("v")] int? SchemaVersion = null)
+{
+    /// <summary>Same extension bucket, same constraint. See <see cref="SkillFileMeta.Unknown"/>.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unknown { get; set; }
+}
 
 [JsonSourceGenerationOptions(
     WriteIndented = true,
@@ -92,7 +110,18 @@ public sealed partial class ScriniaMcpTools
         File.Copy(filePath, Path.Combine(versionsDir, $"{name}_{timestamp}{ext}"));
     }
 
-    /// <summary>Reads a JSON sidecar (.meta.json) next to <paramref name="filePath"/>. Null if missing or corrupted.</summary>
+    /// <summary>
+    /// Reads a JSON sidecar (.meta.json) next to <paramref name="filePath"/>. Null if missing or
+    /// corrupted.
+    ///
+    /// <para>Deliberately does NOT gate on <see cref="DurableFormats.SkillMeta"/> /
+    /// <see cref="DurableFormats.AgentMeta"/>. Unlike <c>ReadSidecarRaw</c>'s blanket catch, this
+    /// method catches only <see cref="JsonException"/> — an <see cref="IOException"/> already
+    /// escapes it today, so a version-disposition throw added here would escape the same way. A
+    /// read must never throw on a version; the refusal belongs solely to
+    /// <see cref="WriteSidecarMeta"/>, exactly as <c>WriteSidecarCore</c> is the only gate for
+    /// the artifact sidecar.</para>
+    /// </summary>
     internal static T? ReadSidecarMeta<T>(string filePath, JsonTypeInfo<T> typeInfo) where T : class
     {
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
@@ -108,9 +137,33 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
-    /// <summary>Writes a JSON sidecar (.meta.json) next to <paramref name="filePath"/>.</summary>
+    /// <summary>
+    /// Writes a JSON sidecar (.meta.json) next to <paramref name="filePath"/>. Refuses when
+    /// <paramref name="meta"/>'s own declared version disposes to <see cref="FormatDisposition.LoadReadOnly"/>,
+    /// mirroring the artifact sidecar's <c>WriteSidecarCore</c> backstop, which gates on the
+    /// entry object being written rather than re-reading the file it is about to replace. Reads
+    /// still return the object regardless (see <see cref="ReadSidecarMeta{T}"/>).
+    /// </summary>
     internal static void WriteSidecarMeta<T>(string filePath, T meta, JsonTypeInfo<T> typeInfo)
     {
+        // Two types, two contracts, chosen here rather than passed in so no caller can pair a
+        // type with the wrong contract.
+        var contract = typeof(T) == typeof(SkillFileMeta) ? DurableFormats.SkillMeta : DurableFormats.AgentMeta;
+
+        int? declared = meta switch
+        {
+            SkillFileMeta skillMeta => skillMeta.SchemaVersion,
+            AgentFileMeta agentMeta => agentMeta.SchemaVersion,
+            _ => null
+        };
+
+        if (FormatVersion.Evaluate(contract, declared) == FormatDisposition.LoadReadOnly)
+            throw new ScopeReadOnlyException(
+                Path.ChangeExtension(filePath, ".meta.json"),
+                Path.GetFileNameWithoutExtension(filePath),
+                declared ?? contract.Current,
+                contract.Current);
+
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
         string json = JsonSerializer.Serialize(meta, typeInfo);
         File.WriteAllText(metaPath, json);

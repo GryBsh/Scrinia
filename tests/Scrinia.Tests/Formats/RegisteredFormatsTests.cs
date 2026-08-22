@@ -1,7 +1,9 @@
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Search;
+using Scrinia.Mcp;
 
 namespace Scrinia.Tests.Formats;
 
@@ -59,5 +61,130 @@ public class RegisteredFormatsTests
         DurableFormats.Nmp2Body.OnNewer.Should().Be(FormatDisposition.Refuse);
 
         Nmp2Strategy.Instance.CanDecode(header).Should().Be(shouldParse);
+    }
+
+    // ── Task 6: skill and agent sidecars ─────────────────────────────────────────────
+    //
+    // These two formats were not in the original review's finding at all — they turned up only
+    // by enumerating every durable format instead of sampling the one that was reported.
+
+    [Fact]
+    public void SkillMeta_PreservesUnknownKeys()
+    {
+        const string json = """{"role":"reviewer","futureThing":42}""";
+        var meta = JsonSerializer.Deserialize(json, ScriniaMcpJsonContext.Default.SkillFileMeta)!;
+
+        meta.Unknown.Should().ContainKey("futureThing");
+        JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.SkillFileMeta)
+            .Should().Contain("futureThing");
+    }
+
+    [Fact]
+    public void SkillMeta_AtV1_EmitsNoVersionKey()
+    {
+        var meta = new SkillFileMeta(null, "reviewer", null, null, null, null);
+        JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.SkillFileMeta)
+            .Should().NotContain("\"v\"");
+    }
+
+    [Fact]
+    public void AgentMeta_PreservesUnknownKeys()
+    {
+        const string json = """{"createdAt":"2026-01-01T00:00:00+00:00","futureThing":42}""";
+        var meta = JsonSerializer.Deserialize(json, ScriniaMcpJsonContext.Default.AgentFileMeta)!;
+
+        meta.Unknown.Should().ContainKey("futureThing");
+        JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.AgentFileMeta)
+            .Should().Contain("futureThing");
+    }
+
+    [Fact]
+    public void AgentMeta_AtV1_EmitsNoVersionKey()
+    {
+        var meta = new AgentFileMeta(null, null);
+        JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.AgentFileMeta)
+            .Should().NotContain("\"v\"");
+    }
+
+    /// <summary>
+    /// The write-side gate: a <see cref="SkillFileMeta"/> declaring a version above
+    /// <see cref="DurableFormats.SkillMeta"/>'s Current must refuse, mirroring the artifact
+    /// sidecar's <c>WriteSidecarCore</c> backstop. Calls <c>WriteSidecarMeta</c> directly (not
+    /// through <c>ScriniaMcpTools.SkillCreate</c>), which is what makes this a test of the gate
+    /// itself rather than of whatever a specific caller happens to thread through.
+    /// </summary>
+    [Fact]
+    public void WriteSidecarMeta_RefusesASkillMetaNewerThanCurrent()
+    {
+        string tempFile = Path.Combine(Path.GetTempPath(), $"scrinia_skillmeta_{Guid.NewGuid():N}.md");
+        string metaPath = Path.ChangeExtension(tempFile, ".meta.json");
+        try
+        {
+            var newer = new SkillFileMeta(null, "reviewer", null, null, null, null)
+            {
+                SchemaVersion = DurableFormats.SkillMeta.Current + 1
+            };
+
+            var act = () => ScriniaMcpTools.WriteSidecarMeta(
+                tempFile, newer, ScriniaMcpJsonContext.Default.SkillFileMeta);
+
+            act.Should().Throw<ScopeReadOnlyException>();
+            File.Exists(metaPath).Should().BeFalse(
+                because: "a refused write must not land bytes on disk at all");
+        }
+        finally
+        {
+            File.Delete(metaPath);
+        }
+    }
+
+    /// <summary>
+    /// Discrimination companion to the refusal test above. If <c>WriteSidecarMeta</c> refused
+    /// every write regardless of version — rather than specifically the newer-than-Current
+    /// case — the refusal test would still pass, but for the wrong reason. This pins that a
+    /// Current-version write still lands.
+    /// </summary>
+    [Fact]
+    public void WriteSidecarMeta_StillWritesASkillMetaAtCurrent()
+    {
+        string tempFile = Path.Combine(Path.GetTempPath(), $"scrinia_skillmeta_{Guid.NewGuid():N}.md");
+        string metaPath = Path.ChangeExtension(tempFile, ".meta.json");
+        try
+        {
+            var current = new SkillFileMeta(null, "reviewer", null, null, null, null);
+            ScriniaMcpTools.WriteSidecarMeta(tempFile, current, ScriniaMcpJsonContext.Default.SkillFileMeta);
+
+            File.Exists(metaPath).Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(metaPath);
+        }
+    }
+
+    /// <summary>
+    /// A read must never throw on a version, even a newer one — <c>ReadSidecarMeta</c>
+    /// deliberately does not gate at all (only <c>WriteSidecarMeta</c> does). Written directly
+    /// to disk (bypassing the write gate) to exercise the read path against bytes a newer build
+    /// actually would have produced.
+    /// </summary>
+    [Fact]
+    public void ReadSidecarMeta_NeverThrowsOnANewerSkillMeta()
+    {
+        string tempFile = Path.Combine(Path.GetTempPath(), $"scrinia_skillmeta_{Guid.NewGuid():N}.md");
+        string metaPath = Path.ChangeExtension(tempFile, ".meta.json");
+        try
+        {
+            string json = $$"""{"role":"reviewer","v":{{DurableFormats.SkillMeta.Current + 1}}}""";
+            File.WriteAllText(metaPath, json);
+
+            var act = () => ScriniaMcpTools.ReadSidecarMeta(tempFile, ScriniaMcpJsonContext.Default.SkillFileMeta);
+
+            act.Should().NotThrow().Which!.SchemaVersion.Should().Be(DurableFormats.SkillMeta.Current + 1);
+        }
+        finally
+        {
+            File.Delete(metaPath);
+        }
     }
 }

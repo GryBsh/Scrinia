@@ -10,6 +10,26 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — every durable format now carries a version and an unknown-field bucket
+
+- The artifact sidecar, `facts.json`, the NMP/2 body sentinel, a bundle's `manifest.json` and its
+  entries, the legacy `index.json`, and now the skill/agent `.meta.json` sidecars are all routed
+  through one shared version gate (`Scrinia.Core.Formats`) instead of scattered ad-hoc checks. The
+  last two — skill and agent sidecars — were not in the review finding that started this work at
+  all; they turned up only by enumerating every durable format on disk instead of sampling the one
+  format that had been reported. Seven formats, not one.
+- A sidecar declaring a version newer than this build writes loads read-only: reading and search
+  keep working, but a write to that specific file is refused rather than silently downgrading or
+  clobbering data from a newer build. Unknown JSON keys — fields a future build added that this
+  one doesn't know about — now round-trip through a read-modify-write cycle instead of being
+  silently dropped.
+- **No format's version was bumped.** This ships the gate, not a migration — every existing
+  sidecar in a workspace continues to load and serialize byte-identical to before. A v1 skill or
+  agent sidecar still serializes with no `"v"` key at all, exactly as it always has.
+- Skill and agent sidecars' `WriteSidecarMeta` still writes via a bare `File.WriteAllText`, not the
+  store's atomic temp-file-then-`File.Move`. That is a separate defect (recorded as out-of-scope
+  for this work) wearing this task's clothes, and is deliberately left alone here.
+
 ### Fixed (breaking) — `scri bundle import` no longer deletes memories written during it
 
 - A restore snapshotted the scope index under a shared lock that released immediately, wrote every
