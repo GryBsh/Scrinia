@@ -6,6 +6,7 @@ using Xunit;
 
 namespace Scrinia.Tests;
 
+[Collection(BackgroundWorkCollection.Name)]
 public sealed class EntityGraphStoreSelectionTests : IDisposable
 {
     private readonly string _tempDir;

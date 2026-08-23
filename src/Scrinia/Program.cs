@@ -24,6 +24,6 @@ await app.RunAsync(args);
 if (!await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(10)))
 {
     Console.Error.WriteLine(
-        "[scrinia:warn] Background indexing did not finish within 10s and was cancelled. " +
-        "Some memories may not appear in semantic search until the next write or `scri reindex`.");
+        "[scrinia:warn] Background and derived-cache work did not finish within 10s and was cancelled. " +
+        "Authoritative memories are preserved; semantic indexes and facts caches may rebuild on the next write or `scri reindex`.");
 }

@@ -31,6 +31,7 @@ namespace Scrinia.Tests;
 /// trivially. It is here so the suite has a production implementation in it, and so a store that
 /// ever does page has somewhere obvious to be added.</para>
 /// </summary>
+[Collection(BackgroundWorkCollection.Name)]
 public sealed class ListScopedCompletenessTests
 {
     private const int PageSize = 2;

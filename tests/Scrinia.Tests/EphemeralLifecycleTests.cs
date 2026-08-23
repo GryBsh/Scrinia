@@ -14,6 +14,7 @@ namespace Scrinia.Tests;
 /// consistent across every projection of the same memory, and — for a remote client — is hashed
 /// against the caller's real workspace rather than a throwaway temp directory.
 /// </summary>
+[Collection(BackgroundWorkCollection.Name)]
 public sealed class EphemeralLifecycleTests : IDisposable
 {
     private readonly string _workspace;

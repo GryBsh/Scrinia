@@ -38,6 +38,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="TestData\facts.txt" />
     <EmbeddedResource Include="TestData\humaneval_sample.txt" />
     <EmbeddedResource Include="TestData\gsm8k_sample.txt" />

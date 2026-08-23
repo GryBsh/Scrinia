@@ -4,6 +4,7 @@ using Xunit;
 
 namespace Scrinia.Tests;
 
+[Collection(BackgroundWorkCollection.Name)]
 public sealed class EntityFactStoreTests
 {
     private static readonly DateTimeOffset D1 = DateTimeOffset.Parse("2023-01-01T00:00:00Z");

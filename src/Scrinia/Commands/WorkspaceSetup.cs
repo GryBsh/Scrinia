@@ -388,10 +388,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.InstallDefault(
-                    eventHandler,
-                    new EntityTypingEventHandler(provider),
-                    new MaintenanceEventSink());
+                InstallEmbeddingEventSinks(eventHandler, new EntityTypingEventHandler(provider));
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] HTTP embeddings ready " +
@@ -434,10 +431,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.InstallDefault(
-                    eventHandler,
-                    new EntityTypingEventHandler(provider),
-                    new MaintenanceEventSink());
+                InstallEmbeddingEventSinks(eventHandler, new EntityTypingEventHandler(provider));
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +
@@ -462,6 +456,18 @@ internal static class WorkspaceSetup
             SearchContributorContext.Default ??= new PathSegmentScoreContributor();
             MemoryEventSinkContext.InstallDefault(new MaintenanceEventSink());
         }
+    }
+
+    internal static void InstallEmbeddingEventSinks(
+        IMemoryEventSink eventHandler, IMemoryEventSink entityTypingHandler)
+    {
+        ArgumentNullException.ThrowIfNull(eventHandler);
+        ArgumentNullException.ThrowIfNull(entityTypingHandler);
+
+        MemoryEventSinkContext.InstallDefault(
+            new MaintenanceEventSink(),
+            entityTypingHandler,
+            eventHandler);
     }
 
     /// <summary>

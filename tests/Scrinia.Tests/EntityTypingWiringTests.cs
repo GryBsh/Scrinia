@@ -2,11 +2,13 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.Commands;
 using Scrinia.Services;
 using Xunit;
 
 namespace Scrinia.Tests;
 
+[Collection(BackgroundWorkCollection.Name)]
 public class EntityTypingWiringTests
 {
     // Mirrors EntityTypingEventHandlerTests' TempWorkspace (temp-dir + FileMemoryStore
@@ -43,13 +45,80 @@ public class EntityTypingWiringTests
 
         var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
         IMemoryEventSink sink = new CompositeEventSink([
-            new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3)),
             new MaintenanceEventSink(),
+            new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3)),
         ]);
 
         await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
 
         store.LoadIndex("local:findings").Single(e => e.Name == "note")
             .Attributes!["thing"].Should().Contain("seraphim");
+    }
+
+    [Theory]
+    [InlineData("HTTP embeddings")]
+    [InlineData("built-in embeddings")]
+    public async Task WorkspaceSetupEmbeddingInstallations_PreserveOrderAndFailureIsolation(
+        string installationSite)
+    {
+        var prior = MemoryEventSinkContext.Default;
+        try
+        {
+            using var tmp = new TempWorkspace();
+            var order = new List<string>();
+            var downstream = new RecordingSink("downstream", order);
+
+            WorkspaceSetup.InstallEmbeddingEventSinks(
+                downstream,
+                new RecordingSink("entity-typing", order));
+
+            MemoryEventSinkContext.Default.Should().BeOfType<CompositeEventSink>(because: installationSite);
+            await MemoryEventSinkContext.Default!.OnStoredAsync(
+                "/findings/wiring", ["content"], tmp.Store, CancellationToken.None);
+
+            order.Should().Equal(["entity-typing", "downstream"],
+                because: $"the {installationSite} pipeline must keep maintenance before typing and "
+                         + "continue to the downstream handler");
+
+            order.Clear();
+            WorkspaceSetup.InstallEmbeddingEventSinks(downstream, new ThrowingSink());
+            await MemoryEventSinkContext.Default!.OnStoredAsync(
+                "/findings/wiring", ["content"], tmp.Store, CancellationToken.None);
+
+            order.Should().Equal(["downstream"],
+                because: $"a failing entity-typing sink in the {installationSite} pipeline must "
+                         + "not isolate unrelated downstream handlers");
+        }
+        finally
+        {
+            MemoryEventSinkContext.Default = prior;
+        }
+    }
+
+    private sealed class RecordingSink(string name, List<string> order) : IMemoryEventSink
+    {
+        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        {
+            order.Add(name);
+            return Task.CompletedTask;
+        }
+
+        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+            => Task.CompletedTask;
+
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+            => Task.CompletedTask;
+    }
+
+    private sealed class ThrowingSink : IMemoryEventSink
+    {
+        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+            => throw new InvalidOperationException("entity typing failed");
+
+        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+            => throw new InvalidOperationException("entity typing failed");
+
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+            => throw new InvalidOperationException("entity typing failed");
     }
 }

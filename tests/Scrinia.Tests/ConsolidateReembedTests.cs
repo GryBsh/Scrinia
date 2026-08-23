@@ -39,6 +39,7 @@ public sealed class ConsolidateReembedTests : IDisposable
 
     public void Dispose()
     {
+        BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
         // Leaving the handler installed would point later work at this test's VectorStore, which
         // is disposed when the test method exits. Released through Current, not Default: the sink
         // is installed into this test's own async flow (see the test body), so this is a per-flow

@@ -1,5 +1,14 @@
 namespace Scrinia.Core;
 
+internal interface IBackgroundWorkParticipant
+{
+    Task FlushAsync(CancellationToken cancellationToken);
+    bool IsDisposed { get; }
+    bool HasPendingWork { get; }
+}
+
+internal interface IBackgroundWorkRegistration : IDisposable { }
+
 /// <summary>
 /// Tracks detached background work — currently <see cref="IMemoryEventSink"/> dispatch from the
 /// MCP write path — so it can be waited on instead of abandoned.
@@ -19,6 +28,52 @@ public static class BackgroundWork
     private static readonly Lock Gate = new();
     private static CancellationTokenSource _shutdown = new();
     private static int _inFlight;
+    private static readonly HashSet<Registration> Participants = [];
+    private static readonly SemaphoreSlim DrainGate = new(1, 1);
+    private static bool _finalizing;
+    private static readonly Queue<(Func<CancellationToken, Task> Work, string Description)> DeferredWork = [];
+    private static readonly Queue<Registration> DeferredRegistrations = [];
+
+    private sealed class Registration(IBackgroundWorkParticipant participant) : IBackgroundWorkRegistration
+    {
+        private IBackgroundWorkParticipant? _participant = participant;
+        private int _disposed;
+
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+        public bool TryGetParticipant(out IBackgroundWorkParticipant value)
+        {
+            if (Volatile.Read(ref _participant) is { } target)
+            {
+                value = target;
+                return true;
+            }
+
+            value = null!;
+            return false;
+        }
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            Interlocked.Exchange(ref _participant, null);
+            lock (Gate) Participants.Remove(this);
+        }
+    }
+
+    internal static IBackgroundWorkRegistration Register(IBackgroundWorkParticipant participant)
+    {
+        ArgumentNullException.ThrowIfNull(participant);
+        var registration = new Registration(participant);
+        lock (Gate)
+        {
+            if (_finalizing)
+                DeferredRegistrations.Enqueue(registration);
+            else
+                Participants.Add(registration);
+        }
+        return registration;
+    }
+
+    internal static Action? BeforeFinalQuiescenceForTests { get; set; }
 
     /// <summary>Number of work items currently outstanding. Diagnostics and tests only.</summary>
     public static int InFlightCount => Volatile.Read(ref _inFlight);
@@ -35,11 +90,19 @@ public static class BackgroundWork
         ArgumentNullException.ThrowIfNull(work);
 
         CancellationToken ct;
-        lock (Gate) ct = _shutdown.Token;
+        lock (Gate)
+        {
+            if (_finalizing)
+            {
+                DeferredWork.Enqueue((work, description));
+                return;
+            }
 
-        // Counted BEFORE the work can start, so a drain running concurrently with this call
-        // cannot observe an empty registry and conclude the work is done.
-        Interlocked.Increment(ref _inFlight);
+            ct = _shutdown.Token;
+            // Admission and token capture are one synchronized operation. A final drain snapshot
+            // cannot pass between reading an empty registry and admitting this work.
+            Interlocked.Increment(ref _inFlight);
+        }
 
         _ = Task.Run(async () =>
         {
@@ -68,26 +131,60 @@ public static class BackgroundWork
     /// Returns <see langword="true"/> if everything completed. On expiry, cancels the outstanding
     /// items' token, gives them a brief grace period to unwind, and returns <see langword="false"/>.
     /// </summary>
-    public static async Task<bool> DrainAsync(TimeSpan timeout)
+    public static Task<bool> DrainAsync(TimeSpan timeout)
     {
-        if (InFlightCount == 0) return true;
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = Task.Run(() => CompleteDrainAsync(timeout, completion));
+        return completion.Task;
+    }
 
-        if (await WaitForEmptyAsync(timeout).ConfigureAwait(false))
-            return true;
-
-        CancellationTokenSource expired;
-        lock (Gate)
+    private static async Task CompleteDrainAsync(
+        TimeSpan timeout,
+        TaskCompletionSource<bool> completion)
+    {
+        bool drained;
+        try
         {
-            expired = _shutdown;
-            // Hand subsequent work a live token — a drain must not poison later writes.
-            // Swapping under the lock means Fire never reads a source we are about to dispose.
-            _shutdown = new CancellationTokenSource();
+            drained = await DrainCoreAsync(timeout).ConfigureAwait(false);
+            ReleaseDeferredWork();
+            completion.TrySetResult(drained);
         }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+    }
 
-        await expired.CancelAsync().ConfigureAwait(false);
-        await WaitForEmptyAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        expired.Dispose();
-        return false;
+    private static async Task<bool> DrainCoreAsync(TimeSpan timeout)
+    {
+        await DrainGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var scheduled = new HashSet<Registration>();
+            var completed = new HashSet<Registration>();
+            if (await WaitForEmptyAsync(timeout, scheduled, completed).ConfigureAwait(false))
+                return true;
+
+            CancellationTokenSource expired;
+            lock (Gate)
+            {
+                _finalizing = false;
+                expired = _shutdown;
+                // Hand subsequent work a live token — a drain must not poison later writes.
+                // Swapping under the lock means Fire never reads a source we are about to dispose.
+                _shutdown = new CancellationTokenSource();
+            }
+
+            await expired.CancelAsync().ConfigureAwait(false);
+            await WaitForEmptyAsync(TimeSpan.FromSeconds(2), scheduled, completed).ConfigureAwait(false);
+            // Keep the retired source alive until process exit. An admitted item can still be
+            // holding its token after the grace period, and disposing it would corrupt that work.
+            return false;
+        }
+        finally
+        {
+            DrainGate.Release();
+        }
     }
 
     /// <summary>
@@ -95,14 +192,115 @@ public static class BackgroundWork
     /// snapshot of tasks) is deliberate: work fired <em>while</em> the drain runs must also be
     /// waited for, and a snapshot would miss it.
     /// </summary>
-    private static async Task<bool> WaitForEmptyAsync(TimeSpan budget)
+    private static async Task<bool> WaitForEmptyAsync(
+        TimeSpan budget,
+        HashSet<Registration> scheduled,
+        HashSet<Registration> completed)
     {
         long deadline = Environment.TickCount64 + (long)budget.TotalMilliseconds;
-        while (InFlightCount > 0)
+        while (true)
         {
+            if (ScheduleParticipantsAndCheckForQuiescence(scheduled, completed)) return true;
             if (Environment.TickCount64 >= deadline) return false;
             await Task.Delay(10, CancellationToken.None).ConfigureAwait(false);
         }
-        return true;
+    }
+
+    private static bool ScheduleParticipantsAndCheckForQuiescence(
+        HashSet<Registration> scheduled,
+        HashSet<Registration> completed)
+    {
+        Registration[] registrations;
+        CancellationToken shutdownToken;
+        lock (Gate)
+        {
+            registrations = Participants
+                .Where(registration => !registration.IsDisposed
+                    && registration.TryGetParticipant(out var participant)
+                    && !participant.IsDisposed)
+                .Where(registration => !completed.Contains(registration)
+                    || registration.TryGetParticipant(out var participant)
+                    && participant.HasPendingWork)
+                .Where(scheduled.Add)
+                .ToArray();
+            shutdownToken = _shutdown.Token;
+            Interlocked.Add(ref _inFlight, registrations.Length);
+
+            // This is the drain's linearization point. Fire and Register both take Gate, so work
+            // admitted before this check is counted and anything admitted after it belongs to the
+            // next drain rather than being mistaken for already-quiescent work.
+            if (InFlightCount == 0)
+            {
+                if (registrations.Length == 0)
+                {
+                    BeforeFinalQuiescenceForTests?.Invoke();
+                    _finalizing = true;
+                    return true;
+                }
+            }
+        }
+
+        foreach (var registration in registrations)
+            StartParticipantFlush(registration, scheduled, completed, shutdownToken);
+
+        return false;
+    }
+
+    private static void ReleaseDeferredWork()
+    {
+        (Func<CancellationToken, Task> Work, string Description)[] deferred;
+        Registration[] deferredRegistrations;
+        lock (Gate)
+        {
+            _finalizing = false;
+            deferredRegistrations = [.. DeferredRegistrations];
+            DeferredRegistrations.Clear();
+            foreach (var registration in deferredRegistrations)
+                Participants.Add(registration);
+            deferred = [.. DeferredWork];
+            DeferredWork.Clear();
+        }
+
+        foreach (var (work, description) in deferred)
+            Fire(work, description);
+    }
+
+    private static void StartParticipantFlush(
+        Registration registration,
+        HashSet<Registration> scheduled,
+        HashSet<Registration> completed,
+        CancellationToken shutdownToken)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (!registration.TryGetParticipant(out var participant) || participant.IsDisposed)
+                    return;
+                await participant.FlushAsync(shutdownToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] Background work 'participant flush' failed: {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                lock (Gate)
+                {
+                    // A flush may discover and queue more participant work after the drain's
+                    // previous admission check. Remove the completed admission before dropping
+                    // the in-flight count so the next check can admit that work atomically.
+                    scheduled.Remove(registration);
+                    if (registration.TryGetParticipant(out var completedParticipant)
+                        && !completedParticipant.HasPendingWork)
+                        completed.Add(registration);
+                    Interlocked.Decrement(ref _inFlight);
+                }
+            }
+        }, CancellationToken.None);
     }
 }

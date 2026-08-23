@@ -13,6 +13,7 @@ namespace Scrinia.Tests;
 /// before an import keeps serving a cache that omits every imported memory for the rest of its
 /// lifetime.
 /// </summary>
+[Collection(BackgroundWorkCollection.Name)]
 public sealed class EntityFactCacheInvalidationTests : IDisposable
 {
     private readonly string _tempDir;
@@ -70,5 +71,20 @@ public sealed class EntityFactCacheInvalidationTests : IDisposable
         _target.GetEntityFactStore().Entities("topic")
             .Should().Contain(EntityRef.Of("topic", "authentication"),
                 because: "an imported memory's attributes must reach the fact store");
+    }
+
+    [Fact]
+    public void EphemeralRememberAndForget_InvalidateWarmFactStoreWithoutSidecar()
+    {
+        _target.GetEntityFactStore().Entities("person").Should().BeEmpty();
+        _target.RememberEphemeral("scratch", new EphemeralEntry(
+            "scratch", "", 0, 1, DateTimeOffset.UtcNow,
+            Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] }));
+
+        _target.GetEntityFactStore().Entities("person")
+            .Should().Contain(EntityRef.Of("person", "maria"));
+        _target.ForgetEphemeral("scratch").Should().BeTrue();
+        _target.GetEntityFactStore().Entities("person")
+            .Should().NotContain(EntityRef.Of("person", "maria"));
     }
 }

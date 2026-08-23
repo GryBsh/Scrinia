@@ -98,6 +98,7 @@ internal static class TestHelpers
     {
         public string WorkspaceDir { get; }
         public string TempDir { get; }
+        private readonly FileMemoryStore _store;
 
         public StoreScope(bool createStoreDir = true)
         {
@@ -132,19 +133,18 @@ internal static class TestHelpers
             // lands in the test's own ExecutionContext and survives its awaits (measured). It would
             // NOT survive if this were an `async` method — see SilentEventSink's doc.
             MemoryEventSinkContext.Current = TestDoubles.SilentEventSink.Instance;
-            MemoryStoreContext.Current = new FileMemoryStore(WorkspaceDir);
+            _store = new FileMemoryStore(WorkspaceDir);
+            MemoryStoreContext.Current = _store;
         }
 
         public void Dispose()
         {
-            // Deliberately does NOT drain BackgroundWork. The registry is process-wide, so a
-            // per-test drain makes every disposal wait on every other test's in-flight sinks —
-            // and CoreEmbeddingEventHandler's VectorWriteRetry backs off up to 42s. Blocking on
-            // that from hundreds of parallel disposals starves the thread pool and takes the
-            // suite from ~52s to over 10 minutes (measured). Clearing the sink context in the
-            // constructor is what actually prevents the leak; TestHostLifetime drains once at
-            // the end of the run.
+            // Test assemblies serialize the process-wide registry's observers. Drain before the
+            // store and its temp workspace disappear so detached work cannot retain a disposed
+            // store or write into a later test's directory.
+            BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
             SessionBudget.OverrideStore(null);
+            _store.Dispose();
             // Releases this flow's shadow so a later scope in the same flow starts from Default
             // again. Per-flow, so it cannot disturb a test running in parallel — which the old
             // `Default = null` here could, and did.

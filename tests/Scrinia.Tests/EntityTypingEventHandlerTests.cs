@@ -7,6 +7,7 @@ using Xunit;
 
 namespace Scrinia.Tests;
 
+[Collection(BackgroundWorkCollection.Name)]
 public class EntityTypingEventHandlerTests
 {
     // Mirrors AttributeMigrationTests' TempWorkspace (temp-dir + FileMemoryStore construction/disposal),
