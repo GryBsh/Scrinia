@@ -71,7 +71,6 @@ public sealed partial class ScriniaMcpTools
     // that needed a different shape) is now caught at schema-validation time,
     // not by the per-handler error path. Shared validation constants:
 
-    private const int MaxPathLength = 256;
     private const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
 
     // ── Per-tool truncation advice (Task 10, T10-B) ─────────────────────────
@@ -102,18 +101,15 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Canonicalizes an address arriving at the MCP facade. One helper rather than seven
-    /// repetitions of the same call — the CLI (<c>ScriniaCommands.RefuseEphemeral</c>) and REST
-    /// already have theirs.
+    /// repetitions of the same call; the local CLI applies its own refusal policy.
     ///
-    /// <para>The facade canonicalizes and PROCEEDS; the CLI and REST deliberately REFUSE instead,
-    /// because their processes cannot serve an ephemeral memory back — the CLI exits immediately,
-    /// and REST sits below the surface where the alias would resolve to the persistent scope
-    /// <c>local:temp</c>. Those are three considered policies, not an inconsistency to unify.</para>
+    /// <para>The facade canonicalizes and proceeds. The CLI deliberately refuses ephemeral
+    /// addresses because each command process exits immediately and cannot serve the memory
+    /// back. Those are considered local-surface policies, not an inconsistency to unify.</para>
     ///
-    /// <para>Scope is deliberately this class only. The two remaining single-call surfaces
-    /// (<c>ScriniaMcpResources</c> and <c>AgentLoop</c>) keep their direct call: a one-line helper
-    /// wrapping a one-line call at one site is indirection without consolidation. All five are
-    /// pinned behaviourally by <c>Scrinia.Tests.Naming.AddressSurfaceCoverageTests</c>.</para>
+    /// <para>Scope is deliberately this class only. Other local call sites canonicalize at their
+    /// own boundary; wrapping a one-line call used once would add indirection without
+    /// consolidation. The facade and CLI policies are pinned behaviourally by the test suite.</para>
     /// </summary>
     private static string Address(string raw) => MemoryNaming.CanonicalizeEphemeralAlias(raw);
 
@@ -184,11 +180,6 @@ public sealed partial class ScriniaMcpTools
                 "remember requires 'path'.",
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/findings/example', content: [...] })").ToYaml();
-        if (path.Length > MaxPathLength)
-            return ResponseBuilder.Error(
-                $"path exceeds {MaxPathLength} characters.",
-                ErrorCodes.InvalidParameter,
-                $"Shorten the path to under {MaxPathLength} characters.").ToYaml();
         foreach (var element in content)
         {
             if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
@@ -381,7 +372,7 @@ public sealed partial class ScriniaMcpTools
         "Merge a multi-chunk memory. Archives the previous version first — except for an " +
         "ephemeral (~name) memory, which has no versions/ directory, so compacting one is " +
         "irreversible, or a persistent memory with no prior index entry, which has no previous " +
-        "version to archive. The response says which happened. " +
+        "version to archive. A compact no-op is returned as a warning. The response says which happened. " +
         "Example: compact({ path: '/sessions/2026-05-11', keepRecent: 3 }).")]
     public async Task<string> MemoryCompact(
         [Description("Memory path to compact.")] string path,

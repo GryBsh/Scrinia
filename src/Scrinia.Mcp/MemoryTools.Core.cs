@@ -211,12 +211,18 @@ public sealed partial class ScriniaMcpTools
         // itself, so there is no second write path here to keep in step with the first.
         var (ephemeral, scope, subject) = Resolve(store, name);
 
-        var entry = await store.StoreAsync(
-            // The `keywords` argument is the CALLER's raw list (D-01). Nothing derived is ever
-            // handed back in as input — which is why this method now computes nothing to hand it.
-            new MemoryWrite(subject, scope, content, description,
-                WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen), keywords),
-            cancellationToken);
+        MemoryWrite write;
+        try
+        {
+            write = new MemoryWrite(subject, scope, content, description,
+                WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen), keywords);
+        }
+        catch (InvalidMemoryWriteException ex)
+        {
+            return InvalidMemoryWriteResponse(ex);
+        }
+
+        var entry = await store.StoreAsync(write, cancellationToken);
 
         string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 
@@ -260,10 +266,16 @@ public sealed partial class ScriniaMcpTools
                       + FormatBytes(entry.OriginalBytes);
         return ephemeral
             ? ResponseBuilder.Success($"Remembered: {qualifiedName} ({counts}) [ephemeral]")
-                .WithAction(actionLabel)
+                .WithPersistedPath(qualifiedName).WithAction(actionLabel)
             : ResponseBuilder.Success($"Remembered: {qualifiedName} ({counts}).")
-                .WithFileChanges().WithAction(actionLabel);
+                .WithFileChanges().WithPersistedPath(qualifiedName).WithAction(actionLabel);
     }
+
+    private static McpResponse InvalidMemoryWriteResponse(InvalidMemoryWriteException exception) =>
+        ResponseBuilder.Error(
+            exception.Message,
+            ErrorCodes.InvalidParameter,
+            $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
     /// <summary>
     /// Folds the tool surface's separate carrier parameters — tags, anchors and the two review
@@ -639,7 +651,7 @@ public sealed partial class ScriniaMcpTools
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
-            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed")
+            return Task.FromResult(ResponseBuilder.Warning("No memories stored.").WithAction("listed")
                 .WithTruncationAdvice(ListTruncationAdvice));
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
@@ -894,7 +906,7 @@ public sealed partial class ScriniaMcpTools
         var matches = outcome.Matches;
 
         if (matches.Count == 0)
-            return ResponseBuilder.Success("No matching memories found.").WithAction("searched")
+            return ResponseBuilder.Warning("No matching memories found.").WithAction("searched")
                 .WithTruncationAdvice(SearchTruncationAdvice);
 
         string body = SearchResultRenderer.FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
@@ -1032,10 +1044,18 @@ public sealed partial class ScriniaMcpTools
         // here and no second call into Remember.
         var (ephemeral, scope, subject) = Resolve(store, name);
 
-        var entry = await store.AppendAsync(
-            new MemoryWrite(subject, scope, [content], description,
-                WriteAttributes(attributes, tags, anchors), keywords),
-            cancellationToken);
+        MemoryWrite write;
+        try
+        {
+            write = new MemoryWrite(subject, scope, [content], description,
+                WriteAttributes(attributes, tags, anchors), keywords);
+        }
+        catch (InvalidMemoryWriteException ex)
+        {
+            return InvalidMemoryWriteResponse(ex);
+        }
+
+        var entry = await store.AppendAsync(write, cancellationToken);
 
         string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 

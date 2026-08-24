@@ -1164,10 +1164,10 @@ public sealed partial class ScriniaMcpTools
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
         if (chunkCount <= 1)
-            return ResponseBuilder.Success("Already a single chunk, nothing to compact.").WithAction("compacted");
+            return ResponseBuilder.Warning("Already a single chunk, nothing to compact.").WithAction("compacted");
 
         if (keepRecent > 0 && keepRecent >= chunkCount)
-            return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted");
+            return ResponseBuilder.Warning($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted");
 
         // The compacted CHUNKS, not a re-encoded artifact: the store encodes what it is given, and
         // handing it the chunk array is what keeps the chunk boundaries a caller asked to keep
@@ -1278,12 +1278,23 @@ public sealed partial class ScriniaMcpTools
         // MemoryWrite.Name directly, and only the "~"-prefixed original carries that prefix —
         // `subject` here is a sanitized-but-still-tilde-prefixed value from ParseQualifiedName that
         // exists only to keep the non-ephemeral branch working.
-        var stored = await store.StoreAsync(
-            new MemoryWrite(ephemeral ? name : subject, scope, compacted,
+        MemoryWrite write;
+        try
+        {
+            write = new MemoryWrite(ephemeral ? name : subject, scope, compacted,
                 Description: existingPreview,
                 Attributes: existingAttributes,
-                Keywords: curatedKeywords),
-            cancellationToken);
+                Keywords: curatedKeywords);
+        }
+        catch (InvalidMemoryWriteException ex)
+        {
+            return ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.InvalidParameter,
+                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
+        }
+
+        var stored = await store.StoreAsync(write, cancellationToken);
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         await FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, compacted, store, cancellationToken));

@@ -20,6 +20,13 @@ that forward-fills older entries onto the attributes model.
 
 ## Commands
 
+### Exit status
+
+Commands exit 0 only when the requested operation succeeds. They exit 1 for an error and for a
+warning: a completed command that found no matches, had no memories to list, or could not compact
+because no chunks would be removed. Warning output remains structured as `status: warning`, not an
+error.
+
 ### scri serve
 
 Start the MCP server over stdio transport. This is how MCP clients (Claude Code, Cursor, Copilot) connect to Scrinia.
@@ -64,6 +71,14 @@ scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
 ### scri store
 
 Compress and persist text as a named memory. Reads from a file path or stdin (`-`).
+
+Persistent memory subjects may be at most 182 characters after filename sanitization. The limit
+applies to the sanitized persistent subject, not the whole scoped display path. `~name` is
+ephemeral and is exempt from this filesystem limit, although the CLI refuses ephemeral addresses
+because each invocation exits immediately.
+
+`scri store --json` emits `name`, `originalBytes`, and `message`. Consumers must stop reading
+`chunkCount`; use the documented input echo and response message instead.
 
 > **Ephemeral memories are not available from the CLI.** `~name` and its `/temp/...` alias live
 > only in the process that creates them, and the CLI exits immediately — so a CLI ephemeral write
@@ -121,6 +136,9 @@ scri show <name> [--workspace-root <path>] [-o output.md]
 
 Delete a stored memory and remove its index entry.
 
+`scri forget --json` emits `name` and `message`. Consumers must stop reading `success`; use the
+process exit and response message instead.
+
 ```bash
 scri forget <name> [--workspace-root <path>]
 ```
@@ -156,6 +174,9 @@ echo "another paragraph" | scri append session-notes
 
 If the target memory doesn't exist, `append` falls back to creating it as a
 single-chunk memory (equivalent to `store`).
+
+Persistent memory subjects may be at most 182 characters after filename sanitization. The limit
+applies to the sanitized persistent subject, not the whole scoped display path.
 
 ### scri compact
 
@@ -268,6 +289,9 @@ cat resolved.md | scri reconcile --conflict-id memories/local/api-design.nmp2 --
 ### scri bundle export
 
 Export one or more topics to a portable `.scrinia-bundle` file (ZIP format).
+
+`scri bundle export --json` emits `message`. Consumers must stop reading `path`; use the response
+message and command options instead.
 
 ```bash
 scri bundle export <topics> [--workspace-root <path>] [-o filename]
@@ -402,6 +426,9 @@ Force a full rebuild of every vector file in the workspace. Use when:
 ```bash
 scri reindex [--workspace-root <path>] [--json]
 ```
+
+`scri reindex --json` emits `embedded`, `total`, `skipped`, `failed`, and `message`. Consumers
+must stop reading `rescuedScopes`; use the observed counters and response message instead.
 
 Enumerates the canonical memories from the store, probes their vector scopes explicitly,
 and rebuilds the vectors from sidecars through the active embedding pipeline. Each memory's

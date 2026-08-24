@@ -1,4 +1,4 @@
-status: success
+status: warning
 action: compacted
 content: |
   Already a single chunk, nothing to compact.

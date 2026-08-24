@@ -10,6 +10,15 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed (breaking) — public outcomes now match durable writes and CLI data
+
+- Persistent sanitized subjects over 182 characters now fail early as `INVALID_PARAMETER`, with no
+  filesystem side effects. Existing entries remain readable and are not renamed.
+- Empty search/list and no-op compact are warnings and exit 1 rather than successful exit 0.
+- Removed the fabricated `rescuedScopes`, `chunkCount`, `success`, and export `path` JSON
+  properties; reindex now exposes `embedded`, `total`, `skipped`, and `failed`.
+- NMP/2, sidecars, bundles, and plugin/embedding layouts did not change.
+
 ### Changed — every durable format now carries a version and an unknown-field bucket
 
 - The artifact sidecar, `facts.json`, the NMP/2 body sentinel, a bundle's `manifest.json` and its
@@ -149,12 +158,12 @@ and all assembly attributes.
   result: `CliJsonContext` writes indented (multi-line) JSON where the old hand-rolled emitter wrote
   one line. Field names are unchanged — `count`, `matches`, `scope`, `name`, and `score` still mean
   the same thing — so a caller parsing the JSON rather than matching the raw text is unaffected.
-- `SCRINIA__EMBEDDINGS__PROVIDER` — the double-underscore form the configuration docs prescribe and
-  the server already accepts — now resolves in the CLI. Both underscore forms work;
+- `SCRINIA__EMBEDDINGS__PROVIDER` — the double-underscore form the configuration docs prescribe —
+  now resolves in the CLI. Both underscore forms work;
   `SCRINIA_EMBEDDINGS_PROVIDER` keeps priority where both are set, so no installation that set the
   single-underscore form changes behaviour. An installation that exported the double-underscore form
-  for the server only (previously ignored by the CLI, which fell through to `.scrinia/config.json`)
-  will see the CLI pick it up now.
+  (previously ignored by the CLI, which fell through to `.scrinia/config.json`) will see the CLI pick
+  it up now.
 
 ### Changed (breaking) — MCP `search`, `list` and `facts` take `scopes`/`excludeTopics` as arrays
 
@@ -167,31 +176,13 @@ and all assembly attributes.
   comma-separated `--scopes`/`--exclude-topics` arguments — a deliberate divergence, since
   command-line arguments are strings and repeated flags would be a worse CLI for no gain.
 
-### Changed (breaking) — REST `/search` and `/memories`'s `scopes`/`excludeTopics` are repeated query params / a JSON array
-
-- The REST `/search` endpoint (both GET and POST) now takes `scopes` and `excludeTopics` as
-  arrays instead of a comma-joined string: GET via repeated query parameters
-  (`?scopes=a&scopes=b`), POST via a JSON array in the request body. A comma-joined value in
-  either place is no longer split into multiple scopes. This is a second, independent breaking
-  wire change from the MCP `search`/`list`/`facts` conversion above — REST and MCP callers are
-  different audiences and this list covers both. The bound on the old single comma-joined string
-  (1KB total) is now a count bound (64 entries) plus a per-element length bound (1024 characters)
-  on each of `scopes` and `excludeTopics` independently.
-- The `/memories` listing endpoint's `scopes` query parameter now takes the same repeated-param
-  encoding and the same 64-entry/1024-character bound — a bound this route never had before. It
-  was originally left out of this conversion on the premise that only `/search` needed it; that
-  premise was wrong, because `IMemoryStore.ListScoped` already promises list semantics and
-  `/memories` re-joining its filter on commas broke that promise for every remote read (a
-  comma-named scope was reachable through every local caller and invisible through this endpoint).
-
 ### Changed (breaking) — `Scrinia.Core.IMemoryStore`'s scope/excludeTopics members take lists, not strings
 
 - `IMemoryStore.ListScoped`, `AnyScoped`, `ResolveReadScopes`, `GatherTopicInfos`,
   `ShouldExcludeScope`, `BuildExcludedScopeSet`, and `Search.SearchQuery.Scopes`/`.ExcludeTopics`
-  all changed from `string?`/`string` to `IReadOnlyList<string>?`/`IReadOnlyList<string>`. This is
-  source- and binary-breaking for any out-of-tree `IMemoryStore` implementation or plugin that
-  binds to these members directly — a third audience distinct from the MCP tool-schema and REST
-  wire-encoding entries above, since a plugin talks to the Core contract, not either wire. An
+   all changed from `string?`/`string` to `IReadOnlyList<string>?`/`IReadOnlyList<string>`. This is
+   source- and binary-breaking for any out-of-tree `IMemoryStore` implementation or plugin that
+   binds to these members directly. An
   implementation must update its signatures to the list-typed shape to keep compiling against this
   version.
 
@@ -311,8 +302,8 @@ and all assembly attributes.
 - **`MaintenanceEventSink`'s auto-link/orphan-detection pass no longer materializes the whole
   store to answer "does anything reference this memory?"** A new `IMemoryStore.AnyScoped(scopes,
   predicate)` answers that without building the listing first. `FileMemoryStore` overrides it to
-  enumerate scope by scope and return on the first match; a store that hasn't overridden it (such
-  as `HttpMemoryStore`) inherits `ListScoped(scopes).Any(predicate)`, which is still correct but
+   enumerate scope by scope and return on the first match; the default implementation inherits
+   `ListScoped(scopes).Any(predicate)`, which is still correct but
   materializes the listing exactly as before. The sink's second question — "does this entry still
   carry the legacy `orphan` keyword?" — is about one named entry in one known scope, and now reads
   that scope alone rather than scanning every scope in the store.
@@ -333,7 +324,7 @@ and all assembly attributes.
 
 - **Installing the Vulkan embeddings plugin used to make semantic recall on long memories
   worse or absent.** Seven implementations of embed-and-index had drifted apart, and the
-  load-bearing divergence was the chunking unit: Core and the server sliced content into
+  load-bearing divergence was the chunking unit: some paths sliced content into
   overlapping windows, while the plugin never windowed at all — so a 40 KB memory became one
   mean-pooled vector, or the provider's context limit was exceeded and the memory silently got
   zero vectors. A new `MemoryVectorIndexer` in `Scrinia.Core.Embeddings` now owns windowing,
@@ -355,13 +346,8 @@ and all assembly attributes.
 
   | Deployment | Migration |
   |---|---|
-  | CLI with built-in or HTTP embeddings | Automatic on next launch |
-  | CLI with the Vulkan plugin | Run `scri reindex` |
-  | Server (`scri serve` / container) | `POST /api/v1/stores/{store}/embeddings/reindex`, once per store, with a key holding the `reindex` permission |
-
-  The server logs a warning at startup naming the quarantined scopes and this route. It does not
-  rebuild automatically: a full-corpus re-embed is unbounded work with no progress channel at
-  boot, and one server hosts many stores.
+   | CLI with built-in embeddings | Automatic on next launch |
+   | CLI with the Vulkan plugin | Run `scri reindex` |
 
 - **Appending to a memory destroyed its embeddings.** On the built-in path an append embedded
   only the appended fragment, and indexing replaces a memory's vectors atomically — so the rest
@@ -372,8 +358,8 @@ and all assembly attributes.
   deleted memory's vectors in place and semantically searchable.** `VectorStore.RemoveAsync`
   treated an unloaded scope's cache as empty instead of lazily loading it from disk first — the
   same class of bug `UpsertAsync` already guarded against. Concretely: the first vector
-  operation a fresh `VectorStore` performed against a scope, if it happened to be a remove (e.g.
-  the leading half of `MemoryVectorIndexer`'s remove-then-upsert on a freshly started server),
+   operation a fresh `VectorStore` performed against a scope, if it happened to be a remove (e.g.
+   the leading half of `MemoryVectorIndexer`'s remove-then-upsert in a freshly started process),
   silently no-opped — nothing looked stale in memory, so the on-disk vectors were never removed
   and a subsequent upsert merged in beside them instead of replacing them. `RemoveAsync` now
   loads the scope the same way `UpsertAsync` does.
@@ -398,10 +384,9 @@ and all assembly attributes.
 - **`MaxChunksPerMemory` now defaults to 500, up from 100, and is clamped below 1000.** Under
   the element/window layout every non-blank content element plans at least one chunk, so the cap
   is also a floor on how many content elements can be vector-reachable — a memory of 150 short
-  elements lost everything past the hundredth. Because `append` adds elements at the end, the
-  dropped tail was the *newest* content. A configured value of 1000 or more used to throw from a
-  constructor with no config guardrail (a generic init failure on the CLI, a 500 on every server
-  request, a leaked GPU context per retry in the plugin); it now clamps to 999 with a warning,
+   elements lost everything past the hundredth. Because `append` adds elements at the end, the
+   dropped tail was the *newest* content. A configured value of 1000 or more used to throw from a
+   constructor with no config guardrail; it now clamps to 999 with a warning,
   matching how the sibling `ChunkOverlap`/`ChunkSize` invariant already behaved.
 
 - **Appending to an *ephemeral* memory silently left its vectors stale.** All three append
@@ -410,39 +395,6 @@ and all assembly attributes.
   moves on. The two reindex loops already handled it. One helper now owns that rule for all five
   call sites.
 
-### Fixed — a fresh server could not run the migration this changelog prescribes
-
-- **The bootstrap key was missing the `reindex` permission**, so the only key that exists on a
-  fresh server got a 403 from the only route that rebuilds quarantined vectors. It was also
-  missing `manage_roles`. Both are now granted. This affects new servers only — the bootstrap
-  key is minted once, when no keys exist.
-
-- **The server now detects quarantined vectors at startup** and logs a warning naming the
-  affected scopes and the reindex route. Previously only the CLI's in-process path noticed.
-
-### Fixed — the embeddings reindex route can now resolve a store
-
-- **`POST /api/v1/plugins/embeddings/reindex` returned "No store context available" on every
-  request, and most likely always had.** The route group carried no `{store}` segment, so
-  neither of the two ways its handler resolved a store could ever produce one. The three
-  embeddings routes have moved under the store-scoped group, where the existing middleware
-  resolves the store and applies access checks:
-
-  | Was | Now |
-  |---|---|
-  | `GET /api/v1/plugins/embeddings/status` | `GET /api/v1/stores/{store}/embeddings/status` |
-  | `GET /api/v1/plugins/embeddings/settings` | `GET /api/v1/stores/{store}/embeddings/settings` |
-  | `POST /api/v1/plugins/embeddings/reindex` | `POST /api/v1/stores/{store}/embeddings/reindex` |
-
-- **Reindex now requires a `reindex` permission.** The old group carried only
-  `RequireAuthorization()`, so any authenticated key could have triggered a full-store re-embed
-  if the route had worked.
-
-- **The web Settings page no longer offers a Save button that could not save.** It issued
-  `PUT .../embeddings/settings`, a route no server ever mapped; the request fell through to the
-  SPA fallback and returned HTML. Embedding settings are read from configuration, so the panel
-  is now read-only and says where the values come from.
-
 ### Changed — plugin hosts prefer a single `index` call
 
 - The out-of-process plugin protocol gains an `index` tool that takes a memory's whole content
@@ -450,12 +402,6 @@ and all assembly attributes.
   being restated by every caller that speaks the protocol. `upsert` is unchanged and still
   supported: a plugin that offers only `upsert` keeps receiving the previous call sequence, and
   the host warns on stderr naming what that costs.
-
-### Changed — `reindex` is a distinct API-key permission
-
-- Keys that should be able to trigger a full-store re-embed need `reindex` in their permission
-  list. Existing keys do not have it, and will get a 403 from the reindex route until it is
-  granted — the previous route was ungated, but it also never worked.
 
 ### Removed — three unreachable features, and a config key that now works
 
@@ -468,7 +414,7 @@ and all assembly attributes.
   positional-record argument that was simply never passed — so production could not reach it.
   Accepts `sum` (default) or `rrf`.
 
-### Changed (breaking) — public surface of `Scrinia.Core`, `Scrinia.Merge` and `Scrinia.Server`
+### Changed (breaking) — public surface of `Scrinia.Core` and `Scrinia.Merge`
 
 `Scrinia.Core` is BSD-licensed and other code may compile against it directly, so every change
 to a public type is listed here in full.
@@ -494,8 +440,6 @@ to a public type is listed here in full.
   — there is no migration to run and no need to rewrite the file. A test fixture pins this.
 - **`ScriniaCommands.Setup` lost its `resolver` parameter**, and the `scri setup --resolver`
   flag is gone. It only ever wrote the `MergeConfig` fields that nothing read.
-- **`GET /api/v1/stores/{store}/embeddings/settings` no longer returns `maxBatchSize`** and now
-  returns `hardware`. The removed field described a batching knob that no longer exists.
 
 **Added**
 
@@ -503,12 +447,8 @@ to a public type is listed here in full.
 - `Scrinia.Core.Embeddings.VectorScoreProjection` — the single read-side key projection.
 - `Scrinia.Core.Embeddings.MemoryArtifactSource` — reads a memory's content array by
   `(scope, subject)`, ephemeral scope included.
-- `Scrinia.Core.Embeddings.IEmbeddingsAdmin` — what the embeddings REST routes resolve, so the
-  built-in service and the Vulkan plugin are served by one set of handlers.
 - `Scrinia.Core.Search.ScoringWeights` — the scoring rubric, previously restated in prose in
   five places.
-- `Scrinia.Server.Endpoints.EmbeddingsEndpoints`, plus the response records
-  `EmbeddingsStatusResponse`, `EmbeddingsSettingsResponse` and `ReindexResponse`.
 - `EmbeddingOptions.ClampChunkCapBelowStride` and `EmbeddingOptions.MaxChunksPerMemoryCeiling`.
 - `PluginConfigProtocol.BuildOptions` — the plugin-side half of the host's config forwarding.
 - `EmbeddingReindexer.ProbeStaleScopes` — quarantine detection, separated from remediation.
@@ -517,46 +457,6 @@ to a public type is listed here in full.
 
 - `EmbeddingsPlugin.ReindexStoreAsync` changed from `internal` to `public` (it implements
   `IEmbeddingsAdmin`).
-
-### Fixed — REST writes now fire the same event sinks as MCP writes
-
-- **A REST write gets the same ref-linking, orphan-marking and entity-typing treatment as the
-  identical write through MCP.** The server's REST API and its hosted MCP endpoint are two
-  separate write doors in the same process; REST went through `PluginPipeline`'s
-  `IMemoryOperationHook`s while MCP went through `IMemoryEventSink`s via
-  `MemoryEventSinkContext`, and nothing carried the sink set onto the REST door. A new
-  `EventSinkOperationHook` adapter runs the registered `IMemoryEventSink`s from inside
-  `PluginPipeline`, excluding any sink that is also an `IMemoryOperationHook` so a component
-  implementing both still fires exactly once. `EntityTypingEventHandler` also now runs
-  server-side (it moved into `Scrinia.Core` so the server can reference it), where previously it
-  ran only for the CLI.
-
-### Fixed — maintenance no longer disappears when embeddings are unavailable or a plugin supplies them
-
-- **Ref-linking and orphan marking no longer depend on the embeddings model.** The server had
-  exactly one `IMemoryEventSink` registration, `MaintenanceEventSink`, nested three conditionals
-  deep inside the embeddings setup block even though it takes no constructor arguments and has
-  nothing to do with embeddings. Ref-linking and orphan marking silently vanished whenever the
-  model was absent, initialisation threw, or a plugin supplied embeddings — the last being a
-  supported configuration, so installing the Vulkan plugin turned off orphan marking. Sinks are
-  now registered individually, and maintenance registers unconditionally.
-
-### Fixed — a remote store answered every listing from the first 200 entries
-
-- Remote stores now return complete listings. `HttpMemoryStore.ListScoped` sent no `limit`
-  against a server defaulting to 200 rows, so past 200 entries a remote store answered listing
-  questions confidently and wrongly — with no error and no truncation marker. Entity facts,
-  per-topic counts and `list` beyond the first page were all derived from the truncated set, and
-  topic discovery was worse than incomplete: a topic whose entries all fell past the cut stopped
-  existing, so code that listed it reported it empty. `ListScoped` and `LoadIndex` now share one
-  paging loop that runs to the server's reported total.
-
-### Added — local/remote parity across the read surface, above the page boundary
-
-- `PagedListingConformanceTests` — local/remote parity across the read surface (`ListScoped`,
-  `DiscoverTopics`, `ResolveReadScopes`, `GatherTopicInfos`, `GetEntityFactStore`) over a corpus
-  that crosses the server's default page size. The existing conformance harness covers search
-  over 27 entries, structurally below the boundary where the defect began.
 
 ### Fixed — a memory remembered at `/temp/x` is now reachable at `/temp/x`
 
@@ -580,11 +480,6 @@ to a public type is listed here in full.
   `scri store /temp/x` reported success and exit 0 while discarding the content: the ephemeral
   map is in-memory and the CLI process exits immediately. Both spellings are marked
   CLI-unavailable in the reserved-path tables.
-- **The REST write routes return 400 for a `/temp/...` name** — `POST /memories`, patch, append,
-  forget, copy and copy-from-client. The alias is resolved at the agent-facing surfaces (the MCP
-  facade, the MCP `scrinia://memory/{name}` resource, the chat agent's `recall_memory` tool, and
-  the CLI) and never crosses the wire. Read routes are unchanged and answer 404 for a name they
-  cannot find.
 - **No migration for existing `.scrinia/memories/temp/` bytes (D-5) — read this before relying on
   a memory stored there.** They are left exactly in place, under the persistent topic scope
   `local:temp`, and are never moved, renamed or deleted by this change. But the address that used
@@ -593,8 +488,8 @@ to a public type is listed here in full.
   longer be **read or deleted by path** from either surface. `list` and `search` still *display*
   it as `/temp/x` — `FileMemoryStore.FormatQualifiedName` (`:272-275`) formats `local:temp` that
   way regardless of this change — so the address shown in those results is not one that resolves.
-  The supported recovery is to export the `temp` topic (`POST /export`) and re-import its contents
-  under a different topic name.
+   The supported recovery is to export the `temp` topic and re-import its contents under a different
+   topic name.
 
 ### Fixed — a long destination name turned a link into keywords
 
@@ -707,11 +602,11 @@ to a public type is listed here in full.
   because `Directory.CreateDirectory` cannot create it; `CON`/`PRN`/`AUX`/`COM1-9`/`LPT1-9` are
   **not** refused — measured on Windows, those create real, writable directories and alias nothing.
 - **Which direction each caller takes.** Write paths — storing, appending, forgetting, copying,
-  bundle import/export — throw `ArgumentException`; over HTTP that is a `400` naming the segment and
-  why. Read paths — the `scopes` filter, `excludeTopics` — treat an unbuildable topic as matching
+   bundle import/export — throw `ArgumentException`. Read paths — the `scopes` filter,
+   `excludeTopics` — treat an unbuildable topic as matching
   nothing rather than refusing, because a scope that cannot be constructed cannot name a stored
-  memory either. Scope *recovery* (reading back a directory name the filesystem itself produced, or
-  a label a remote store reports) is deliberately exempt and unchanged: validating there would make
+   memory either. Scope *recovery* (reading back a directory name the filesystem itself produced) is
+   deliberately exempt and unchanged: validating there would make
   an already-stored memory in such a scope undeletable.
 - **The repaired direction, which is not a refusal.** `*`, `?`, `<`, `>`, `|` and `"` in a topic
   segment are now substituted with `_`, exactly as the leaf has always treated them — so `/a*b/x`
@@ -792,35 +687,17 @@ to a public type is listed here in full.
 
 - An append now records a drift baseline for a file its new chunk references for the first time.
   Previously the path reached the searchable `file` attribute through attribute extraction while
-  drift detection had nothing to compare it against, so it was reported clean forever. Applies to
-  local and remote — the server routes an append through the same store, and therefore the same
-  `MemoryDerivation` pipeline.
+  drift detection had nothing to compare it against, so it was reported clean forever. It runs
+  through the shared `MemoryDerivation` pipeline.
 - A file already in the baseline keeps its ORIGINAL hash across appends — only newly-referenced
   paths are hashed. Re-hashing an already-baselined path on every append would re-baseline it to
   its current content each time, so it could never be reported as drifted; that is the signal the
   baseline exists to provide.
 
-### Fixed — ephemeral memories had no drift baseline, and a remote one hashed against nothing
+### Fixed — ephemeral memories now carry a drift baseline
 
 - Ephemeral memories now carry a drift baseline (`EphemeralEntry.FileHashes`, persisted as
   `codeRefs`), surfaced in write responses and in `list()`.
-- `scri serve --remote` now resolves a workspace root from the current directory. Previously the
-  in-process helper store `HttpMemoryStore` uses to derive ephemeral writes was rooted at a
-  throwaway temporary directory whenever no `workspaceRoot` was supplied, so a `file` reference on
-  a remote ephemeral write hashed against a directory with nothing in it.
-
-### Fixed — copying into or out of ephemeral storage dropped the metadata that makes a memory findable
-
-- Copying a memory into or out of ephemeral storage now keeps its keywords, term frequencies,
-  keyword provenance (`AgentKeywords`) and drift baseline (`FileHashes`). Previously the copy
-  hand-assembled a subset of fields and dropped `TermFrequencies` — what BM25 scores against — so
-  a promoted or demoted memory kept its bytes and preview and became **unfindable by search**.
-  `UpdatedAt` carries across the copy; `CreatedAt` deliberately does not — on both directions of
-  the boundary, a copy is a new memory, created now, not a relocation of the old one.
-  **This originally landed local-store only.** The remote path — promoting a `~name` to, or
-  demoting a persistent memory from, a remote store — carried none of this and had its own,
-  worse failure modes; see "Fixed — copying across the ephemeral boundary against a remote store"
-  below for the fix.
 - `compact()` now works on ephemeral memories instead of reporting them as not found. It never
   checked whether the target was ephemeral and went straight to the disk-only artifact read, so
   compacting an existing multi-chunk ephemeral memory failed even though `list()` showed it and
@@ -868,20 +745,20 @@ to a public type is listed here in full.
 ### Changed — `link()` works on ephemeral memories instead of refusing them
 
 - **`link()` now accepts an ephemeral (`~name`) memory on either side.** `UpdateMeta`, which both
-  halves of a link go through, refused a `~name` outright, so linking one was impossible; it now
-  loads the ephemeral, applies the same metadata mutation the persistent path applies, and writes it
-  back. Identical in local and remote mode — an ephemeral memory lives in the calling process in
-  both, so nothing about this crosses the wire. **This replaces an earlier entry in this same
+   halves of a link go through, refused a `~name` outright, so linking one was impossible; it now
+   loads the ephemeral, applies the same metadata mutation the persistent path applies, and writes it
+   back. An ephemeral memory lives in the calling process. **This replaces an earlier entry in this
+   same
   `[Unreleased]` cycle** which said `link()` refuses before writing anything when either side is an
   ephemeral.
   - **Not reachable from the CLI**, and cannot be: an ephemeral memory lives only in the memory of
     the process that created it, and every `scri` invocation is a fresh process. `scri link ~x /y`
     answers "not found". The MCP tool supports it because `scri serve` is long-lived.
 - `IMemoryStore` gains `TryUpdateEphemeral(key, mutate)` — the ephemeral counterpart of
-  `TryUpdateEntry`, and the only place the missing atomicity could live. Both real stores implement
-  it as a compare-and-swap over their in-process map, so a metadata update that loses a race is
-  re-applied to the newer entry rather than overwriting it; the local one also invalidates the merged
-  entity-fact cache, as every other mutating write path there does. A `GetEphemeral` → mutate →
+   `TryUpdateEntry`, and the only place the missing atomicity could live. It uses a compare-and-swap
+   over the in-process map, so a metadata update that loses a race is re-applied to the newer entry
+   rather than overwriting it and invalidates the merged entity-fact cache, as every other mutating
+   write path does. A `GetEphemeral` → mutate →
   `RememberEphemeral` caller would silently drop a concurrent writer's change — and for `link` the
   dropped value is a `ref`, so a lost update manufactures exactly the dangling one-sided reference
   the precheck above exists to prevent. **Interface addition:** an external `IMemoryStore`
@@ -914,115 +791,13 @@ to a public type is listed here in full.
   previous version either; the response already reported this correctly and the description now
   agrees with it.
 
-### Fixed — copying across the ephemeral boundary against a remote store
+### Changed (breaking) — BM25 ranking uses one attribute-seeding policy
 
-- **Promoting a `~name` to a persistent memory, and demoting a persistent memory to a `~name`, now
-  work against a remote store (`scri serve --remote`).** Both directions previously reused the
-  server's existing `/copy` endpoint, and each failed for its own reason. Promotion stripped the
-  `~` from the *source* before sending it, so the server resolved a bare name against its own
-  index — an index that has never seen the client's in-process ephemeral memories — returning a
-  `400 Bad Request` when no persistent memory of that name existed there, or, when a same-named
-  persistent memory *did* exist server-side, **silently copying that unrelated memory instead of
-  refusing** (the wrong-memory symptom). Demotion sent the *destination*'s `~name` intact: the
-  server's own store saw the leading `~` and resolved it as a write into its own in-process
-  ephemeral map — a map the client can never see — so the copy reported success while landing
-  somewhere the caller could not retrieve it from.
-- The fix is a new route, `POST /memories/{name}/copy-from-client`, not an optional field on the
-  existing `/copy` request. **`{name}` is the DESTINATION on this route — the opposite of `/copy`,
-  where `{name}` is the source.** That asymmetry is deliberate and is the whole reason the route
-  exists: the source is a client-side ephemeral the server has never seen, so there is no
-  server-side name to put in the path. The client sends its decoded chunk text — never the encoded
-  artifact itself — plus the metadata it already derived (keywords, attributes, term frequencies,
-  chunk entries, drift baseline, keyword provenance). The server re-encodes the chunks it received
-  into the artifact, so the artifact's own chunk-count header can never disagree with what it
-  actually contains, and derives `OriginalBytes`, `ChunkCount` and `CreatedAt` itself rather than
-  trusting them from the caller — everything else in the carried metadata is stored verbatim, after
-  the same normalisation and bounds checks every other write path applies. This is the same rule
-  `ILocalMemoryStore.WriteCarriedCopy` already applies to an in-process, local
-  ephemeral-to-persistent promotion, now reachable through this route by a caller whose source the
-  server cannot see.
-- **A route, not a field, because an older server has to fail loudly, not quietly.** A server
-  predating this change would ignore an unrecognised field on the existing `CopyRequest` body and
-  fall through to the same bare-name resolution that produces the wrong-memory symptom, reporting
-  success. An unknown *route* 404s instead, which the client surfaces as an explicit refusal naming
-  the missing route — a version-skew mismatch the caller can act on, not a silent miscopy.
-- Demoting resolves the source through the same `GET .../entry` and `GET .../memories/{name}`
-  (show) routes any remote caller with `read` permission already uses, then writes the result into
-  the calling process's own ephemeral map — nothing crosses back to the server. Promoting requires
-  the `copy` permission and, like `WriteCarriedCopy`, refuses rather than overwrites an existing
-  destination unless `overwrite` is set.
-
-### Changed (breaking) — one derivation pipeline; the remote wire is API v2
-
-- Metadata derivation for memories was implemented four times — MCP store, MCP append, server
-  store, server append — and had drifted, in four places far enough to lose data. All four collapse
-  onto one pipeline (`Scrinia.Core.MemoryDerivation`), moved to the store boundary: a store now
-  takes the caller's *raw* input and returns the entry it derived. `FileMemoryStore` derives
-  in-process; `HttpMemoryStore` POSTs the raw input and returns whatever the server derived —
-  nothing is derived client-side any more, and there is no longer a second copy of
-  `TextAnalysis`/`AttributeExtractor` logic on the client to drift out of step with the server's.
-  `RemoteApiVersion.Current` is now `"2"`. Client and server always ship from the same commit, so
-  this is a hard cut, not a negotiated migration — a pre-change client will not work against this
-  server.
-- `POST /memories`, the append endpoint, and the listing (`GET /memories`) all now carry the
-  **complete derived entry**, not a `{name, chunkCount, originalBytes, message}` summary. A caller
-  that only wants the message ignores the rest; a caller that wants to know what the store actually
-  computed — keywords, term frequencies, chunk entries, the drift baseline — no longer has to issue
-  a second `GET` to find out.
-- `ShowResponse.Content` is a `string[]` of chunks, not one joined string. `ShowResponse.ChunkCount`
-  is deleted — it is `Content.Length`, and a derivable field that can disagree with its own payload
-  is exactly the defect this branch removes elsewhere (`StoreResponse`/`AppendResponse` dropping
-  `Name`/`QualifiedName`/`ChunkCount`/`OriginalBytes` for the same reason: read the counts off
-  `Entry`). **Consequence:** `recall({ chunk: N })` against a remote store now returns the right
-  chunk. It previously reassembled a multi-chunk memory as a single joined chunk on every remote
-  read (`Nmp2ChunkedEncoder.Encode(show.Content)` over one scalar string), so a chunk index past 1
-  either returned the whole memory or nothing — the tool description's claim that chunk retrieval
-  works was false for any remote, multi-chunk memory. It is now re-encoded from the real chunk
-  array (`Nmp2ChunkedEncoder.EncodeChunks(show.Content)`) and behaves the same as a local recall.
-- The entry (`ArtifactEntry` locally, `MemoryEntry` on the wire) carries a new keyword-provenance
-  field, `agentKeywords` — which of the entry's `keywords` the caller actually supplied, as opposed
-  to what was auto-extracted from content. It is additive and optional, read as "unknown" (not
-  "none") when absent, so it did not by itself need the version bump — but it is why a memory
-  survives a rewrite (compaction, an attribute-only update) without its curated keywords being
-  guessed at from the text again. See "Changed — compaction derives its metadata" below.
-
-### Added — `GET` one complete entry, and `PATCH` its metadata
-
-- `GET /memories/{name}/entry` returns the same complete entry shape as the write endpoints, for a
-  caller that wants to read one without writing to it. Requires the `read` permission.
-- `PATCH /memories/{name}` updates a memory's description, attributes and keywords without
-  rewriting its content. This is the real fix for a defect the previous branch could only fail
-  closed on: `HttpMemoryStore.TryUpdateEntry` used to always return `false` because there was no
-  server-side channel to persist a metadata-only mutation through, so `link()` (the only production
-  caller of the internal metadata-only write, `UpdateMeta`) against a remote store either reported
-  `NOT_SUPPORTED` or (before that) reported success while nothing reached the server. Requires the
-  `store` permission.
-  - The body **is** the entry — a PATCH that omits `description`, `attributes` or `keywords`
-    entirely is rejected with `400` rather than treated as "leave it alone": those keys binding to
-    null/default from a partial body would silently erase curated metadata (an explicit `null` is
-    fine; an *omitted* key is not).
-  - A body that changes `keywords` to anything other than what is already stored is rejected with
-    `400`. Keywords are derived from content, and PATCH has no content to re-derive against — a
-    genuine keyword change has to go through `remember()`/`append()`.
-  - `updatedAt` is an optimistic-concurrency token: the body must carry the value the server
-    currently has stored, or the PATCH is rejected with `409` rather than silently overwriting a
-    concurrent writer's change.
-  - **Operational:** updating an entry's metadata against a remote store now needs the `read` *and*
-    `store` permissions (`GET .../entry` then `PATCH`), where the path it replaces went through the
-    listing endpoint and needed only `search`. An API key scoped to `search` alone that previously
-    got `NOT_SUPPORTED` from `link()` now gets a `403`.
-
-### Changed (breaking) — BM25 ranking now matches between local and remote
-
-- Local and remote used to rank the same memory differently: over the wire the carrier attributes
-  (`tag`/`review`/`anchor`/`file`) arrived in one flat map and were seeded into term frequencies,
-  while locally `SeedTermFrequencies` ran *before* the carrier merge, so those keys were never
-  seeded there at all. The one derivation pipeline seeds term frequencies exactly once, as the last
-  step of attribute handling, over the complete attribute map — both store modes now take this
-  path, so they rank identically. **This is a deliberate, user-visible ranking change: `tag`,
-  `review` and `file` attribute values now seed term frequencies at +3 (previously 0, locally), and
-  `anchor` at +3 (previously +2)** — one weight for every attribute value, applied the next time a
-  memory is written or rewritten.
+- `SeedTermFrequencies` now runs exactly once, as the last step of attribute handling, over the
+  complete attribute map. **This is a deliberate, user-visible ranking change: `tag`, `review` and
+  `file` attribute values now seed term frequencies at +3 (previously 0), and `anchor` at +3
+  (previously +2)** — one weight for every attribute value, applied the next time a memory is
+  written or rewritten.
 - **A ruling, not just a consequence of unifying the pipelines:** attribute values added through
   `link()`'s metadata-only write previously seeded at +5 — the same weight as a curated keyword — so an
   attribute added after the fact outranked the same term if it had arrived through `remember()`
@@ -1034,12 +809,9 @@ to a public type is listed here in full.
   its original auto weight (+2) unless it is genuinely agent-supplied. Nothing is dropped: the
   carried-forward list still leads the keyword merge exactly as before (that guarantee is
   unaffected) — only the *weight* changes.
-- Review dates now persist as UTC on every write path. `remember()`'s bare-date parse and the
-  direct-REST path used to disagree — one round-tripped a bare date through the writer's local time
-  zone, the other stored it verbatim as an unparseable condition — so the same input produced two
-  different stored values depending on the writer's machine and the route taken. Both now go
-  through one shared parse (`MemoryDerivation.TryParseReviewDate`, anchored to UTC), so a bare
-  `review` date is read the same way regardless of where or how it was written.
+- Review dates now persist as UTC on every write path through one shared parse
+  (`MemoryDerivation.TryParseReviewDate`, anchored to UTC), so a bare `review` date is read the
+  same way regardless of where or how it was written.
 
 ### Changed — compaction now derives its metadata
 
@@ -1071,36 +843,6 @@ to a public type is listed here in full.
   and rebuilt the next time it is read. This is expected churn from the derivation collapse, not
   corruption — no action is needed.
 
-### Changed (breaking) — the HTTP store request and response shapes
-
-- `POST /api/v1/stores/{store}/memories`'s request body drops `tags`, `reviewAfter`, and
-  `reviewWhen` in favour of `attributes` — a map of key to string array, the same shape the MCP
-  tools already write. Listing responses (`GET /api/v1/stores/{store}/memories`) now carry the same
-  `attributes` map instead of a flattened `tags` array. Search responses carry `originalBytes` and
-  `createdAt` for `entry`/`chunk` results (null for `topic` results, which are scope labels, not
-  memories). Nothing is deployed over HTTP today, so there is no migration path and none is
-  needed — but a pre-change client speaking the old shape will not work against this server.
-- There is no `UnmappedMemberHandling.Disallow` on the request DTO, so unknown members are
-  **ignored, not rejected**: a stale client still sending `tags`/`reviewAfter`/`reviewWhen` gets a
-  `201` and those values are silently dropped rather than surfaced as an error.
-- `POST /api/v1/stores/{store}/memories` now **rejects** two attribute shapes it previously
-  accepted, with a `400` naming the bound. More than `KnownAttributes.MaxAttributes` (32) keys in
-  `attributes` is refused rather than accepted-and-truncated (`KnownAttributes.Merge` silently drops
-  keys past the cap, so accepting would lose data quietly). More than
-  `KnownAttributes.MaxValuesPerKey` (256) values under a single key is refused as a
-  storage-growth guard. Neither bound can fire for a map produced by Scrinia's own code: both are
-  enforced by `KnownAttributes.Merge`, which every write path funnels through, so local and remote
-  accept the same input. They are the wire guard for a hand-rolled client.
-  *(The values-per-key bound was 64 during development and was reachable from routine
-  auto-extraction — nothing caps `file`/`ref` values, so a memory citing 70 distinct paths stored
-  locally and `400`'d remotely. 256 is unreachable from extraction.)*
-- **`remember()` now requires the `search` permission as well as `store`.** The write path's
-  existing-entry lookup goes through `LoadIndex`, which proxies to
-  `GET /api/v1/stores/{store}/memories` — and that endpoint requires `search`
-  (`MemoryEndpoints.ListMemory`). An API key scoped to `store` alone could `remember()` before this
-  change and now gets a `403` from inside the write. This coupling is a consequence of proxying the
-  listing rather than adding a dedicated existence-check endpoint; decoupling them needs one.
-
 ### Changed (breaking) — "matched nothing" is no longer reported as success
 
 - An operation that completed without doing what was asked now reports a non-success outcome on
@@ -1117,92 +859,11 @@ to a public type is listed here in full.
   print a warning envelope in yellow and exit `1` through the same code path, but as of this
   writing none of their call sites can actually produce a warning envelope — only `facts` and
   `bundle import` do today.
-- **HTTP:** `POST /api/v1/stores/{store}/import` returns `422 Unprocessable Content`
-  instead of `200` when no topics were imported. `422` rather than `400`, because the request was
-  well-formed and authorised — it simply yielded nothing to import.
 - **Also fixed:** `scri store` had no error guard at all and returned `0` unconditionally, so a
   genuinely failed store reported success. This is the same dead-guard defect previously fixed at
   `scri show`, `scri forget`, `scri bundle export` and `scri bundle import`; `store` was missed.
-- Anything gating on exit `0` or HTTP `200` from these paths will now see a failure where it
-  previously saw success. That is the point of the change, but it is breaking.
-
-### Fixed — remote writes silently discarded the agent's metadata
-
-- The write seam (`IMemoryStore.WriteArtifactAsync`) carried only the artifact text, and
-  `HttpMemoryStore.Upsert` is a no-op by design (persistent writes go through
-  `WriteArtifactAsync` instead), so a `remember()` against a remote store (`scri serve --remote`)
-  sent the attributes map, the keywords, and the curated description nowhere — none of it reached
-  the server. `WriteArtifactAsync` now takes an optional `ArtifactWriteMetadata`, and the MCP
-  remember path assembles it *before* the write instead of trying to patch it in afterward.
-  ***Superseded, `store-owned-derivation`:*** `ArtifactWriteMetadata` is deleted. It was a
-  patch over the real defect — every caller still derived its own metadata and handed the result
-  to the write seam, which is the four-implementations problem the entries above this one fix at
-  the root. `WriteArtifactAsync` no longer carries metadata at all: persistent writes go through
-  `IMemoryStore.StoreAsync`/`AppendAsync`, which take the caller's *raw* input and return the
-  entry the store derived — locally in-process, remotely by deferring to the server's own
-  derivation pass over `POST /memories`/`POST /memories/{name}/append`. A remote `remember()` now
-  loses nothing for the same reason a local one doesn't: there is one derivation pipeline, not a
-  value smuggled sideways into a write call that wasn't built to carry it.
-
-### Fixed — remote search results reported fabricated metadata
-
-- Every remote search result was rebuilt with `originalBytes: 0` and `createdAt: <now>`, so a
-  caller reading a remote result's creation time got the time of the query, not the memory's actual
-  age. Search results now carry the real values from the server. Two fabrications remain and are
-  not fixed by this: `uri` (always `""`; making a remote result dereferenceable is a separate
-  capability decision) and `chunkCount` (always `1`, wrong for any multi-chunk memory — it has no
-  wire field yet).
-
-### Fixed / Changed — `LoadIndex` proxies remotely; `TryUpdateEntry` fails closed
-
-- `HttpMemoryStore.LoadIndex` returned `[]` unconditionally in remote mode. Every caller that asks
-  "does this entry already exist" — the async entity-typing sink, the maintenance sink, every MCP
-  tool's existing-entry lookup — got an empty answer for a scope that was not actually empty.
-  `LoadIndex` now proxies to the same listing endpoint `ListScoped` already uses, and paginates
-  using the server's reported total so a scope larger than one page still comes back whole. This is
-  now a genuine blocking network round trip (more than one for a large scope) where it was
-  previously a free in-process read — there is no async seam on `LoadIndex` to hide the cost
-  behind.
-- **This does not fix entity-typing promotion remotely — it still does not work.** Fixing
-  `LoadIndex` in isolation would have made things *worse*: with `Upsert` a no-op remotely,
-  `IMemoryStore`'s default `TryUpdateEntry` would now *find* the entry via the fixed `LoadIndex`,
-  apply the caller's mutation, hand it to the no-op `Upsert`, and still return `true` — a false
-  success where before there was at least an honest "not found". `HttpMemoryStore.TryUpdateEntry`
-  is therefore overridden to fail closed (always returns `false`) until a dedicated attributes-only
-  PATCH endpoint exists server-side. Entity-typing promotion against a remote store still does not
-  persist; it now fails honestly instead of silently.
-- `HttpMemoryStore.ListScoped` now throws on a non-2xx listing response, matching `LoadIndex`. It
-  used to fall through to an empty list, so a `403` from the `search` permission gate made `list()`
-  answer "No memories stored." for a store full of them.
-
-### Fixed — remote `link()` reported writes that never happened
-
-- `MemoryTools.UpdateMeta` — no caller outside `link()` and the tests, and reached by both halves
-  of `link()` — went `LoadIndex` → mutate → `Upsert` → success. It reached the no-op remote `Upsert` **directly**,
-  bypassing the `TryUpdateEntry` override above, so once `LoadIndex` was fixed to return the real
-  listing, a remote `link()` answered `status: success / action: linked` while no `ref` attribute
-  ever reached the server. It now routes through `TryUpdateEntry` and reports `NOT_SUPPORTED` when
-  the store cannot persist a metadata-only change — the same fail-closed mechanism, not a second
-  one. Locally this also makes the update atomic under `FileMemoryStore`'s per-scope write lock
-  instead of a racy read-modify-write. `MaintenanceEventSink`'s auto-link and orphan-marking writes
-  were converted for the same reason.
-
-### Fixed — remote `append()` and `compact()` destroyed the attributes `remember()` persists
-
-- Both called `WriteArtifactAsync` without metadata and assembled the entry afterwards for the
-  no-op `Upsert`. Remotely the write re-runs the server's whole store path, replacing the entry with
-  server-extracted attributes only — so an `append()` to a memory carrying `tag`/`anchor`/`person`
-  left just the freshly extracted mentions behind, while reporting success. Identical calls against
-  a local store preserved everything. `append()` now hoists its carried-forward attribute map above
-  the write and hands it over (the same reorder `remember()` got); `compact()` reads the existing
-  entry *before* the write — reading after sampled the already-replaced entry — and carries its
-  attributes, keywords and description across. The CLI compaction path
-  (`ScriniaCommands.CompactEntryToSingleChunk`) carries them too; it is typed `ILocalMemoryStore` so
-  it cannot reach a remote store today, but the call site now states the requirement rather than
-  relying on the parameter's static type.
-- `HttpMemoryStore.WriteArtifactAsync` now includes the server's response body (truncated via
-  `HttpErrorBody`) in the exception it throws for a failed write. A `400` naming the exact bound it
-  refused used to reach the caller as a bare "400 BadRequest".
+- Anything gating on exit `0` from these paths will now see a failure where it previously saw
+  success. That is the point of the change, but it is breaking.
 
 ### Fixed — a re-store under a different casing discarded the prior version
 
@@ -1232,11 +893,8 @@ to a public type is listed here in full.
   replacing. The destination is now resolved through the index and adopts the existing memory's
   casing, so the bytes land on the memory that is already there and it keeps its own name.
   *Ruling: `archive` and `Archive` are one memory.* The alternative — case-sensitive names
-  throughout — is a coherent design, but it is a storage-format decision (two names differing only
-  in case need two files, which an ordinary NTFS volume cannot hold), not a change to this check.
-  This closed every site of the class reachable at the time; the `~name` → persistent promotion
-  branch remained open until `WriteCarriedCopy`'s destination-casing adoption (see "copying across
-  the ephemeral boundary against a remote store", above) closed it too, on a later branch.
+   throughout — is a coherent design, but it is a storage-format decision (two names differing only
+   in case need two files, which an ordinary NTFS volume cannot hold), not a change to this check.
 - `copy()` from a source named in a different casing now carries the source's metadata. It resolved
   the source *file* case-insensitively (the filesystem did it) but its *entry* ordinally, so the
   copy silently took the synthesized-defaults branch: destination created, bytes intact, attributes
@@ -1258,56 +916,13 @@ to a public type is listed here in full.
   Fixed in the store primitive rather than at the three call sites, so the pairing agrees for every
   caller.
 - `append()` resolves the memory's artifact under the entry's own casing, not the caller's. The
-  index lookup now runs *before* the artifact read in both implementations (the MCP tool and the
-  server orchestrator). Previously the read ran first on the caller's casing; on a case-sensitive
+   index lookup now runs *before* the artifact read in the MCP tool. Previously the read ran first
+   on the caller's casing; on a case-sensitive
   filesystem it missed, and the create-new fallback underneath it — whose own lookup *is*
   case-insensitive — then landed on the existing memory and replaced its content with the appended
   chunk alone. `append()` behaving as `replace()`. NTFS folds case in `File.Exists`, so this was
   never reachable on Windows; both sites carry a ruling comment saying so, and the ordering itself
   is pinned by a test at each.
-
-### Added — the client refuses an unrecognised server API version
-
-- Remote search filter parameters (`excludeTopics`, `pathPrefix`, and friends) were sent as
-  additive query params, so a server that predates them silently ignored what it didn't understand
-  and returned an unfiltered result set the client presented as filtered. The server now stamps
-  `X-Scrinia-Api-Version` on every response under `/api/v1/stores`, and `HttpMemoryStore` throws if
-  a response is missing the header or carries a version it doesn't recognise, on both the
-  synchronous and asynchronous send paths.
-
-### Changed — BM25 ranking differs slightly between a local and a remote write
-
-- The same memory, stored through MCP against a local store and through
-  `POST /api/v1/stores/{store}/memories`, gets different term frequencies and therefore ranks
-  slightly differently. Over the wire the carrier keys (`tag`/`review`/`anchor`/`file`) arrive
-  inside one flat `attributes` map and are seeded into TF; locally `SeedTermFrequencies` runs
-  *before* the carrier merge, so those keys are never seeded. The server also cannot tell an
-  agent-supplied attribute from a carrier one — a wire map is flat by construction — so it treats
-  the caller's keywords as agent-supplied and boosts them accordingly. Attribute *maps* match
-  exactly; only ranking differs. Reproducing local's split needs the two maps sent separately,
-  which is a wire-shape change. Documented at `MemoryOrchestrator.cs`.
-  ***Fixed, `store-owned-derivation`:*** the two maps are now sent separately — the wire carries a
-  complete entry, not a flattened carrier — so both store modes seed term frequencies through the
-  same call, in the same order, and rank identically. See "Changed (breaking) — BM25 ranking now
-  matches between local and remote" above for the resulting weight change.
-
-### Changed — MCP and REST disagree on a bare date in a `review` attribute
-
-- The MCP `remember()` tool routes a `review` attribute value through a lenient
-  `DateTimeOffset.TryParse` and stores the result in round-trip (`"o"`) format — `"2026-08-01"`
-  becomes `"2026-08-01T00:00:00.0000000+00:00"`, which `TryReadReview` recognises as a review
-  *date* and reports as `[stale]` once it passes. A direct
-  `POST /api/v1/stores/{store}/memories` performs no such parsing — `KnownAttributes.Normalize`
-  only trims and lowercases — so the same bare `"2026-08-01"` is stored verbatim, `TryReadReview`
-  cannot parse it as a round-trip date, and it is read as a review *condition* instead: the memory
-  reports `needsReview: true` forever rather than going stale on the date. The MCP tool description
-  (`MemoryTools.cs`) advertises exactly the lenient bare-date form (`review: ['2026-08-01']`) that
-  only works correctly through MCP, not through the REST endpoint directly.
-  ***Fixed, `store-owned-derivation`:*** every write path now parses a `review` date through the
-  one shared `MemoryDerivation.TryParseReviewDate`, which reads with
-  `DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal` — a bare date is anchored to
-  UTC rather than the writer's local zone, so the same input produces the same stored value on
-  every machine and through every route.
 
 ### Changed — store read path
 
@@ -1326,80 +941,6 @@ to a public type is listed here in full.
   list on every read. The single caller that mutates the result (`ImportTopicEntries`) now copies
   explicitly. The read-only type makes a caller's mutation a compile error rather than silent
   corruption of the store's index cache.
-
-### Changed — `IMemoryStore` split: local-only members moved to a new `ILocalMemoryStore`
-
-- `IMemoryStore` lost eight members. Six moved to a new `ILocalMemoryStore : IMemoryStore` in
-  `Scrinia.Core` — `ArtifactPath`, `FindArtifactPath`, `GetStoreDirForScope`, `WorkspaceRoot`,
-  `ListTopicArtifacts`, `ImportTopicEntries`. These are the members a store without a filesystem
-  could only ever implement by throwing; `v0.4.0` added `WorkspaceRoot` to the shared interface on
-  exactly that basis ("Remote stores throw `NotSupportedException`"), and this reverses that call.
-  "Needs local files" is now a compile-time fact rather than a runtime surprise, and no member of
-  `IMemoryStore` throws for lack of a filesystem any more.
-- Three more members were removed outright rather than moved: `SaveIndex` (no caller outside the
-  store implementations — now a plain public member of `FileMemoryStore`, on neither interface),
-  `GenerateContentPreview` (both implementations had byte-identical bodies that touched no store
-  state — now the static `Scrinia.Core.ContentPreview.Generate`), and `GetResultScope` (no callers
-  left after the search-contract change).
-- `FileMemoryStore` implements `ILocalMemoryStore`; `HttpMemoryStore` implements only
-  `IMemoryStore`. `Scrinia.Core` is not published to NuGet, so this affects in-process plugin
-  authors rather than package consumers — but a plugin DLL compiled against the old interface will
-  fail to load. An `IStorageBackend` plugin whose store has a workspace on disk should implement
-  `ILocalMemoryStore`; one that does not can implement `IMemoryStore` alone and every caller
-  degrades or refuses cleanly instead of throwing.
-
-### Fixed — remote-store operations that threw or returned incomplete results
-
-- `remember()` against a remote store (`scri serve --remote`) threw `NotSupportedException` for
-  any non-ephemeral memory carrying a `file` attribute — the drift-detection hasher read
-  `IMemoryStore.WorkspaceRoot`, which only a local store can answer, unconditionally. A remote
-  `remember()` now stores the memory without file hashes instead of failing outright; drift
-  detection against those hashes is inherently a local-only capability (see `list(mode:
-  'drift')` below). Ephemeral remembers (`/temp/*`) were unaffected — `HttpMemoryStore` has
-  always implemented ephemeral storage for real.
-- `list()` against a remote store threw in every mode, not only the mode that needed it: a
-  single overly-broad narrowing meant `summary` and `full` modes failed even though neither
-  reads the local filesystem. Both modes now return real listings against a remote store.
-  `list(mode: 'drift')` still declines — drift detection re-hashes files on disk by nature — but
-  now with a clean `NOT_SUPPORTED` error (see below) instead of an unhandled exception.
-- `guide()` and `restore()` against a remote store previously succeeded in a degraded form (the
-  conflict-scan, skills, and agent-config sections silently omitted) only because their file
-  reads happened to sit inside a swallowing `try/catch`. That behavior is preserved — remote
-  `guide()`/`restore()` still degrade the same way — but is now a deliberate, type-checked branch
-  covered by tests, not an incidental side effect of exception handling.
-- Server bundle endpoints (`POST /export`, `POST /import`) returned an unhandled-exception `500`
-  against a non-local store backend, because the request path read a `RequestContext` accessor
-  that threw. Both now return a clean `501 Not Implemented`.
-- `recall('/agent/<name>')` against a remote store threw `NotSupportedException`. The `/agent/`
-  branch prefers a hand-authored `.md` file in the workspace, which a remote store has none of;
-  it now falls through to ordinary NMP/2 resolution instead of refusing, so the call returns a
-  stored `/agent/*` memory if the backend has one and a `NOT_FOUND` error if it does not. This is
-  neither a refusal nor a degraded success — the lookup genuinely runs, it just cannot consult a
-  local file first.
-
-### Added — `NOT_SUPPORTED` MCP error code
-
-- MCP tools whose operation is inherently local-only — `export()`/`import()` (bundle
-  files), `reconcile()` (merge-conflict scan), skill creation/loading from a file path, and
-  `remember()` to an `/agent/*` config — now return a structured error response with
-  `code: NOT_SUPPORTED` when the active store is remote, instead of letting a raw
-  `NotSupportedException` propagate out of the tool call. Anything parsing MCP tool error codes
-  (previously `INVALID_PARAMETER`, `INVALID_ACTION`, `INVALID_PATH`, `NOT_FOUND`, `CONFLICT`,
-  `INTERNAL`) will see this new code for the first time; each response's `actionNeeded[]` names
-  the local-only feature and, where one exists, a remote-compatible alternative.
-
-### Changed — server handler names now match the published MCP tool vocabulary
-
-- `MemoryEndpoints`'s internal handler methods were renamed to line up with the MCP tool
-  names: `StoreMemory` → `RememberMemory`, `ListMemories` → `ListMemory`, `ShowMemory` →
-  `RecallMemory`, `SearchMemories` → `SearchMemory`, `SearchMemoriesPost` →
-  `SearchMemoryPost`. Route paths and the HTTP contract are unchanged. **One exception**:
-  Minimal API derives an endpoint's OpenAPI `operationId` from the handler method name when
-  none is set explicitly, and none of these five endpoints calls `.WithName()`.
-  `AddOpenApi()`/`MapOpenApi()` are wired up in `Program.cs` — exposed when the server runs
-  in Development or with `Scrinia:ExposeOpenApi=true`, and covered by `OpenApiTests`. Any
-  client generated from `/openapi/v1.json` against these five endpoints will see their
-  `operationId` change on this release.
 
 ### Changed — CLI exit codes and not-found output
 
@@ -1452,50 +993,6 @@ to a public type is listed here in full.
   previously the store's own re-list would have picked it up. Search was never transactional
   with concurrent writes, and the contributor already scored against the earlier snapshot, so
   this makes the two halves of one search consistent with each other rather than half-fresh.
-
-### Changed — remote-mode search filters server-side
-
-- `POST /api/v1/stores/{store}/search` now also bounds each `attributeFilter` value array at 64
-  entries, mirroring the existing 64-key bound on the filter itself. A request where any single
-  key carried more than 64 values previously passed validation and relied on Kestrel's body limit
-  as the only backstop; it now gets a 400 where it previously got 200.
-- `HttpMemoryStore.SearchAll` sent only `q`, `scopes`, and `limit` to `GET /search`;
-  `excludeTopics`, `pathPrefix`, and `attributeFilter` were applied by post-filtering the
-  results after they came back over the wire — filtering an already-truncated top-K. A
-  remote search scoped to a `pathPrefix` that most of the corpus falls outside of could
-  return far fewer than `limit` matches, or none, even when enough matching memories
-  existed. All three filters are now sent to the server, so a filtered search against a
-  remote store returns up to `limit` matching results.
-- New `POST /api/v1/stores/{store}/search`, taking a `SearchRequest` body — needed
-  because `attributeFilter` is a dictionary of arrays, which does not fit a query string.
-  `GET /search` additively gained `excludeTopics` and `pathPrefix`. Both are
-  backward-compatible: existing `GET /search` callers are unaffected, and
-  `HttpMemoryStore` only POSTs when an attribute filter is present, GETting otherwise.
-  **That compatibility only runs one direction.** An old client against a new server is
-  fine. A new client (this branch's `HttpMemoryStore`) against an *older* server is not:
-  `excludeTopics` and `pathPrefix` now travel only as additive query parameters, and an
-  older v1 server ignores query parameters it doesn't recognize rather than rejecting the
-  request. So `scri search "x" --path-prefix /findings/` against an older server silently
-  returns memories from every path, and `--exclude-topics goal` silently returns memories
-  from the topic the caller asked to exclude — this branch trades a recall bug (results
-  under-filled by post-limit filtering) for a silent precision bug (filters not applied at
-  all) whenever the server on the other end predates this change. `attributeFilter` is the
-  one exception, and only by luck, not by design: it requires `POST /search`, which an
-  older server doesn't expose, so the 404/405 hits `HttpMemoryStore`'s
-  `!resp.IsSuccessStatusCode` guard and the search returns empty instead of unfiltered.
-  There is no version handshake in `HttpMemoryStore` — the mismatch is undetected on both
-  ends. A capability probe (client asks the server what it supports before relying on it)
-  is the right fix and is deferred to the `store-boundaries` branch.
-
-### Fixed — remote search results reported every entry, chunk, and topic as scope "local"
-
-- `HttpMemoryStore.SearchAll` recovered a result's scope only when its wire name
-  contained `':'`. An entry or chunk's wire name is a v3 path (e.g.
-  `/goal/G-1/widget-0`) and a topic's is a `FormatScopeLabel` display string — neither
-  ever contains `':'` — so every remote search result reported `scope: "local"`
-  regardless of where it actually lived. Entry and chunk names now parse
-  unconditionally via `ParseQualifiedName`; topic names via the new
-  `MemoryNaming.ParseScopeLabel`, the inverse of `FormatScopeLabel`.
 
 ### Fixed — response envelope can no longer be impersonated by memory content
 
@@ -1563,12 +1060,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 
 - Bundle import left the cached entity-fact store stale, so `facts()` and entity-fact
   surfacing in search omitted every imported memory for the life of the process.
-- `POST /api/v1/stores/{store}/import` rejected every multipart bundle upload with 415
-  Unsupported Media Type. Its `topics` parameter was declared without `[FromQuery]`, so Minimal
-  API inferred it as JSON-body-bound and content negotiation failed before the handler ran —
-  meaning none of the endpoint's own permission, writability or file-presence guards were ever
-  reached. The endpoint had likely never worked for a real caller. Note `topics` takes repeated
-  query keys (`?topics=a&topics=b`), not a comma-separated list.
 
 ### Changed — file-entity unification
 
@@ -1586,8 +1077,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   report the skipped category rather than dropping it silently.
 - The legacy `local:skill` NMP/2 read fallback is deleted. `v0.4.0` contains no skill code
   at all, so such entries exist only in unreleased dev builds.
-- `IMemoryStore` gains `WorkspaceRoot`. Remote stores throw `NotSupportedException`: skills
-  and agent configs are local-only, which was previously accidental rather than stated.
 
 ### Changed — embedding provider error truncation now matches the chat providers
 
@@ -1600,10 +1089,9 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 
 - Detached event-sink work is now tracked by `BackgroundWork` instead of being dropped on the
   floor by a bare `_ = Task.Run(...)`. Writes still return without waiting for embedding
-  latency, but the work is owned: the CLI and `Scrinia.Server` both drain outstanding sinks
-  before exiting, so a short-lived command — or a request that lands just before shutdown —
-  no longer ends with a vector file half-written. If the drain exceeds 10s the work is
-  cancelled and a warning names `scri reindex` as the recovery.
+  latency, but the work is owned: the CLI drains outstanding sinks before exiting, so a
+  short-lived command no longer ends with a vector file half-written. If the drain exceeds 10s
+  the work is cancelled and a warning names `scri reindex` as the recovery.
 - A faulting embeddings-plugin shutdown no longer kills the process. The `ProcessExit`
   handler registered by `WorkspaceSetup` called `DisposeAsync().AsTask().Wait(3000)`
   unguarded — and an exception escaping a `ProcessExit` handler terminates the process.
@@ -1885,20 +1373,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 - `FileMemoryStore.Remove` invalidates the topic-discovery cache when removing
   from a `local-topic:*` scope. Without this, `DiscoverTopics` reported topics
   with no remaining entries until the cache flushed naturally.
-- `ImportanceScoringSink.OnAppendedAsync` now rescores against the **full**
-  memory after the append (existing + new), not the appended snippet alone.
-  Previously a one-line "Yes" append could clobber an `Importance=9`
-  architectural decision with a score derived from the snippet alone.
-- `ImportanceScoringSink` is now registered in the server-mode event-sink
-  pipeline as well as the CLI. Previously the CHANGELOG claimed coverage of
-  "every workspace-bootstrap path" but server-mode writes were skipped.
-- `MemoryTools.FireEventSinkAsync` now passes `CancellationToken.None` to the
-  sink action rather than the request CT. The sink is fire-and-forget on a
-  background `Task`, so propagating the request-scoped CT would abort the
-  sink as soon as the user-facing response returned — leaving importance
-  unscored or the vector index half-written. The synchronous
-  `OnForgottenAsync` call sites continue to use the request CT, since their
-  side effects must complete before the response returns.
 
 ### Added
 - `scri hint` now applies **Maximal Marginal Relevance (MMR)** diversity rerank
@@ -2038,15 +1512,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   is PowerShell, and bash interprets `\` as an escape. Forward slashes work
   uniformly in bash, PowerShell, and cmd. Re-run `scri setup --hooks` to
   update existing installs.
-- `scri setup` now configures the Tier 2 LLM backend explicitly. Previously the
-  CLI-based provider values (`claude-cli`, `codex-cli`, `copilot-cli`) and the
-  native Anthropic/Gemini providers were reachable only via raw
-  `scri config Scrinia:Llm:Provider <value>` — setup had no LLM step at all.
-  New `--llm <value>` argument pins a backend non-interactively
-  (`claude-cli`/`codex-cli`/`copilot-cli`/`openai`/`anthropic`/`gemini`/`plugin`/
-  `none`/`auto`); when omitted, setup writes `auto` only if no provider is
-  already configured. Secondary keys (API keys for anthropic/gemini, base URL +
-  model for openai) are prompted only when missing from existing config.
 - `scri setup` clears stale Ollama-derived config when the Ollama path falls
   through (probe failed, user declined, or `--no-ollama`). Previously, switching
   off Ollama left `Scrinia:Embeddings:Provider=ollama` + URL + model intact, so
@@ -2101,62 +1566,16 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   - Direct `scri` invocation in every hook — no intermediate shell scripts
     that can drift from their deployment locations (avoids the GSD #1834
     footgun).
-- **Agent CLI as background LLM** — three new `Scrinia:Llm:Provider` values
-  (`claude-cli`, `codex-cli`, `copilot-cli`) that shell out to the user's
-  installed agent CLI in non-interactive print mode. Reuses the user's
-  existing CLI authentication so Tier 2 doesn't need a separate API key or
-  bundled model. Combined system+user prompt arrives on stdin to avoid
-  Windows' 8K argument-length limit. Auto-mode (`Provider=auto`) tries HTTP
-  → agent CLIs in preference order (claude → codex → copilot) → bundled
-  plugin.
-- **Native Anthropic + Gemini LLM providers** (`Provider=anthropic`,
-  `Provider=gemini`) using each vendor's native API rather than the
-  OpenAI-compat shim. Anthropic targets `/v1/messages` with the Messages API
-  shape (system field, content blocks, x-api-key + anthropic-version
-  headers) — better feature parity than the compat shim. Gemini targets
-  `/v1beta/models/{model}:generateContent` with x-goog-api-key. Both inherit
-  from a new `ResilientLlmProvider` base.
 - **`IProcessRunner` abstraction** under `Scrinia.Core.Process` — testable
   one-shot process invocation with Windows PATHEXT resolution (`.cmd` shims
   for Node-based CLIs don't resolve through `Process.Start` with
   `UseShellExecute=false`).
-- New config keys: `Scrinia:Llm:AnthropicApiKey`, `Scrinia:Llm:AnthropicBaseUrl`,
-  `Scrinia:Llm:GeminiApiKey`, `Scrinia:Llm:GeminiBaseUrl`,
-  `Scrinia:Hint:Enabled`, `Scrinia:Hint:MinScore`, `Scrinia:Hint:MinPromptChars`.
-
-### Added — Tier 2 LLM consolidation
-- `scri consolidate --with-llm` runs an LLM pass over the local store after the
-  existing Tier 1 mechanical compaction: regenerates auto-fallback descriptions,
-  one-paragraph summaries for compacted session entries, and extracts 3–7 atomic
-  facts per memory (Mem0-style). Resumable via `.scrinia/.tier2-progress.json`
-  keyed by qualified name + content hash — re-runs only touch memories whose
-  content changed since the last pass.
-- `ArtifactEntry.Facts: string[]?` field on the sidecar schema (v4). Each fact
-  enters `TermFrequencies` at weight +2 so BM25 picks them up naturally;
-  `WeightedFieldScorer.ScoreEntryTerm` also gives per-fact contains-match a
-  small boost.
-- `IBackgroundLlm` interface in `Scrinia.Core/Llm/` with two implementations:
-  `OpenAiCompatibleBackgroundLlm` (HTTP via `HttpClient` against any
-  OpenAI-compatible chat-completions endpoint — Ollama, llama.cpp server,
-  LM Studio, Docker Model Runner) and `PluginBackgroundLlm` (MCP `complete`
-  tool on the bundled `scri-plugin-llm`). Prompts live in `Scrinia.Core`
-  (`LlmPrompts.cs`) so new Tier 2 tasks don't require a plugin rebuild.
-- Bundled `Scrinia.Plugin.Llm` + `Scrinia.Plugin.Llm.Cli` ship LFM2.5-1.2B-Instruct
-  on Vulkan via LLamaSharp 0.25. `publish.ps1 -WithLlm` packages it into
-  `plugins/scri-plugin-llm/`. The plugin exposes a single `complete` MCP tool
-  and a `status` tool; prompts stay on the host side.
-- Provider preference for both LLM and embeddings auto-modes: existing HTTP
-  backend (Ollama et al.) wins over the bundled Vulkan plugin. The principle is
-  "if Ollama is already running, don't spin up another model in our own VRAM."
-  Force a backend with `Scrinia:Llm:Provider = plugin` or `openai`.
+- New config keys: `Scrinia:Hint:Enabled`, `Scrinia:Hint:MinScore`,
+  `Scrinia:Hint:MinPromptChars`.
 
 ### Added — Ollama auto-detection
-- `scri setup` probes for a running Ollama instance via `GET /api/tags`. When
-  reachable, prompts for an embedding model and a completion model (defaults:
-  `nomic-embed-text`, `lfm2:1.2b` with `llama3.2:1b` fallback), pulls any
-  missing models via streaming `POST /api/pull` with per-layer progress, and
-  writes the resulting `Scrinia:Embeddings:*` + `Scrinia:Llm:*` config so
-  subsequent `scri serve` / `scri consolidate --with-llm` "just work."
+- `scri setup` probes for a running Ollama instance and, when reachable, prompts for an embedding
+  model and pulls missing models with per-layer progress.
 - Skip the Ollama prompt with `scri setup --no-ollama`.
 
 ### Added — Chunked embeddings + reindex
@@ -2214,9 +1633,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   what produced the earlier 798/816 failure mode.
 - `EmbeddingReindexer` classifies `FileNotFoundException` (sidecar without
   artifact) as Skipped rather than Failed and logs at Debug level.
-- Robustness around transient file-access failures in `LlmConsolidator` progress
-  flushes: per-N-entry batched writes, atomic `.tmp` rename with [50,100,250]ms
-  retry on `IOException`/`UnauthorizedAccessException`.
 
 ### Added
 - `scri serve` auto-downloads the built-in embedding model on first run if it's
@@ -2255,17 +1671,13 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   unreachable features" above); nothing outside its own tests ever referenced it.
 - BM25 corpus-stats dictionary is pre-sized via a `docCountHint` parameter,
   removing rehash churn during search corpus computation.
-- `IOptions<EmbeddingOptions>` and `IOptions<ChatOptions>` migration with
-  `PostConfigure` for the historical Temperature/MaxTokens normalisation; server
-  fails fast on missing required configuration.
-- `ListMemories` REST endpoint accepts `offset`/`limit` query parameters
-  (default 200, hard cap 1000) and returns the unpaginated total count.
+- `IOptions<EmbeddingOptions>` migration with `PostConfigure` for historical
+  normalisation; missing required configuration fails fast.
 - New documentation: `docs/plugin-authoring.md` (extension interfaces + worked
   example), `docs/security.md` (threat model + recommendations), embedding-provider
-  selection section in `docs/architecture/embeddings.md`, `AgentChatPage` entry in
-  `docs/web-ui-guide.md`, `scri migrate` reference in `docs/cli-reference.md`,
-  chunked-embeddings + Tier 2 LLM coverage in `docs/cli-reference.md` and
-  `docs/architecture/embeddings.md`.
+  selection section in `docs/architecture/embeddings.md`, `scri migrate` reference
+  in `docs/cli-reference.md`, chunked-embeddings + Tier 2 LLM coverage in
+  `docs/cli-reference.md` and `docs/architecture/embeddings.md`.
 
 ### Changed
 - Bundled-plugin default GGUF switched from `LFM2.5-1.2B-Thinking` to
@@ -2279,9 +1691,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 - Ollama probe uses `/api/tags` rather than `/` or `/v1/models` — works on every
   Ollama version including fresh installs with no models pulled, and surfaces a
   human-readable error string when unreachable.
-- LLM HTTP probe timeout bumped 2s → 5s to match the Ollama-setup probe
-  (Windows IPv6→IPv4 fallback latency on localhost was tripping the shorter
-  budget intermittently).
 - HybridReranker max-aggregates per-chunk vector scores under the
   `{scope}|{name}` key the whole-memory scorer pass looks up. The chunked
   `{scope}|{name}|{chunkIndex}` keys are still emitted alongside.
@@ -2308,14 +1717,6 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   matches `src/Scrinia.Mcp/skills/` exactly.
 - `docs/reviews/2026-04-29-llm-integration-architect-review.md` moved to
   `docs/reviews/archive/` with a resolution annotation.
-
-### Fixed — the store listing endpoint dropped keywords
-
-- The store listing endpoint (`GET /api/v1/stores/{store}/memories`) now returns each memory's
-  `keywords`. The field was absent from the wire entirely, so a remote client saw `null` keywords
-  for every memory regardless of what was stored. Additive and optional in both directions: an
-  older client ignores the new field, and a newer client against an older server reads `null`
-  exactly as before, so `X-Scrinia-Api-Version` is deliberately not bumped.
 
 ### Fixed — bundle import preserves every entry member and its timestamps
 

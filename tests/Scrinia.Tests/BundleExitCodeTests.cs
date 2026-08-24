@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Text.Json;
 using Scrinia.Commands;
 using Scrinia.Mcp;
 
@@ -15,6 +16,45 @@ namespace Scrinia.Tests;
 /// </summary>
 public class BundleExitCodeTests
 {
+    private static async Task<(int Exit, JsonDocument Output)> CaptureJsonAsync(Func<Task<int>> command)
+    {
+        var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await command();
+            return (exit, JsonDocument.Parse(output.ToString()));
+        }
+        finally
+        {
+            Console.SetOut(prior);
+        }
+    }
+
+    [Fact]
+    public async Task EmptyCliListAndSearch_KeepStructuredPayloadsButExitOne()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        var (listExit, list) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().List(workspaceRoot: scope.WorkspaceDir, json: true));
+        using (list)
+        {
+            listExit.Should().Be(1);
+            list.RootElement.GetProperty("memories").GetArrayLength().Should().Be(0);
+            list.RootElement.GetProperty("total").GetInt32().Should().Be(0);
+        }
+
+        var (searchExit, search) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().Search("absent", workspaceRoot: scope.WorkspaceDir, json: true));
+        using (search)
+        {
+            searchExit.Should().Be(1);
+            search.RootElement.GetProperty("results").GetArrayLength().Should().Be(0);
+            search.RootElement.GetProperty("total").GetInt32().Should().Be(0);
+        }
+    }
     [Fact]
     public async Task Export_OnGenuineFailure_ExitsNonZero()
     {

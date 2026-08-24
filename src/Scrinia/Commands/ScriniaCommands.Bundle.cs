@@ -57,7 +57,7 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            WriteJson(new CliExportOutput("", result), CliJsonContext.Default.CliExportOutput);
+            WriteJson(new CliExportOutput(result), CliJsonContext.Default.CliExportOutput);
             return response.IsWarning ? 1 : 0;
         }
         return RenderEnvelope(response, result);
@@ -80,9 +80,8 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
-        // CLI comma-splits; the HTTP endpoint binds repeated ?topics= keys. Deliberate — see
-        // "Bundle commands: topic filters differ deliberately between CLI and HTTP" in
-        // docs/architecture/cli.md.
+        // Parse the CLI's comma-separated topic filter at this local command boundary before
+        // dispatching to the MCP implementation.
         string[]? topicArray = topics?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 

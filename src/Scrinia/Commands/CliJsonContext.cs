@@ -65,13 +65,13 @@ internal sealed record CliListSummaryOutput(
     CliScopeEntry[] Scopes, string[]? TopKeywords, CliAttributeEntry[]? TopAttributes, string? Rendered);
 internal sealed record CliSearchOutput(CliSearchResult[] Results, int Total, string Query);
 internal sealed record CliShowOutput(string Name, string Content, int Length);
-internal sealed record CliStoreOutput(string Name, int ChunkCount, long OriginalBytes, string Message);
-internal sealed record CliForgetOutput(string Name, bool Success, string Message);
-internal sealed record CliExportOutput(string Path, string Message);
+internal sealed record CliStoreOutput(string Name, long OriginalBytes, string Message);
+internal sealed record CliForgetOutput(string Name, string Message);
+internal sealed record CliExportOutput(string Message);
 internal sealed record CliImportOutput(string Message);
 internal sealed record CliBundleOutput(string Path, int FileCount, string Topic, long BundleBytes, string Message);
 internal sealed record CliConfigOutput(Dictionary<string, string>? Settings, string? Key, string? Value);
-internal sealed record CliReindexOutput(int RescuedScopes, string Message);
+internal sealed record CliReindexOutput(int Embedded, int Total, int Skipped, int Failed, string Message);
 internal sealed record CliErrorOutput(string Error);
 
 /// <summary>

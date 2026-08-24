@@ -676,7 +676,7 @@ public partial class ScriniaCommands
             $"Embedded {result.Embedded}/{result.Total}, " +
             $"{result.Skipped} skipped, {result.Failed} failed.";
         if (json)
-            WriteJson(new CliReindexOutput(result.Embedded, summary), CliJsonContext.Default.CliReindexOutput);
+            WriteJson(new CliReindexOutput(result.Embedded, result.Total, result.Skipped, result.Failed, summary), CliJsonContext.Default.CliReindexOutput);
         else
             AnsiConsole.MarkupLine($"[green]Reindex complete.[/] {Markup.Escape(summary)}");
         return result.Failed == 0 ? 0 : 1;

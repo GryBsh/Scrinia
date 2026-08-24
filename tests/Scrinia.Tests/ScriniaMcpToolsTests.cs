@@ -25,6 +25,90 @@ public sealed class ScriniaMcpToolsTests
         return raw[..Math.Min(approxChars, raw.Length)];
     }
 
+    [Theory]
+    [InlineData("remember")]
+    [InlineData("append-create")]
+    [InlineData("compact")]
+    public async Task InvalidPersistentSubject_EveryWriteHandlerReturnsInvalidParameter(string route)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        string longName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
+
+        McpResponse response = route switch
+        {
+            "remember" => await tools.Remember(["body"], longName),
+            "append-create" => await tools.Append("body", longName),
+            "compact" => await CompactLegacyLongTargetAsync(tools, longName),
+            _ => throw new InvalidOperationException(route),
+        };
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+    }
+
+    [Theory]
+    [InlineData("remember")]
+    [InlineData("append")]
+    [InlineData("compact")]
+    public async Task InvalidPersistentSubject_EveryWriteFacadeReturnsInvalidParameter(string route)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string longName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
+        if (route == "compact") await SeedLegacyLongTargetAsync(longName);
+
+        string yaml = route switch
+        {
+            "remember" => await new ScriniaMcpTools().MemoryRemember(longName, ["body"]),
+            "append" => await new ScriniaMcpTools().MemoryAppend(longName, "body"),
+            "compact" => await new ScriniaMcpTools().MemoryCompact(longName),
+            _ => throw new InvalidOperationException(route),
+        };
+
+        var response = ResponseParser.Parse(yaml);
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+    }
+
+    private static async Task<McpResponse> CompactLegacyLongTargetAsync(ScriniaMcpTools tools, string name)
+    {
+        await SeedLegacyLongTargetAsync(name);
+        return await tools.Compact(name);
+    }
+
+    private static async Task SeedLegacyLongTargetAsync(string name)
+    {
+        var store = TestHelpers.Store;
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
+        await File.WriteAllTextAsync(store.ArtifactPath(name, "local"), artifact);
+
+        var entry = new ArtifactEntry(name, "", "firstsecond".Length, 2, DateTimeOffset.UtcNow);
+        string sidecarPath = Path.Combine(store.GetStoreDirForScope("local"), MemoryNaming.SanitizeSegment(name) + ".meta.json");
+        await File.WriteAllTextAsync(sidecarPath, System.Text.Json.JsonSerializer.Serialize(entry));
+    }
+
+    [Fact]
+    public async Task NoResultAndNoOpOutcomes_AreWarningsWithoutErrorCodes()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+
+        McpResponse emptySearch = await tools.Search("absent");
+        McpResponse emptyList = await tools.List();
+        await tools.Remember(["one"], "single");
+        McpResponse singleChunk = await tools.Compact("single");
+        await tools.Remember(["one", "two"], "two");
+        McpResponse keepAll = await tools.Compact("two", keepRecent: 2);
+
+        foreach (McpResponse response in new[] { emptySearch, emptyList, singleChunk, keepAll })
+        {
+            response.Status.Should().Be("warning");
+            response.IsWarning.Should().BeTrue();
+            response.IsError.Should().BeFalse();
+            response.ErrorCode.Should().BeNull();
+        }
+    }
+
     // ── Show (10 tests) ─────────────────────────────────────────────────────
 
     [Fact]

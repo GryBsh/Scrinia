@@ -18,6 +18,8 @@ namespace Scrinia.Tests;
 /// </summary>
 public class FileMemoryStoreWriteSurfaceTests
 {
+    private const int MaxPersistentSubjectLength = 182;
+
     /// <summary>Mirrors EntityTypingEventHandlerTests' TempWorkspace: temp dir, a FileMemoryStore
     /// rooted there, recursive delete on dispose.</summary>
     private sealed class TempWorkspace : IDisposable
@@ -44,6 +46,72 @@ public class FileMemoryStoreWriteSurfaceTests
         string artifact = await store.ReadArtifactAsync(subject, scope);
         int count = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         return string.Concat(Enumerable.Range(1, count).Select(i => Nmp2ChunkedEncoder.DecodeChunk(artifact, i)));
+    }
+
+    [Fact]
+    public async Task StoreAndAppend_AllowA182CharacterSanitizedPersistentSubject()
+    {
+        using var tmp = new TempWorkspace();
+        string subject = new('x', MaxPersistentSubjectLength);
+
+        await tmp.Store.StoreAsync(new MemoryWrite(subject, "local", ["first"]));
+        await tmp.Store.AppendAsync(new MemoryWrite(subject, "local", ["second"]));
+
+        tmp.Store.LoadIndex("local").Should().ContainSingle(e => e.Name == subject);
+        (await DecodeAsync(tmp.Store, subject)).Should().Be("firstsecond");
+    }
+
+    [Fact]
+    public void PersistentMemoryWrite_At183SanitizedCharacters_ThrowsBeforeAStoreCanTouchDisk()
+    {
+        using var tmp = new TempWorkspace();
+        string subject = new('x', MaxPersistentSubjectLength + 1);
+
+        Action construct = () => _ = new MemoryWrite(subject, "local", ["body"]);
+
+        var error = construct.Should().Throw<InvalidMemoryWriteException>().Which;
+        error.MaxPersistentSubjectLength.Should().Be(MemoryWrite.MaxPersistentSubjectLength);
+        error.SanitizedSubjectLength.Should().Be(MemoryWrite.MaxPersistentSubjectLength + 1);
+        Directory.EnumerateFiles(tmp.Root, "*", SearchOption.AllDirectories).Should().BeEmpty(
+            because: "construction rejects before a store can create artifact, sidecar, archive, or temporary files");
+    }
+
+    [Fact]
+    public void PersistentMemoryWrite_UsesTheSanitizedLeafLength()
+    {
+        string raw = new string('x', 181) + "?";
+
+        Action construct = () => _ = new MemoryWrite(raw, "local", ["body"]);
+
+        construct.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task LongEphemeralMemoryWrite_IsExemptAndCreatesNoPersistentFiles()
+    {
+        using var tmp = new TempWorkspace();
+        string name = "~" + new string('x', 1_000);
+
+        await tmp.Store.StoreAsync(new MemoryWrite(name, "ignored", ["body"]));
+
+        tmp.Store.GetEphemeral(name[1..]).Should().NotBeNull();
+        tmp.Store.LoadIndex("local").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void MemoryWrite_RetainsItsPublicConstructionAndRecordShapes()
+    {
+        var write = new MemoryWrite("name", "local", ["body"], "description",
+            new Dictionary<string, string[]> { ["tag"] = ["one"] }, ["keyword"]);
+        var renamed = write with { Name = "renamed" };
+        var (name, scope, content, description, attributes, keywords) = renamed;
+
+        name.Should().NotBeNull();
+        scope.Should().NotBeNull();
+        content.Should().NotBeNull();
+        description.Should().NotBeNull();
+        attributes.Should().NotBeNull();
+        keywords.Should().NotBeNull();
     }
 
     // ── Deriving ─────────────────────────────────────────────────────────────

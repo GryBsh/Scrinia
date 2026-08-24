@@ -29,7 +29,7 @@ public partial class BundleJsonContext : JsonSerializerContext;
 
 /// <summary>
 /// Shared bundle format I/O — zip creation/extraction, manifest/index serialization.
-/// Used by both REST API (BundleService) and MCP layer (MemoryTools).
+/// Used by the local CLI bundle commands and MCP memory tools.
 /// </summary>
 public static class BundleFormatService
 {

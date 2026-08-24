@@ -101,7 +101,7 @@ public partial class ScriniaCommands
     // YAML response (terminal-friendly when read by humans, parseable by tools);
     // --json wraps the response in CliMcpOutput so callers get a stable shape.
 
-    private static int EmitMcpResult(McpResponse r, bool json, string action)
+    internal static int EmitMcpResult(McpResponse r, bool json, string action)
     {
         // A warning envelope means the command completed without doing what was asked — an empty
         // import, an entity that matched nothing, an update specifying no changes. Exiting 0 for
@@ -110,7 +110,14 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            // --json output is unchanged: CliMcpOutput still carries the rendered YAML.
+            if (r.IsError)
+            {
+                WriteJsonError(r.Error ?? "unknown error");
+                return 1;
+            }
+
+            // Successful and warning envelopes retain the MCP payload for callers that need its
+            // structured details. Errors use the common CLI error contract instead.
             WriteJson(new CliMcpOutput(action, r.Status, r.ToYaml()), CliJsonContext.Default.CliMcpOutput);
         }
         else

@@ -45,7 +45,7 @@ public partial class ScriniaCommands
                 WriteJson(new CliListOutput([], 0, null), CliJsonContext.Default.CliListOutput);
             else
                 AnsiConsole.MarkupLine("[yellow]No memories stored.[/]");
-            return Task.FromResult(0);
+            return Task.FromResult(1);
         }
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
@@ -260,7 +260,7 @@ public partial class ScriniaCommands
                 WriteJson(new CliSearchOutput([], 0, query), CliJsonContext.Default.CliSearchOutput);
             else
                 AnsiConsole.MarkupLine("[yellow]No matching memories found.[/]");
-            return 0;
+            return 1;
         }
 
         if (json)
@@ -410,10 +410,10 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            var (scope, subject) = WorkspaceSetup.Store.ParseQualifiedName(name);
-            string qualifiedName = WorkspaceSetup.Store.FormatQualifiedName(scope, subject);
+            string qualifiedName = response.PersistedPath
+                ?? throw new InvalidOperationException("The completed memory write did not report its persisted path.");
             long bytes = System.Text.Encoding.UTF8.GetByteCount(content);
-            WriteJson(new CliStoreOutput(qualifiedName, 1, bytes, result),
+            WriteJson(new CliStoreOutput(qualifiedName, bytes, result),
                 CliJsonContext.Default.CliStoreOutput);
             return response.IsWarning ? 1 : 0;
         }
@@ -501,7 +501,7 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            WriteJson(new CliForgetOutput(name, true, result), CliJsonContext.Default.CliForgetOutput);
+            WriteJson(new CliForgetOutput(name, result), CliJsonContext.Default.CliForgetOutput);
             return response.IsWarning ? 1 : 0;
         }
         return RenderEnvelope(response, result);

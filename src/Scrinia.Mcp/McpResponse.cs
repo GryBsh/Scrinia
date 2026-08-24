@@ -56,6 +56,9 @@ public sealed record McpResponse
 
     public string? Action { get; init; }           // "created", "completed", "listed", etc.
     public string? Path { get; init; }              // "/goal/G-60-abc", "/concern/SEC-054", etc.
+    /// <summary>The canonical address returned by a completed durable write. This is transport
+    /// metadata rather than a response field, so the YAML renderer does not emit it.</summary>
+    public string? PersistedPath { get; init; }
     public string? Instruction { get; init; }      // what the agent must do next
     public string[]? ActionNeeded { get; init; }    // action-needed items
     public string[]? Info { get; init; }           // informational items
@@ -166,6 +169,11 @@ public static class ResponseBuilder
 
     public static McpResponse WithPath(this McpResponse r, string path) =>
         r with { Path = path };
+
+    /// <summary>Attaches the canonical address produced by a completed write without changing the
+    /// rendered MCP response.</summary>
+    public static McpResponse WithPersistedPath(this McpResponse r, string path) =>
+        r with { PersistedPath = path };
 
     public static McpResponse WithAction(this McpResponse r, string action) =>
         r with { Action = action };
