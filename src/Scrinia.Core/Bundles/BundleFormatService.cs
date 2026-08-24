@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,6 +18,7 @@ public sealed record BundleManifest(
     string Exported,
     List<string> Topics,
     int TotalEntries,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     Dictionary<string, List<string>>? FileEntities = null);
 
 [JsonSourceGenerationOptions(
@@ -159,11 +161,9 @@ public static class BundleFormatService
         var manifestEntry = zip.GetEntry("manifest.json")
             ?? throw new InvalidOperationException("Invalid bundle — manifest.json not found.");
 
-        string manifestJson;
-        using (var reader = new StreamReader(manifestEntry.Open()))
-            manifestJson = reader.ReadToEnd();
+        string manifestJson = ReadZipEntryText(manifestEntry);
 
-        using var manifestDoc = JsonDocument.Parse(manifestJson);
+        using var manifestDoc = ParseManifest(manifestJson);
         var root = manifestDoc.RootElement;
 
         int? declaredVersion = root.TryGetProperty("version", out var versionEl)
@@ -247,9 +247,7 @@ public static class BundleFormatService
             if (indexZipEntry is null)
                 continue;
 
-            string indexJson;
-            using (var reader = new StreamReader(indexZipEntry.Open()))
-                indexJson = reader.ReadToEnd();
+            string indexJson = ReadZipEntryText(indexZipEntry);
 
             // Deserialize through the SAME source-generated context that ExportTopicsToZip
             // serializes with, so the round trip is total by construction. This replaced a
@@ -356,8 +354,7 @@ public static class BundleFormatService
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
                 if (artifactZipEntry is not null)
                 {
-                    using var reader = new StreamReader(artifactZipEntry.Open());
-                    artifactContents[entry.Name] = reader.ReadToEnd();
+                    artifactContents[entry.Name] = ReadZipEntryText(artifactZipEntry);
                 }
 
                 // A null Keywords means this entry was never derived — `scri bundle` packages
@@ -462,6 +459,10 @@ public static class BundleFormatService
                 toWrite.Add((topicScope, topic, entries, artifactContents));
         }
 
+        ImmutableArray<FileEntityWrite> fileEntityWrites;
+        List<string> skippedCategories;
+        (fileEntityWrites, skippedCategories) = BuildFileEntityWrites(zip, root, store);
+
         // WRITE PASS — nothing above this point has touched the store, so every throw in the
         // build pass above happens before any side effect. Holding every topic's entries and
         // artifact text in memory here is acceptable and consistent with the rest of this file,
@@ -475,10 +476,55 @@ public static class BundleFormatService
             importedTopicNames.Add(topic);
         }
 
-        // Import disk-based file entities (v2 bundles; v1 bundles skip this)
-        var skippedCategories = ImportFileEntities(zip, root, store);
+        WriteFileEntities(fileEntityWrites);
 
         return (importedTopics, importedEntries, importedTopicNames, skippedCategories);
+    }
+
+    private static JsonDocument ParseManifest(string manifestJson)
+    {
+        try
+        {
+            return JsonDocument.Parse(manifestJson);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Invalid bundle — manifest.json is not valid JSON: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Reads one archive member while retaining an archive I/O failure as the inner cause of a
+    /// durable import failure. JSON parsing failures remain invalid-bundle refusals at their own
+    /// boundary.
+    /// </summary>
+    private static string ReadZipEntryText(ZipArchiveEntry entry)
+    {
+        try
+        {
+            using var reader = new StreamReader(entry.Open());
+            return reader.ReadToEnd();
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            throw new DurableWriteException("read bundle", entry.FullName, exception);
+        }
+    }
+
+    private static byte[] ReadZipEntryBytes(ZipArchiveEntry entry)
+    {
+        try
+        {
+            using var input = entry.Open();
+            using var bytes = new MemoryStream();
+            input.CopyTo(bytes);
+            return bytes.ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            throw new DurableWriteException("read bundle", entry.FullName, exception);
+        }
     }
 
     // ── File entity helpers ─────────────────────────────────────────────────
@@ -553,23 +599,24 @@ public static class BundleFormatService
         return fileEntities;
     }
 
+    private sealed record FileEntityWrite(string Category, string FileName, string Destination, byte[] Bytes);
+
     /// <summary>
-    /// Imports disk-based file entities from a v2 bundle.
-    /// If the manifest has no <c>fileEntities</c> property (v1 bundles), this is a no-op.
+    /// Builds the approved file-entity writes without creating directories or replacing files.
+    /// A v1 manifest without <c>fileEntities</c> has no file-entity work.
     /// </summary>
-    /// <returns>
-    /// Manifest category keys that were skipped because <see cref="CategoryToKind"/> has no
-    /// entry for them (deleted categories like the former "workflows", or unrecognised/crafted
-    /// keys) — reported so a bundle never silently loses content on import.
-    /// </returns>
-    private static List<string> ImportFileEntities(
+    private static (ImmutableArray<FileEntityWrite> Writes, List<string> SkippedCategories) BuildFileEntityWrites(
         ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
     {
         var skippedCategories = new List<string>();
+        var writes = ImmutableArray.CreateBuilder<FileEntityWrite>();
 
-        if (!manifestRoot.TryGetProperty("fileEntities", out var fileEntitiesEl)
-            || fileEntitiesEl.ValueKind != JsonValueKind.Object)
-            return skippedCategories;
+        if (!manifestRoot.TryGetProperty("fileEntities", out var fileEntitiesEl))
+            return (writes.ToImmutable(), skippedCategories);
+
+        if (fileEntitiesEl.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException(
+                "Invalid bundle — manifest fileEntities must be a JSON object when present.");
 
         foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
         {
@@ -581,54 +628,119 @@ public static class BundleFormatService
             if (!CategoryToKind.ContainsKey(category))
             {
                 skippedCategories.Add(category);
-                continue; // deleted or unknown category — reported, never written
+                continue;
             }
 
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
-                continue;
+                throw new InvalidOperationException(
+                    $"Invalid bundle — file category '{category}' must be an array.");
 
-            // CategoryToKind.ContainsKey(category) already returned true above, so CategoryDir
-            // always resolves here — the "no kind" branch that used to guard this is unreachable.
             string categoryDir = CategoryDir(store, category)!;
-            Directory.CreateDirectory(categoryDir);
 
             foreach (var fileEl in categoryProp.Value.EnumerateArray())
             {
                 string? fileName = fileEl.GetString();
-                if (string.IsNullOrWhiteSpace(fileName))
-                    continue;
+                if (!IsSupportedFileEntityName(fileName))
+                    throw InvalidFileEntity(category, fileName, "has an unsafe or unsupported filename");
 
-                // Guard against path traversal and directory nesting: a crafted manifest entry
-                // like "sub/x.md" would pass both the ".." and rooted-path checks, then
-                // File.Create(destPath) would throw DirectoryNotFoundException for a
-                // subdirectory that doesn't exist — uncaught, aborting the import after topics
-                // were already written. Export only ever emits Path.GetFileName(filePath), so a
-                // legitimate manifest entry never contains a separator.
-                if (fileName.Contains("..") || Path.IsPathRooted(fileName)
-                    || fileName.IndexOfAny(['/', '\\']) >= 0)
-                    continue;
-
-                string zipEntryName = $"files/{category}/{fileName}";
+                string approvedFileName = fileName!;
+                string zipEntryName = $"files/{category}/{approvedFileName}";
                 var zipEntry = zip.GetEntry(zipEntryName);
                 if (zipEntry is null)
-                    continue;
+                    throw InvalidFileEntity(category, fileName, "is declared but missing from the archive");
 
-                string destPath = Path.Combine(categoryDir, fileName);
+                string destPath = Path.Combine(categoryDir, approvedFileName);
                 string fullDest = Path.GetFullPath(destPath);
-                // Anchored to categoryDir (not the outer .scrinia base): stricter against
-                // traversal, but permits a symlinked .scrinia/agent pointing outside .scrinia,
-                // where an outer-anchored check would deny it. Deliberate — consistent with the
-                // write path (SkillCreate/Remember's agent branch), which never had that outer
-                // check either.
                 if (!PathContainment.IsWithin(categoryDir, fullDest))
-                    continue;
+                    throw InvalidFileEntity(category, fileName, "resolves outside its destination directory");
 
-                using var inStream = zipEntry.Open();
-                using var outStream = File.Create(destPath);
-                inStream.CopyTo(outStream);
+                byte[] content = ReadZipEntryBytes(zipEntry);
+
+                ValidateFileEntityMetadata(category, approvedFileName, content);
+                writes.Add(new FileEntityWrite(category, approvedFileName, fullDest, content));
             }
         }
 
-        return skippedCategories;
+        return (writes.ToImmutable(), skippedCategories);
     }
+
+    /// <summary>
+    /// Writes an already-approved bundle file set. This is deliberately prefix-consistent: each
+    /// selected file is atomically replaced, but a failure can leave an applied prefix and an
+    /// untouched suffix. Journaled restore recovery is not provided here.
+    /// </summary>
+    private static void WriteFileEntities(ImmutableArray<FileEntityWrite> writes)
+    {
+        foreach (var write in writes)
+        {
+            string directory = Path.GetDirectoryName(write.Destination)!;
+            try
+            {
+                Directory.CreateDirectory(directory);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new DurableWriteException("create directory", directory, exception);
+            }
+
+            DurableFile.AtomicWriteAllBytes(write.Destination, write.Bytes);
+        }
+    }
+
+    private static bool IsSupportedFileEntityName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)
+            || Path.IsPathRooted(fileName)
+            || fileName.Contains("..")
+            || fileName.IndexOfAny(['/', '\\']) >= 0
+            || !string.Equals(fileName, Path.GetFileName(fileName), StringComparison.Ordinal))
+            return false;
+
+        return fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+            || (fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase)
+                && fileName.Length > ".meta.json".Length);
+    }
+
+    private static void ValidateFileEntityMetadata(string category, string fileName, byte[] bytes)
+    {
+        if (!fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            int? declaredVersion;
+            if (category.Equals("skills", StringComparison.OrdinalIgnoreCase))
+            {
+                var metadata = JsonSerializer.Deserialize(bytes, FileEntityJsonContext.Default.SkillFileMeta);
+                if (metadata is null)
+                    throw InvalidFileEntity(category, fileName, "contains null metadata");
+
+                declaredVersion = metadata.SchemaVersion;
+            }
+            else
+            {
+                var metadata = JsonSerializer.Deserialize(bytes, FileEntityJsonContext.Default.AgentFileMeta);
+                if (metadata is null)
+                    throw InvalidFileEntity(category, fileName, "contains null metadata");
+
+                declaredVersion = metadata.SchemaVersion;
+            }
+            var contract = category.Equals("skills", StringComparison.OrdinalIgnoreCase)
+                ? DurableFormats.SkillMeta
+                : DurableFormats.AgentMeta;
+
+            if (FormatVersion.Evaluate(contract, declaredVersion) == FormatDisposition.LoadReadOnly)
+                throw InvalidFileEntity(category, fileName,
+                    $"declares version {declaredVersion}, but this build supports up to {contract.Current}. " +
+                    "Re-export the bundle with a matching version, or upgrade scri");
+        }
+        catch (JsonException exception)
+        {
+            throw InvalidFileEntity(category, fileName, "contains malformed metadata JSON", exception);
+        }
+    }
+
+    private static InvalidOperationException InvalidFileEntity(
+        string category, string? fileName, string reason, Exception? innerException = null) =>
+        new($"Invalid bundle — file entity '{category}/{fileName ?? "<missing>"}' {reason}.", innerException);
 }

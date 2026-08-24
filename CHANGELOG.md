@@ -10,6 +10,16 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — durable file replacement and bundle file-entity admission
+
+- Artifact sidecars, skill and agent files, and imported bundle file entities now replace each selected
+  file through a flushed sibling temporary file, so readers do not observe a truncated replacement.
+- Bundle file entities are validated before topic import begins. Missing, unsafe, malformed, or
+  forward-versioned members now fail with `INVALID_BUNDLE`; filesystem write failures report
+  `DURABLE_WRITE_FAILED` through both MCP and `scri bundle import`.
+- This is per-file durability, not transactional restore: an interruption can leave a complete applied
+  prefix of a skill/agent pair or bundle file set. Journaled restore recovery remains future work.
+
 ### Fixed (breaking) — public outcomes now match durable writes and CLI data
 
 - Persistent sanitized subjects over 182 characters now fail early as `INVALID_PARAMETER`, with no
@@ -35,9 +45,8 @@ and all assembly attributes.
 - **No format's version was bumped.** This ships the gate, not a migration — every existing
   sidecar in a workspace continues to load and serialize byte-identical to before. A v1 skill or
   agent sidecar still serializes with no `"v"` key at all, exactly as it always has.
-- Skill and agent sidecars' `WriteSidecarMeta` still writes via a bare `File.WriteAllText`, not the
-  store's atomic temp-file-then-`File.Move`. That is a separate defect (recorded as out-of-scope
-  for this work) wearing this task's clothes, and is deliberately left alone here.
+- Skill and agent sidecars' `WriteSidecarMeta` now uses the same flushed atomic replacement as
+  artifact sidecars and imported file entities.
 
 ### Fixed (breaking) — `scri bundle import` no longer deletes memories written during it
 

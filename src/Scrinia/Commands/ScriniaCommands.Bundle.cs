@@ -90,7 +90,11 @@ public partial class ScriniaCommands
 
         if (response.IsError)
         {
-            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            if (json)
+            {
+                WriteJson(new CliImportOutput(response.ToYaml()), CliJsonContext.Default.CliImportOutput);
+                return 1;
+            }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }

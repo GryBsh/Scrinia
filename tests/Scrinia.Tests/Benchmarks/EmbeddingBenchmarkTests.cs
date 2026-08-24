@@ -15,6 +15,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// Benchmarks comparing BM25-only and Model2Vec embedding methods for store and search.
 /// Downloads the Model2Vec model on first run; skips if the download fails (no network, etc.).
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class EmbeddingBenchmarkTests(ITestOutputHelper output) : IAsyncLifetime, IDisposable
 {
     private static readonly string ModelDir = Path.Combine(AppContext.BaseDirectory, "models", "m2v-MiniLM-L6-v2");
@@ -530,6 +531,7 @@ public sealed class EmbeddingBenchmarkTests(ITestOutputHelper output) : IAsyncLi
 
         public void Dispose()
         {
+            _store.Dispose();
             _vectorStore?.Dispose();
             try { Directory.Delete(_tempDir, recursive: true); } catch { }
         }

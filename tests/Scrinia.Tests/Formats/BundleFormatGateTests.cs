@@ -144,6 +144,57 @@ public sealed class BundleFormatGateTests : IDisposable
     }
 
     [Fact]
+    public void Import_RefusesForwardSkillSidecarBeforeTopicOrFileEntityWrites()
+    {
+        // This is binding coverage for the file-entity build pass: removing its call before
+        // ImportTopicEntries lets the topic import and makes this assertion fail.
+        int newerThanCurrent = DurableFormats.SkillMeta.Current + 1;
+        string skillsDir = Path.Combine(_workspaceRoot, ".scrinia", "skills");
+        string bodyPath = Path.Combine(skillsDir, "planner.md");
+        string sidecarPath = Path.Combine(skillsDir, "planner.meta.json");
+        byte[] originalBody = [0, 255, 7];
+        byte[] originalSidecar = "{\"v\":1,\"sentinel\":true}"u8.ToArray();
+        Directory.CreateDirectory(skillsDir);
+        File.WriteAllBytes(bodyPath, originalBody);
+        File.WriteAllBytes(sidecarPath, originalSidecar);
+
+        byte[] zipBytes;
+        using (var stream = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                var index = new BundleIndex(
+                    [new ArtifactEntry("note", "", 5, 1, DateTimeOffset.UtcNow, "a note")]);
+                WriteZipText(zip, "topics/test/index.json",
+                    JsonSerializer.Serialize(index, BundleFormatService.DefaultJsonOptions));
+                WriteZipText(zip, "topics/test/note.nmp2", "hello");
+                WriteZipText(zip, "files/skills/planner.md", "# Planner");
+                WriteZipText(zip, "files/skills/planner.meta.json", $"{{\"v\":{newerThanCurrent}}}");
+                WriteZipText(zip, "manifest.json", """
+                    {"version":2,"topics":["test"],"totalEntries":1,
+                    "fileEntities":{"skills":["planner.md","planner.meta.json"]}}
+                    """);
+            }
+            zipBytes = stream.ToArray();
+        }
+
+        using var readStream = new MemoryStream(zipBytes);
+        using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
+
+        Action act = () => BundleFormatService.ImportTopicsFromZip(
+            zipRead, _store, filterTopics: null, overwrite: true);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage($"*skills*planner.meta.json*{newerThanCurrent}*Re-export*upgrade*");
+
+        // Cold-disk assertions prove the preflight failed before either destination class mutated.
+        using var cold = new FileMemoryStore(_workspaceRoot);
+        cold.LoadIndex(MemoryNaming.BuildScopedTopicScope("test")).Should().BeEmpty();
+        File.ReadAllBytes(bodyPath).Should().Equal(originalBody);
+        File.ReadAllBytes(sidecarPath).Should().Equal(originalSidecar);
+    }
+
+    [Fact]
     public void ExportedIndexJson_CarriesExplicitNullSchemaVersionWhenAbsent()
     {
         // Known fact, not a defect to fix here: BundleJsonContext has no

@@ -1,5 +1,7 @@
 using FluentAssertions;
+using System.IO.Compression;
 using System.Text.Json;
+using Scrinia.Core;
 using Scrinia.Commands;
 using Scrinia.Mcp;
 
@@ -80,6 +82,83 @@ public class BundleExitCodeTests
         exit.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Import_WithMissingFileEntity_ExitsOneAndPreservesInvalidBundleEnvelopeInJson()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "missing-file", includeFile: false);
+
+        var (exit, output) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, json: true));
+        using (output)
+        {
+            exit.Should().Be(1);
+            ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!).ErrorCode
+                .Should().Be(ErrorCodes.InvalidBundle);
+        }
+    }
+
+    [Fact]
+    public async Task Import_WithMalformedManifest_ExitsOneAndPreservesActionableInvalidBundleEnvelopeInJson()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateMalformedManifestBundle(scope.WorkspaceDir);
+
+        var (exit, output) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, json: true));
+        using (output)
+        {
+            exit.Should().Be(1);
+            var response = ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!);
+            response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
+            response.Error.Should().Contain("Invalid bundle").And.Contain("manifest.json").And.Contain("valid JSON");
+        }
+    }
+
+    [Fact]
+    public async Task Import_WithNonObjectFileEntities_ExitsOneAndPreservesInvalidBundleEnvelopeInJson()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateBundleWithRawFileEntities(scope.WorkspaceDir, "null");
+
+        var (exit, output) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, json: true));
+        using (output)
+        {
+            exit.Should().Be(1);
+            var response = ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!);
+            response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
+            response.Error.Should().Contain("fileEntities").And.Contain("JSON object");
+        }
+    }
+
+    [Fact]
+    public async Task Import_WhenFileEntityMoveFails_ExitsOneAndPreservesDurableWriteEnvelopeInJson()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "durable-file", includeFile: true);
+        string destination = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "durable-file.md");
+        DurableFile.FailureInjector = (phase, path) =>
+            phase == DurableWritePhase.BeforeMove && path == destination
+                ? new UnauthorizedAccessException("injected before file-entity move")
+                : null;
+        try
+        {
+            var (exit, output) = await CaptureJsonAsync(() =>
+                new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, json: true));
+            using (output)
+            {
+                exit.Should().Be(1);
+                ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!).ErrorCode
+                    .Should().Be(ErrorCodes.DurableWriteFailed);
+            }
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+    }
+
     /// <summary>
     /// RULED 2026-08-10: an import that matched no topics is a failure, not a success.
     ///
@@ -128,6 +207,52 @@ public class BundleExitCodeTests
         ResponseBuilder.Error("x").IsWarning.Should().BeFalse();
         ResponseBuilder.Warning("x").IsError.Should().BeFalse(
             because: "a warning is not an error — the two predicates must not overlap");
+    }
+
+    private static string CreateFileEntityBundle(string workspaceRoot, string name, bool includeFile)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, $"{name}.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        if (includeFile)
+        {
+            var entry = zip.CreateEntry($"files/skills/{name}.md");
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("file entity content");
+        }
+
+        var manifest = zip.CreateEntry("manifest.json");
+        using var manifestWriter = new StreamWriter(manifest.Open());
+        manifestWriter.Write(JsonSerializer.Serialize(new
+        {
+            version = 2,
+            topics = Array.Empty<string>(),
+            totalEntries = 0,
+            fileEntities = new Dictionary<string, string[]> { ["skills"] = [$"{name}.md"] }
+        }));
+        return bundlePath;
+    }
+
+    private static string CreateMalformedManifestBundle(string workspaceRoot)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, "malformed-manifest.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        var manifest = zip.CreateEntry("manifest.json");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write("{ malformed");
+        return bundlePath;
+    }
+
+    private static string CreateBundleWithRawFileEntities(string workspaceRoot, string fileEntitiesJson)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, "invalid-file-entities.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        var manifest = zip.CreateEntry("manifest.json");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write($$"""{"version":2,"topics":[],"totalEntries":0,"fileEntities":{{fileEntitiesJson}}}""");
+        return bundlePath;
     }
 
     /// <summary>

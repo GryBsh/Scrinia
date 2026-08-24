@@ -335,6 +335,39 @@ public sealed partial class SidecarVersioningTests
     }
 
     [Fact]
+    public async Task ReStoringANewerSidecar_LeavesBodySidecarAndArchivesUnchangedOnColdDisk()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+
+        string bodyPath = store.ArtifactPath("seed", "local:notes");
+        string sidecarPath = SidecarPath(scope, "local:notes", "seed");
+        string versionsPath = Path.Combine(scope.TempDir, "notes", "versions");
+        byte[] bodyBefore = File.ReadAllBytes(bodyPath);
+        byte[] sidecarBefore = File.ReadAllBytes(sidecarPath);
+        int archiveCountBefore = Directory.Exists(versionsPath)
+            ? Directory.EnumerateFiles(versionsPath).Count()
+            : 0;
+        SetSidecarVersionOnDisk(
+            scope, "local:notes", "seed", DurableFormats.ArtifactSidecar.Current + 1);
+        sidecarBefore = File.ReadAllBytes(sidecarPath);
+
+        var act = async () => await store.StoreAsync(
+            new MemoryWrite("seed", "local:notes", ["overwrite attempt"]));
+
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        File.ReadAllBytes(bodyPath).Should().Equal(bodyBefore);
+        File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore);
+        (Directory.Exists(versionsPath) ? Directory.EnumerateFiles(versionsPath).Count() : 0)
+            .Should().Be(archiveCountBefore);
+        cold.LoadIndex("local:notes").Single(entry => entry.Name == "seed").SchemaVersion
+            .Should().Be(DurableFormats.ArtifactSidecar.Current + 1);
+    }
+
+    [Fact]
     public async Task AfterThatRefusal_TheBodyOnDiskIsUnchanged()
     {
         // The property that makes leaving body writes ungated safe: StoreAsync's rollback puts
@@ -500,6 +533,27 @@ public sealed partial class SidecarVersioningTests
     }
 
     [Fact]
+    public void WriteSidecarCore_RefusalPreservesAnExistingSidecarOnColdDisk()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        string sentinelPath = Path.Combine(scope.TempDir, "direct.meta.json");
+        byte[] sentinel = [0, 255, 7];
+        File.WriteAllBytes(sentinelPath, sentinel);
+        var newer = new ArtifactEntry("direct", "file:///direct.nmp2", 5, 1, DateTimeOffset.UtcNow)
+        {
+            SchemaVersion = DurableFormats.ArtifactSidecar.Current + 1,
+        };
+
+        var act = () => store.InvokeWriteSidecarForTest(newer, scope.TempDir);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        File.ReadAllBytes(sentinelPath).Should().Equal(sentinel);
+    }
+
+    [Fact]
     public void ImportTopicEntries_RefusesAListContainingANewerEntry_BeforeTheFirstFileMove()
     {
         // ImportTopicEntriesCore's commit loop calls WriteSidecar directly, per entry, so
@@ -524,6 +578,37 @@ public sealed partial class SidecarVersioningTests
             .Should().BeFalse("nothing staged for import may be committed once one entry is refused");
         File.Exists(Path.Combine(scope.TempDir, "notes", "writable-import.meta.json"))
             .Should().BeFalse();
+    }
+
+    [Fact]
+    public void ImportTopicEntries_RefusesForwardVersionedEntriesBeforeCreatingAnyIncomingFiles()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        var writable = new ArtifactEntry("writable-import", "file://placeholder", 5, 1, DateTimeOffset.UtcNow);
+        var newer = writable with
+        {
+            Name = "newer-import",
+            SchemaVersion = DurableFormats.ArtifactSidecar.Current + 1,
+        };
+        var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["writable-import"] = "writable body",
+            ["newer-import"] = "newer body",
+        };
+
+        var act = () => store.ImportTopicEntries(
+            "local:notes", [writable, newer], contents, overwrite: true);
+
+        act.Should().Throw<ScopeReadOnlyException>();
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+        File.Exists(Path.Combine(storeDir, "writable-import.nmp2")).Should().BeFalse();
+        File.Exists(Path.Combine(storeDir, "writable-import.meta.json")).Should().BeFalse();
+        File.Exists(Path.Combine(storeDir, "newer-import.nmp2")).Should().BeFalse();
+        File.Exists(Path.Combine(storeDir, "newer-import.meta.json")).Should().BeFalse();
+        cold.LoadIndex("local:notes").Should().BeEmpty();
     }
 
     /// <summary>

@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
@@ -1330,6 +1332,101 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Import_WithMissingDeclaredFileEntity_ReturnsInvalidBundleWithUpgradeRecovery()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "missing-file", includeFile: false);
+
+        McpResponse response = await Tools().Import(bundlePath);
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
+        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("re-export").And.Contain("upgrade");
+    }
+
+    [Fact]
+    public async Task Import_WithMalformedManifest_ReturnsInvalidBundleWithActionableError()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateMalformedManifestBundle(scope.WorkspaceDir);
+
+        McpResponse response = await Tools().Import(bundlePath);
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
+        response.Error.Should().Contain("Invalid bundle").And.Contain("manifest.json").And.Contain("valid JSON");
+        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("re-export").And.Contain("retry");
+    }
+
+    [Fact]
+    public async Task Import_WithNonObjectFileEntities_ReturnsInvalidBundle()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateBundleWithRawFileEntities(scope.WorkspaceDir, "[]");
+
+        McpResponse response = await Tools().Import(bundlePath);
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
+        response.Error.Should().Contain("fileEntities").And.Contain("JSON object");
+    }
+
+    [Fact]
+    public async Task Import_WhenFileEntityMoveFails_ReturnsDurableWriteFailureWithoutSuccess()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "durable-file", includeFile: true);
+        string destination = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "durable-file.md");
+        DurableFile.FailureInjector = (phase, path) =>
+            phase == DurableWritePhase.BeforeMove && path == destination
+                ? new UnauthorizedAccessException("injected before file-entity move")
+                : null;
+        try
+        {
+            McpResponse response = await Tools().Import(bundlePath);
+
+            response.Status.Should().Be("error");
+            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+            response.Error.Should().Be($"Durable write bytes failed for '{destination}'.");
+            response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("permissions").And.Contain("disk space").And.Contain("retry");
+            response.Content.Should().BeNull();
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+    }
+
+    [Fact]
+    public async Task Import_WithUnreadableArchive_ReturnsDurableWriteFailure()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = Path.Combine(scope.WorkspaceDir, "unreadable.scrinia-bundle");
+        await File.WriteAllTextAsync(bundlePath, "not a zip archive");
+
+        McpResponse response = await Tools().Import(bundlePath);
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("retry");
+    }
+
+    [Fact]
+    public async Task OpenBundleForImport_WhenArchiveIsUnreadable_WrapsTheOriginalZipFailure()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = Path.Combine(scope.WorkspaceDir, "unreadable-inner.scrinia-bundle");
+        await File.WriteAllTextAsync(bundlePath, "not a zip archive");
+
+        Action open = () => ScriniaMcpTools.OpenBundleForImport(bundlePath);
+
+        var failure = open.Should().Throw<DurableWriteException>().Which;
+        failure.Operation.Should().Be("read bundle");
+        failure.Destination.Should().Be(bundlePath);
+        failure.InnerException.Should().BeOfType<InvalidDataException>();
+    }
+
+    [Fact]
     public async Task Export_EmptyTopic_ReturnsError()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -1338,6 +1435,52 @@ public sealed class ScriniaMcpToolsTests
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "exporting a topic with no entries must return an error");
+    }
+
+    private static string CreateFileEntityBundle(string workspaceRoot, string name, bool includeFile)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, $"{name}.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        if (includeFile)
+        {
+            var entry = zip.CreateEntry($"files/skills/{name}.md");
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("file entity content");
+        }
+
+        var manifest = zip.CreateEntry("manifest.json");
+        using var manifestWriter = new StreamWriter(manifest.Open());
+        manifestWriter.Write(JsonSerializer.Serialize(new
+        {
+            version = 2,
+            topics = Array.Empty<string>(),
+            totalEntries = 0,
+            fileEntities = new Dictionary<string, string[]> { ["skills"] = [$"{name}.md"] }
+        }));
+        return bundlePath;
+    }
+
+    private static string CreateMalformedManifestBundle(string workspaceRoot)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, "malformed-manifest.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        var manifest = zip.CreateEntry("manifest.json");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write("{ malformed");
+        return bundlePath;
+    }
+
+    private static string CreateBundleWithRawFileEntities(string workspaceRoot, string fileEntitiesJson)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, "invalid-file-entities.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        var manifest = zip.CreateEntry("manifest.json");
+        using var writer = new StreamWriter(manifest.Open());
+        writer.Write($$"""{"version":2,"topics":[],"totalEntries":0,"fileEntities":{{fileEntitiesJson}}}""");
+        return bundlePath;
     }
 
     // ── Keywords (4 tests) ───────────────────────────────────────────────────

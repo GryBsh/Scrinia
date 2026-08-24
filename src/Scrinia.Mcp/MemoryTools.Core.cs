@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
@@ -172,7 +173,10 @@ public sealed partial class ScriniaMcpTools
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
 
             string agentContent = string.Join("\n", content);
-            await File.WriteAllTextAsync(filePath, agentContent, cancellationToken);
+            // Preflight runs before any mutation. The body and sidecar are individually atomic
+            // files, but their replacement sequence is not a paired transaction.
+            cancellationToken.ThrowIfCancellationRequested();
+            DurableFile.AtomicWriteAllText(filePath, agentContent);
 
             string now = DateTimeOffset.UtcNow.ToString("o");
             var meta = new AgentFileMeta(

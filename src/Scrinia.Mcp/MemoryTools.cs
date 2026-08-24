@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
+using Scrinia.Core.Formats;
 
 namespace Scrinia.Mcp;
 
@@ -168,7 +169,21 @@ public sealed partial class ScriniaMcpTools
     {
         // Skill-path routing: '/skill/{name}' → SkillCreate.
         var skillRoute = TryRouteSkillRemember(path, content, attributes, keywords, cancellationToken);
-        if (skillRoute is not null) return (await skillRoute).ToYaml();
+        if (skillRoute is not null)
+        {
+            try
+            {
+                return (await skillRoute).ToYaml();
+            }
+            catch (DurableWriteException ex)
+            {
+                return DurableWriteFailureResponse(ex).ToYaml();
+            }
+            catch (ScopeReadOnlyException ex)
+            {
+                return DurableWriteFailureResponse(ex).ToYaml();
+            }
+        }
 
         if (content is null || content.Length == 0)
             return ResponseBuilder.Error(
@@ -190,9 +205,21 @@ public sealed partial class ScriniaMcpTools
         }
 
         path = Address(path);
-        McpResponse response = await Remember(content, path,
-            keywords: keywords, attributes: attributes,
-            actionLabel: "remembered", cancellationToken: cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await Remember(content, path,
+                keywords: keywords, attributes: attributes,
+                actionLabel: "remembered", cancellationToken: cancellationToken);
+        }
+        catch (DurableWriteException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (ScopeReadOnlyException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
 
         // Was InjectInfoHint doing string surgery on rendered YAML. The no-op-on-error rule is
         // preserved deliberately: errors carry recovery text on actionNeeded, not info.
@@ -202,6 +229,12 @@ public sealed partial class ScriniaMcpTools
 
         return response.ToYaml();
     }
+
+    private static McpResponse DurableWriteFailureResponse(Exception exception) =>
+        ResponseBuilder.Error(
+            exception.Message,
+            ErrorCodes.DurableWriteFailed,
+            "Check permissions, free disk space if needed, and retry after upgrading scri when the existing sidecar is newer.");
 
     [McpServerTool(Name = "recall"), Description(
         "Read a memory by path. Returns the full content unless a chunk index is provided. " +

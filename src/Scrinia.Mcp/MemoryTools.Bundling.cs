@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -102,8 +103,9 @@ public sealed partial class ScriniaMcpTools
 
         try
         {
-            using var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read);
-            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            var bundle = OpenBundleForImport(resolvedPath);
+            using var stream = bundle.Stream;
+            using var zip = bundle.Archive;
 
             var (topicCount, entryCount, names, skippedCategories) =
                 Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);
@@ -125,12 +127,62 @@ public sealed partial class ScriniaMcpTools
 
             return Task.FromResult(response);
         }
+        catch (DurableWriteException ex)
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.DurableWriteFailed,
+                "Check permissions, free disk space if needed, and retry."));
+        }
+        catch (ScopeReadOnlyException ex)
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.DurableWriteFailed,
+                "Check permissions, free disk space if needed, and retry after upgrading scri when an existing sidecar is newer."));
+        }
         catch (InvalidOperationException ex)
         {
             return Task.FromResult(ResponseBuilder.Error(
                 ex.Message,
-                ErrorCodes.Internal,
-                "Verify the bundle file is a valid .scrinia-bundle archive."));
+                ErrorCodes.InvalidBundle,
+                "re-export the bundle with a matching version, or upgrade scri, then retry."));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.DurableWriteFailed,
+                "Check permissions, free disk space if needed, and retry."));
+        }
+        catch (InvalidDataException ex)
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.DurableWriteFailed,
+                "Check permissions, free disk space if needed, and retry."));
+        }
+        catch (IOException ex)
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.DurableWriteFailed,
+                "Check permissions, free disk space if needed, and retry."));
+        }
+    }
+
+    internal static (FileStream Stream, ZipArchive Archive) OpenBundleForImport(string path)
+    {
+        FileStream? stream = null;
+        try
+        {
+            stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+            return (stream, new ZipArchive(stream, ZipArchiveMode.Read));
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or InvalidDataException)
+        {
+            stream?.Dispose();
+            throw new DurableWriteException("read bundle", path, exception);
         }
     }
 

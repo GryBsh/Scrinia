@@ -1,6 +1,8 @@
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using FluentAssertions;
+using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Search;
@@ -105,6 +107,19 @@ public class RegisteredFormatsTests
         var meta = new AgentFileMeta(null, null);
         JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.AgentFileMeta)
             .Should().NotContain("\"v\"");
+    }
+
+    [Fact]
+    public void FileEntityJsonContext_SerializesTheSharedSkillAndAgentMetadataContracts()
+    {
+        JsonSerializer.Serialize(
+                new SkillFileMeta(null, "reviewer", null, null, null, null),
+                FileEntityJsonContext.Default.SkillFileMeta)
+            .Should().Contain("reviewer");
+        JsonSerializer.Serialize(
+                new AgentFileMeta("created", "updated"),
+                FileEntityJsonContext.Default.AgentFileMeta)
+            .Should().Contain("created");
     }
 
     /// <summary>
@@ -228,6 +243,27 @@ public class RegisteredFormatsTests
             "a rewrite must carry forward fields this build has no member for");
     }
 
+    [Fact]
+    public async Task ReWritingAnAgentConfig_KeepsItsCurrentVersionAndUnknownSidecarFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/agent/profile", ["you are helpful"]);
+
+        string metaPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.meta.json");
+        var seededSidecar = JsonNode.Parse(File.ReadAllText(metaPath))!.AsObject();
+        seededSidecar["v"] = DurableFormats.AgentMeta.Current;
+        seededSidecar["futureThing"] = JsonValue.Create(42);
+        File.WriteAllText(metaPath, seededSidecar.ToJsonString());
+
+        await tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
+
+        _ = new FileMemoryStore(scope.WorkspaceDir);
+        var rewrittenSidecar = JsonDocument.Parse(File.ReadAllBytes(metaPath)).RootElement;
+        rewrittenSidecar.GetProperty("v").GetInt32().Should().Be(DurableFormats.AgentMeta.Current);
+        rewrittenSidecar.GetProperty("futureThing").GetInt32().Should().Be(42);
+    }
+
     /// <summary>
     /// The SKILL path's version carry-forward, pinned. Re-creating a skill whose sidecar was
     /// written by a newer build must be REFUSED.
@@ -250,20 +286,24 @@ public class RegisteredFormatsTests
 
         string skillPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "newer-probe.md");
         string versionsDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "versions");
-        string bodyBefore = File.ReadAllText(skillPath);
+        byte[] bodyBefore = File.ReadAllBytes(skillPath);
+        string sidecarPath = Path.ChangeExtension(skillPath, ".meta.json");
+        byte[] sidecarBefore = File.ReadAllBytes(sidecarPath);
         int versionsBefore = Directory.Exists(versionsDir)
             ? Directory.GetFiles(versionsDir).Length : 0;
 
-        var act = async () => await tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]);
+        var response = ResponseParser.Parse(
+            await tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]));
 
-        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
 
-        // Asserting only that it threw is what let a refuse-AFTER-write ship: the archive and the
-        // body overwrite both happen before the sidecar is touched, and neither has a rollback, so
-        // a late refusal destroyed the previous prompt and still reported failure. These two
-        // assertions are the difference between "it refused" and "it refused before doing damage".
-        File.ReadAllText(skillPath).Should().Be(bodyBefore,
+        // An error envelope alone would miss a refusal after mutation: the archive and body write
+        // have no rollback, so raw cold-disk bytes and the archive count prove refusal was early.
+        _ = new FileMemoryStore(scope.WorkspaceDir);
+        File.ReadAllBytes(skillPath).Should().Equal(bodyBefore,
             "a refused rewrite must not have overwritten the prompt");
+        File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore,
+            "a refused rewrite must not have replaced metadata");
         (Directory.Exists(versionsDir) ? Directory.GetFiles(versionsDir).Length : 0)
             .Should().Be(versionsBefore,
                 "a refused rewrite must not deposit a versions/ entry for a change it rejected");
@@ -287,19 +327,111 @@ public class RegisteredFormatsTests
 
         string agentPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.md");
         string agentVersions = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "versions");
-        string bodyBefore = File.ReadAllText(agentPath);
+        byte[] bodyBefore = File.ReadAllBytes(agentPath);
+        string sidecarPath = Path.ChangeExtension(agentPath, ".meta.json");
+        byte[] sidecarBefore = File.ReadAllBytes(sidecarPath);
         int versionsBefore = Directory.Exists(agentVersions)
             ? Directory.GetFiles(agentVersions).Length : 0;
 
-        var act = async () => await tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
+        var response = ResponseParser.Parse(
+            await tools.MemoryRemember("/agent/profile", ["you are rewritten"]));
 
-        await act.Should().ThrowAsync<ScopeReadOnlyException>();
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
 
-        File.ReadAllText(agentPath).Should().Be(bodyBefore,
+        _ = new FileMemoryStore(scope.WorkspaceDir);
+        File.ReadAllBytes(agentPath).Should().Equal(bodyBefore,
             "a refused rewrite must not have overwritten the config");
+        File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore,
+            "a refused rewrite must not have replaced metadata");
         (Directory.Exists(agentVersions) ? Directory.GetFiles(agentVersions).Length : 0)
             .Should().Be(versionsBefore,
                 "a refused rewrite must not deposit a versions/ entry for a change it rejected");
+    }
+
+    [Fact]
+    public async Task ReCreatingASkill_WhenTheSidecarMoveFails_ReportsDurableWriteFailureAndLeavesTheAcceptedPrefix()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/skill/durable-control", ["original control instructions"]);
+        await tools.MemoryRemember("/skill/durable-control", ["replacement control instructions"]);
+        string controlPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "durable-control.md");
+        File.Exists(controlPath).Should().BeTrue();
+        File.Exists(Path.ChangeExtension(controlPath, ".meta.json")).Should().BeTrue();
+
+        await tools.MemoryRemember("/skill/durable-probe", ["original instructions"]);
+
+        string skillPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "durable-probe.md");
+        string sidecarPath = Path.ChangeExtension(skillPath, ".meta.json");
+        string versionsDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "versions");
+        byte[] sidecarBefore = File.ReadAllBytes(sidecarPath);
+        int versionsBefore = Directory.Exists(versionsDir) ? Directory.GetFiles(versionsDir).Length : 0;
+
+        DurableFile.FailureInjector = (phase, destination) =>
+            phase == DurableWritePhase.BeforeMove && destination.EndsWith(".meta.json", StringComparison.Ordinal)
+                ? new UnauthorizedAccessException("sidecar move denied")
+                : null;
+        try
+        {
+            var response = ResponseParser.Parse(
+                await tools.MemoryRemember("/skill/durable-probe", ["failed sidecar replacement"]));
+
+            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+
+        // A skill body and sidecar are individually atomic files, not a paired transaction: a
+        // sidecar failure may leave this complete new body with the previous sidecar.
+        _ = new FileMemoryStore(scope.WorkspaceDir);
+        File.ReadAllText(skillPath).Should().Contain("failed sidecar replacement");
+        File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore);
+        Directory.GetFiles(versionsDir).Length.Should().Be(versionsBefore + 1);
+    }
+
+    [Fact]
+    public async Task ReWritingAnAgent_WhenTheSidecarMoveFails_ReportsDurableWriteFailureAndLeavesTheAcceptedPrefix()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/agent/durable-control", ["original control agent"]);
+        await tools.MemoryRemember("/agent/durable-control", ["replacement control agent"]);
+        string controlPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "durable-control.md");
+        File.Exists(controlPath).Should().BeTrue();
+        File.Exists(Path.ChangeExtension(controlPath, ".meta.json")).Should().BeTrue();
+
+        await tools.MemoryRemember("/agent/durable-probe", ["original agent"]);
+
+        string agentPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "durable-probe.md");
+        string sidecarPath = Path.ChangeExtension(agentPath, ".meta.json");
+        string versionsDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "versions");
+        byte[] sidecarBefore = File.ReadAllBytes(sidecarPath);
+        int versionsBefore = Directory.Exists(versionsDir) ? Directory.GetFiles(versionsDir).Length : 0;
+
+        DurableFile.FailureInjector = (phase, destination) =>
+            phase == DurableWritePhase.BeforeMove && destination.EndsWith(".meta.json", StringComparison.Ordinal)
+                ? new UnauthorizedAccessException("sidecar move denied")
+                : null;
+        try
+        {
+            var response = ResponseParser.Parse(
+                await tools.MemoryRemember("/agent/durable-probe", ["failed sidecar replacement"]));
+
+            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+
+        // A config body and sidecar are individually atomic files, not a paired transaction: a
+        // sidecar failure may leave this complete new body with the previous sidecar.
+        _ = new FileMemoryStore(scope.WorkspaceDir);
+        File.ReadAllText(agentPath).Should().Be("failed sidecar replacement");
+        File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore);
+        Directory.GetFiles(versionsDir).Length.Should().Be(versionsBefore + 1);
     }
 
     /// <summary>Stamps a "v" onto an existing sidecar by hand. The typed record cannot express a

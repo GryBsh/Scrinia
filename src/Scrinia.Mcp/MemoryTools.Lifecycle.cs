@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Merge;
 using Scrinia.Core.Models;
 
@@ -130,6 +131,10 @@ public sealed partial class ScriniaMcpTools
                 if (TryComputeAutoResolvedMetaJson(fileContent, threshold, out string? autoResolvedJson))
                 {
                     try { WriteResolved(absolutePath, autoResolvedJson!); }
+                    catch (ScopeReadOnlyException ex)
+                    {
+                        return DurableWriteRefused(ex);
+                    }
                     catch (Exception ex)
                     {
                         return ResponseBuilder.Error(
@@ -235,6 +240,10 @@ public sealed partial class ScriniaMcpTools
             string toWrite = type == "nmp2" ? Nmp2ChunkedEncoder.Encode(resolvedContent) : resolvedContent;
             WriteResolved(absolutePath, toWrite);
         }
+        catch (ScopeReadOnlyException ex)
+        {
+            return DurableWriteRefused(ex);
+        }
         catch (Exception ex)
         {
             return ResponseBuilder.Error(
@@ -302,10 +311,34 @@ public sealed partial class ScriniaMcpTools
 
     private static void WriteResolved(string absolutePath, string content)
     {
+        if (absolutePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            EnsureResolvedArtifactSidecarIsWritable(absolutePath, content);
+
         FileMemoryStore.AtomicWriteAllText(absolutePath, content);
         if (MemoryStoreContext.Current is FileMemoryStore store)
             store.InvalidateCaches();
     }
+
+    private static void EnsureResolvedArtifactSidecarIsWritable(string absolutePath, string content)
+    {
+        ArtifactEntry entry = JsonSerializer.Deserialize(content, ScriniaMcpJsonContext.Default.ArtifactEntry)
+            ?? throw new JsonException($"Resolved artifact sidecar '{absolutePath}' is empty.");
+
+        if (FormatVersion.Evaluate(DurableFormats.ArtifactSidecar, entry.SchemaVersion) == FormatDisposition.Load)
+            return;
+
+        throw new ScopeReadOnlyException(
+            Path.GetDirectoryName(absolutePath) ?? absolutePath,
+            entry.Name,
+            entry.SchemaVersion ?? DurableFormats.ArtifactSidecar.AbsentMeans ?? 0,
+            DurableFormats.ArtifactSidecar.Current);
+    }
+
+    private static McpResponse DurableWriteRefused(ScopeReadOnlyException exception) =>
+        ResponseBuilder.Error(
+            exception.Message,
+            ErrorCodes.DurableWriteFailed,
+            "Upgrade scri to a version that supports this sidecar, or re-export the memory with a compatible scri version before resolving the conflict.");
 
     private static McpResponse ScanForConflicts(string scriniaDir)
     {

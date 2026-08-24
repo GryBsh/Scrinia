@@ -6,41 +6,11 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
-
-/// <summary>Metadata sidecar for a skill file on disk.</summary>
-public record SkillFileMeta(
-    string? BasedOn,
-    string? Role,
-    string[]? Capabilities,
-    string? Scaffold,
-    string? CreatedAt,
-    string? UpdatedAt,
-    [property: JsonPropertyName("v")] int? SchemaVersion = null)
-{
-    /// <summary>
-    /// Keys present in the sidecar that this build has no member for, preserved verbatim so a
-    /// read-write cycle cannot delete them. Same rationale and the same mutability constraint as
-    /// <see cref="ArtifactEntry.Unknown"/>: STJ refuses an init-only extension-data property on a
-    /// record with a parameterized constructor, so this cannot be <c>{ get; init; }</c>.
-    /// </summary>
-    [JsonExtensionData]
-    public Dictionary<string, JsonElement>? Unknown { get; set; }
-}
-
-/// <summary>Metadata sidecar for an agent config file on disk.</summary>
-public record AgentFileMeta(
-    string? CreatedAt,
-    string? UpdatedAt,
-    [property: JsonPropertyName("v")] int? SchemaVersion = null)
-{
-    /// <summary>Same extension bucket, same constraint. See <see cref="SkillFileMeta.Unknown"/>.</summary>
-    [JsonExtensionData]
-    public Dictionary<string, JsonElement>? Unknown { get; set; }
-}
 
 [JsonSourceGenerationOptions(
     WriteIndented = true,
@@ -221,7 +191,7 @@ public sealed partial class ScriniaMcpTools
 
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
         string json = JsonSerializer.Serialize(meta, typeInfo);
-        File.WriteAllText(metaPath, json);
+        DurableFile.AtomicWriteAllText(metaPath, json);
     }
 
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
@@ -316,7 +286,10 @@ public sealed partial class ScriniaMcpTools
 
         ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
 
-        await File.WriteAllTextAsync(filePath, promptContent, cancellationToken);
+        // Preflight runs before any mutation. The body and sidecar are individually atomic files,
+        // but their replacement sequence is not a paired transaction.
+        cancellationToken.ThrowIfCancellationRequested();
+        DurableFile.AtomicWriteAllText(filePath, promptContent);
 
         string now = DateTimeOffset.UtcNow.ToString("o");
         string[]? capabilities = string.IsNullOrWhiteSpace(tools) ? null

@@ -107,6 +107,138 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
             .Should().BeFalse(because: "the category is deleted, not merely unwritten");
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("..")]
+    [InlineData("../planner.md")]
+    [InlineData("nested/planner.md")]
+    [InlineData("C:\\planner.md")]
+    [InlineData("planner.json")]
+    public void ImportBundle_WithUnsafeKnownCategoryFilename_RefusesBeforeWriting(string fileName)
+    {
+        var sentinels = SeedSentinels();
+        byte[] zipBytes;
+        using (var stream = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                var manifest = new BundleManifest(
+                    Version: 2,
+                    Exported: DateTimeOffset.UtcNow.ToString("o"),
+                    Topics: [],
+                    TotalEntries: 0,
+                    FileEntities: new Dictionary<string, List<string>> { ["skills"] = [fileName] });
+                WriteZipText(zip, "manifest.json",
+                    JsonSerializer.Serialize(manifest, BundleFormatService.DefaultJsonOptions));
+            }
+            zipBytes = stream.ToArray();
+        }
+
+        using var readStream = new MemoryStream(zipBytes);
+        using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
+        Action act = () => BundleFormatService.ImportTopicsFromZip(
+            zipRead, _store, filterTopics: null, overwrite: true);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*skills*unsafe or unsupported*");
+        AssertSentinelsSurvived(sentinels);
+    }
+
+    [Fact]
+    public void ImportBundle_WhenExistingDestinationResolvesOutsideCategory_RefusesBeforeWriting()
+    {
+        var sentinels = SeedSentinels();
+        string outside = Path.Combine(_tempDir, "outside");
+        Directory.CreateDirectory(outside);
+        File.Delete(sentinels.FileBodyPath);
+        string outsideBody = Path.Combine(outside, "planner.md");
+        File.WriteAllBytes(outsideBody, sentinels.FileBody);
+        Skip.If(
+            !TryCreateFileSymlink(sentinels.FileBodyPath, outsideBody),
+            "This host cannot create file symbolic links because platform support or privileges are unavailable.");
+
+        byte[] zipBytes;
+        using (var stream = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                WriteZipText(zip, "files/skills/planner.md", "replacement");
+                WriteZipText(zip, "manifest.json", """
+                    {"version":2,"topics":[],"totalEntries":0,"fileEntities":{"skills":["planner.md"]}}
+                    """);
+            }
+            zipBytes = stream.ToArray();
+        }
+
+        using var readStream = new MemoryStream(zipBytes);
+        using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
+        Action act = () => BundleFormatService.ImportTopicsFromZip(
+            zipRead, _store, filterTopics: null, overwrite: true);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*skills*planner.md*outside*");
+        AssertSentinelsSurvived(sentinels);
+    }
+
+    private SentinelBundleState SeedSentinels()
+    {
+        const string name = "sentinel-note";
+        string scope = MemoryNaming.BuildScopedTopicScope("sentinel-topic");
+        _store.Upsert(new Scrinia.Core.Models.ArtifactEntry(name, "", 13, 1, DateTimeOffset.UtcNow), scope);
+        _store.WriteArtifactAsync(name, scope, "topic sentinel").GetAwaiter().GetResult();
+
+        string topicDirectory = _store.GetStoreDirForScope(scope);
+        string skillsDirectory = Path.Combine(_workspaceRoot, ".scrinia", "skills");
+        Directory.CreateDirectory(skillsDirectory);
+        string bodyPath = Path.Combine(skillsDirectory, "planner.md");
+        string sidecarPath = Path.Combine(skillsDirectory, "planner.meta.json");
+        File.WriteAllBytes(bodyPath, [0, 255, 7]);
+        File.WriteAllBytes(sidecarPath, "{\"v\":1,\"sentinel\":true}"u8.ToArray());
+
+        return new SentinelBundleState(
+            scope,
+            Path.Combine(topicDirectory, name + ".nmp2"),
+            Path.Combine(topicDirectory, name + ".meta.json"),
+            bodyPath,
+            sidecarPath,
+            File.ReadAllBytes(Path.Combine(topicDirectory, name + ".nmp2")),
+            File.ReadAllBytes(Path.Combine(topicDirectory, name + ".meta.json")),
+            File.ReadAllBytes(bodyPath),
+            File.ReadAllBytes(sidecarPath));
+    }
+
+    private void AssertSentinelsSurvived(SentinelBundleState sentinels)
+    {
+        using var cold = new FileMemoryStore(_workspaceRoot);
+        cold.LoadIndex(sentinels.TopicScope).Select(entry => entry.Name).Should().Contain("sentinel-note");
+        File.ReadAllBytes(sentinels.TopicBodyPath).Should().Equal(sentinels.TopicBody);
+        File.ReadAllBytes(sentinels.TopicSidecarPath).Should().Equal(sentinels.TopicSidecar);
+        File.ReadAllBytes(sentinels.FileBodyPath).Should().Equal(sentinels.FileBody);
+        File.ReadAllBytes(sentinels.FileSidecarPath).Should().Equal(sentinels.FileSidecar);
+    }
+
+    private static bool TryCreateFileSymlink(string link, string target)
+    {
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private sealed record SentinelBundleState(
+        string TopicScope,
+        string TopicBodyPath,
+        string TopicSidecarPath,
+        string FileBodyPath,
+        string FileSidecarPath,
+        byte[] TopicBody,
+        byte[] TopicSidecar,
+        byte[] FileBody,
+        byte[] FileSidecar);
+
     private static void WriteZipText(ZipArchive zip, string entryName, string text)
     {
         var entry = zip.CreateEntry(entryName);

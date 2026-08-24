@@ -275,6 +275,135 @@ public sealed class BundleV2Tests : IDisposable
     }
 
     [Fact]
+    public void BundleV2Import_PreservesAcceptedSidecarUnknownFieldsAndRawBytes()
+    {
+        byte[] expected = [0, 255, 10, 13];
+        byte[] zipBytes;
+        using (var stream = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                WriteZipBytes(zip, "files/skills/planner.md", expected);
+                string meta = "{\"v\":1,\"futureField\":{\"kept\":true}}";
+                WriteZipText(zip, "files/skills/planner.meta.json", meta);
+                WriteZipText(zip, "manifest.json", """
+                    {"version":2,"topics":[],"totalEntries":0,
+                    "fileEntities":{"skills":["planner.md","planner.meta.json"]}}
+                    """);
+            }
+            zipBytes = stream.ToArray();
+        }
+
+        string importRoot = Path.Combine(_tempDir, "byte-fidelity-import");
+        Directory.CreateDirectory(importRoot);
+        using (var importing = new FileMemoryStore(importRoot))
+            ImportFromBytes(zipBytes, importing);
+
+        // A fresh process-equivalent store sees the exact bytes selected from the archive.
+        using var cold = new FileMemoryStore(importRoot);
+        string skillsDir = Path.Combine(importRoot, ".scrinia", "skills");
+        File.ReadAllBytes(Path.Combine(skillsDir, "planner.md")).Should().Equal(expected);
+        File.ReadAllBytes(Path.Combine(skillsDir, "planner.meta.json"))
+            .Should().Equal(ReadZipMemberBytes(zipBytes, "files/skills/planner.meta.json"));
+    }
+
+    [Fact]
+    public void BundleV2Import_WhenFileEntityDirectorySetupFails_WrapsFailureAndPreservesExistingBytes()
+    {
+        string importRoot = Path.Combine(_tempDir, "directory-setup-failure-import");
+        Directory.CreateDirectory(importRoot);
+        using var importing = new FileMemoryStore(importRoot);
+        string skillsDirectory = PathRouter.ToFileEntityDir("skill", importRoot);
+        byte[] originalBytes = [0, 255, 7];
+        Directory.CreateDirectory(Path.GetDirectoryName(skillsDirectory)!);
+        File.WriteAllBytes(skillsDirectory, originalBytes);
+
+        byte[] zipBytes;
+        using (var stream = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                WriteZipBytes(zip, "files/skills/planner.md", [1, 2, 3]);
+                WriteZipText(zip, "manifest.json", """
+                    {"version":2,"topics":[],"totalEntries":0,
+                    "fileEntities":{"skills":["planner.md"]}}
+                    """);
+            }
+            zipBytes = stream.ToArray();
+        }
+
+        Action import = () => ImportFromBytes(zipBytes, importing);
+
+        var failure = import.Should().Throw<DurableWriteException>().Which;
+
+        failure.Operation.Should().Be("create directory");
+        failure.Destination.Should().Be(skillsDirectory);
+        failure.InnerException.Should().BeOfType<IOException>();
+        importing.Dispose();
+        using var cold = new FileMemoryStore(importRoot);
+        File.ReadAllBytes(skillsDirectory).Should().Equal(originalBytes);
+    }
+
+    [Fact]
+    public void BundleV2Import_MalformedAgentMetadata_RefusesBeforeMutatingExistingTopicOrFiles()
+    {
+        string importRoot = Path.Combine(_tempDir, "malformed-agent-import");
+        Directory.CreateDirectory(importRoot);
+        SentinelBundleState sentinels;
+        using (var target = new FileMemoryStore(importRoot))
+        {
+            sentinels = SeedSentinels(target, "agent");
+            Action import = () => ImportFromBytes(CreateFileEntityBundle(
+                "agent", "{ not json", includeDeclaredBody: true), target);
+
+            import.Should().Throw<InvalidOperationException>().WithMessage("*agent*planner.meta.json*malformed*");
+        }
+
+        AssertSentinelsSurvived(importRoot, sentinels);
+    }
+
+    [Fact]
+    public void BundleV2Import_ManifestDeclaredMissingSkillMember_RefusesBeforeMutatingExistingTopicOrFiles()
+    {
+        string importRoot = Path.Combine(_tempDir, "missing-member-import");
+        Directory.CreateDirectory(importRoot);
+        SentinelBundleState sentinels;
+        using (var target = new FileMemoryStore(importRoot))
+        {
+            sentinels = SeedSentinels(target, "skill");
+            Action import = () => ImportFromBytes(CreateFileEntityBundle(
+                "skills", "{\"v\":1}", includeDeclaredBody: false), target);
+
+            import.Should().Throw<InvalidOperationException>().WithMessage("*skills*planner.md*missing*");
+        }
+
+        AssertSentinelsSurvived(importRoot, sentinels);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("\"not-an-object\"")]
+    public void BundleImport_PresentNonObjectFileEntities_RefusesBeforeMutatingTopicsOrFiles(
+        string fileEntitiesJson)
+    {
+        string importRoot = Path.Combine(_tempDir, "invalid-file-entities-import");
+        Directory.CreateDirectory(importRoot);
+        SentinelBundleState sentinels;
+        using (var target = new FileMemoryStore(importRoot))
+        {
+            sentinels = SeedSentinels(target, "skill");
+            Action import = () => ImportFromBytes(
+                CreateBundleWithRawFileEntities(fileEntitiesJson), target);
+
+            import.Should().Throw<InvalidOperationException>()
+                .WithMessage("*fileEntities*JSON object*");
+        }
+
+        AssertSentinelsSurvived(importRoot, sentinels);
+    }
+
+    [Fact]
     public async Task BundleV2RoundTrip_FilesMatch()
     {
         // Arrange — seed topic data and disk files
@@ -525,4 +654,119 @@ public sealed class BundleV2Tests : IDisposable
         using var writer = new StreamWriter(entry.Open());
         writer.Write(text);
     }
+
+    private static void WriteZipBytes(ZipArchive zip, string entryName, byte[] bytes)
+    {
+        var entry = zip.CreateEntry(entryName);
+        using var stream = entry.Open();
+        stream.Write(bytes);
+    }
+
+    private static byte[] ReadZipMemberBytes(byte[] zipBytes, string entryName)
+    {
+        using var stream = new MemoryStream(zipBytes);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+        using var member = zip.GetEntry(entryName)!.Open();
+        using var bytes = new MemoryStream();
+        member.CopyTo(bytes);
+        return bytes.ToArray();
+    }
+
+    private static byte[] CreateFileEntityBundle(string category, string sidecarJson, bool includeDeclaredBody)
+    {
+        using var stream = new MemoryStream();
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteZipText(zip, "topics/imported/index.json", """
+                {"entries":[{"name":"imported-note","originalBytes":5,"chunkCount":1}]}
+                """);
+            WriteZipText(zip, "topics/imported/imported-note.nmp2", "body");
+            if (includeDeclaredBody)
+                WriteZipBytes(zip, $"files/{category}/planner.md", [1, 2, 3]);
+            WriteZipText(zip, $"files/{category}/planner.meta.json", sidecarJson);
+            var manifest = new BundleManifest(
+                Version: 2,
+                Exported: DateTimeOffset.UtcNow.ToString("o"),
+                Topics: ["imported"],
+                TotalEntries: 1,
+                FileEntities: new Dictionary<string, List<string>>
+                {
+                    [category] = ["planner.md", "planner.meta.json"]
+                });
+            WriteZipText(zip, "manifest.json",
+                JsonSerializer.Serialize(manifest, BundleFormatService.DefaultJsonOptions));
+        }
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateBundleWithRawFileEntities(string fileEntitiesJson)
+    {
+        using var stream = new MemoryStream();
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteZipText(zip, "topics/imported/index.json", """
+                {"entries":[{"name":"imported-note","originalBytes":5,"chunkCount":1}]}
+                """);
+            WriteZipText(zip, "topics/imported/imported-note.nmp2", "body");
+            WriteZipText(zip, "manifest.json", $$"""
+                {"version":2,"topics":["imported"],"totalEntries":1,
+                "fileEntities":{{fileEntitiesJson}}}
+                """);
+        }
+
+        return stream.ToArray();
+    }
+
+    private static SentinelBundleState SeedSentinels(FileMemoryStore store, string fileEntityKind)
+    {
+        const string topic = "sentinel-topic";
+        const string name = "sentinel-note";
+        string scope = MemoryNaming.BuildScopedTopicScope(topic);
+        var entry = new ArtifactEntry(name, "", 13, 1, DateTimeOffset.UtcNow, "sentinel topic");
+        store.Upsert(entry, scope);
+        store.WriteArtifactAsync(name, scope, "topic sentinel").GetAwaiter().GetResult();
+
+        string topicDirectory = store.GetStoreDirForScope(scope);
+        string topicBodyPath = Path.Combine(topicDirectory, name + ".nmp2");
+        string topicSidecarPath = Path.Combine(topicDirectory, name + ".meta.json");
+        string fileDirectory = PathRouter.ToFileEntityDir(fileEntityKind, store.WorkspaceRoot);
+        Directory.CreateDirectory(fileDirectory);
+        string fileBodyPath = Path.Combine(fileDirectory, "planner.md");
+        string fileSidecarPath = Path.Combine(fileDirectory, "planner.meta.json");
+        File.WriteAllBytes(fileBodyPath, [0, 255, 7]);
+        File.WriteAllBytes(fileSidecarPath, "{\"v\":1,\"sentinel\":true}"u8.ToArray());
+
+        return new SentinelBundleState(
+            scope,
+            topicBodyPath,
+            File.ReadAllBytes(topicBodyPath),
+            topicSidecarPath,
+            File.ReadAllBytes(topicSidecarPath),
+            fileBodyPath,
+            File.ReadAllBytes(fileBodyPath),
+            fileSidecarPath,
+            File.ReadAllBytes(fileSidecarPath));
+    }
+
+    private static void AssertSentinelsSurvived(string importRoot, SentinelBundleState sentinels)
+    {
+        using var cold = new FileMemoryStore(importRoot);
+        cold.LoadIndex(sentinels.TopicScope).Select(entry => entry.Name).Should().Contain("sentinel-note");
+        cold.LoadIndex(MemoryNaming.BuildScopedTopicScope("imported")).Should().BeEmpty();
+        File.ReadAllBytes(sentinels.TopicBodyPath).Should().Equal(sentinels.TopicBody);
+        File.ReadAllBytes(sentinels.TopicSidecarPath).Should().Equal(sentinels.TopicSidecar);
+        File.ReadAllBytes(sentinels.FileBodyPath).Should().Equal(sentinels.FileBody);
+        File.ReadAllBytes(sentinels.FileSidecarPath).Should().Equal(sentinels.FileSidecar);
+    }
+
+    private sealed record SentinelBundleState(
+        string TopicScope,
+        string TopicBodyPath,
+        byte[] TopicBody,
+        string TopicSidecarPath,
+        byte[] TopicSidecar,
+        string FileBodyPath,
+        byte[] FileBody,
+        string FileSidecarPath,
+        byte[] FileSidecar);
 }

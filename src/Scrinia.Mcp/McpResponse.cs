@@ -24,6 +24,12 @@ public static class ErrorCodes
     /// <summary>Merge-conflict resolution failed (bad choice value, missing content, etc.).</summary>
     public const string Conflict = "CONFLICT";
 
+    /// <summary>A durable write was refused or could not complete safely.</summary>
+    public const string DurableWriteFailed = "DURABLE_WRITE_FAILED";
+
+    /// <summary>Bundle content is missing, malformed, unsafe, or unsupported by this build.</summary>
+    public const string InvalidBundle = "INVALID_BUNDLE";
+
     /// <summary>Fallback for unexpected internal failures and uncategorised errors.</summary>
     public const string Internal = "INTERNAL";
 

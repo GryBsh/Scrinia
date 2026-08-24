@@ -355,6 +355,10 @@ public sealed class TransactionalRestoreTests
         // is no cache to be fooled by here — but the habit is what the branch's other vacuous
         // test failed on, so it is kept deliberately.
         using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        byte[] alphaBodyBytes = File.ReadAllBytes(Path.Combine(storeDir, "alpha.nmp2"));
+        byte[] alphaSidecarBytes = File.ReadAllBytes(Path.Combine(storeDir, "alpha.meta.json"));
+        alphaBodyBytes.Should().NotBeEmpty("alpha's committed body must be present on cold disk");
+        alphaSidecarBytes.Should().NotBeEmpty("alpha's committed sidecar must be present on cold disk");
         var alpha = cold.LoadIndex(Scope).Single(e => e.Name == "alpha");
         string alphaBody = await cold.ReadArtifactAsync("alpha", Scope);
 

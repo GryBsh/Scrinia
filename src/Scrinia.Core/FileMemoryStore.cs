@@ -1126,21 +1126,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         };
 
         string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
-        // Unique-per-call temp name (ProcessId + Guid): read-time forward-fill writes sidecars
-        // from inside LoadIndex's shared lock, so concurrent cold loads of the same un-migrated
-        // sidecar must not race a shared temp name (first File.Move consumes it, second throws
-        // FileNotFound — permanent in FileRetry). Content is deterministic and File.Move atomic.
-        string tmp = $"{metaPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            FileRetry.Run(() => File.WriteAllText(tmp, json));
-            FileRetry.Run(() => File.Move(tmp, metaPath, overwrite: true));
-        }
-        catch
-        {
-            try { File.Delete(tmp); } catch { }
-            throw;
-        }
+        DurableFile.AtomicWriteAllText(metaPath, json);
     }
 
     /// <summary>
@@ -1175,76 +1161,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// this class's own <see cref="EnsureGitIgnore"/> writes), so that write goes through the same
     /// atomic-temp-then-move convention as every other artifact write in this codebase rather than
     /// a bare <c>File.WriteAllText</c>.</summary>
-    /// <summary>
-    /// Writes text and forces it to physical media before returning, so the temp file the
-    /// caller is about to rename holds real bytes rather than page-cache promises.
-    /// </summary>
-    /// <remarks>
-    /// The temp-then-rename convention around this call buys ATOMICITY — a concurrent reader
-    /// never sees a half-written file. It does not buy DURABILITY: without this flush, a crash
-    /// or power loss can leave an atomically-renamed file whose contents the OS never wrote,
-    /// which presents as a present-but-empty or truncated artifact. Every atomic writer in this
-    /// class funnels through here, so the flush lands once.
-    /// <para>Scope, stated so nobody assumes more than this does: the FILE's contents are
-    /// synced. The containing DIRECTORY entry created by the rename is not — .NET exposes no
-    /// portable directory fsync, and Windows offers no equivalent. So the rename itself can
-    /// still be lost on power failure, leaving the previous body intact. That is the safe
-    /// direction to fail in, and it is why the write order (artifact, then sidecar) matters.</para>
-    /// <para>Encoding is deliberately left to <see cref="StreamWriter"/>'s default, which is
-    /// UTF-8 with no BOM — byte-identical to the <c>File.WriteAllText</c> this replaced.</para>
-    /// </remarks>
-    private static void WriteAllTextDurable(string path, string content)
-    {
-        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-        using (var writer = new StreamWriter(fs, leaveOpen: true))
-            writer.Write(content);
-        fs.Flush(flushToDisk: true);
-    }
+    internal static void AtomicWriteAllText(string path, string content) =>
+        DurableFile.AtomicWriteAllText(path, content);
 
-    internal static void AtomicWriteAllText(string path, string content)
+    private static Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
     {
-        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            FileRetry.Run(() => WriteAllTextDurable(tmp, content));
-            FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
-        }
-        catch
-        {
-            try { File.Delete(tmp); } catch { }
-            throw;
-        }
-    }
-
-    /// <summary>Async twin of <see cref="WriteAllTextDurable"/>. The final flush is synchronous
-    /// because <see cref="FileStream.Flush(bool)"/> has no async form — the fsync blocks either
-    /// way, and pretending otherwise would only hide it.</summary>
-    private static async Task WriteAllTextDurableAsync(string path, string content, CancellationToken ct)
-    {
-        var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None,
-                                bufferSize: 4096, useAsync: true);
-        await using (fs.ConfigureAwait(false))
-        {
-            var writer = new StreamWriter(fs, leaveOpen: true);
-            await using (writer.ConfigureAwait(false))
-                await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
-            fs.Flush(flushToDisk: true);
-        }
-    }
-
-    private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
-    {
-        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            await FileRetry.RunAsync(() => WriteAllTextDurableAsync(tmp, content, ct), ct: ct);
-            FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
-        }
-        catch
-        {
-            try { File.Delete(tmp); } catch { }
-            throw;
-        }
+        ct.ThrowIfCancellationRequested();
+        DurableFile.AtomicWriteAllText(path, content);
+        return Task.CompletedTask;
     }
 
     private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
@@ -2903,10 +2827,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                         topicScope, blocking.Name, blocking.SchemaVersion ?? 1,
                         DurableFormats.ArtifactSidecar.Current);
 
-                // COMMIT. Per entry, content then that entry's sidecar, so a crash leaves a PREFIX
-                // of fully-applied entries rather than the whole bundle sitting under stale
-                // sidecars. WriteSidecarCore is itself atomic per file (temp name + File.Move),
-                // so the exposure inside one iteration is a single rename.
+                // COMMIT. Each body and each sidecar is individually atomic and flushed; the
+                // body-then-sidecar sequence is only prefix-consistent; no journal or recovery is
+                // added here. Per entry, content then that entry's sidecar leaves a crash-applied
+                // prefix rather than the whole bundle sitting under stale sidecars.
                 foreach (var (stagedPath, finalPath, entry) in staged)
                 {
                     FileRetry.Run(() => File.Move(stagedPath, finalPath, overwrite: true));
