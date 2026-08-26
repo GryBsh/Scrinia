@@ -57,7 +57,7 @@ public class FakeMemoryStore : IMemoryStore
     public virtual string GetStoreDirForScope(string scope) => throw NoWorkspace(nameof(GetStoreDirForScope));
     public virtual List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) => throw NoWorkspace(nameof(ListTopicArtifacts));
     public virtual void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite) => throw NoWorkspace(nameof(ImportTopicEntries));
+        Dictionary<string, byte[]> artifactBytes, bool overwrite) => throw NoWorkspace(nameof(ImportTopicEntries));
 
     private static NotSupportedException NoWorkspace(string member) => new(
         $"{nameof(FakeMemoryStore)}.{member} has no workspace on disk. Override it on a subclass, "

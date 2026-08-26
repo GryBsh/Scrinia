@@ -144,10 +144,10 @@ Memory paths are free-form. A small set has first-class behavior:
 ## Testing
 
 ```bash
-dotnet test Scrinia.sln                                    # full suite
+dotnet test Scrinia.sln                                    # default suite; excludes opt-in performance benchmarks
 dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj       # core tests only
-# Opt-in embedding performance benchmark; expect several minutes on durable storage.
-dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "Category=LongRunningBenchmark" --blame-hang --blame-hang-timeout 15m
+# Opt-in performance benchmarks across the solution; expect several minutes on durable storage.
+dotnet test Scrinia.sln --filter "Category=LongRunningBenchmark" --blame-hang --blame-hang-timeout 15m
 ```
 
 Use `TestHelpers.StoreScope` for test isolation — it redirects workspace, store directory, ephemeral store, and `SessionBudget` via `AsyncLocal` overrides.

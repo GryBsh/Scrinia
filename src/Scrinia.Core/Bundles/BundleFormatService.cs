@@ -228,7 +228,7 @@ public static class BundleFormatService
         // "validate EVERY manifest topic before writing anything ... refuse cleanly ... before any
         // side effect"). Fixed here by the same rule: nothing in this loop calls
         // ImportTopicEntries. Parsed results are collected and written only in the pass below.
-        var toWrite = new List<(string TopicScope, string Topic, List<ArtifactEntry> Entries, Dictionary<string, string> ArtifactContents)>();
+        var toWrite = new List<(string TopicScope, string Topic, List<ArtifactEntry> Entries, Dictionary<string, byte[]> ArtifactBytes)>();
 
         foreach (string topic in topicsToImport)
         {
@@ -291,7 +291,7 @@ public static class BundleFormatService
                 continue;
 
             var entries = new List<ArtifactEntry>(index.Entries.Count);
-            var artifactContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var artifactBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 
             for (int entryIndex = 0; entryIndex < index.Entries.Count; entryIndex++)
             {
@@ -354,7 +354,7 @@ public static class BundleFormatService
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
                 if (artifactZipEntry is not null)
                 {
-                    artifactContents[entry.Name] = ReadZipEntryText(artifactZipEntry);
+                    artifactBytes[entry.Name] = ReadZipArtifactBytes(artifactZipEntry);
                 }
 
                 // A null Keywords means this entry was never derived — `scri bundle` packages
@@ -367,7 +367,7 @@ public static class BundleFormatService
                 // CANNOT be re-derived (AgentKeywords, FileHashes, timestamps); this fills what
                 // was never there. Attributes are never rewritten here — the bundle's are
                 // authoritative and round-trip intact.
-                if (entry.Keywords is null && artifactContents.TryGetValue(entry.Name, out string? artifact))
+                if (entry.Keywords is null && artifactBytes.TryGetValue(entry.Name, out byte[]? artifactBytesForEntry))
                 {
                     // A bundle is untrusted external input — hand-crafted, foreign, or corrupted —
                     // and before this feature existed, import never decoded artifact bytes at all,
@@ -425,6 +425,7 @@ public static class BundleFormatService
                         // live here; it duplicated the chunk-count bound and omitted the other two,
                         // making it a seventh decode path on top of six existing production callers
                         // of this exact method — the drift this branch exists to stop.
+                        string artifact = System.Text.Encoding.UTF8.GetString(artifactBytesForEntry);
                         chunks = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
                     }
                     catch (Exception ex) when (ex is FormatException or InvalidDataException
@@ -456,7 +457,7 @@ public static class BundleFormatService
             }
 
             if (entries.Count > 0)
-                toWrite.Add((topicScope, topic, entries, artifactContents));
+                toWrite.Add((topicScope, topic, entries, artifactBytes));
         }
 
         ImmutableArray<FileEntityWrite> fileEntityWrites;
@@ -468,9 +469,9 @@ public static class BundleFormatService
         // artifact text in memory here is acceptable and consistent with the rest of this file,
         // which already reads whole artifacts into memory during export; this is not a streaming
         // path and should not become one.
-        foreach (var (topicScope, topic, entries, artifactContents) in toWrite)
+        foreach (var (topicScope, topic, entries, artifactBytes) in toWrite)
         {
-            store.ImportTopicEntries(topicScope, entries, artifactContents, overwrite);
+            store.ImportTopicEntries(topicScope, entries, artifactBytes, overwrite);
             importedTopics++;
             importedEntries += entries.Count;
             importedTopicNames.Add(topic);
@@ -519,6 +520,36 @@ public static class BundleFormatService
             using var input = entry.Open();
             using var bytes = new MemoryStream();
             input.CopyTo(bytes);
+            return bytes.ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            throw new DurableWriteException("read bundle", entry.FullName, exception);
+        }
+    }
+
+    private static byte[] ReadZipArtifactBytes(ZipArchiveEntry entry)
+    {
+        long maximumBytes = RestoreJournalCodec.MaxRawNmp2BodyBytes;
+        if (entry.Length > maximumBytes)
+            throw new InvalidOperationException($"Invalid bundle — artifact '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
+
+        try
+        {
+            using var input = entry.Open();
+            using var bytes = new MemoryStream(entry.Length > 0 ? checked((int)entry.Length) : 0);
+            var buffer = new byte[81920];
+            long totalBytes = 0;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) != 0)
+            {
+                totalBytes = checked(totalBytes + read);
+                if (totalBytes > maximumBytes)
+                    throw new InvalidOperationException($"Invalid bundle — artifact '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
+
+                bytes.Write(buffer, 0, read);
+            }
+
             return bytes.ToArray();
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException)

@@ -43,10 +43,18 @@ public partial class ScriniaCommands
         // purpose and splits at this boundary, same as `scri list`/`scri search`. A scope name
         // containing a comma is therefore unaddressable from `scri facts`, unlike the MCP `facts`
         // tool, which takes a real array.
-        McpResponse response = await new ScriniaMcpTools().FactsResponse(
-            op, entity, entities, key,
-            MemoryNaming.SplitCommaSeparated(scopes), MemoryNaming.SplitCommaSeparated(excludeTopics),
-            limit, cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await new ScriniaMcpTools().FactsResponse(
+                op, entity, entities, key,
+                MemoryNaming.SplitCommaSeparated(scopes), MemoryNaming.SplitCommaSeparated(excludeTopics),
+                limit, cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "facts");
+        }
         return EmitMcpResult(response, json, "facts");
     }
 }

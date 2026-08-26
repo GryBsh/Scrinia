@@ -8,6 +8,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// the correct fact given a natural-language query.
 /// Expected: Scrinia ranked precision > Flat-file (Contains returns noisy matches).
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class SearchPrecisionBenchmarkTests(ITestOutputHelper output)
 {
     [Fact]

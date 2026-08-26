@@ -85,8 +85,15 @@ public static class DurableFormats
         new("agent-meta", Current: 1, AbsentMeans: 1,
             FormatDisposition.Load, FormatDisposition.LoadReadOnly);
 
+    /// <summary>A scope-local restore instruction. Any version this build cannot execute must
+    /// remain in place rather than being guessed at or discarded.</summary>
+    public static readonly FormatContract RestoreJournal =
+        new("restore-journal", Current: 1, AbsentMeans: null,
+            FormatDisposition.Refuse, FormatDisposition.Refuse);
+
     public static IReadOnlyList<FormatContract> All { get; } =
     [
-        ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta
+        ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta,
+        RestoreJournal
     ];
 }

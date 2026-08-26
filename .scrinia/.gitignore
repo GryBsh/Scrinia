@@ -9,6 +9,7 @@ exports/
 
 # Temporary files from interrupted writes
 **/*.tmp
+**/.restore-journal.json
 
 # Vector indexes (derived from topic content; rebuild with `scri reindex`)
 embeddings/

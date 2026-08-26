@@ -8,6 +8,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// in a large corpus. All systems should find exact matches, but Scrinia
 /// should do so at much lower token cost.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class NeedleInHaystackBenchmarkTests(ITestOutputHelper output)
 {
     [Fact]

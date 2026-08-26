@@ -70,4 +70,15 @@ public sealed class BundleGitIgnoreTests : IDisposable
             because: "bundle export can be a workspace's first scrinia write (it's the orphan-store " +
                      "recovery command) and must still materialize .gitignore before creating exports/");
     }
+
+    [Fact]
+    public void DefaultGitIgnore_ExcludesRestoreJournals()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+
+        Scrinia.Core.FileMemoryStore.EnsureGitIgnore(scope.WorkspaceDir);
+
+        string contents = File.ReadAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore"));
+        contents.Should().Contain(".restore-journal.json");
+    }
 }

@@ -42,7 +42,14 @@ public sealed partial class ScriniaMcpTools
                         "bundle('export') requires 'topics' parameter.",
                         ErrorCodes.InvalidParameter,
                         "bundle('export', { topics: ['api', 'arch'] })").ToYaml();
-                return (await Export(topics, bundlePath, cancellationToken)).ToYaml();
+                try
+                {
+                    return (await Export(topics, bundlePath, cancellationToken)).ToYaml();
+                }
+                catch (RestoreRecoveryException exception)
+                {
+                    return RecoveryBlockedResponse(exception).ToYaml();
+                }
 
             case "import":
                 if (string.IsNullOrWhiteSpace(bundlePath))

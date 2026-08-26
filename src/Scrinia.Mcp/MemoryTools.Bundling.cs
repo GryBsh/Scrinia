@@ -127,6 +127,10 @@ public sealed partial class ScriniaMcpTools
 
             return Task.FromResult(response);
         }
+        catch (RestoreRecoveryException ex)
+        {
+            return Task.FromResult(RecoveryBlockedResponse(ex));
+        }
         catch (DurableWriteException ex)
         {
             return Task.FromResult(ResponseBuilder.Error(

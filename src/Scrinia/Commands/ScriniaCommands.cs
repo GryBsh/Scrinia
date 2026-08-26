@@ -130,6 +130,43 @@ public partial class ScriniaCommands
         return failed ? 1 : 0;
     }
 
+    /// <summary>Renders the recovery-blocked envelope without changing the command's ordinary
+    /// error classification or JSON contract.</summary>
+    private static int EmitRecoveryBlocked(RestoreRecoveryException exception, bool json, string action)
+    {
+        string error = exception.Failure switch
+        {
+            RestoreRecoveryFailure.UnsupportedVersion =>
+                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal version {ExtractUnsupportedJournalVersion(exception)} is newer than this build supports (1). The journal was left unchanged at '{exception.JournalPath}'. Upgrade scri, then retry the operation.",
+            RestoreRecoveryFailure.MalformedOrIntegrityFailed =>
+                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal '{exception.JournalPath}' is malformed or failed integrity verification. No files were changed and the journal was retained. Inspect or restore the journal with a compatible scri build, then retry.",
+            _ =>
+                $"Recovery could not complete for topic scope '{exception.Scope}'; the journal remains at '{exception.JournalPath}' and access is blocked until retry succeeds. Check permissions and free disk space, then retry."
+        };
+        var response = ResponseBuilder.Error(
+            error,
+            ErrorCodes.RecoveryBlocked,
+            "Resolve the retained restore journal for the named topic scope, then retry.");
+        string yaml = response.ToYaml();
+
+        if (json)
+            WriteJson(new CliMcpOutput(action, response.Status, yaml), CliJsonContext.Default.CliMcpOutput);
+        else
+            Console.Write(yaml);
+        return 1;
+    }
+
+    private static string ExtractUnsupportedJournalVersion(RestoreRecoveryException exception)
+    {
+        const string prefix = "Restore journal version ";
+        const string suffix = " is unsupported.";
+        string message = exception.Message;
+        if (!message.StartsWith(prefix, StringComparison.Ordinal) || !message.EndsWith(suffix, StringComparison.Ordinal))
+            return "unknown";
+
+        return message[prefix.Length..^suffix.Length];
+    }
+
     /// <summary>Print the embedded agent guide.</summary>
     /// <param name="json">Output as JSON instead of raw markdown.</param>
     public async Task<int> Guide(

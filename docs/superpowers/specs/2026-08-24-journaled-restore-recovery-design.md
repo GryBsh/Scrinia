@@ -110,8 +110,23 @@ The journal is UTF-8 JSON with no BOM, written through `DurableFile.AtomicWriteA
 sanitized names derived from `name` with `.nmp2` and `.meta.json` appended; separators, rooted
 paths, `.`/`..`, duplicates after case-insensitive comparison, and noncanonical names are
 malformed. Entries are non-empty and have unique names/files under ordinal-ignore-case comparison.
-The decoded byte length is bounded by the normal import limits plus the serialized sidecars; it
-must be validated before allocation beyond the encoded journal content. Each SHA-256 is calculated
+Version 1 defines `RestoreJournalCodec.MaxRawNmp2BodyBytes` as a named, checked runtime bound for
+one raw `.nmp2` body. It is recomputed from the current `Nmp2Strategy.MaxDecodedBytes`: take
+`BrotliEncoder.GetMaxCompressedLength(MaxDecodedBytes)`, calculate its unpadded Base64Url character
+ceiling, add one newline for each 76-character Base64Url line, then add the fixed NMP/2
+header/footer overhead (including the bounded decimal-length field). Every intermediate arithmetic
+operation is checked. This is a bound on the raw NMP/2 text carried by the ZIP and journal, not on
+decoded memory content; it prevents a valid-size decoded artifact from bypassing admission with an
+unbounded incompressible representation.
+
+`RestoreJournalCodec.MaxJournalJsonBytes` is a separate named checked bound for the complete UTF-8
+journal document, including JSON syntax, Base64 text, sidecars, and all entries. The reader checks
+the on-disk file length before `ReadAllBytes`, JSON deserialization, or Base64 decode, and rejects a
+stream that crosses the bound even when its ZIP/filesystem length metadata is absent or misleading.
+The ZIP body reader uses `MaxRawNmp2BodyBytes` the same way: reject an oversized member before
+materializing it and stop a streaming read when the running byte count crosses the bound. An
+oversized ZIP member is an `INVALID_BUNDLE` refusal; an oversized retained journal is a malformed
+recovery obligation and therefore blocks its scope. Each SHA-256 is calculated
 `hello` payload demonstrates the encoding and digest grammar only; a real journal carries the
 actual NMP/2 body and serialized sidecar bytes for its entry.
 
@@ -164,7 +179,8 @@ Every persistent scope access starts with `EnsureScopeRecovered(scope)`:
 2. If a journal exists, release the shared lock, acquire the existing exclusive lock, and re-check
    for it. The re-check resolves concurrent recovery or cleanup.
 3. Parse and validate the entire journal, including format/version, scope identity, canonical names,
-   base64 payloads, and hashes, before changing any destination.
+   complete-document and per-payload bounds, base64 payloads, and hashes, before changing any
+   destination. The complete-document bound is enforced before deserialization or Base64 decoding.
 4. For `prepared`, replay every entry, verify all destinations, mark it `completed`, invalidate
    unpublished stale state, and delete it. For `completed`, verify every destination hash before
    deleting it; a mismatch is a blocking recovery failure, not permission to overwrite a state
@@ -217,7 +233,13 @@ Introduce a distinct recovery-blocked exception/error code rather than mapping j
 durable local recovery obligation; the source ZIP is no longer relevant.
 
 For MCP and CLI surfaces, the error must identify the canonical scope and journal path and use
-actionable copy. Required forms are:
+actionable copy. `ScriniaMcpTools` has one narrow `RestoreRecoveryException` response helper that
+returns `RECOVERY_BLOCKED`; it is used by every persistent MCP route — `remember`, `recall`,
+`search`, `list`, `append`, `forget`, `compact`, `link`, `facts`, and `import`. It catches only
+`RestoreRecoveryException` at each route's store-facing boundary, preserving route-specific handling
+and all unrelated exceptions (including `INVALID_BUNDLE` bundle parse/version errors, durable-write
+failures, lock contention, validation, and `INTERNAL`). Skill/agent file-entity routes are not
+reclassified because they do not access persistent topic restore journals. Required forms are:
 
 - **Unsupported journal:**
   `Recovery is blocked for topic scope 'local:notes': restore journal version 2 is newer than this build supports (1). The journal was left unchanged at '/workspace/.scrinia/memories/notes/.restore-journal.json'. Upgrade scri, then retry the operation.`
@@ -248,9 +270,11 @@ cannot hide disk state.
 | Crash after all destination writes, before completed | Fail completed-journal rewrite | Later access verifies/replays and cleans up. |
 | Crash after completed, before delete | Leave a valid completed journal | Later access verifies destinations, deletes journal, and makes no destination write. |
 | Prepared replay I/O failure | Deny/lock a destination or inject `BeforeMove` | Journal remains; scope stays blocked; another scope remains readable. |
-| Unsupported version | Handcraft a valid version-current+1 journal | Every read and write route for that scope fails with upgrade guidance; journal bytes remain unchanged. |
+| Unsupported version | Handcraft a valid version-current+1 journal | Every persistent MCP route — remember, recall, search, list, append, forget, compact, link, facts, and import — returns `RECOVERY_BLOCKED` with upgrade guidance; journal bytes remain unchanged. |
 | Malformed JSON / wrong scope / noncanonical target / duplicate target | Handcraft each journal | No destination is changed; journal remains; access is blocked. |
 | Base64 or embedded-hash mismatch | Change one payload character or digest | No destination is changed; journal remains; access is blocked. |
+| Oversized ZIP body | Supply a `.nmp2` ZIP member larger than `MaxRawNmp2BodyBytes` | Import refuses as `INVALID_BUNDLE` before materializing or decoding the member and changes no destination. |
+| Oversized or malformed journal | Handcraft a journal exceeding `MaxJournalJsonBytes`, or malformed JSON below that bound | Recovery checks the full-file bound before deserialization/Base64 decode; it retains the journal, changes no destination, and every persistent MCP route returns `RECOVERY_BLOCKED`. |
 | Completed destination mismatch | Mark completed then alter one live destination | Access blocks and retains journal; it must not silently overwrite the contradictory destination. |
 | Index cache barrier | Warm `LoadIndex`, create prepared journal externally, then call `LoadIndex` | It recovers before returning; returned entries reflect journal bytes. |
 | Artifact cache barrier | Warm `ReadArtifactAsync`, create prepared journal, then read again | It recovers before returning; no stale artifact-cache value is returned. |
@@ -306,3 +330,7 @@ Reviewed for placeholders, contradictions, and ambiguity:
   verified completed journal may be cleaned up.
 - Cache and facts barriers are specified before their current fast paths, preventing publication
   before recovery completes.
+- The raw NMP/2 body and complete-journal bounds are named, checked runtime limits; ZIP admission
+  and journal recovery apply them before body materialization, deserialization, or Base64 decode.
+- The narrow `RestoreRecoveryException` mapping enumerates all ten persistent MCP routes and leaves
+  unrelated route errors under their existing classifications.

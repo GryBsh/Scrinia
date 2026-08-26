@@ -7,6 +7,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// Measures cold-start overhead — tokens consumed before the first useful query.
 /// Expected: Scrinia=0, Flat-file=linear with corpus, Auto=capped at index size.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class ColdStartBenchmarkTests(ITestOutputHelper output)
 {
     [Theory]

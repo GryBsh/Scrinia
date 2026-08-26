@@ -18,12 +18,13 @@
 - The journal is `.restore-journal.json` beside `.lock`; it is private control data and must be ignored by discovery, sidecar enumeration, export, and bundle import.
 - Journal JSON is UTF-8 without BOM and all journal writes, state transitions, and replayed destination replacements use `DurableFile.AtomicWriteAllBytes`.
 - Version 1 has only `prepared` and `completed`. `prepared` is replayed in full; `completed` verifies destinations then only cleans up. There is no cursor or `applying` state.
-- Unsupported, malformed, wrong-scope, noncanonical, duplicate, undecodable, oversized, or hash-mismatched journals remain byte-for-byte in place and block only their scope. Never quarantine, delete, repair, or overwrite them.
+- `RestoreJournalCodec.MaxRawNmp2BodyBytes` is a named checked runtime limit derived from `Nmp2Strategy.MaxDecodedBytes`, `BrotliEncoder.GetMaxCompressedLength`, unpadded Base64Url encoded length, 76-character line wrapping, and fixed NMP/2 overhead. `MaxJournalJsonBytes` separately bounds the entire UTF-8 journal before deserialization or Base64 decoding.
+- Reject ZIP `.nmp2` members exceeding `MaxRawNmp2BodyBytes` before materializing them (and stop a streaming read that crosses it) as `INVALID_BUNDLE`. Unsupported, malformed, wrong-scope, noncanonical, duplicate, undecodable, oversized, or hash-mismatched retained journals remain byte-for-byte in place and block only their scope. Never quarantine, delete, repair, or overwrite them.
 - Every persistent read and write is gated; ephemeral memories remain ungated and other persistent scopes remain available. A lock timeout is a loud contention failure, never a recovery bypass.
 - Preserve the existing additive import and stale-`.staging` cleanup rules. Do not create whole-bundle/file-entity transactions, rollback, migration/compact/ordinary-write journals, or a background recovery sweep.
 - Use source-generated JSON contexts only; do not introduce reflection serialization or a Core → MCP dependency.
 - Crash/recovery assertions must use a fresh `FileMemoryStore` over the same workspace or raw disk bytes, never a warm cache alone.
-- Do not commit while executing this plan. Add one concise `[Unreleased]` changelog entry; do not rewrite the approved design or historical plan artifacts.
+- Do not commit while executing this plan. Add one concise `[Unreleased]` changelog entry. Keep the approved design and this implementation plan synchronized when an approved correction changes their future-work contract; do not rewrite unrelated historical artifacts.
 
 ---
 
@@ -32,16 +33,17 @@
 | File | Responsibility | Change |
 |---|---|---|
 | `src/Scrinia.Core/Formats/DurableFormats.cs` | Registers the restore-journal durable-format contract. | Modify |
-| `src/Scrinia.Core/RestoreJournal.cs` | Immutable journal DTOs, source-generated JSON context, validation, hashes, and recovery-blocked exception. | Create |
+| `src/Scrinia.Core/RestoreJournal.cs` | Immutable journal DTOs, source-generated JSON context, checked size limits, validation, hashes, and recovery-blocked exception. | Create |
 | `src/Scrinia.Core/FileMemoryStore.cs` | Builds journals, applies/recover journals under the existing scope locks, gates reads/writes, invalidates caches/facts, and retains `.staging` cleanup. | Modify |
 | `src/Scrinia.Core/IMemoryStore.cs` | Carries raw bundle artifact bytes into the scope-local restore transaction. | Modify |
 | `tests/Scrinia.TestDoubles/FakeMemoryStore.cs` | Keeps the only test-double implementation conformant with the raw-byte import signature. | Modify |
 | `src/Scrinia.Core/Bundles/BundleFormatService.cs` | Retains exact incoming NMP/2 body bytes through the validated topic build pass. | Modify |
 | `src/Scrinia.Mcp/McpResponse.cs` | Declares the stable recovery-blocked error code. | Modify |
-| `src/Scrinia.Mcp/MemoryTools.cs`, `src/Scrinia.Mcp/MemoryTools.Bundling.cs` | Map journal recovery failures to actionable MCP/CLI responses. | Modify |
+| `src/Scrinia.Mcp/MemoryTools.cs`, `src/Scrinia.Mcp/MemoryTools.Facts.cs`, `src/Scrinia.Mcp/MemoryTools.Bundling.cs` | Map journal recovery failures through one narrow helper on every persistent MCP route. | Modify |
 | `tests/Scrinia.Tests/Formats/FormatVersionTests.cs` | Pins journal registry membership and version dispositions. | Modify |
 | `tests/Scrinia.Tests/Store/JournaledRestoreRecoveryTests.cs` | Cold-disk state-machine, validation, cache/facts, concurrency, residue, and crash-transition coverage. | Create |
-| `tests/Scrinia.Tests/BundleExitCodeTests.cs` | Pins MCP/CLI recovery-blocked envelope and exit code. | Modify |
+| `tests/Scrinia.Tests/BundleExitCodeTests.cs` | Pins import MCP/CLI recovery-blocked envelope and exit code. | Modify |
+| `tests/Scrinia.Tests/McpRecoveryBlockedRouteTests.cs` | Pins `RECOVERY_BLOCKED` coverage for every non-import persistent MCP route and preserves unrelated error classifications. | Create |
 | `CHANGELOG.md` | Records per-scope roll-forward recovery and its limits. | Modify |
 
 ---
@@ -58,13 +60,14 @@
 - Produces `internal sealed record RestoreJournal(string Format, int Version, RestoreJournalState State, string TransactionId, string Scope, IReadOnlyList<RestoreJournalEntry> Entries)` and `internal sealed record RestoreJournalEntry(string Name, string BodyFile, string BodyBase64, string BodySha256, string SidecarFile, string SidecarBase64, string SidecarSha256)`.
 - Produces `internal static class RestoreJournalCodec` with `CreatePrepared(string scope, IReadOnlyList<RestoreJournalPayload> entries)`, `ParseAndValidate(ReadOnlySpan<byte> json, string expectedScope, string journalPath)`, `Serialize(RestoreJournal journal)`, and `WithCompleted(RestoreJournal journal)`.
 - Produces `internal sealed class RestoreRecoveryException : IOException` with `Scope`, `JournalPath`, and `RestoreRecoveryFailure Failure`, where `Failure` is `UnsupportedVersion`, `MalformedOrIntegrityFailed`, or `ReplayIoFailed`.
+- Produces runtime-evaluated `internal static long MaxRawNmp2BodyBytes` and `MaxJournalJsonBytes` accessors (not values frozen during type initialization). Compute the first with checked arithmetic from the live `Nmp2Strategy.MaxDecodedBytes`, `BrotliEncoder.GetMaxCompressedLength`, unpadded Base64Url characters, 76-character wrapping newlines, and fixed NMP/2 header/footer overhead; compute and validate the complete-document limit with checked arithmetic too.
 - Adds `DurableFormats.RestoreJournal = new("restore-journal", Current: 1, AbsentMeans: null, FormatDisposition.Refuse, FormatDisposition.Refuse)` and includes it exactly once in `DurableFormats.All`.
 
 - [ ] **Step 1: Write the failing durable-format and codec tests**
 
 Create tests that assert `DurableFormats.All` contains `RestoreJournal` once, has `Current == 1`, `AbsentMeans == null`, and refuses both version `0`/absent and version `2`. Add source-generation serialization coverage that creates a one-entry prepared journal, serializes it, parses it through `RestoreJournalCodec`, and asserts exact decoded body and sidecar bytes plus lowercase 64-character SHA-256 values.
 
-Add table-driven invalid cases: non-object JSON, absent/foreign `format`, version 0/2, unknown state, empty entries, wrong scope, `../x.nmp2`, rooted paths, `x/y.nmp2`, noncanonical filenames, duplicate names/files ignoring case, invalid base64, uppercase/non-hex digest, and payload-hash mismatch. Each must throw `RestoreRecoveryException` with `Failure == MalformedOrIntegrityFailed` except version 2, which must be `UnsupportedVersion`.
+Add table-driven invalid cases: non-object JSON, absent/foreign `format`, version 0/2, unknown state, empty entries, wrong scope, `../x.nmp2`, rooted paths, `x/y.nmp2`, noncanonical filenames, duplicate names/files ignoring case, invalid base64, uppercase/non-hex digest, payload-hash mismatch, and a document exceeding `MaxJournalJsonBytes`. Each must throw `RestoreRecoveryException` with `Failure == MalformedOrIntegrityFailed` except version 2, which must be `UnsupportedVersion`. Assert an oversized document is rejected before JSON deserialization or Base64 decode.
 
 - [ ] **Step 2: Run the focused tests and confirm they fail**
 
@@ -83,7 +86,7 @@ internal sealed record RestoreJournalPayload(
     ArtifactEntry Entry, byte[] BodyBytes, byte[] SidecarBytes);
 ```
 
-`CreatePrepared` must generate `transactionId` with `Guid.NewGuid().ToString("N")`, set `Format` to `"scrinia.restore-journal"`, set `Version` from `DurableFormats.RestoreJournal.Current`, and derive each file name exclusively as `SanitizeName(name) + ".nmp2"` and `SanitizeName(name) + ".meta.json"`. It must compute `Convert.ToHexStringLower(SHA256.HashData(bytes))` from the exact in-memory arrays and Base64-encode those same arrays. `ParseAndValidate` must enforce the inverse rules before decoding any payload into a destination write, bound decoded lengths to the existing bundle body limit plus the serialized sidecar byte count, and compare hashes with ordinal, case-sensitive equality after requiring lowercase digest grammar.
+`CreatePrepared` must generate `transactionId` with `Guid.NewGuid().ToString("N")`, set `Format` to `"scrinia.restore-journal"`, set `Version` from `DurableFormats.RestoreJournal.Current`, and derive each file name exclusively as `SanitizeName(name) + ".nmp2"` and `SanitizeName(name) + ".meta.json"`. It must compute `Convert.ToHexStringLower(SHA256.HashData(bytes))` from the exact in-memory arrays and Base64-encode those same arrays. `ParseAndValidate` must first reject JSON larger than `MaxJournalJsonBytes`, then enforce the inverse rules before decoding any payload into a destination write. It must reject a raw body whose decoded Base64 length exceeds `MaxRawNmp2BodyBytes`, bound sidecars, and compare hashes with ordinal, case-sensitive equality after requiring lowercase digest grammar. Do not describe or rely on a pre-existing raw bundle-body limit: none exists.
 
 Add the `DurableFormats.RestoreJournal` declaration and registry entry. Do not put journal DTOs in `FileStoreJsonContext`: journal serialization has its own source-generated context and no artifact sidecar behavior.
 
@@ -95,7 +98,9 @@ Expected: PASS; every invalid input is classified without touching a live artifa
 
 ---
 
-### Task 2: Preserve transaction-private incoming bytes and create `prepared` before live writes
+### Task 2: Admit bounded raw bundle bytes, preserve transaction-private input, and create `prepared` before live writes
+
+**Depends on:** Task 1 (the codec owns the checked raw-body and complete-journal limits used at ZIP admission and journal construction).
 
 **Files:**
 - Modify: `src/Scrinia.Core/Bundles/BundleFormatService.cs:231-481`
@@ -114,6 +119,8 @@ Add a test importing a topic with: an existing entry skipped under `overwrite: f
 
 Add a second test whose ZIP body contains `new byte[] { 0, 255, 10, 13 }`. Interrupt after prepared, delete the ZIP, create a fresh store, and trigger recovery. Assert the restored `.nmp2` bytes exactly equal the journal-decoded byte array. This pins that recovery is independent of text decoding and the source archive.
 
+Add ZIP-admission tests for a member declared larger than `RestoreJournalCodec.MaxRawNmp2BodyBytes` and for a stream that crosses the bound despite unusable/misleading length metadata. Both must return the existing `INVALID_BUNDLE` classification before full member allocation, NMP/2 decoding, journal creation, or destination mutation.
+
 - [ ] **Step 2: Run the focused tests and confirm they fail**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~JournaledRestoreRecoveryTests`
@@ -122,7 +129,7 @@ Expected: FAIL because bundle import retains strings, no journal exists, and a f
 
 - [ ] **Step 3: Build private immutable transaction input, then durably write `prepared`**
 
-In `BundleFormatService.ImportTopicsFromZip`, replace `Dictionary<string, string> ArtifactContents` with `Dictionary<string, byte[]> ArtifactBytes`; read each `.nmp2` member through the existing bounded byte-reading helper. Decode a temporary UTF-8 string only for the current optional keyword-derivation branch; never substitute its encoded bytes for the retained raw member array. Pass the byte dictionary to `ImportTopicEntries`.
+In `BundleFormatService.ImportTopicsFromZip`, replace `Dictionary<string, string> ArtifactContents` with `Dictionary<string, byte[]> ArtifactBytes`; there is no existing bounded raw-body helper, so change `ReadZipEntryBytes` (or add a specifically named sibling) to accept `RestoreJournalCodec.MaxRawNmp2BodyBytes`, preflight `ZipArchiveEntry.Length`, and count bytes while copying. Decode a temporary UTF-8 string only for the current optional keyword-derivation branch; never substitute its encoded bytes for the retained raw member array. Pass the byte dictionary to `ImportTopicEntries`.
 
 Change the `IMemoryStore.ImportTopicEntries` declaration and `FakeMemoryStore` implementation to the same `Dictionary<string, byte[]>` parameter. The fake must retain arrays without converting them through text so Core bundle tests exercise the production byte contract.
 
@@ -143,11 +150,13 @@ Delete the old `.staging` body write/rename loop from this import path. Keep `Sw
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~JournaledRestoreRecoveryTests|FullyQualifiedName~BundleRoundTripTotalityTests|FullyQualifiedName~BundleV2Tests"`
 
-Expected: PASS; a prepared journal is complete, owns exact incoming bytes, excludes no-ops, and precedes every live destination mutation.
+Expected: PASS; oversized ZIP members are refused before allocation/decoding, and a prepared journal is complete, owns exact incoming bytes, excludes no-ops, and precedes every live destination mutation.
 
 ---
 
 ### Task 3: Implement the locked idempotent recovery state machine and crash seam
+
+**Depends on:** Tasks 1–2 (validated, bounded journal payloads and the prepared-journal import boundary).
 
 **Files:**
 - Modify: `src/Scrinia.Core/FileMemoryStore.cs:637-775,2707-2880`
@@ -206,6 +215,8 @@ Expected: PASS; every durable boundary converges by roll-forward, and a complete
 
 ### Task 4: Gate every persistent read and write without recursive locks or stale caches
 
+**Depends on:** Task 3 (the barrier invokes the completed recovery state machine).
+
 **Files:**
 - Modify: `src/Scrinia.Core/FileMemoryStore.cs:653-775,1302-1835,1953-2077,2099-2201,2463-2505`
 - Modify: `tests/Scrinia.Tests/Store/JournaledRestoreRecoveryTests.cs`
@@ -250,18 +261,23 @@ Expected: PASS; cached index, artifact, and facts results are never published be
 
 ### Task 5: Preserve blocked journals and expose actionable structured errors
 
+**Depends on:** Tasks 3–4 (route tests must exercise real blocked recovery from every persistent access path).
+
 **Files:**
 - Modify: `src/Scrinia.Mcp/McpResponse.cs:10-39`
-- Modify: `src/Scrinia.Mcp/MemoryTools.cs:126-420`, `src/Scrinia.Mcp/MemoryTools.Bundling.cs:104-171`
+- Modify: `src/Scrinia.Mcp/MemoryTools.cs:126-450`, `src/Scrinia.Mcp/MemoryTools.Facts.cs:18-75`, `src/Scrinia.Mcp/MemoryTools.Bundling.cs:104-171`
 - Modify: `tests/Scrinia.Tests/Store/JournaledRestoreRecoveryTests.cs`, `tests/Scrinia.Tests/BundleExitCodeTests.cs`
+- Create: `tests/Scrinia.Tests/McpRecoveryBlockedRouteTests.cs`
 
 **Interfaces:**
 - Produces `ErrorCodes.RecoveryBlocked = "RECOVERY_BLOCKED"`.
-- `RestoreRecoveryException` response mapping preserves `INVALID_BUNDLE` for bundle parse/version failures and returns `RECOVERY_BLOCKED` for a durable journal obligation.
+- Produces one private `RecoveryBlockedResponse(RestoreRecoveryException exception)` helper on `ScriniaMcpTools`. It preserves `INVALID_BUNDLE` for bundle parse/version failures and returns `RECOVERY_BLOCKED` for a durable journal obligation.
 
 - [ ] **Step 1: Write failing blocked-journal tests**
 
-Handcraft journals for newer version, malformed JSON, wrong scope, noncanonical target, duplicate target, base64/hash mismatch, and completed destination hash mismatch. Exercise `LoadIndex`, `ReadArtifactAsync`, `StoreAsync`, `AppendAsync`, `WriteArtifactAsync`, `ListScoped`, `SearchAll`, and `GetEntityFactStore` for the journalled scope. Assert no destination bytes and journal bytes change, and another scope remains usable.
+Handcraft journals for newer version, malformed JSON, wrong scope, noncanonical target, duplicate target, base64/hash mismatch, oversized full JSON, and completed destination hash mismatch. Exercise `LoadIndex`, `ReadArtifactAsync`, `StoreAsync`, `AppendAsync`, `WriteArtifactAsync`, `ListScoped`, `SearchAll`, and `GetEntityFactStore` for the journalled scope. Assert no destination bytes and journal bytes change, and another scope remains usable.
+
+Add a route-level matrix using a persistent path/scope that is blocked by each journal class. Assert `RECOVERY_BLOCKED`, the exception's canonical scope/path/copy, and retained journal bytes for **each** public MCP route: `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `facts`, and `import`. Cover `import` in `BundleExitCodeTests`; cover the other nine in `McpRecoveryBlockedRouteTests`. Add control assertions that a malformed bundle remains `INVALID_BUNDLE`, a `DurableWriteException` remains `DURABLE_WRITE_FAILED`, and an unrelated exception still follows the route's existing classification.
 
 Through `ScriniaMcpTools.Import` and `ScriniaCommands.Import(..., json: true)`, assert exit code `1`, `RECOVERY_BLOCKED`, canonical scope, exact journal path, and the required copy: newer versions say upgrade and retry; malformed/integrity failures say no files changed and journal retained; replay I/O says permissions/free disk space/retry. Do not label any of these `INVALID_BUNDLE`.
 
@@ -273,7 +289,7 @@ Expected: FAIL because journal failures escape as generic I/O/internal failures 
 
 - [ ] **Step 3: Add narrow recovery mapping and immutable-residue behavior**
 
-Add `RecoveryBlocked` to `ErrorCodes`. In `MemoryTools.Bundling.Import`, catch `RestoreRecoveryException` before `DurableWriteException`; render its `Scope` and `JournalPath` exactly once. Use these messages, replacing only the scope/path/version values:
+Add `RecoveryBlocked` to `ErrorCodes`. Add exactly one private `RecoveryBlockedResponse(RestoreRecoveryException exception)` helper to the `ScriniaMcpTools` partial class. It renders `Scope` and `JournalPath` exactly once and is the only recovery-error-to-response conversion. Use these messages, replacing only the scope/path/version values:
 
 ```text
 Recovery is blocked for topic scope '{scope}': restore journal version {version} is newer than this build supports (1). The journal was left unchanged at '{path}'. Upgrade scri, then retry the operation.
@@ -281,17 +297,19 @@ Recovery is blocked for topic scope '{scope}': restore journal '{path}' is malfo
 Recovery could not complete for topic scope '{scope}'; the journal remains at '{path}' and access is blocked until retry succeeds. Check permissions and free disk space, then retry.
 ```
 
-Keep the exception mapping narrow: do not catch `Exception`, do not relabel normal lock contention as recovery success, and do not delete/rename a blocked journal. In `MemoryTools.cs`, add the same ordered `RestoreRecoveryException` catch before each existing `DurableWriteException` catch in `MemoryRemember`, `MemoryAppend`, `MemorySearch`, `MemoryList`, and `MemoryForget`; return `ResponseBuilder.Error(ex.Message, ErrorCodes.RecoveryBlocked, "Resolve the retained restore journal for the named topic scope, then retry.")`. This makes automatic recovery failure on a read or write structured rather than stale or `INTERNAL`.
+Keep the exception mapping narrow: do not catch `Exception`, do not relabel normal lock contention as recovery success, and do not delete/rename a blocked journal. At the store-facing invocation in each public MCP route, catch only `RestoreRecoveryException` and return `RecoveryBlockedResponse(exception)`: `MemoryRemember`, `MemoryRecall`, `MemorySearch`, `MemoryList`, `MemoryAppend`, `MemoryForget`, `MemoryCompact`, `MemoryLink`, `Facts`, and `Import`. Preserve existing catch ordering by placing this catch before any broader `IOException`/durable-write handling. Do not wrap inline-NMP/2 recall decoding, skill/agent file-entity routing, request validation, or response rendering; those errors retain their current behavior. This makes automatic recovery failure on every persistent read or write structured rather than stale or `INTERNAL`.
 
 - [ ] **Step 4: Run focused structured-error tests**
 
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~JournaledRestoreRecoveryTests|FullyQualifiedName~BundleExitCodeTests|FullyQualifiedName~ScriniaMcpToolsTests"`
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~JournaledRestoreRecoveryTests|FullyQualifiedName~BundleExitCodeTests|FullyQualifiedName~McpRecoveryBlockedRouteTests"`
 
-Expected: PASS; failed recovery blocks only its scope, preserves evidence, and uses `RECOVERY_BLOCKED` rather than `INVALID_BUNDLE`.
+Expected: PASS; all ten persistent MCP routes use the one recovery helper, failed recovery blocks only its scope and preserves evidence, and unrelated bundle/durable/internal errors retain their prior classifications.
 
 ---
 
 ### Task 6: Verify residue handling, import boundaries, documentation, and the complete suite
+
+**Depends on:** Tasks 1–5 (final verification covers size admission, recovery, barriers, and all response routes together).
 
 **Files:**
 - Modify: `src/Scrinia.Core/FileMemoryStore.cs:2857-2880`
@@ -332,7 +350,7 @@ Under `## [Unreleased]` in `CHANGELOG.md`, add:
 
 - [ ] **Step 4: Run all focused recovery tests and the full suite**
 
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~JournaledRestoreRecoveryTests|FullyQualifiedName~TransactionalRestoreTests|FullyQualifiedName~FormatVersionTests|FullyQualifiedName~BundleV2Tests|FullyQualifiedName~BundleExitCodeTests"`
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~JournaledRestoreRecoveryTests|FullyQualifiedName~TransactionalRestoreTests|FullyQualifiedName~FormatVersionTests|FullyQualifiedName~BundleV2Tests|FullyQualifiedName~BundleExitCodeTests|FullyQualifiedName~McpRecoveryBlockedRouteTests"`
 
 Expected: 0 failures; every crash assertion cold-reopens or reads disk and every completed-journal assertion proves no destination rewrite.
 
@@ -356,15 +374,16 @@ Confirm the change set contains only the files in this plan plus any necessary g
 | Crash injection at every durable transition | 3 |
 | Shared-check/exclusive-escalation access barrier | 4 |
 | Index/artifact/facts caches and concurrent access | 4 |
-| Newer/malformed/hash-mismatch blocking residue and MCP/CLI copy | 5 |
+| Checked raw NMP/2 body bound, ZIP admission, and full-journal pre-deserialization bound | 1, 2 |
+| Newer/malformed/hash-mismatch/oversized blocking residue and all persistent MCP/CLI route copy | 5 |
 | Staging residue, journal invisibility, multi-topic/file-entity limits | 6 |
 | Changelog and focused/full verification | 6 |
 | No whole-bundle/file-entity transaction or rollback | Global Constraints, 2, 6 |
 
 ## Self-Review
 
-- **Spec coverage:** Complete. The plan names the registry, journal byte contract, state machine, automatic read/write barrier, cache/facts invalidation, error surface, every crash boundary, concurrency, residue, changelog, and the deliberately limited per-scope roll-forward semantics.
+- **Spec coverage:** Complete. The plan names the registry, checked raw NMP/2 and complete-journal bounds, ZIP admission, journal byte contract, state machine, automatic read/write barrier, cache/facts invalidation, error surface, every crash boundary, concurrency, residue, changelog, and the deliberately limited per-scope roll-forward semantics.
 - **Placeholder scan:** Complete. No TBD/TODO, deferred implementation, or “similar to” instruction remains. Each task has exact file paths, named methods/types, red-green commands, and concrete assertions or implementation rules.
-- **Type consistency:** Complete. `RestoreJournalPayload` is produced before import consumes it; codec, states, exception, and format registry are established before replay; recovery helpers are defined before access routes call them; `RECOVERY_BLOCKED` is declared before MCP/CLI mapping tests consume it.
+- **Type consistency:** Complete. `RestoreJournalPayload` is produced after bounded ZIP admission and before import consumes it; codec, states, checked limits, exception, and format registry are established before replay; recovery helpers are defined before access routes call them; `RECOVERY_BLOCKED` and `RecoveryBlockedResponse(RestoreRecoveryException)` are declared before all ten MCP-route mapping tests consume them.
 - **Scope check:** Complete. The plan explicitly excludes rollback, whole-bundle/file-entity atomicity, background sweeping, and journals for ordinary writes, migration, compaction, and ephemeral memory.
-- **Blockers:** None. Task 5 names every current public MCP exception boundary that must map `RestoreRecoveryException`, so a read-side recovery failure cannot degrade to `INTERNAL`.
+- **Blockers:** None. Task 5 enumerates remember, recall, search, list, append, forget, compact, link, facts, and import, so no persistent MCP route can omit the narrow `RestoreRecoveryException` mapping or degrade a blocked recovery to `INTERNAL`.

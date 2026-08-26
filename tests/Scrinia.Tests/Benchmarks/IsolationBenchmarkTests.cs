@@ -8,6 +8,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// the target topic vs. unrelated topics.
 /// Expected: Scrinia ~1.0, Auto varies, Flat-file = 1/numTopics.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class IsolationBenchmarkTests(ITestOutputHelper output)
 {
     [Theory]

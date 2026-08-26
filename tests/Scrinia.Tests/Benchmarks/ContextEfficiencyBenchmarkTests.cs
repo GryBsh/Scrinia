@@ -7,6 +7,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// Measures token efficiency — how many tokens each system consumes per query.
 /// Expected: Scrinia &lt;&lt; Auto &lt; Flat-file at 100+ facts.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class ContextEfficiencyBenchmarkTests(ITestOutputHelper output)
 {
     [Fact]

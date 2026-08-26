@@ -93,7 +93,7 @@ public sealed class TransactionalRestoreTests
             ["imported"] = "bundle body",
         };
 
-        store.ImportTopicEntries(Scope, bundled, contents, overwrite: true);
+        store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true);
 
         // Cold read: a fresh store, so nothing is answered from a cache the import updated.
         using var cold = new FileMemoryStore(scope.WorkspaceDir);
@@ -127,7 +127,7 @@ public sealed class TransactionalRestoreTests
         var importDone = new ManualResetEventSlim(false);
         var importThread = new Thread(() =>
         {
-            try { store.ImportTopicEntries(Scope, bundled, contents, overwrite: true); }
+            try { store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true); }
             catch (Exception ex) { importError = ex; }
             finally { importDone.Set(); }
         });
@@ -159,7 +159,7 @@ public sealed class TransactionalRestoreTests
     }
 
     [Fact]
-    public async Task Import_ThatFailsPartWay_LeavesNoLiveArtifactUnderAStaleSidecar()
+    public async Task Import_WithAnUnwritableJournalDestination_RetainsTheJournalAndBlocksOnlyItsScope()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
@@ -167,12 +167,6 @@ public sealed class TransactionalRestoreTests
         await store.StoreAsync(new MemoryWrite("victim", Scope, ["ORIGINAL BODY"]));
 
         string storeDir = Path.Combine(scope.TempDir, "notes");
-        var before = store.LoadIndex(Scope).Single(e => e.Name == "victim");
-
-        // Raw artifact text, captured for an exact comparison below. ReadArtifactAsync returns
-        // the NMP/2 envelope (Brotli + URL-safe Base64), NOT the decoded content — so asserting
-        // on a substring of the original prose would never match, before or after the fix.
-        string bodyBefore = await store.ReadArtifactAsync("victim", Scope);
 
         // A bundle that overwrites `victim` and then fails: the second entry claims content the
         // dictionary does not carry AND a name that cannot be written, so the import throws after
@@ -188,21 +182,22 @@ public sealed class TransactionalRestoreTests
             [new string('n', 300)] = "boom",
         };
 
-        Action failing = () => store.ImportTopicEntries(Scope, bundled, contents, overwrite: true);
+        Action failing = () => store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true);
         failing.Should().Throw<Exception>(because: "the over-length component cannot be written");
 
+        File.ReadAllText(Path.Combine(storeDir, "victim.nmp2")).Should().Be("REPLACEMENT BODY",
+            because: "a prepared journal replays entries in order before the later destination fails");
+        File.Exists(Path.Combine(storeDir, ".restore-journal.json")).Should().BeTrue(
+            because: "the prepared journal is durable recovery evidence, not staging residue");
+
         using var cold = new FileMemoryStore(scope.WorkspaceDir);
-        var after = cold.LoadIndex(Scope).SingleOrDefault(e => e.Name == "victim");
+        Action blocked = () => cold.LoadIndex(Scope);
+        blocked.Should().Throw<RestoreRecoveryException>().Which.Failure
+            .Should().Be(RestoreRecoveryFailure.ReplayIoFailed);
 
-        after.Should().NotBeNull();
-        string bodyAfter = await cold.ReadArtifactAsync("victim", Scope);
-        bodyAfter.Should().Be(bodyBefore, because:
-            "a failed import must not leave new content under a sidecar that still describes the "
-          + "old content — content and metadata must agree, whatever the outcome");
-        after!.OriginalBytes.Should().Be(before.OriginalBytes);
-
-        Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty(
-            because: "a failed import rolls back everything it staged");
+        await cold.StoreAsync(new MemoryWrite("other", "local:other", ["available"]));
+        cold.LoadIndex("local:other").Should().ContainSingle().Which.Name.Should().Be("other",
+            because: "a replay I/O failure blocks only the journalled scope");
     }
 
     [Fact]
@@ -220,7 +215,7 @@ public sealed class TransactionalRestoreTests
         store.ImportTopicEntries(
             Scope,
             [new("fresh", "file://placeholder", 5, 1, DateTimeOffset.UtcNow)],
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["fresh"] = "hello" },
+            new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase) { ["fresh"] = System.Text.Encoding.UTF8.GetBytes("hello") },
             overwrite: true);
 
         File.Exists(litter).Should().BeFalse(because: "a later import clears staging litter");
@@ -279,7 +274,7 @@ public sealed class TransactionalRestoreTests
             ["beta"] = "beta v2 body",
         };
 
-        store.ImportTopicEntries(Scope, bundled, contents, overwrite: true);
+        store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true);
 
         using var cold = new FileMemoryStore(scope.WorkspaceDir);
         foreach (string name in new[] { "alpha", "beta" })
@@ -345,7 +340,7 @@ public sealed class TransactionalRestoreTests
                    FileMode.Open, FileAccess.Read, FileShare.None))
         {
             thrown = Record.Exception(
-                () => store.ImportTopicEntries(Scope, bundled, contents, overwrite: true));
+                () => store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true));
         }
 
         thrown.Should().NotBeNull("holding beta.nmp2 exclusively must make its commit fail");
@@ -368,4 +363,8 @@ public sealed class TransactionalRestoreTests
             "alpha's sidecar must have been written in the SAME loop iteration as its body — " +
             "under rename-all-then-publish it would still describe 'alpha v1'");
     }
+
+    private static Dictionary<string, byte[]> ToArtifactBytes(Dictionary<string, string> contents) =>
+        contents.ToDictionary(pair => pair.Key, pair => System.Text.Encoding.UTF8.GetBytes(pair.Value),
+            StringComparer.OrdinalIgnoreCase);
 }

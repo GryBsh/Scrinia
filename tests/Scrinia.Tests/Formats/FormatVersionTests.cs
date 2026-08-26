@@ -51,7 +51,7 @@ public class FormatVersionTests
     {
         // Guard, not trivia: adding a durable format without registering a contract must fail
         // a test rather than pass silently. Bump this deliberately when a format is added.
-        DurableFormats.All.Should().HaveCount(8);
+        DurableFormats.All.Should().HaveCount(9);
     }
 
     // AbsentMeans is pinned here too. It was the column an adversarial pass corrected THREE
@@ -68,6 +68,7 @@ public class FormatVersionTests
     [InlineData("legacy-index", 3, 3, FormatDisposition.Load, FormatDisposition.Load)]
     [InlineData("skill-meta", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
     [InlineData("agent-meta", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
+    [InlineData("restore-journal", 1, null, FormatDisposition.Refuse, FormatDisposition.Refuse)]
     public void RegisteredContracts_MatchTheSpecTable(
         string name, int current, int? absentMeans,
         FormatDisposition onOlder, FormatDisposition onNewer)
@@ -98,4 +99,15 @@ public class FormatVersionTests
         // would return Refuse and change facts.json's contract.
         FormatVersion.Evaluate(DurableFormats.EntityFacts, 0)
             .Should().Be(FormatDisposition.Rebuild);
+
+    [Fact]
+    public void RestoreJournal_RefusesAbsentOlderAndNewerVersions()
+    {
+        FormatVersion.Evaluate(DurableFormats.RestoreJournal, null)
+            .Should().Be(FormatDisposition.Refuse);
+        FormatVersion.Evaluate(DurableFormats.RestoreJournal, 0)
+            .Should().Be(FormatDisposition.Refuse);
+        FormatVersion.Evaluate(DurableFormats.RestoreJournal, 2)
+            .Should().Be(FormatDisposition.Refuse);
+    }
 }

@@ -24,7 +24,16 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional topic names to exclude (same semantics as search). An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         [Description("Max rows for the entities list / profile timeline (default 50).")] int limit = 50,
         CancellationToken cancellationToken = default)
-        => (await FactsResponse(op, entity, entities, key, scopes, excludeTopics, limit, cancellationToken)).ToYaml();
+    {
+        try
+        {
+            return (await FactsResponse(op, entity, entities, key, scopes, excludeTopics, limit, cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
+    }
 
     /// <summary>
     /// The typed <c>facts</c> handler. Split out from the public tool method so the CLI

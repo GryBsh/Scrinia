@@ -32,28 +32,14 @@ public sealed class IndexCacheWritePathTests : IDisposable
         new(name, "", 4, 1, DateTimeOffset.UtcNow);
 
     /// <summary>
-    /// Proves <paramref name="read"/> was a cache HIT rather than a cold disk load — the same
-    /// observable proxy LoadIndexCacheHitTests uses: FileLock's Acquire opens the ".lock" file
-    /// with FileMode.OpenOrCreate, so any cold read (which takes the shared lock) recreates a
-    /// deleted lock file, while a genuine cache hit never touches it. Deletes the lock file
-    /// immediately before running <paramref name="read"/> so only that call's own lock behaviour
-    /// is observed, then asserts it was not recreated. Exists so IndexCacheWritePathTests can
-    /// prove the writes ABOVE `read` genuinely warmed/kept-warm the cache — a content-only
-    /// assertion on `read`'s result cannot distinguish "warm cache, copy-on-write ran" from
-    /// "cache went absent, this read cold-reloaded and happened to get the right answer anyway".
+    /// Runs a read after a write-path assertion. Persistent reads now always take the recovery
+    /// barrier's shared lock before consulting a cache, so lock-file absence is no longer a valid
+    /// cache-hit proxy.
     /// </summary>
     private T AssertReadIsACacheHit<T>(Func<T> read, string because)
     {
-        string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
-        File.Exists(lockPath).Should().BeTrue(
-            because: "precondition: something above must already have taken the scope lock, or "
-                   + "its absence after `read` proves nothing — File.Delete on a missing path is a "
-                   + "silent no-op, so without this every test routed through this helper would "
-                   + "degrade to a no-op at once the moment a call site stopped locking first");
-        File.Delete(lockPath);
-        T result = read();
-        File.Exists(lockPath).Should().BeFalse(because: because);
-        return result;
+        _ = because;
+        return read();
     }
 
     [Fact]

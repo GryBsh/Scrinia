@@ -80,6 +80,7 @@ public sealed class EmbeddingProvidersFixture : IAsyncLifetime, IDisposable
 /// Full 3-way benchmark: BM25-only vs Model2Vec (built-in) vs Vulkan (LLamaSharp GPU).
 /// Downloads both models once via shared fixture; each provider skips independently if its download fails.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, EmbeddingProvidersFixture fx)
     : IClassFixture<EmbeddingProvidersFixture>, IDisposable
 {

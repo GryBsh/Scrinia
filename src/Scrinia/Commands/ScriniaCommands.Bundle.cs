@@ -44,7 +44,15 @@ public partial class ScriniaCommands
         }
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Export(topicArray, filename, cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Export(topicArray, filename, cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "export");
+        }
 
         if (response.IsError)
         {

@@ -571,7 +571,8 @@ public sealed partial class SidecarVersioningTests
         };
 
         var act = () => store.ImportTopicEntries(
-            "local:notes", [writable, newer], contents, overwrite: true);
+            "local:notes", [writable, newer], contents.ToDictionary(
+                pair => pair.Key, pair => System.Text.Encoding.UTF8.GetBytes(pair.Value)), overwrite: true);
 
         act.Should().Throw<ScopeReadOnlyException>();
         File.Exists(Path.Combine(scope.TempDir, "notes", "writable-import.nmp2"))
@@ -598,7 +599,8 @@ public sealed partial class SidecarVersioningTests
         };
 
         var act = () => store.ImportTopicEntries(
-            "local:notes", [writable, newer], contents, overwrite: true);
+            "local:notes", [writable, newer], contents.ToDictionary(
+                pair => pair.Key, pair => System.Text.Encoding.UTF8.GetBytes(pair.Value)), overwrite: true);
 
         act.Should().Throw<ScopeReadOnlyException>();
 
@@ -638,7 +640,8 @@ public sealed partial class SidecarVersioningTests
             ["incoming"] = "incoming body",
         };
 
-        var act = () => store.ImportTopicEntries("local:notes", [incoming], contents, overwrite: true);
+        var act = () => store.ImportTopicEntries("local:notes", [incoming], contents.ToDictionary(
+            pair => pair.Key, pair => System.Text.Encoding.UTF8.GetBytes(pair.Value)), overwrite: true);
 
         act.Should().Throw<ScopeReadOnlyException>();
         File.Exists(Path.Combine(scope.TempDir, "notes", "incoming.nmp2"))

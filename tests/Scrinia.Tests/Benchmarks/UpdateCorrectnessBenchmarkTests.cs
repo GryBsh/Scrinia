@@ -8,6 +8,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// Verifies that updated facts are correctly returned by search and that
 /// old content is no longer surfaced. Only Scrinia supports staleness detection.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
 {
     [Fact]

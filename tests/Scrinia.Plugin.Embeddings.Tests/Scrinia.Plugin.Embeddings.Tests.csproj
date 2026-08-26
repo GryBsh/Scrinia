@@ -6,6 +6,8 @@
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <!-- Long-running performance benchmarks are opt-in. An explicit filter replaces this default. -->
+    <VSTestTestCaseFilter Condition="'$(VSTestTestCaseFilter)' == ''">Category!=LongRunningBenchmark</VSTestTestCaseFilter>
   </PropertyGroup>
 
   <ItemGroup>

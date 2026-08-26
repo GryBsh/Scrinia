@@ -132,6 +132,23 @@ after a crash:
 
 **Fix:** Delete `.lock` files in `.scrinia/store/` and `.scrinia/topics/*/`. They are recreated automatically.
 
+### `RECOVERY_BLOCKED` during a memory or bundle operation
+
+An interrupted bundle restore may leave `.restore-journal.json` in one persistent topic scope. Scrinia
+automatically rolls that scope forward before reads and writes. If the retained journal is malformed,
+fails integrity verification, requires a newer Scrinia version, or cannot be replayed because of an
+I/O failure, only that scope is blocked; other topics and ephemeral memories remain available.
+
+**Fix:** Use the scope and journal path in the error. For a newer journal, upgrade Scrinia and retry.
+For a malformed or integrity-failed journal, preserve the journal, inspect or restore it with a
+compatible Scrinia build, then retry. For replay failures, check permissions and free disk space before
+retrying. Do not delete or edit the journal to force recovery: Scrinia deliberately retains failed
+journals as evidence and never rolls back or rereads the source bundle.
+
+This recovery is per topic scope only. A multi-topic bundle and skill/agent file entities are not a
+single transaction, so an interruption can leave one topic awaiting its next access while another has
+already completed.
+
 ### Version retention
 
 There is **no limit on the number of memories** you can store, and the currently-active body of

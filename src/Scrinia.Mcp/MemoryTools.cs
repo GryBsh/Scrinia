@@ -212,6 +212,10 @@ public sealed partial class ScriniaMcpTools
                 keywords: keywords, attributes: attributes,
                 actionLabel: "remembered", cancellationToken: cancellationToken);
         }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
         catch (DurableWriteException ex)
         {
             return DurableWriteFailureResponse(ex).ToYaml();
@@ -236,6 +240,35 @@ public sealed partial class ScriniaMcpTools
             ErrorCodes.DurableWriteFailed,
             "Check permissions, free disk space if needed, and retry after upgrading scri when the existing sidecar is newer.");
 
+    private static McpResponse RecoveryBlockedResponse(RestoreRecoveryException exception)
+    {
+        string error = exception.Failure switch
+        {
+            RestoreRecoveryFailure.UnsupportedVersion =>
+                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal version {ExtractUnsupportedJournalVersion(exception)} is newer than this build supports (1). The journal was left unchanged at '{exception.JournalPath}'. Upgrade scri, then retry the operation.",
+            RestoreRecoveryFailure.MalformedOrIntegrityFailed =>
+                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal '{exception.JournalPath}' is malformed or failed integrity verification. No files were changed and the journal was retained. Inspect or restore the journal with a compatible scri build, then retry.",
+            _ =>
+                $"Recovery could not complete for topic scope '{exception.Scope}'; the journal remains at '{exception.JournalPath}' and access is blocked until retry succeeds. Check permissions and free disk space, then retry."
+        };
+
+        return ResponseBuilder.Error(
+            error,
+            ErrorCodes.RecoveryBlocked,
+            "Resolve the retained restore journal for the named topic scope, then retry.");
+    }
+
+    private static string ExtractUnsupportedJournalVersion(RestoreRecoveryException exception)
+    {
+        const string prefix = "Restore journal version ";
+        const string suffix = " is unsupported.";
+        string message = exception.Message;
+        if (!message.StartsWith(prefix, StringComparison.Ordinal) || !message.EndsWith(suffix, StringComparison.Ordinal))
+            return "unknown";
+
+        return message[prefix.Length..^suffix.Length];
+    }
+
     [McpServerTool(Name = "recall"), Description(
         "Read a memory by path. Returns the full content unless a chunk index is provided. " +
         "Example: recall({ path: '/findings/SEC-001' }), or recall({ path: '/skill/qa' }) to load a skill.")]
@@ -258,7 +291,14 @@ public sealed partial class ScriniaMcpTools
                 "list() to discover available paths").ToYaml();
 
         path = Address(path);
-        return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+        try
+        {
+            return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "search"), Description(
@@ -285,7 +325,14 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "search({ query: 'keywords or phrase' })").ToYaml();
 
-        return (await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken)).ToYaml();
+        try
+        {
+            return (await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "list"), Description(
@@ -299,7 +346,14 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional topic names to exclude (e.g. ['plan', 'task', 'project', 'learn'] to hide planning namespaces). An empty array behaves the same as omitting it.")] string[]? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        return (await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken)).ToYaml();
+        try
+        {
+            return (await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "append"), Description(
@@ -365,7 +419,15 @@ public sealed partial class ScriniaMcpTools
                 "Split the append into multiple smaller append calls.").ToYaml();
 
         path = Address(path);
-        McpResponse response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
 
         // Same hint application as MemoryRemember: applied to the typed response before
         // serialisation, and still a no-op on error (errors use actionNeeded, not info).
@@ -398,7 +460,14 @@ public sealed partial class ScriniaMcpTools
                 "forget({ path: '...' })").ToYaml();
 
         path = Address(path);
-        return (await Forget(path, cancellationToken)).ToYaml();
+        try
+        {
+            return (await Forget(path, cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "compact"), Description(
@@ -419,7 +488,14 @@ public sealed partial class ScriniaMcpTools
                 "compact({ path: '...', keepRecent: 3 })").ToYaml();
 
         path = Address(path);
-        return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
+        try
+        {
+            return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "link"), Description(
@@ -447,7 +523,14 @@ public sealed partial class ScriniaMcpTools
 
         path = Address(path);
         destination = Address(destination);
-        return (await Link(path, destination, reason, cancellationToken)).ToYaml();
+        try
+        {
+            return (await Link(path, destination, reason, cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "restore"), Description(

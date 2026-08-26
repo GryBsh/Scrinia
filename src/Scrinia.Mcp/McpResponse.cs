@@ -27,6 +27,9 @@ public static class ErrorCodes
     /// <summary>A durable write was refused or could not complete safely.</summary>
     public const string DurableWriteFailed = "DURABLE_WRITE_FAILED";
 
+    /// <summary>A retained restore journal blocks access to its persistent topic scope.</summary>
+    public const string RecoveryBlocked = "RECOVERY_BLOCKED";
+
     /// <summary>Bundle content is missing, malformed, unsafe, or unsupported by this build.</summary>
     public const string InvalidBundle = "INVALID_BUNDLE";
 

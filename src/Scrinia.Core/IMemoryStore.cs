@@ -352,5 +352,5 @@ public interface IMemoryStore : IPluginStore
     // Export/Import support
     List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
     void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite);
+        Dictionary<string, byte[]> artifactBytes, bool overwrite);
 }

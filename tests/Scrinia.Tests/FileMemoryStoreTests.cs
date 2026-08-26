@@ -221,7 +221,9 @@ public sealed class FileMemoryStoreTests : IDisposable
             ["imported"] = Nmp2ChunkedEncoder.Encode("Imported content")
         };
 
-        _store.ImportTopicEntries("local:test", entries, contents, overwrite: false);
+        _store.ImportTopicEntries("local:test", entries,
+            contents.ToDictionary(pair => pair.Key, pair => System.Text.Encoding.UTF8.GetBytes(pair.Value)),
+            overwrite: false);
 
         var loaded = _store.LoadIndex("local:test");
         loaded.Should().HaveCount(1);

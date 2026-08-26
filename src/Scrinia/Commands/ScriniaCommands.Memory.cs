@@ -38,7 +38,15 @@ public partial class ScriniaCommands
         // arguments are strings, and forcing repeated `--scopes` flags would be a worse CLI for no
         // gain. It splits at this boundary; a scope name containing a comma is therefore unaddressable
         // from the CLI, unlike the MCP `list`/`search` tools, which take a real array.
-        var entries = WorkspaceSetup.Store.ListScoped(MemoryNaming.SplitCommaSeparated(scopes));
+        List<ScopedArtifact> entries;
+        try
+        {
+            entries = WorkspaceSetup.Store.ListScoped(MemoryNaming.SplitCommaSeparated(scopes));
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return Task.FromResult(EmitRecoveryBlocked(exception, json, "list"));
+        }
         if (entries.Count == 0)
         {
             if (json)
@@ -240,20 +248,28 @@ public partial class ScriniaCommands
         // purpose and splits at this boundary — see the matching comment on `List` above. A scope
         // name containing a comma is therefore unaddressable from `scri search`, unlike the MCP
         // `search` tool, which takes a real array.
-        var matches = (await SearchPipeline.ExecuteAsync(
-            store,
-            new SearchQuery(query)
-            {
-                Scopes = MemoryNaming.SplitCommaSeparated(scopes),
-                Limit = limit,
-                ExcludeTopics = MemoryNaming.SplitCommaSeparated(excludeTopics),
-                PathPrefix = pathPrefix,
-            },
-            SearchContributorContext.Current,
-            EntityGraphScoreContext.Current,
-            context,
-            surfaceEntityFacts: false,
-            cancellationToken)).Matches;
+        IReadOnlyList<SearchResult> matches;
+        try
+        {
+            matches = (await SearchPipeline.ExecuteAsync(
+                store,
+                new SearchQuery(query)
+                {
+                    Scopes = MemoryNaming.SplitCommaSeparated(scopes),
+                    Limit = limit,
+                    ExcludeTopics = MemoryNaming.SplitCommaSeparated(excludeTopics),
+                    PathPrefix = pathPrefix,
+                },
+                SearchContributorContext.Current,
+                EntityGraphScoreContext.Current,
+                context,
+                surfaceEntityFacts: false,
+                cancellationToken)).Matches;
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "search");
+        }
         if (matches.Count == 0)
         {
             if (json)
@@ -394,8 +410,16 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Remember([content], name, description ?? "", tagArray,
-            keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Remember([content], name, description ?? "", tagArray,
+                keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "store");
+        }
 
         // Store had no IsError guard at all and returned 0 unconditionally — the same dead-guard
         // defect already fixed at Show, Forget, Export and Import.
@@ -437,7 +461,15 @@ public partial class ScriniaCommands
         name = canonicalName;
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Recall(name, cancellationToken: cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Recall(name, cancellationToken: cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "show");
+        }
 
         // Reads the typed status. The previous guard tested StartsWith("Error:"), a shape ToYaml
         // has never emitted — every envelope opens with "status: " — so `scri show` exited 0 on a
@@ -487,7 +519,15 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Forget(name, cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Forget(name, cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "forget");
+        }
 
         // Same dead guard as Show — `scri forget` reported success on a real not-found.
         if (response.IsError)
@@ -549,7 +589,15 @@ public partial class ScriniaCommands
         }
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Append(content, name, cancellationToken: cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Append(content, name, cancellationToken: cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "append");
+        }
         return EmitMcpResult(response, json, "append");
     }
 
@@ -573,7 +621,15 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Compact(name, keepRecent, cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Compact(name, keepRecent, cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "compact");
+        }
         return EmitMcpResult(response, json, "compact");
     }
 
@@ -600,7 +656,15 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Link(from, to, reason, cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Link(from, to, reason, cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "link");
+        }
         return EmitMcpResult(response, json, "link");
     }
 }

@@ -2,6 +2,8 @@ using FluentAssertions;
 using System.IO.Compression;
 using System.Text.Json;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
+using Scrinia.Core.Models;
 using Scrinia.Commands;
 using Scrinia.Mcp;
 
@@ -159,6 +161,50 @@ public class BundleExitCodeTests
         }
     }
 
+    [Theory]
+    [MemberData(nameof(RecoveryBlockedImportJournals))]
+    public async Task Import_WhenRecoveryIsBlocked_PreservesTheExactDirectMcpYamlAndJournalBytes(
+        string name, byte[] journalBytes)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        string storeDirectory = store.GetStoreDirForScope("local:notes");
+        Directory.CreateDirectory(storeDirectory);
+        string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
+        await File.WriteAllBytesAsync(journalPath, journalBytes);
+        string bundlePath = CreateTopicBundle(scope.WorkspaceDir, "notes");
+
+        if (name == "replay")
+        {
+            FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, _) =>
+                transition == RestoreJournalTransition.BeforeReplayBody
+                    ? new IOException("Injected replay failure.")
+                    : null;
+        }
+
+        try
+        {
+            McpResponse direct = await new ScriniaMcpTools().Import(bundlePath, overwrite: true);
+            var (exit, output) = await CaptureJsonAsync(() =>
+                new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, overwrite: true, json: true));
+            using (output)
+            {
+                exit.Should().Be(1, $"{name} recovery journal blocks import");
+                string cliYaml = output.RootElement.GetProperty("message").GetString()!;
+                cliYaml.Should().Be(direct.ToYaml(),
+                    $"CLI JSON must embed the complete direct MCP envelope for {name} recovery");
+                ResponseParser.Parse(cliYaml).ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+            }
+
+            File.ReadAllBytes(journalPath).Should().Equal(journalBytes,
+                $"{name} recovery journal remains byte-for-byte available for replay");
+        }
+        finally
+        {
+            FileMemoryStore.RestoreJournalFailureInjector.Value = null;
+        }
+    }
+
     /// <summary>
     /// RULED 2026-08-10: an import that matched no topics is a failure, not a success.
     ///
@@ -253,6 +299,35 @@ public class BundleExitCodeTests
         using var writer = new StreamWriter(manifest.Open());
         writer.Write($$"""{"version":2,"topics":[],"totalEntries":0,"fileEntities":{{fileEntitiesJson}}}""");
         return bundlePath;
+    }
+
+    private static string CreateTopicBundle(string workspaceRoot, string topic)
+    {
+        string bundlePath = Path.Combine(workspaceRoot, "topic.scrinia-bundle");
+        using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        var entry = new ArtifactEntry("note", "file://bundle", 0, 1, DateTimeOffset.UtcNow);
+        BundleFormatService.WriteTopic(zip, TestHelpers.Store, topic, [entry], [(entry.Name, "NMP/2 bundle")]);
+        BundleFormatService.WriteManifest(zip, [topic], totalEntries: 1, fileEntities: null);
+        return bundlePath;
+    }
+
+    public static IEnumerable<object[]> RecoveryBlockedImportJournals()
+    {
+        yield return ["malformed", "{]"u8.ToArray()];
+        yield return ["newer", CreateNewerRestoreJournal()];
+        yield return ["replay", CreatePreparedRestoreJournal()];
+    }
+
+    private static byte[] CreateNewerRestoreJournal() =>
+        """{"format":"scrinia.restore-journal","version":2,"state":"prepared","transactionId":"0123456789abcdef0123456789abcdef","scope":"local:notes","entries":[{"name":"note","bodyFile":"note.nmp2","bodyBase64":"AQ==","bodySha256":"4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7c6f8a7c94e0c62","sidecarFile":"note.meta.json","sidecarBase64":"Ag==","sidecarSha256":"dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986"}]}"""u8.ToArray();
+
+    private static byte[] CreatePreparedRestoreJournal()
+    {
+        var entry = new ArtifactEntry("note", "file://bundle", 1, 1, DateTimeOffset.UtcNow);
+        RestoreJournal journal = RestoreJournalCodec.CreatePrepared("local:notes",
+            [new RestoreJournalPayload(entry, [1], [2])]);
+        return RestoreJournalCodec.Serialize(journal);
     }
 
     /// <summary>

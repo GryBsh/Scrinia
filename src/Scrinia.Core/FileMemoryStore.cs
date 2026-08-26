@@ -11,6 +11,19 @@ using Scrinia.Core.Search;
 
 namespace Scrinia.Core;
 
+internal enum RestoreJournalTransition
+{
+    BeforeRecoveryBarrierRead,
+    BeforePreparedWrite,
+    AfterPreparedWrite,
+    BeforeReplayBody,
+    BeforeReplaySidecar,
+    AfterReplayDestinations,
+    BeforeCompletedWrite,
+    AfterCompletedWrite,
+    BeforeCleanupDelete
+}
+
 /// <summary>
 /// Instance-based <see cref="IMemoryStore"/> backed by the filesystem.
 /// Each instance is scoped to a workspace root directory.
@@ -26,6 +39,8 @@ namespace Scrinia.Core;
 /// </summary>
 public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
+    /// <summary>Test-only crash seam around journal durable transitions.</summary>
+    internal static AsyncLocal<Func<RestoreJournalTransition, string, Exception?>?> RestoreJournalFailureInjector { get; } = new();
     /// <summary>Test-only seam receiving the exact bytes successfully written to a derived file.</summary>
     private static readonly object WriteObserverGate = new();
     private static Action<string, byte[]>? WriteObserverSlot;
@@ -272,6 +287,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             # Temporary files from interrupted writes
             **/*.tmp
+
+            # Interrupted topic restore journals (recovered on the next access)
+            **/.restore-journal.json
 
             # Vector indexes (derived from topic content; rebuild with `scri reindex`)
             embeddings/
@@ -655,7 +673,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// write lock, materialising the store first. Every write goes through here so that
     /// "writes materialize, reads do not" holds in one place.
     /// </summary>
-    private T WithExclusiveLock<T>(string scope, Func<T> body, TimeSpan? timeout = null)
+    private T WithExclusiveLock<T>(string scope, Func<T> body, TimeSpan? timeout = null,
+        Action<bool>? afterRecovery = null)
     {
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout);
@@ -663,6 +682,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         lk.EnterWriteLock();
         try
         {
+            bool completedJournalRetained = RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
+            afterRecovery?.Invoke(completedJournalRetained);
             return body();
         }
         finally
@@ -671,8 +692,69 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private void WithExclusiveLock(string scope, Action body, TimeSpan? timeout = null) =>
-        WithExclusiveLock(scope, () => { body(); return true; }, timeout);
+    private void WithExclusiveLock(string scope, Action body, TimeSpan? timeout = null,
+        Action<bool>? afterRecovery = null) =>
+        WithExclusiveLock(scope, () => { body(); return true; }, timeout, afterRecovery);
+
+    /// <summary>
+    /// Holds the scope's shared lock across a persistent read. If a journal is present, releases
+    /// the shared lock before escalating, recovers under the exclusive lock, then retries the
+    /// read. Keeping the check and read in one lock lifetime prevents a reader from observing a
+    /// prepared journal after its pre-check but before its body or sidecar access.
+    /// </summary>
+    private T WithRecoveryReadBarrier<T>(string scope, Func<T> read)
+    {
+        string storeDir = GetStoreDirForScope(scope);
+        if (!Directory.Exists(storeDir))
+            return read();
+
+        string journalPath = GetRestoreJournalPath(storeDir);
+        using (FileLock.AcquireShared(GetLockPath(scope)))
+        {
+            if (!File.Exists(journalPath))
+            {
+                ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead, journalPath);
+                return read();
+            }
+        }
+
+        // The shared lock must be released before escalation. WithExclusiveLock re-checks under
+        // the writer lock, so a concurrent recovery can finish between these acquisitions.
+        bool completedJournalRetained = false;
+        WithExclusiveLock(scope, static () => { }, afterRecovery: retained => completedJournalRetained = retained);
+        if (completedJournalRetained)
+        {
+            using var completedJournalReadLock = FileLock.AcquireShared(GetLockPath(scope));
+            return read();
+        }
+        return WithRecoveryReadBarrier(scope, read);
+    }
+
+    private async Task<T> WithRecoveryReadBarrierAsync<T>(string scope, Func<Task<T>> read)
+    {
+        string storeDir = GetStoreDirForScope(scope);
+        if (!Directory.Exists(storeDir))
+            return await read();
+
+        string journalPath = GetRestoreJournalPath(storeDir);
+        using (FileLock.AcquireShared(GetLockPath(scope)))
+        {
+            if (!File.Exists(journalPath))
+            {
+                ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead, journalPath);
+                return await read();
+            }
+        }
+
+        bool completedJournalRetained = false;
+        WithExclusiveLock(scope, static () => { }, afterRecovery: retained => completedJournalRetained = retained);
+        if (completedJournalRetained)
+        {
+            using var completedJournalReadLock = FileLock.AcquireShared(GetLockPath(scope));
+            return await read();
+        }
+        return await WithRecoveryReadBarrierAsync(scope, read);
+    }
 
     /// <summary>
     /// Test-only seam for <see cref="WithExclusiveLock(string, Action, TimeSpan?)"/>, which is
@@ -683,6 +765,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         => WithExclusiveLock(scope, body, timeout);
 
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
+    {
+        return WithRecoveryReadBarrier(scope, () => LoadIndexUnderRecoveryBarrier(scope));
+    }
+
+    private List<ArtifactEntry> LoadIndexUnderRecoveryBarrier(string scope)
     {
         var lk = GetIndexLock(scope);
 
@@ -760,7 +847,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             lk.ExitReadLock();
         }
 
-        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         lk.EnterReadLock();
         try
         {
@@ -1007,10 +1093,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         var yielded = new HashSet<(string Dir, string Name)>();
         foreach (string scope in ResolveReadScopes(["all"]))
         {
-            string primaryDir = GetStoreDirForScope(scope);
-            var primary = LoadEntriesFromSidecarsRaw(primaryDir);
-            if (primary.Count == 0)
-                primary = LoadEntriesFromLegacyIndex(primaryDir); // raw index.json fallback
+            var (primaryDir, primary) = WithRecoveryReadBarrier(scope, () =>
+            {
+                string storeDir = GetStoreDirForScope(scope);
+                var entries = LoadEntriesFromSidecarsRaw(storeDir);
+                if (entries.Count == 0)
+                    entries = LoadEntriesFromLegacyIndex(storeDir); // raw index.json fallback
+                return (storeDir, entries);
+            });
             foreach (var entry in primary)
                 if (yielded.Add((primaryDir, entry.Name.ToLowerInvariant())))
                     yield return (entry, scope, primaryDir);
@@ -1953,31 +2043,42 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
         CancellationToken ct = default)
     {
-        string path = ArtifactPath(subject, scope);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await AtomicWriteAllTextAsync(path, artifactText, ct);
-        _artifactCache.Invalidate($"{scope}|{subject}|");
+        ct.ThrowIfCancellationRequested();
+        WithExclusiveLock(scope, () =>
+        {
+            string path = ArtifactPath(subject, scope);
+            DurableFile.AtomicWriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(artifactText));
+            _artifactCache.Invalidate($"{scope}|{subject}|");
+        });
+        await Task.CompletedTask;
     }
 
     public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
     {
-        string path = ArtifactPath(subject, scope);
+        return await WithRecoveryReadBarrierAsync(scope, async () =>
+        {
+            string path = ArtifactPath(subject, scope);
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"Artifact not found: {subject} in scope {scope}", path);
 
-        if (!File.Exists(path))
-            throw new FileNotFoundException($"Artifact not found: {subject} in scope {scope}", path);
+            // Check LRU cache (keyed by scope|subject|lastWriteTicks for staleness safety)
+            long ticks = new FileInfo(path).LastWriteTimeUtc.Ticks;
+            string cacheKey = $"{scope}|{subject}|{ticks}";
+            if (_artifactCache.TryGet(cacheKey, out string cached))
+                return cached;
 
-        // Check LRU cache (keyed by scope|subject|lastWriteTicks for staleness safety)
-        long ticks = new FileInfo(path).LastWriteTimeUtc.Ticks;
-        string cacheKey = $"{scope}|{subject}|{ticks}";
-        if (_artifactCache.TryGet(cacheKey, out string cached))
-            return cached;
-
-        string text = await File.ReadAllTextAsync(path, ct);
-        _artifactCache.Set(cacheKey, text);
-        return text;
+            string text = await File.ReadAllTextAsync(path, ct);
+            _artifactCache.Set(cacheKey, text);
+            return text;
+        });
     }
 
     public bool DeleteArtifact(string subject, string scope)
+    {
+        return WithExclusiveLock(scope, () => DeleteArtifactUnsafe(subject, scope));
+    }
+
+    private bool DeleteArtifactUnsafe(string subject, string scope)
     {
         string path = ArtifactPath(subject, scope);
         if (!File.Exists(path))
@@ -2053,7 +2154,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (!PathContainment.IsWithin(scriniDir, filePath))
                 throw new UnauthorizedAccessException(
                     $"file:// URIs are restricted to the workspace .scrinia/ directory.");
-            return await File.ReadAllTextAsync(filePath, ct);
+            string? pathScope = GetArtifactPathScope(filePath);
+            if (pathScope is null)
+                return await File.ReadAllTextAsync(filePath, ct);
+            return await WithRecoveryReadBarrierAsync(pathScope, () => File.ReadAllTextAsync(filePath, ct));
         }
 
         // 3. Ephemeral memory (~name)
@@ -2068,12 +2172,29 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         // 4. Qualified name resolution
         var (scope, subject) = ParseQualifiedName(nameOrArtifact);
-        string path = FindArtifactPath(subject, scope);
+        return await WithRecoveryReadBarrierAsync(scope, async () =>
+        {
+            string path = FindArtifactPath(subject, scope);
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"Memory '{nameOrArtifact}' not found.", path);
+            return await File.ReadAllTextAsync(path, ct);
+        });
+    }
 
-        if (!File.Exists(path))
-            throw new FileNotFoundException($"Memory '{nameOrArtifact}' not found.", path);
+    private string? GetArtifactPathScope(string artifactPath)
+    {
+        if (!artifactPath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
+            return null;
 
-        return await File.ReadAllTextAsync(path, ct);
+        string memoriesRoot = Path.GetFullPath(MemoriesRoot);
+        string artifactDirectory = Path.GetDirectoryName(artifactPath)!;
+        if (!PathContainment.IsWithin(memoriesRoot, artifactDirectory))
+            return null;
+
+        string relativeDirectory = Path.GetRelativePath(memoriesRoot, artifactDirectory);
+        return relativeDirectory == "."
+            ? "local"
+            : $"local:{relativeDirectory.Replace(Path.DirectorySeparatorChar, '/')}";
     }
 
     // ── Listing & Search ─────────────────────────────────────────────────────
@@ -2146,6 +2267,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public EntityFactStore GetEntityFactStore()
     {
+        foreach (string scope in ResolveReadScopes(null))
+            WithRecoveryReadBarrier(scope, static () => true);
+
         long gen;
         lock (_factStoreLock)
         {
@@ -2544,6 +2668,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void ArchiveVersion(string subject, string scope = "local")
     {
+        WithExclusiveLock(scope, () => ArchiveVersionUnsafe(subject, scope));
+    }
+
+    private void ArchiveVersionUnsafe(string subject, string scope)
+    {
         string currentPath = ArtifactPath(subject, scope);
         if (!File.Exists(currentPath))
             return;
@@ -2703,13 +2832,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// it.</para>
     /// </summary>
     private const string ImportStagingSuffix = ".staging";
+    private const string RestoreJournalFileName = ".restore-journal.json";
 
     public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite)
+        Dictionary<string, byte[]> artifactBytes, bool overwrite)
     {
         try
         {
-            ImportTopicEntriesCore(topicScope, entries, artifactContents, overwrite);
+            ImportTopicEntriesCore(topicScope, entries, artifactBytes, overwrite);
         }
         catch (FileLockTimeoutException ex)
         {
@@ -2723,7 +2853,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     private void ImportTopicEntriesCore(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite)
+        Dictionary<string, byte[]> artifactBytes, bool overwrite)
     {
         WithExclusiveLock(topicScope, () =>
         {
@@ -2748,24 +2878,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // here would corrupt every other reader's live view.
             var existingEntries = LoadIndexUnsafe(topicScope).ToList();
 
-            var staged = new List<(string StagedPath, string FinalPath, ArtifactEntry Entry)>();
-            try
+            var candidates = new List<ArtifactEntry>();
+            foreach (ArtifactEntry entry in entries)
             {
-                foreach (var entry in entries)
-                {
-                    bool exists = existingEntries.Any(
-                        e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-                    if (exists && !overwrite)
-                        continue;
-
-                    // An entry listed in the bundle with no matching body in artifactContents
-                    // cannot be applied: there is nothing to stage, and splicing its metadata into
-                    // existingEntries anyway would leave the trailing PublishIndexUnsafe writing
-                    // that metadata over whatever body actually sits on disk locally (or over
-                    // nothing at all) — the same content/metadata divorce this branch closes.
-                    // Skip the entry entirely: no staging, no splice.
-                    if (!artifactContents.TryGetValue(entry.Name, out string? content))
-                        continue;
+                bool exists = existingEntries.Any(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                if (exists && !overwrite || !artifactBytes.ContainsKey(entry.Name))
+                    continue;
 
                     // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
                     // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
@@ -2774,85 +2892,240 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     // deserializes to default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that
                     // specific value is the only one rewritten to "now" here. Any OTHER unparseable
                     // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
-                    var updatedEntry = entry with
-                    {
-                        Uri = ArtifactUri(entry.Name, topicScope),
-                        CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
-                    };
-
-                    // Stage beside the destination — same directory, so the commit below is a
-                    // rename rather than a copy. The live artifact is not touched until every
-                    // body in this bundle is durably on disk.
-                    //
-                    // Token is 8 hex characters, not a full Guid ("N" is 32) — combined with the
-                    // atomic-write temp suffix, a full Guid here cut the maximum importable memory
-                    // name by ~48 characters for no benefit: collisions are impossible regardless
-                    // of width, since the caller holds the scope's exclusive lock (no concurrent
-                    // import can be staging into this directory) and SweepStaleStagingUnsafe clears
-                    // any leftovers from a prior run before this loop starts.
-                    string sanitized = SanitizeName(entry.Name);
-                    string finalPath = Path.Combine(storeDir, sanitized + ".nmp2");
-                    string token = Guid.NewGuid().ToString("N")[..8];
-                    string stagedPath = Path.Combine(
-                        storeDir, $"{sanitized}.import-{token}{ImportStagingSuffix}");
-                    AtomicWriteAllText(stagedPath, content);
-                    staged.Add((stagedPath, finalPath, updatedEntry));
-
-                    int idx = existingEntries.FindIndex(
-                        e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-                    if (idx >= 0)
-                        existingEntries[idx] = updatedEntry;
-                    else
-                        existingEntries.Add(updatedEntry);
-                }
-
-                // Refuse the WHOLE staged list before the first File.Move. This loop calls
-                // WriteSidecar directly, per entry, so WriteSidecars' whole-list pre-check does not
-                // cover it -- and a refusal raised from WriteSidecarCore's backstop mid-loop would
-                // abort after N bodies had already been renamed, the exact partial-restore failure
-                // class the transactional-restore work closed, re-created by its own successor.
-                // Checking `staged` alone was a Critical: PublishIndexUnsafe below hands
-                // `existingEntries` -- the ENTIRE scope -- to WriteSidecars, so one pre-existing
-                // newer memory made the publish throw AFTER every body had been moved, with the
-                // rollback deleting only still-staged files. Fully applied, reported as failed.
-                //
-                // `staged` is TODAY a subset of `existingEntries` (each is spliced in above), so
-                // the Concat is redundant. Kept deliberately: that subset relation is an invariant
-                // maintained twenty lines away, and this guard must not silently depend on it.
-                var blocking =
-                    staged.Select(s => s.Entry).Concat(existingEntries)
-                          .FirstOrDefault(ArtifactSidecarPolicy.IsReadOnly);
-                if (blocking is not null)
-                    throw new ScopeReadOnlyException(
-                        topicScope, blocking.Name, blocking.SchemaVersion ?? 1,
-                        DurableFormats.ArtifactSidecar.Current);
-
-                // COMMIT. Each body and each sidecar is individually atomic and flushed; the
-                // body-then-sidecar sequence is only prefix-consistent; no journal or recovery is
-                // added here. Per entry, content then that entry's sidecar leaves a crash-applied
-                // prefix rather than the whole bundle sitting under stale sidecars.
-                foreach (var (stagedPath, finalPath, entry) in staged)
+                candidates.Add(entry with
                 {
-                    FileRetry.Run(() => File.Move(stagedPath, finalPath, overwrite: true));
-                    WriteSidecar(entry, storeDir);
-                }
+                    Uri = ArtifactUri(entry.Name, topicScope),
+                    CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
+                });
+            }
 
-                // PublishIndexUnsafe, not SaveIndexUnsafe: import ADDS and OVERWRITES, and never
-                // removes. The orphan sweep is not a capability it needs — it is the mechanism that
-                // destroyed data here, so it is gone from this path rather than locked around.
-                PublishIndexUnsafe(existingEntries, topicScope);
-            }
-            catch
+            List<RestoreJournalPayload> payloads = BuildRestorePayloadsUnsafe(topicScope, candidates, artifactBytes, overwrite);
+            if (payloads.Count == 0)
+                return;
+
+            foreach (RestoreJournalPayload payload in payloads)
             {
-                // Roll back what is still staged. Anything already renamed is committed and
-                // consistent; rolling that back would need the previous content, which staging
-                // deliberately did not retain.
-                foreach (var (stagedPath, _, _) in staged)
-                    TryDeleteStagingFile(stagedPath);
-                throw;
+                ArtifactEntry updatedEntry = payload.Entry;
+                int idx = existingEntries.FindIndex(e => e.Name.Equals(updatedEntry.Name, StringComparison.OrdinalIgnoreCase));
+                if (idx >= 0)
+                    existingEntries[idx] = updatedEntry;
+                else
+                    existingEntries.Add(updatedEntry);
             }
+
+            var blocking = existingEntries.FirstOrDefault(ArtifactSidecarPolicy.IsReadOnly);
+            if (blocking is not null)
+                throw new ScopeReadOnlyException(topicScope, blocking.Name, blocking.SchemaVersion ?? 1,
+                    DurableFormats.ArtifactSidecar.Current);
+
+            RestoreJournal journal = RestoreJournalCodec.CreatePrepared(topicScope, payloads);
+            byte[] journalBytes = RestoreJournalCodec.Serialize(journal);
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforePreparedWrite,
+                GetRestoreJournalPath(storeDir));
+            DurableFile.AtomicWriteAllBytes(GetRestoreJournalPath(storeDir), journalBytes);
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterPreparedWrite,
+                GetRestoreJournalPath(storeDir));
+            ApplyPreparedJournalUnsafe(journal, storeDir);
+            InvalidateRecoveredScopeUnsafe(topicScope);
+            TryDeleteCompletedJournalUnsafe(GetRestoreJournalPath(storeDir));
         }, ImportLockTimeout);
     }
+
+    /// <summary>
+    /// Recovers a scope while its existing exclusive file and write locks are held.
+    ///
+    /// <para>State | Destination action | Verification | Next journal action</para>
+    /// <para>absent | none | none | continue</para>
+    /// <para>prepared | replay every body then sidecar | hash every destination | atomically write completed, invalidate, delete</para>
+    /// <para>completed | none | hash every destination | invalidate, delete</para>
+    /// <para>invalid/newer | none | none | retain and throw recovery-blocked</para>
+    /// </summary>
+    private bool RecoverScopeUnsafe(string scope, string storeDir)
+    {
+        string journalPath = GetRestoreJournalPath(storeDir);
+        if (!File.Exists(journalPath))
+            return false;
+
+        RestoreJournal journal;
+        try
+        {
+            journal = RestoreJournalCodec.ParseAndValidate(ReadJournalBytesUnsafe(journalPath, scope), scope, journalPath);
+        }
+        catch (RestoreRecoveryException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw ReplayIoFailed(scope, journalPath, exception);
+        }
+
+        try
+        {
+            if (journal.State == RestoreJournalState.Prepared)
+                ApplyPreparedJournalUnsafe(journal, storeDir);
+            else
+                VerifyJournalDestinationsUnsafe(journal, storeDir);
+        }
+        catch (RestoreRecoveryException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw ReplayIoFailed(scope, journalPath, exception);
+        }
+
+        InvalidateRecoveredScopeUnsafe(scope);
+        return !TryDeleteCompletedJournalUnsafe(journalPath);
+    }
+
+    private void ApplyPreparedJournalUnsafe(RestoreJournal journal, string storeDir)
+    {
+        string journalPath = GetRestoreJournalPath(storeDir);
+        var payloads = journal.Entries.Select(entry => (Entry: entry,
+            Bytes: RestoreJournalCodec.DecodeAndVerifyPayloads(entry, journal.Scope, journalPath))).ToList();
+
+        foreach ((RestoreJournalEntry entry, (byte[] body, byte[] sidecar) bytes) in payloads)
+        {
+            string bodyPath = Path.Combine(storeDir, entry.BodyFile);
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeReplayBody, bodyPath);
+            DurableFile.AtomicWriteAllBytes(bodyPath, bytes.body);
+
+            string sidecarPath = Path.Combine(storeDir, entry.SidecarFile);
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeReplaySidecar, sidecarPath);
+            DurableFile.AtomicWriteAllBytes(sidecarPath, bytes.sidecar);
+        }
+
+        ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterReplayDestinations, journalPath);
+        VerifyJournalDestinationsUnsafe(journal, storeDir);
+        ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeCompletedWrite, journalPath);
+        DurableFile.AtomicWriteAllBytes(journalPath, RestoreJournalCodec.Serialize(RestoreJournalCodec.WithCompleted(journal)));
+        ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterCompletedWrite, journalPath);
+    }
+
+    private static byte[] ReadJournalBytesUnsafe(string journalPath, string scope)
+    {
+        using var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return ReadBoundedJournalStream(stream, RestoreJournalCodec.MaxJournalJsonBytes, scope, journalPath);
+    }
+
+    /// <summary>Materializes a restore journal while enforcing its byte cap as each stream read
+    /// arrives, rather than trusting a stale length snapshot before reading.</summary>
+    internal static byte[] ReadBoundedJournalStream(Stream stream, long maximumBytes, string scope, string journalPath)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumBytes);
+        using var materialized = new MemoryStream();
+        byte[] buffer = new byte[81_920];
+
+        while (true)
+        {
+            int read = stream.Read(buffer);
+            if (read == 0)
+                return materialized.ToArray();
+
+            if (read > maximumBytes - materialized.Length)
+                throw new RestoreRecoveryException(scope, journalPath,
+                    RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+                    "Restore journal exceeds the maximum document size.");
+
+            materialized.Write(buffer, 0, read);
+        }
+    }
+
+    private static void VerifyJournalDestinationsUnsafe(RestoreJournal journal, string storeDir)
+    {
+        string journalPath = GetRestoreJournalPath(storeDir);
+        foreach (RestoreJournalEntry entry in journal.Entries)
+        {
+            VerifyJournalDestination(Path.Combine(storeDir, entry.BodyFile), entry.BodySha256, journal, journalPath);
+            VerifyJournalDestination(Path.Combine(storeDir, entry.SidecarFile), entry.SidecarSha256, journal, journalPath);
+        }
+    }
+
+    private static void VerifyJournalDestination(string path, string expectedHash, RestoreJournal journal,
+        string journalPath)
+    {
+        byte[] bytes = File.ReadAllBytes(path);
+        string actualHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        if (string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
+            return;
+
+        throw new RestoreRecoveryException(journal.Scope, journalPath, RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+            "Restore journal destination failed integrity verification.");
+    }
+
+    private void InvalidateRecoveredScopeUnsafe(string scope)
+    {
+        _indexCache.TryRemove(scope, out _);
+        _artifactCache.Invalidate($"{scope}|");
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            _cachedTopics = null;
+        InvalidateFactStore(persistentMutation: true);
+    }
+
+    private static bool TryDeleteCompletedJournalUnsafe(string journalPath)
+    {
+        try
+        {
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeCleanupDelete, journalPath);
+            File.Delete(journalPath);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Completion was already verified and durably recorded. Keep that evidence; a later
+            // access re-verifies the destinations and retries this cleanup.
+            return false;
+        }
+    }
+
+    private static void ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition transition, string destination)
+    {
+        Exception? failure = RestoreJournalFailureInjector.Value?.Invoke(transition, destination);
+        if (failure is not null)
+            throw failure;
+    }
+
+    private static RestoreRecoveryException ReplayIoFailed(string scope, string journalPath, Exception exception) =>
+        new(scope, journalPath, RestoreRecoveryFailure.ReplayIoFailed,
+            $"Restore replay failed for topic scope '{scope}'.", exception);
+
+    private List<RestoreJournalPayload> BuildRestorePayloadsUnsafe(string topicScope, List<ArtifactEntry> incoming,
+        Dictionary<string, byte[]> bodies, bool overwrite)
+    {
+        if (incoming.Count > RestoreJournalCodec.MaxJournalEntryCount)
+            throw new InvalidOperationException("Imported topic exceeds the restore journal entry limit.");
+
+        var payloads = new List<RestoreJournalPayload>(incoming.Count);
+        long aggregatePayloadBytes = 0;
+        foreach (ArtifactEntry entry in incoming)
+        {
+            if (!bodies.TryGetValue(entry.Name, out byte[]? bodyBytes))
+                continue;
+            if (bodyBytes.LongLength > RestoreJournalCodec.MaxRawNmp2BodyBytes)
+                throw new InvalidOperationException($"Imported artifact '{entry.Name}' exceeds the maximum raw NMP/2 body size.");
+
+            aggregatePayloadBytes = RestoreJournalCodec.AddDecodedPayloadLength(
+                aggregatePayloadBytes, bodyBytes.LongLength, topicScope, "<new restore journal>");
+
+            ArtifactEntry normalizedEntry = entry.NormalizeAttributesKey();
+            byte[] sidecarBytes = JsonSerializer.SerializeToUtf8Bytes(normalizedEntry,
+                FileStoreJsonContext.Default.ArtifactEntry);
+            if (sidecarBytes.LongLength > RestoreJournalCodec.MaxSidecarBytes)
+                throw new InvalidOperationException($"Imported artifact '{entry.Name}' sidecar exceeds the maximum size.");
+
+            aggregatePayloadBytes = RestoreJournalCodec.AddDecodedPayloadLength(
+                aggregatePayloadBytes, sidecarBytes.LongLength, topicScope, "<new restore journal>");
+
+            payloads.Add(new RestoreJournalPayload(normalizedEntry, bodyBytes, sidecarBytes));
+        }
+
+        return payloads;
+    }
+
+    private static string GetRestoreJournalPath(string storeDir) => Path.Combine(storeDir, RestoreJournalFileName);
 
     /// <summary>Best-effort removal of a staging file. A leftover is inert litter, not
     /// corruption — it is invisible to every enumerator in the store — so a failure to delete

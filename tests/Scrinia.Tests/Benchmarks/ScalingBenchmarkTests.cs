@@ -7,6 +7,7 @@ namespace Scrinia.Tests.Benchmarks;
 /// Measures how token consumption scales with corpus size.
 /// Expected: Flat-file linear, Scrinia near-constant, Auto sublinear.
 /// </summary>
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class ScalingBenchmarkTests(ITestOutputHelper output)
 {
     private static readonly int[] ScalePoints = [10, 50, 100, 500];

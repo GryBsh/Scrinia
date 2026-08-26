@@ -10,6 +10,16 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — interrupted bundle restores recover per topic scope
+
+- Bundle topic restore now records a durable, versioned journal containing the final artifact body and
+  sidecar bytes before changing that topic. After an interruption, the next access rolls the affected
+  topic forward to those verified bytes before returning data or accepting a write.
+- Recovery is scoped to one persistent topic and is demand-driven. Other topics and ephemeral memories
+  remain available; imports across multiple topics and skill/agent file entities are not one transaction.
+- A malformed, integrity-failed, or newer restore journal is retained and blocks only its topic with
+  `RECOVERY_BLOCKED` guidance. Recovery never guesses, rolls back, or rereads the source bundle.
+
 ### Fixed — durable file replacement and bundle file-entity admission
 
 - Artifact sidecars, skill and agent files, and imported bundle file entities now replace each selected
@@ -18,7 +28,8 @@ and all assembly attributes.
   forward-versioned members now fail with `INVALID_BUNDLE`; filesystem write failures report
   `DURABLE_WRITE_FAILED` through both MCP and `scri bundle import`.
 - This is per-file durability, not transactional restore: an interruption can leave a complete applied
-  prefix of a skill/agent pair or bundle file set. Journaled restore recovery remains future work.
+  prefix of a skill/agent pair or bundle file set. Topic artifact restores use their own per-topic
+  recovery journal; file-entity sets remain independently durable.
 
 ### Fixed (breaking) — public outcomes now match durable writes and CLI data
 

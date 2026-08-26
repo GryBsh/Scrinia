@@ -15,13 +15,13 @@ namespace Scrinia.Benchmarks;
 /// <para>The in-process toolchain is not a preference — it is a workaround. BenchmarkDotNet's
 /// default out-of-process toolchain generates a throwaway csproj and resolves it by searching the
 /// whole repository tree for a project file matching the benchmark assembly's name. This
-/// workspace carries an unrelated stray git worktree under <c>.claude/worktrees/</c> that happens
-/// to contain its own checked-out copy of <c>tests/Scrinia.Benchmarks/Scrinia.Benchmarks.csproj</c>,
-/// so that search finds two matches and BenchmarkDotNet throws
+/// agent harness can create a second checkout under <c>.claude/worktrees/</c> at any time, containing
+/// its own <c>tests/Scrinia.Benchmarks/Scrinia.Benchmarks.csproj</c>. That recurring worktree shape
+/// makes the search find two matches and BenchmarkDotNet throws
 /// <c>NotSupportedException: Found more than one matching project file</c> before a single
 /// iteration runs. In-process execution skips project generation entirely, so the collision never
 /// enters the picture. <see cref="LoadIndexBenchmarks"/> and <see cref="Bm25ScorerBenchmarks"/>
-/// predate that stray worktree's presence and were not touched here.</para>
+/// do not mutate on-disk state and need neither this monitoring configuration nor its toolchain.</para>
 ///
 /// <para>Combining two independent job characteristics (strategy + toolchain) can't be done with
 /// two separate attributes on one class — <c>[SimpleJob(...)]</c> plus <c>[InProcess]</c> would

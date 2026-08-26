@@ -10,6 +10,7 @@ namespace Scrinia.Tests;
 /// and bits per token.
 /// </summary>
 [Collection(Nmp2DecodeCapCollection.Name)]
+[Trait("Category", "LongRunningBenchmark")]
 public sealed class Nmp2BenchmarkTests(ITestOutputHelper output)
 {
     private static readonly Nmp2Strategy Strategy = new();

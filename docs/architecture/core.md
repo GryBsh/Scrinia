@@ -403,6 +403,24 @@ Instance-based implementation of `IMemoryStore`, and the only one. One instance 
 3. If input starts with `~` → read from ephemeral store
 4. Otherwise → parse as qualified name, read from filesystem
 
+### Journaled Bundle Restore Recovery
+
+Bundle topic imports use a private, versioned `.restore-journal.json` in the affected persistent
+scope. Before replacing any imported artifact, the journal records the transaction's final raw body
+and serialized sidecar bytes with SHA-256 hashes. A pending journal is recovered synchronously before
+that scope returns cached or on-disk data, or accepts a write: `prepared` journals replay and verify
+their final bytes, while `completed` journals verify and clean up without replacing destinations.
+
+Recovery is demand-driven and scoped to one persistent topic. A pending or blocked journal neither
+stops another topic nor affects ephemeral memories. Journal admission is bounded to 1,000 entries,
+96 MiB per body, 16 MiB per sidecar, 128 MiB of decoded payload in total, and a 181,009,068-byte
+journal document; malformed, integrity-failed, unsupported-version, or unreplayable journals remain
+unchanged and block only their own scope.
+
+This is roll-forward recovery, not rollback. It does not make a whole bundle, multiple topic scopes,
+or skill/agent file entities one transaction, and it never reopens the source bundle to recover.
+The journal is private control data: discovery, sidecar enumeration, and bundle export ignore it.
+
 ### CachedIndex
 
 Internal structure holding a scope's cached index entries:
