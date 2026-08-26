@@ -2855,6 +2855,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private void ImportTopicEntriesCore(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite)
     {
+        // Import bypasses MemoryWrite, so reject every unsafe durable leaf before materializing
+        // the scope lock or creating a staging artifact. Once a restore begins staging, failure
+        // must not leave residue for a later recovery sweep to interpret.
+        foreach (var entry in entries)
+            MemoryWrite.ValidatePersistentSubject(entry.Name);
+
         WithExclusiveLock(topicScope, () =>
         {
             string storeDir = GetStoreDirForScope(topicScope);

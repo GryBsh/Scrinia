@@ -168,36 +168,72 @@ public sealed class TransactionalRestoreTests
 
         string storeDir = Path.Combine(scope.TempDir, "notes");
 
-        // A bundle that overwrites `victim` and then fails: the second entry claims content the
-        // dictionary does not carry AND a name that cannot be written, so the import throws after
-        // `victim` would previously have been overwritten in place.
+        // A bundle that overwrites `victim` and then fails replaying its valid second entry, so
+        // the import throws after `victim` has been restored from the prepared journal.
         var bundled = new List<ArtifactEntry>
         {
             new("victim", "file://placeholder", 13, 1, DateTimeOffset.UtcNow),
-            new(new string('n', 300), "file://placeholder", 5, 1, DateTimeOffset.UtcNow),
+            new("later", "file://placeholder", 5, 1, DateTimeOffset.UtcNow),
         };
         var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["victim"] = "REPLACEMENT BODY",
-            [new string('n', 300)] = "boom",
+            ["later"] = "boom",
         };
 
-        Action failing = () => store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true);
-        failing.Should().Throw<Exception>(because: "the over-length component cannot be written");
+        FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, destination) =>
+            transition == RestoreJournalTransition.BeforeReplayBody
+            && destination.EndsWith("later.nmp2", StringComparison.Ordinal)
+                ? new IOException("Injected replay failure.")
+                : null;
+        try
+        {
+            Action failing = () => store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true);
+            failing.Should().Throw<IOException>(because: "the second journal entry cannot be replayed");
 
-        File.ReadAllText(Path.Combine(storeDir, "victim.nmp2")).Should().Be("REPLACEMENT BODY",
-            because: "a prepared journal replays entries in order before the later destination fails");
-        File.Exists(Path.Combine(storeDir, ".restore-journal.json")).Should().BeTrue(
-            because: "the prepared journal is durable recovery evidence, not staging residue");
+            File.ReadAllText(Path.Combine(storeDir, "victim.nmp2")).Should().Be("REPLACEMENT BODY",
+                because: "a prepared journal replays entries in order before the later destination fails");
+            File.Exists(Path.Combine(storeDir, ".restore-journal.json")).Should().BeTrue(
+                because: "the prepared journal is durable recovery evidence, not staging residue");
 
-        using var cold = new FileMemoryStore(scope.WorkspaceDir);
-        Action blocked = () => cold.LoadIndex(Scope);
-        blocked.Should().Throw<RestoreRecoveryException>().Which.Failure
-            .Should().Be(RestoreRecoveryFailure.ReplayIoFailed);
+            using var cold = new FileMemoryStore(scope.WorkspaceDir);
+            Action blocked = () => cold.LoadIndex(Scope);
+            blocked.Should().Throw<RestoreRecoveryException>().Which.Failure
+                .Should().Be(RestoreRecoveryFailure.ReplayIoFailed);
 
-        await cold.StoreAsync(new MemoryWrite("other", "local:other", ["available"]));
-        cold.LoadIndex("local:other").Should().ContainSingle().Which.Name.Should().Be("other",
-            because: "a replay I/O failure blocks only the journalled scope");
+            await cold.StoreAsync(new MemoryWrite("other", "local:other", ["available"]));
+            cold.LoadIndex("local:other").Should().ContainSingle().Which.Name.Should().Be("other",
+                because: "a replay I/O failure blocks only the journalled scope");
+        }
+        finally
+        {
+            FileMemoryStore.RestoreJournalFailureInjector.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task Import_RejectsAnOverlongSanitizedNameBeforeStagingOrMutatingLiveEntries()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        const string existingName = "keeper";
+        const string existingContent = "original body";
+        await store.StoreAsync(new MemoryWrite(existingName, Scope, [existingContent]));
+        string bodyBefore = await store.ReadArtifactAsync(existingName, Scope);
+        string storeDir = Path.Combine(scope.TempDir, "notes");
+        string rejectedName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
+
+        Action import = () => store.ImportTopicEntries(
+            Scope,
+            [new ArtifactEntry(rejectedName, "file://placeholder", 4, 1, DateTimeOffset.UtcNow)],
+            new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase) { [rejectedName] = "body"u8.ToArray() },
+            overwrite: true);
+
+        import.Should().Throw<InvalidMemoryWriteException>();
+        (await store.ReadArtifactAsync(existingName, Scope)).Should().Be(bodyBefore,
+            because: "a rejected prepared restore must not mutate an existing live artifact");
+        Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty(
+            because: "the name is refused before a restore body can be staged");
     }
 
     [Fact]

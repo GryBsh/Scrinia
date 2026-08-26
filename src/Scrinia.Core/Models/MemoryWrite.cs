@@ -64,12 +64,7 @@ public sealed record MemoryWrite
         Dictionary<string, string[]>? Attributes = null,
         string[]? Keywords = null)
     {
-        if (!MemoryNaming.IsEphemeralName(Name))
-        {
-            int sanitizedSubjectLength = MemoryNaming.SanitizeSegment(Name).Length;
-            if (sanitizedSubjectLength > MaxPersistentSubjectLength)
-                throw new InvalidMemoryWriteException(MaxPersistentSubjectLength, sanitizedSubjectLength);
-        }
+        ValidatePersistentSubject(Name);
 
         this.Name = Name;
         this.Scope = Scope;
@@ -77,6 +72,16 @@ public sealed record MemoryWrite
         this.Description = Description;
         this.Attributes = Attributes;
         this.Keywords = Keywords;
+    }
+
+    /// <summary>Rejects a persistent subject that cannot produce every durable filename.</summary>
+    public static void ValidatePersistentSubject(string name)
+    {
+        if (MemoryNaming.IsEphemeralName(name)) return;
+
+        int sanitizedSubjectLength = MemoryNaming.SanitizeSegment(name).Length;
+        if (sanitizedSubjectLength > MaxPersistentSubjectLength)
+            throw new InvalidMemoryWriteException(MaxPersistentSubjectLength, sanitizedSubjectLength);
     }
 
     /// <summary>Gets or initializes the resolved memory subject.</summary>

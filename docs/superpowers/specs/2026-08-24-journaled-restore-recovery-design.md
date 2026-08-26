@@ -110,14 +110,8 @@ The journal is UTF-8 JSON with no BOM, written through `DurableFile.AtomicWriteA
 sanitized names derived from `name` with `.nmp2` and `.meta.json` appended; separators, rooted
 paths, `.`/`..`, duplicates after case-insensitive comparison, and noncanonical names are
 malformed. Entries are non-empty and have unique names/files under ordinal-ignore-case comparison.
-Version 1 defines `RestoreJournalCodec.MaxRawNmp2BodyBytes` as a named, checked runtime bound for
-one raw `.nmp2` body. It is recomputed from the current `Nmp2Strategy.MaxDecodedBytes`: take
-`BrotliEncoder.GetMaxCompressedLength(MaxDecodedBytes)`, calculate its unpadded Base64Url character
-ceiling, add one newline for each 76-character Base64Url line, then add the fixed NMP/2
-header/footer overhead (including the bounded decimal-length field). Every intermediate arithmetic
-operation is checked. This is a bound on the raw NMP/2 text carried by the ZIP and journal, not on
-decoded memory content; it prevents a valid-size decoded artifact from bypassing admission with an
-unbounded incompressible representation.
+Version 1 defines `RestoreJournalCodec.MaxRawNmp2BodyBytes` as the 96 MiB limit for one raw
+`.nmp2` body. It bounds the ZIP member and journal payload before materialization or Base64 decode.
 
 `RestoreJournalCodec.MaxJournalJsonBytes` is a separate named checked bound for the complete UTF-8
 journal document, including JSON syntax, Base64 text, sidecars, and all entries. The reader checks
@@ -127,8 +121,29 @@ The ZIP body reader uses `MaxRawNmp2BodyBytes` the same way: reject an oversized
 materializing it and stop a streaming read when the running byte count crosses the bound. An
 oversized ZIP member is an `INVALID_BUNDLE` refusal; an oversized retained journal is a malformed
 recovery obligation and therefore blocks its scope. Each SHA-256 is calculated
-`hello` payload demonstrates the encoding and digest grammar only; a real journal carries the
-actual NMP/2 body and serialized sidecar bytes for its entry.
+over its decoded payload. The `hello` payload demonstrates the encoding and digest grammar only; a
+real journal carries the actual NMP/2 body and serialized sidecar bytes for its entry.
+
+### Journal resource bounds and admission order
+
+Version 1 admits at most **1,000 entries**. A decoded body is at most **96 MiB**
+(`100,663,296` bytes), a decoded sidecar is at most **16 MiB** (`16,777,216` bytes), and all
+decoded body and sidecar payloads in one journal total at most **128 MiB** (`134,217,728` bytes).
+
+The maximum journal JSON file size is this checked `long` expression:
+
+```csharp
+checked(4L * 1024L + checked(1_000L * (2L * 1024L)) +
+        checked((((128L * 1024L * 1024L) + 2L) / 3L) * 4L))
+// 181,009,068 bytes
+```
+
+Validation first rejects a file beyond that ceiling, then validates the JSON structure, canonical
+targets, and duplicate rules. Before each Base64 decode it validates encoded grammar and padding,
+derives exact decoded lengths, and uses checked per-entry and aggregate accounting. Only admitted
+payloads are decoded, defensively length-rechecked, and hash-verified. Bundle admission likewise
+preflights the raw NMP/2 bound and bounded streaming copy, while serialized sidecars are limited to
+16 MiB before a journal is created.
 
 The only version-1 states are `prepared` and `completed`:
 

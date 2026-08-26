@@ -18,8 +18,9 @@
 - The journal is `.restore-journal.json` beside `.lock`; it is private control data and must be ignored by discovery, sidecar enumeration, export, and bundle import.
 - Journal JSON is UTF-8 without BOM and all journal writes, state transitions, and replayed destination replacements use `DurableFile.AtomicWriteAllBytes`.
 - Version 1 has only `prepared` and `completed`. `prepared` is replayed in full; `completed` verifies destinations then only cleans up. There is no cursor or `applying` state.
-- `RestoreJournalCodec.MaxRawNmp2BodyBytes` is a named checked runtime limit derived from `Nmp2Strategy.MaxDecodedBytes`, `BrotliEncoder.GetMaxCompressedLength`, unpadded Base64Url encoded length, 76-character line wrapping, and fixed NMP/2 overhead. `MaxJournalJsonBytes` separately bounds the entire UTF-8 journal before deserialization or Base64 decoding.
+- `RestoreJournalCodec.MaxRawNmp2BodyBytes` bounds a decoded body at 96 MiB. `MaxJournalJsonBytes` separately bounds the entire UTF-8 journal before deserialization or Base64 decoding.
 - Reject ZIP `.nmp2` members exceeding `MaxRawNmp2BodyBytes` before materializing them (and stop a streaming read that crosses it) as `INVALID_BUNDLE`. Unsupported, malformed, wrong-scope, noncanonical, duplicate, undecodable, oversized, or hash-mismatched retained journals remain byte-for-byte in place and block only their scope. Never quarantine, delete, repair, or overwrite them.
+- Journal admission also permits at most 1,000 entries, 96 MiB decoded body bytes per entry, 16 MiB decoded sidecar bytes per entry, and 128 MiB aggregate decoded payload. The full journal has the checked 181,009,068-byte ceiling, and validation proves encoded and derived decoded lengths with checked aggregate accounting before any Base64 decode.
 - Every persistent read and write is gated; ephemeral memories remain ungated and other persistent scopes remain available. A lock timeout is a loud contention failure, never a recovery bypass.
 - Preserve the existing additive import and stale-`.staging` cleanup rules. Do not create whole-bundle/file-entity transactions, rollback, migration/compact/ordinary-write journals, or a background recovery sweep.
 - Use source-generated JSON contexts only; do not introduce reflection serialization or a Core → MCP dependency.
@@ -67,7 +68,7 @@
 
 Create tests that assert `DurableFormats.All` contains `RestoreJournal` once, has `Current == 1`, `AbsentMeans == null`, and refuses both version `0`/absent and version `2`. Add source-generation serialization coverage that creates a one-entry prepared journal, serializes it, parses it through `RestoreJournalCodec`, and asserts exact decoded body and sidecar bytes plus lowercase 64-character SHA-256 values.
 
-Add table-driven invalid cases: non-object JSON, absent/foreign `format`, version 0/2, unknown state, empty entries, wrong scope, `../x.nmp2`, rooted paths, `x/y.nmp2`, noncanonical filenames, duplicate names/files ignoring case, invalid base64, uppercase/non-hex digest, payload-hash mismatch, and a document exceeding `MaxJournalJsonBytes`. Each must throw `RestoreRecoveryException` with `Failure == MalformedOrIntegrityFailed` except version 2, which must be `UnsupportedVersion`. Assert an oversized document is rejected before JSON deserialization or Base64 decode.
+Add table-driven invalid cases: non-object JSON, absent/foreign `format`, version 0/2, unknown state, empty entries, wrong scope, `../x.nmp2`, rooted paths, `x/y.nmp2`, noncanonical filenames, duplicate names/files ignoring case, invalid base64, uppercase/non-hex digest, payload-hash mismatch, oversized encoded body/sidecar, aggregate decoded payload over 128 MiB, checked arithmetic overflow, and a document exceeding `MaxJournalJsonBytes`. Each must throw `RestoreRecoveryException` with `Failure == MalformedOrIntegrityFailed` except version 2, which must be `UnsupportedVersion`. Assert every unsupported, malformed, oversized, or overflowed journal remains byte-for-byte unchanged and a different scope remains accessible; an oversized document must be rejected before JSON deserialization or Base64 decode.
 
 - [ ] **Step 2: Run the focused tests and confirm they fail**
 
@@ -86,7 +87,17 @@ internal sealed record RestoreJournalPayload(
     ArtifactEntry Entry, byte[] BodyBytes, byte[] SidecarBytes);
 ```
 
-`CreatePrepared` must generate `transactionId` with `Guid.NewGuid().ToString("N")`, set `Format` to `"scrinia.restore-journal"`, set `Version` from `DurableFormats.RestoreJournal.Current`, and derive each file name exclusively as `SanitizeName(name) + ".nmp2"` and `SanitizeName(name) + ".meta.json"`. It must compute `Convert.ToHexStringLower(SHA256.HashData(bytes))` from the exact in-memory arrays and Base64-encode those same arrays. `ParseAndValidate` must first reject JSON larger than `MaxJournalJsonBytes`, then enforce the inverse rules before decoding any payload into a destination write. It must reject a raw body whose decoded Base64 length exceeds `MaxRawNmp2BodyBytes`, bound sidecars, and compare hashes with ordinal, case-sensitive equality after requiring lowercase digest grammar. Do not describe or rely on a pre-existing raw bundle-body limit: none exists.
+`CreatePrepared` must generate `transactionId` with `Guid.NewGuid().ToString("N")`, set `Format` to `"scrinia.restore-journal"`, set `Version` from `DurableFormats.RestoreJournal.Current`, and derive each file name exclusively as `SanitizeName(name) + ".nmp2"` and `SanitizeName(name) + ".meta.json"`. It must compute `Convert.ToHexStringLower(SHA256.HashData(bytes))` from the exact in-memory arrays and Base64-encode those same arrays. Before creating a journal, reject more than 1,000 payloads, a body over 96 MiB, a UTF-8 serialized sidecar over 16 MiB, or checked aggregate decoded bytes over 128 MiB. `ParseAndValidate` must first reject JSON larger than `MaxJournalJsonBytes`, then enforce the inverse rules before decoding any payload into a destination write. It must reject a raw body whose decoded Base64 length exceeds `MaxRawNmp2BodyBytes`, bound sidecars, and compare hashes with ordinal, case-sensitive equality after requiring lowercase digest grammar.
+
+It must validate the journal file length against this checked `long` ceiling before reading or parsing it:
+
+```csharp
+checked(4L * 1024L + checked(1_000L * (2L * 1024L)) +
+        checked((((128L * 1024L * 1024L) + 2L) / 3L) * 4L))
+// 181,009,068 bytes
+```
+
+After structural validation, it must validate each encoded length and Base64 grammar/padding, derive each exact decoded length without decoding, and use checked `long` per-entry and aggregate accounting before any Base64 decode. It must then enforce the 96 MiB body, 16 MiB sidecar, and 128 MiB aggregate limits, decode, defensively recheck lengths, and compare hashes.
 
 Add the `DurableFormats.RestoreJournal` declaration and registry entry. Do not put journal DTOs in `FileStoreJsonContext`: journal serialization has its own source-generated context and no artifact sidecar behavior.
 
@@ -275,7 +286,7 @@ Expected: PASS; cached index, artifact, and facts results are never published be
 
 - [ ] **Step 1: Write failing blocked-journal tests**
 
-Handcraft journals for newer version, malformed JSON, wrong scope, noncanonical target, duplicate target, base64/hash mismatch, oversized full JSON, and completed destination hash mismatch. Exercise `LoadIndex`, `ReadArtifactAsync`, `StoreAsync`, `AppendAsync`, `WriteArtifactAsync`, `ListScoped`, `SearchAll`, and `GetEntityFactStore` for the journalled scope. Assert no destination bytes and journal bytes change, and another scope remains usable.
+Handcraft journals for newer version, malformed JSON, wrong scope, noncanonical target, duplicate target, base64/hash mismatch, oversized full JSON or encoded payload, aggregate decoded payload over 128 MiB, arithmetic overflow, and completed destination hash mismatch. Exercise `LoadIndex`, `ReadArtifactAsync`, `StoreAsync`, `AppendAsync`, `WriteArtifactAsync`, `ListScoped`, `SearchAll`, and `GetEntityFactStore` for the journalled scope. Assert no destination bytes change, the original journal byte array remains byte-for-byte identical, and another scope remains usable.
 
 Add a route-level matrix using a persistent path/scope that is blocked by each journal class. Assert `RECOVERY_BLOCKED`, the exception's canonical scope/path/copy, and retained journal bytes for **each** public MCP route: `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `facts`, and `import`. Cover `import` in `BundleExitCodeTests`; cover the other nine in `McpRecoveryBlockedRouteTests`. Add control assertions that a malformed bundle remains `INVALID_BUNDLE`, a `DurableWriteException` remains `DURABLE_WRITE_FAILED`, and an unrelated exception still follows the route's existing classification.
 
@@ -387,3 +398,4 @@ Confirm the change set contains only the files in this plan plus any necessary g
 - **Type consistency:** Complete. `RestoreJournalPayload` is produced after bounded ZIP admission and before import consumes it; codec, states, checked limits, exception, and format registry are established before replay; recovery helpers are defined before access routes call them; `RECOVERY_BLOCKED` and `RecoveryBlockedResponse(RestoreRecoveryException)` are declared before all ten MCP-route mapping tests consume them.
 - **Scope check:** Complete. The plan explicitly excludes rollback, whole-bundle/file-entity atomicity, background sweeping, and journals for ordinary writes, migration, compaction, and ephemeral memory.
 - **Blockers:** None. Task 5 enumerates remember, recall, search, list, append, forget, compact, link, facts, and import, so no persistent MCP route can omit the narrow `RestoreRecoveryException` mapping or degrade a blocked recovery to `INTERNAL`.
+- **Approved bounds:** Complete. The plan records the exact 181,009,068-byte checked-`long` journal formula, all entry and aggregate payload ceilings, validation order, byte-for-byte blocked-residue rule, and boundary/overflow coverage.

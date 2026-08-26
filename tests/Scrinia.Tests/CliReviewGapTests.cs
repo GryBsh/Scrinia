@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
 
@@ -135,6 +136,7 @@ public sealed class CliReviewGapTests
     public async Task Reindex_JsonSerializesTheRevisedGeneratedSchema()
     {
         using var scope = new TestHelpers.StoreScope();
+        using var provider = WorkspaceSetup.OverrideEmbeddingProviderForTest(new TestEmbeddingProvider());
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Reindex(scope.WorkspaceDir, json: true));
@@ -148,6 +150,22 @@ public sealed class CliReviewGapTests
                                   $"{output.Skipped} skipped, {output.Failed} failed.");
         using var document = JsonDocument.Parse(json);
         AssertOnlyProperties(document.RootElement, "embedded", "total", "skipped", "failed", "message");
+    }
+
+    [Fact]
+    public async Task Reindex_WithoutAnEmbeddingProvider_EmitsStructuredErrorAndExitsOne()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        using var provider = WorkspaceSetup.OverrideEmbeddingProviderForTest(null);
+
+        var (exit, json) = await RunJsonAsync(() =>
+            new ScriniaCommands().Reindex(scope.WorkspaceDir, json: true));
+
+        exit.Should().Be(1);
+        JsonSerializer.Deserialize(json, CliJsonContext.Default.CliErrorOutput)!.Error
+            .Should().Contain("no embedding provider is available");
+        using var document = JsonDocument.Parse(json);
+        AssertOnlyProperties(document.RootElement, "error");
     }
 
     [Fact]
@@ -214,5 +232,20 @@ public sealed class CliReviewGapTests
         var entry = new ArtifactEntry(name, "", "firstsecond".Length, 2, DateTimeOffset.UtcNow);
         string sidecarPath = Path.Combine(store.GetStoreDirForScope("local"), MemoryNaming.SanitizeSegment(name) + ".meta.json");
         await File.WriteAllTextAsync(sidecarPath, JsonSerializer.Serialize(entry));
+    }
+
+    private sealed class TestEmbeddingProvider : IEmbeddingProvider
+    {
+        public bool IsAvailable => true;
+        public int Dimensions => 3;
+        public string Signature => "test:cli-review-gap";
+
+        public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default) =>
+            Task.FromResult<float[]?>([1f, 0f, 0f]);
+
+        public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default) =>
+            Task.FromResult<float[][]?>(texts.Select(_ => new[] { 1f, 0f, 0f }).ToArray());
+
+        public void Dispose() { }
     }
 }

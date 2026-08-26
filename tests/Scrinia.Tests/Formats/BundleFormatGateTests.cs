@@ -144,6 +144,37 @@ public sealed class BundleFormatGateTests : IDisposable
     }
 
     [Fact]
+    public void Import_RefusesACraftedOverlongEntryNameBeforeLeavingRestoreResidue()
+    {
+        string rejectedName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
+        byte[] zipBytes;
+        using (var stream = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                var index = new BundleIndex(
+                    [new ArtifactEntry(rejectedName, "", 4, 1, DateTimeOffset.UtcNow)]);
+                WriteZipText(zip, "topics/test/index.json",
+                    JsonSerializer.Serialize(index, BundleFormatService.DefaultJsonOptions));
+                WriteZipText(zip, $"topics/test/{rejectedName}.nmp2", "body");
+                WriteZipText(zip, "manifest.json", """{"version":1,"topics":["test"],"totalEntries":1}""");
+            }
+            zipBytes = stream.ToArray();
+        }
+
+        using var readStream = new MemoryStream(zipBytes);
+        using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
+
+        Action import = () => BundleFormatService.ImportTopicsFromZip(
+            zipRead, _store, filterTopics: null, overwrite: true);
+
+        import.Should().Throw<InvalidOperationException>()
+            .WithMessage("*exceeds 182 sanitized characters*");
+        Directory.Exists(Path.Combine(_workspaceRoot, ".scrinia", "memories", "test"))
+            .Should().BeFalse(because: "parsed restore journals with unsafe names are refused before materialization");
+    }
+
+    [Fact]
     public void Import_RefusesForwardSkillSidecarBeforeTopicOrFileEntityWrites()
     {
         // This is binding coverage for the file-entity build pass: removing its call before

@@ -321,6 +321,20 @@ public static class BundleFormatService
                         $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
                         "with a missing or empty name.");
 
+                // Bundle entries bypass MemoryWrite, so enforce the same durable-leaf bound at
+                // the parse boundary. Refusing during the build pass leaves no topic journal or
+                // live artifact for this crafted entry.
+                try
+                {
+                    MemoryWrite.ValidatePersistentSubject(deserialized.Name);
+                }
+                catch (InvalidMemoryWriteException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Invalid bundle — topic '{topic}' has an entry '{deserialized.Name}' " +
+                        $"that {ex.Message}", ex);
+                }
+
                 // Same "refuse before any write" reasoning as the nameless-entry check above.
                 // Routed through DurableFormats.BundleEntry, NOT ArtifactSidecar: the same bytes
                 // read in a transport context get a different OnNewer (Refuse, not LoadReadOnly),

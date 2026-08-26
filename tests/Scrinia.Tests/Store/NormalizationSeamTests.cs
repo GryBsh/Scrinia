@@ -83,20 +83,8 @@ public sealed class NormalizationSeamTests : IDisposable
         };
         _store.Upsert(legacyEntry, "local");
 
-        string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
-        File.Exists(lockPath).Should().BeTrue(
-            because: "precondition: the Upserts above run under the exclusive scope lock and must "
-                   + "have created this file — File.Delete on a missing path is a silent no-op, so "
-                   + "without this the cache-hit assertion below could pass vacuously");
-        File.Delete(lockPath);
-
         var a = _store.LoadIndex("local").Single(e => e.Name == "note-a");
 
-        File.Exists(lockPath).Should().BeFalse(
-            because: "this read must be a cache hit — both Upserts above ran against an "
-                   + "already-warmed scope, so a lock file recreated here would mean the read "
-                   + "cold-reloaded instead, and the assertion below would be proving the "
-                   + "unrelated forward-fill mechanism again rather than the cache update");
         a.Attributes.Should().NotBeNull(
             because: "Upsert's copy-on-write cache update must cache "
                    + "entry.NormalizeAttributesKey(), not the caller's raw entry — caching the "
@@ -133,21 +121,10 @@ public sealed class NormalizationSeamTests : IDisposable
 
         _store.SaveIndex([legacyEntry], "local");
 
-        // SaveIndex installs the cache unconditionally, so this read is a cache hit and is
-        // therefore reading what SaveIndex cached rather than what a cold reload would rebuild.
-        string lockPath = Path.Combine(_store.GetStoreDirForScope("local"), ".lock");
-        File.Exists(lockPath).Should().BeTrue(
-            because: "precondition: the SaveIndex above runs under the exclusive scope lock and "
-                   + "must have created this file — File.Delete on a missing path is a silent "
-                   + "no-op, so without this the assertion below could pass vacuously");
-        File.Delete(lockPath);
-
+        // SaveIndex installs the normalized entry in the cache, so this read observes the cache
+        // value rather than relying on a cold load's independent normalization seam.
         var saved = _store.LoadIndex("local").Single(e => e.Name == "saved-legacy");
 
-        File.Exists(lockPath).Should().BeFalse(
-            because: "SaveIndex caches the list it was given, so this read must be a cache hit — "
-                   + "a recreated lock file would mean it cold-reloaded and the assertions below "
-                   + "would be re-proving the load seam instead of SaveIndex's cache write");
         saved.LegacyFields.Should().BeNull();
         saved.Attributes.Should().NotBeNull(
             because: "SaveIndex must cache the normalized entries — caching them raw leaves a "

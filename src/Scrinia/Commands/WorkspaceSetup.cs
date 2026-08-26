@@ -11,6 +11,7 @@ internal static class WorkspaceSetup
 {
     private static McpPluginHost? _pluginHost;
     private static IEmbeddingProvider? _embeddingProvider;
+    private static readonly AsyncLocal<EmbeddingProviderOverride?> _embeddingProviderOverride = new();
     private static readonly AsyncLocal<string?> _rootOverride = new();
     private static string? _root;
 
@@ -29,6 +30,21 @@ internal static class WorkspaceSetup
     /// async context. For tests that need root isolation under parallel execution; not
     /// wired into any production path.</summary>
     internal static void OverrideRoot(string? path) => _rootOverride.Value = path;
+
+    /// <summary>Temporarily replaces provider discovery for an isolated test flow.</summary>
+    internal static IDisposable OverrideEmbeddingProviderForTest(IEmbeddingProvider? provider)
+    {
+        EmbeddingProviderOverride? prior = _embeddingProviderOverride.Value;
+        _embeddingProviderOverride.Value = new EmbeddingProviderOverride(provider);
+        return new RestoreEmbeddingProviderOverride(prior);
+    }
+
+    private sealed record EmbeddingProviderOverride(IEmbeddingProvider? Provider);
+
+    private sealed class RestoreEmbeddingProviderOverride(EmbeddingProviderOverride? prior) : IDisposable
+    {
+        public void Dispose() => _embeddingProviderOverride.Value = prior;
+    }
 
     /// <summary>
     /// The configured store for this process. Throws if <see cref="Configure"/> has not run.
@@ -197,6 +213,11 @@ internal static class WorkspaceSetup
     /// </summary>
     internal static async Task LoadPluginsAsync(CancellationToken ct = default)
     {
+        if (_embeddingProviderOverride.Value is { } providerOverride)
+        {
+            return;
+        }
+
         var loggerFactory = LoggerFactory.Create(b => b
             .AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace)
             .SetMinimumLevel(LogLevel.Warning));
@@ -320,7 +341,8 @@ internal static class WorkspaceSetup
             if (done == total) Console.Error.WriteLine();
         }
 
-        var provider = _embeddingProvider;
+        EmbeddingProviderOverride? providerOverride = _embeddingProviderOverride.Value;
+        var provider = providerOverride is null ? _embeddingProvider : providerOverride.Provider;
         if (provider is { IsAvailable: true })
         {
             var options = BuildEmbeddingOptions();

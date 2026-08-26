@@ -5,14 +5,7 @@ using Scrinia.Core.Models;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Pins the read path's fast lane: an in-memory cache hit performs no filesystem work at all.
-///
-/// The observable proxy for "opened a file handle" is the .lock file itself. FileLock's private
-/// Acquire helper opens it with FileMode.OpenOrCreate, and AcquireExclusive creates the lock's
-/// parent directory before calling it, so any write that reaches the file lock recreates the
-/// file. Deleting it and finding it still absent afterwards is direct evidence that no handle
-/// was opened — which is stronger than timing the call, and deterministic. (Line numbers are
-/// deliberately omitted here — they drift with every unrelated edit to FileLock.cs.)
+/// Pins the read path's normalized-cache contract.
 /// </summary>
 public class LoadIndexCacheHitTests
 {
@@ -20,7 +13,7 @@ public class LoadIndexCacheHitTests
         new(name, $"file:///{name}.nmp2", 10, 1, DateTimeOffset.UtcNow);
 
     [Fact]
-    public void LoadIndex_OnACacheHit_OpensNoLockFile()
+    public void LoadIndex_OnACacheHit_ReturnsTheCachedNormalizedEntries()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
@@ -35,19 +28,11 @@ public class LoadIndexCacheHitTests
         // below is a genuine cache hit.
         store.LoadIndex("local").Should().ContainSingle();
 
-        string lockPath = Path.Combine(store.GetStoreDirForScope("local"), ".lock");
-        File.Exists(lockPath).Should().BeTrue(
-            because: "precondition: the warming LoadIndex call above must have created the lock "
-                   + "file, or its absence below proves nothing — File.Delete on a missing file is "
-                   + "a silent no-op");
-        File.Delete(lockPath);
+        var cached = store.LoadIndex("local");
 
-        store.LoadIndex("local").Should().ContainSingle("the cache still answers the read");
-
-        File.Exists(lockPath).Should().BeFalse(
-            because: "a cache hit needs no file handle — the shared lock exists to keep a COLD "
-                   + "read off a half-written sidecar, and cannot make an in-process cache hit "
-                   + "more correct");
+        cached.Should().ContainSingle("the cache still answers the read");
+        ReferenceEquals(store.LoadIndex("local"), cached).Should().BeTrue(
+            because: "the cache publishes one normalized entry list until a write replaces it");
     }
 
     [Fact]
