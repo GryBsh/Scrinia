@@ -2,11 +2,14 @@
 
 Common issues and solutions for the Scrinia CLI, server, and plugins.
 
+Examples marked `sh` use POSIX shell syntax. Use the equivalent commands in your preferred shell
+on other platforms.
+
 ## CLI Issues
 
 ### "No .scrinia/ directory found"
 
-The CLI walks up from the current directory looking for the nearest enclosing git repository and uses that repository's root as the workspace root. If no repository encloses the current directory, `cwd` itself is the workspace root and no upward search happens. Either way, `.scrinia/` is created lazily -- only once something is written; reading commands against a workspace with no store create nothing.
+The CLI walks up from the current directory looking for the nearest enclosing git repository and uses that repository's root as the resolved workspace root. If no repository encloses the current directory, `cwd` itself is the workspace root and no upward search happens. Either way, `.scrinia/` is created lazily by the first write; read-only commands against a workspace with no store create nothing.
 
 **Fix:** Run `scri` from within your project directory, or use `--workspace-root /path/to/project`.
 
@@ -14,7 +17,7 @@ The CLI walks up from the current directory looking for the nearest enclosing gi
 
 The workspace root is the nearest enclosing git repository, found by walking up from the current directory looking for a `.git` entry and stopping at the first one. A project that isn't inside any git repository uses its own directory as the root, with no upward search. This means two unrelated projects only ever share a store if they share the same enclosing repository -- a project's memories never bind to a `.scrinia/` sitting in a distant ancestor directory just because that ancestor happens to have one.
 
-If `scri` finds a `.scrinia/` directory outside the root it resolved to, it prints a warning to stderr on writes, `setup`, `serve` startup, and `restore` (the SessionStart hook, once per session), naming the ignored store, the root actually in use, and a ready-to-run migration command pair, for example:
+If `scri` finds a `.scrinia/` directory outside the root it resolved to, it prints a warning to stderr on selected memory-write commands (`store`, `forget`, `append`, `compact`, and `link`), `setup`, `serve` startup, and `restore` (the SessionStart hook, once per session). Bundle import is not included. The warning names the ignored store, the root actually in use, and a ready-to-run migration command pair, for example:
 
 ```
 scrinia: ignoring store at C:\ancestor\.scrinia
@@ -33,22 +36,28 @@ to migrate its memories:
 
 ### "Model not found" / Semantic search not working
 
-The built-in Model2Vec embedding model (~22MB) must be downloaded before semantic search works.
+On its first startup, `scri serve` automatically downloads the built-in Model2Vec embedding model
+(approximately 50 MB total, including supporting files), unless you pass `--no-auto-setup`. When an HTTP provider or the Vulkan provider is
+configured, that provider may use its own model and model-download process instead.
 
 **Fix:**
-```bash
+```sh
 scri setup
 ```
 
-This downloads `m2v-MiniLM-L6-v2` to `{exeDir}/models/`. Without it, search falls back to BM25-only (keyword matching still works).
+This downloads `m2v-MiniLM-L6-v2` to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Without the built-in
+model, search falls back to BM25-only (keyword matching still works). If you use an HTTP or
+Vulkan provider, follow that provider's model configuration instead.
 
 ### Slow first search after startup
 
-The first search in a scope computes BM25 corpus statistics and may load vectors. Subsequent searches use cached stats and the 50MB LRU artifact cache.
+The first search in a scope may load index entries, decode artifacts, and load vectors. The 50 MB
+LRU caches decoded artifact text; it does not cache BM25 corpus statistics, which are computed for
+each search over that search's candidate set.
 
 ### "Access denied" when publishing
 
-The `scri.exe` binary is locked while the MCP server is running.
+The `scri` executable is locked while the MCP server is running.
 
 **Fix:** Stop the MCP server (e.g., toggle it off in your editor's MCP settings), then re-run `publish.ps1`.
 
@@ -70,19 +79,22 @@ process, but a long-running `scri serve` keeps the values it started with — re
 
 ### Vulkan plugin not loading
 
-Symptoms: Semantic search works but uses CPU (Model2Vec) instead of GPU.
+Symptoms: semantic search uses the in-process provider instead of the Vulkan plugin, or search
+falls back to BM25 and path scoring after the configured plugin fails.
 
 **Checklist:**
-1. Plugin binary exists at `{exeDir}/plugins/scri-plugin-embeddings/scri-plugin-embeddings[.exe]` (checked first), or `{exeDir}/plugins/scri-plugin-embeddings[.exe]` (checked second)
+1. The configured plugin binary exists at `{exeDir}/plugins/{name}/{name}[.exe]` (checked first), or `{exeDir}/plugins/{name}[.exe]` (checked second). The default name is `scri-plugin-embeddings`.
 2. Vulkan drivers are installed and up to date
 3. GPU supports Vulkan (check with `vulkaninfo`)
-4. GGUF model exists at `{exeDir}/plugins/scri-plugin-embeddings/models/`
+4. The GGUF model exists at `{exeDir}/plugins/{name}/models/` (with the default name,
+   `{exeDir}/plugins/scri-plugin-embeddings/models/`)
 
 **Diagnostic:** Check CLI output during `scri serve` — plugin discovery is logged.
 
 ### Plugin crashes / "degraded to BM25-only"
 
-The CLI auto-reconnects crashed plugins up to 3 times. After 3 failures, it sets `_degraded = true` and falls back to BM25-only search. Plugin failures never break core memory operations.
+The CLI auto-reconnects crashed plugins up to 3 times. After 3 failures, it sets `_degraded = true`
+and falls back to BM25 and path scoring. Plugin failures never break core memory operations.
 
 **Fix:** Check the plugin's stderr output (forwarded to CLI logs). Common causes:
 - Out of GPU memory — try a smaller model
@@ -91,10 +103,14 @@ The CLI auto-reconnects crashed plugins up to 3 times. After 3 failures, it sets
 
 ### Plugin not found despite being installed
 
-Plugin discovery looks for executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`. The plugin name comes from the `plugins:embeddings` config setting (default: `scri-plugin-embeddings`).
+Plugin discovery looks for executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then
+`{exeDir}/plugins/{name}[.exe]`. The plugin name comes from the `plugins:embeddings` config
+setting (default: `scri-plugin-embeddings`). When a plugin executable is found, Scrinia skips
+built-in Model2Vec; if that plugin cannot start or becomes unavailable, it does not switch back to
+Model2Vec and search falls back to BM25 and path scoring.
 
 **Fix:**
-```bash
+```sh
 scri config plugins:embeddings    # Check current setting
 ls $(dirname $(which scri))/plugins/  # List discovered plugins
 ```
@@ -108,7 +124,7 @@ Every write to an existing memory archives the previous version — `store`, `ap
 number of frequently-edited memories rather than with the number of writes.
 
 **Fix:** Periodically clean old versions:
-```bash
+```sh
 # Remove versions older than 30 days
 find .scrinia/memories -path "*/versions/*.nmp2" -mtime +30 -delete
 ```
@@ -118,7 +134,10 @@ safe. See [Version retention](#version-retention) below for what is kept and for
 
 ### Search returns unexpected results
 
-Scrinia uses hybrid scoring: `fieldScore + bm25*5 + semanticScore`. If results seem wrong:
+Scrinia uses hybrid scoring. In the default additive mode, relevance is
+`attributeScore + normalizedBm25*5 + supplementalEmbeddingScore + entityGraphScore`; the final
+score is `alphaRelevance*relevance + alphaRecency*exp(-ageDays/tauDays)*recencyScale`. RRF mode
+combines the same sources by rank instead of raw score. If results seem wrong:
 
 1. Check if embeddings are active: `scri setup` (downloads model if missing)
 2. Keywords matter: agent-provided keywords get +5 TF boost, auto-extracted get +2
@@ -128,9 +147,19 @@ Scrinia uses hybrid scoring: `fieldScore + bm25*5 + semanticScore`. If results s
 
 Multiple processes against one workspace — several CLI invocations, or a CLI alongside a running
 `scri serve` — use OS-enforced file locks (`.lock` files per scope). If you see stale `.lock` files
-after a crash:
+after a crash, first stop `scri serve` and every other concurrent Scrinia CLI process. Do not delete
+lock files while a Scrinia process is still running: an active process may still be using the lock,
+and removing the file does not release its OS lock; another process could then write concurrently.
+After all Scrinia processes have stopped:
 
-**Fix:** Delete `.lock` files in `.scrinia/store/` and `.scrinia/topics/*/`. They are recreated automatically.
+**Fix:** In a POSIX shell, remove the lock files under the memories root and its topic
+subdirectories:
+
+```sh
+find .scrinia/memories -type f -name .lock -delete
+```
+
+They are recreated automatically.
 
 ### `RECOVERY_BLOCKED` during a memory or bundle operation
 
@@ -175,12 +204,12 @@ The NMP/2 archive carries the memory's `.meta.json` sidecar alongside the body, 
 version arrives with the keywords, attributes and drift baseline it had at the time.
 
 The `versions/` directories are gitignored by default (`.scrinia/.gitignore` includes
-`**/versions/`) so they don't pollute commits. Bundles produced by `scri bundle export` /
-`bundle('export')` do not include `versions/`.
+`**/versions/`) so they don't pollute commits. Bundles produced by `scri bundle export` do not
+include `versions/`. Bundle export is a CLI command; it is not an MCP operation.
 
 **Manual prune** for skill and agent rollback history (NMP/2 history is already self-managing):
 
-```bash
+```sh
 # Keep the 5 newest skill rollback snapshots per skill name
 for f in $(ls .scrinia/skills/versions/ | sed 's/_[0-9]*-[0-9]*\.md//' | sort -u); do
     ls -1t .scrinia/skills/versions/${f}_*.md | tail -n +6 | xargs -r rm

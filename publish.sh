@@ -152,24 +152,41 @@ fi
 # flattens all native DLLs to the root, and the CPU backend's (ggml-base, ggml, llama, mtmd)
 # overwrite the Vulkan ones since they share filenames — so LLamaSharp would load CPU.
 overwrite_vulkan_natives() {
-    local rid="$1" dest="$2" pkg src
+    local rid="$1" dest="$2" pkg src expected file
+    local -a expected_files
     case "$rid" in
-        win-*)   pkg="llamasharp.backend.vulkan.windows" ;;
-        linux-*) pkg="llamasharp.backend.vulkan.linux" ;;
+        win-*)
+            pkg="llamasharp.backend.vulkan.windows"
+            expected_files=("mtmd.dll" "llama.dll" "ggml.dll" "ggml-vulkan.dll" "ggml-base.dll")
+            ;;
+        linux-*)
+            pkg="llamasharp.backend.vulkan.linux"
+            expected_files=("libmtmd.so" "libllama.so" "libggml.so" "libggml-vulkan.so" "libggml-base.so")
+            ;;
         *)
-            echo "  [warn] no Vulkan backend package exists for $rid; shipping the CPU backend." >&2
+            # macOS has no Vulkan package in the supported release contract. Keep the explicit,
+            # intentional CPU fallback for that platform; Windows and Linux fail below instead.
+            echo "  [info] no Vulkan backend package exists for $rid; using the configured macOS CPU fallback." >&2
             return 0 ;;
     esac
     src="$HOME/.nuget/packages/$pkg/$VULKAN_BACKEND_VERSION/runtimes/$rid/native/vulkan"
-    if [ -d "$src" ]; then
-        # Not `cp -f "$src"/*`: under `set -e` that aborts the whole script if $src has no
-        # files (the glob stays literal) or contains a subdirectory ("omitting directory").
-        # -type f sidesteps both.
-        find "$src" -maxdepth 1 -type f -exec cp -f {} "$dest"/ \;
-        echo "    Overwrote root native DLLs with Vulkan variants"
-    else
-        echo "  [warn] Vulkan natives not found at $src; shipping the CPU backend." >&2
+    if [ ! -d "$src" ]; then
+        echo "Error: Vulkan natives not found at $src; refusing to ship a CPU fallback for $rid." >&2
+        exit 1
     fi
+    for expected in "${expected_files[@]}"; do
+        file="$src/$expected"
+        if [ ! -f "$file" ]; then
+            echo "Error: expected Vulkan native is missing: $file" >&2
+            exit 1
+        fi
+        cp -f "$file" "$dest/$expected"
+        if [ ! -f "$dest/$expected" ] || ! cmp -s "$file" "$dest/$expected"; then
+            echo "Error: copied Vulkan native does not match its package source: $dest/$expected" >&2
+            exit 1
+        fi
+    done
+    echo "    Overwrote and verified root native DLLs with Vulkan variants"
 }
 
 mkdir -p "$OUTPUT_DIR"

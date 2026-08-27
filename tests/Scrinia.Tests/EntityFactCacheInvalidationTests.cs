@@ -87,4 +87,33 @@ public sealed class EntityFactCacheInvalidationTests : IDisposable
         _target.GetEntityFactStore().Entities("person")
             .Should().NotContain(EntityRef.Of("person", "maria"));
     }
+
+    [Fact]
+    public void Upsert_ReplacesFactStoreAndItsScoringAdjacency()
+    {
+        var initial = new ArtifactEntry(
+            Name: "note",
+            Uri: "uri",
+            OriginalBytes: 1,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow,
+            Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] });
+        _target.Upsert(initial, "local");
+
+        var first = _target.GetEntityFactStore();
+        var firstAdjacency = first.ScoringAdjacency();
+
+        _target.Upsert(initial with
+        {
+            Attributes = new Dictionary<string, string[]> { ["person"] = ["jolene"] }
+        }, "local");
+
+        var replacement = _target.GetEntityFactStore();
+        var replacementAdjacency = replacement.ScoringAdjacency();
+
+        ReferenceEquals(first, replacement).Should().BeFalse();
+        replacementAdjacency.EntityToDocs.Should().ContainKey("person:jolene");
+        replacementAdjacency.EntityToDocs.Should().NotContainKey("person:maria");
+        firstAdjacency.EntityToDocs.Should().ContainKey("person:maria");
+    }
 }

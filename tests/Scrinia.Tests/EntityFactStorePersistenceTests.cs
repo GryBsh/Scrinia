@@ -152,15 +152,17 @@ public sealed class EntityFactStorePersistenceTests
             $"vectors.bin bytes counted as facts=0");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RepositoryCopy_N46_ReportsPathSpecificReadWriteAmplification()
     {
         const int corpusSize = 46;
         const int expectedLogicalPayloadBytes = 1302;
-        string repositoryRoot = FindRepositoryRoot();
-        string sourceScrinia = Path.Combine(repositoryRoot, ".scrinia");
+        string? sourceScrinia = FindRepositoryLocalScrinia();
+        Skip.If(sourceScrinia is null,
+            "The repository-local .scrinia corpus is unavailable; the N=46 measurement is skipped.");
+
         string temporaryRoot = Path.Combine(Path.GetTempPath(), $"scrinia_h6_{Guid.NewGuid():N}");
-        string sourceMemories = Path.Combine(sourceScrinia, "memories");
+        string sourceMemories = Path.Combine(sourceScrinia!, "memories");
         string[] sourceArtifacts = Directory.GetFiles(sourceMemories, "*.nmp2", SearchOption.AllDirectories)
             .Where(path => !path.Contains(Path.DirectorySeparatorChar + "sessions" + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase))
@@ -170,8 +172,10 @@ public sealed class EntityFactStorePersistenceTests
             .Take(corpusSize)
             .ToArray();
 
+        Skip.If(sourceArtifacts.Length < corpusSize,
+            $"The repository-local .scrinia corpus contains only {sourceArtifacts.Length} artifacts; N=46 is required.");
         sourceArtifacts.Should().HaveCount(corpusSize);
-        CopyCorpusForMeasurement(sourceScrinia, temporaryRoot, sourceArtifacts);
+        CopyCorpusForMeasurement(sourceScrinia!, temporaryRoot, sourceArtifacts);
 
         try
         {
@@ -449,15 +453,19 @@ public sealed class EntityFactStorePersistenceTests
         return $"{attrs}|kw=[{keywords}]";
     }
 
-    private static string FindRepositoryRoot()
+    private static string? FindRepositoryLocalScrinia()
     {
-        for (DirectoryInfo? directory = new(Directory.GetCurrentDirectory()); directory is not null; directory = directory.Parent)
+        for (DirectoryInfo? directory = new(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
         {
-            if (Directory.Exists(Path.Combine(directory.FullName, ".scrinia", "memories")))
-                return directory.FullName;
+            string gitMarker = Path.Combine(directory.FullName, ".git");
+            if (!File.Exists(gitMarker) && !Directory.Exists(gitMarker))
+                continue;
+
+            string scrinia = Path.Combine(directory.FullName, ".scrinia");
+            return Directory.Exists(Path.Combine(scrinia, "memories")) ? scrinia : null;
         }
 
-        throw new DirectoryNotFoundException("Could not locate the repository .scrinia corpus.");
+        return null;
     }
 
     private static void CopyCorpusForMeasurement(string sourceScrinia, string temporaryRoot, string[] selectedArtifacts)

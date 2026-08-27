@@ -106,22 +106,37 @@ function Set-VulkanNatives {
            else { $null }
 
     if (-not $pkg) {
-        # [Console]::Error, not Write-Warning: publish.sh writes these to stderr, and the two
-        # scripts are meant to be an equivalent pair. Write-Warning uses the warning stream.
-        [Console]::Error.WriteLine("  [warn] no Vulkan backend package exists for $Rid; shipping the CPU backend.")
+        # macOS has no Vulkan package in the supported release contract. Keep the explicit,
+        # intentional CPU fallback for that platform; Windows and Linux fail below instead.
+        [Console]::Error.WriteLine("  [info] no Vulkan backend package exists for $Rid; using the configured macOS CPU fallback.")
         return
     }
 
+    $expectedFiles = if ($Rid -like 'win-*') {
+        @('mtmd.dll', 'llama.dll', 'ggml.dll', 'ggml-vulkan.dll', 'ggml-base.dll')
+    } else {
+        @('libmtmd.so', 'libllama.so', 'libggml.so', 'libggml-vulkan.so', 'libggml-base.so')
+    }
     # $HOME, not $env:USERPROFILE: the latter is Windows-only and unset on Linux/macOS, which
     # made this branch never find the Vulkan natives there and silently ship the CPU backend
     # every time. $HOME is a PowerShell automatic variable on every platform.
     $src = "$HOME/.nuget/packages/$pkg/$VulkanBackendVersion/runtimes/$Rid/native/vulkan"
-    if (Test-Path $src) {
-        Copy-Item "$src/*" $Dest -Force
-        Write-Host '    Overwrote root native DLLs with Vulkan variants'
-    } else {
-        [Console]::Error.WriteLine("  [warn] Vulkan natives not found at $src; shipping the CPU backend.")
+    if (-not (Test-Path $src -PathType Container)) {
+        throw "Vulkan natives not found at $src; refusing to ship a CPU fallback for $Rid."
     }
+    foreach ($expectedFile in $expectedFiles) {
+        $sourceFile = Join-Path $src $expectedFile
+        $destinationFile = Join-Path $Dest $expectedFile
+        if (-not (Test-Path $sourceFile -PathType Leaf)) {
+            throw "Expected Vulkan native is missing: $sourceFile"
+        }
+        Copy-Item $sourceFile $destinationFile -Force
+        if (-not (Test-Path $destinationFile -PathType Leaf) -or
+            (Get-FileHash $sourceFile -Algorithm SHA256).Hash -cne (Get-FileHash $destinationFile -Algorithm SHA256).Hash) {
+            throw "Copied Vulkan native does not match its package source: $destinationFile"
+        }
+    }
+    Write-Host '    Overwrote and verified root native DLLs with Vulkan variants'
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null

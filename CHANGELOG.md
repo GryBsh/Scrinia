@@ -8,7 +8,7 @@ The single source of truth for the version number is `Directory.Build.props` at 
 repository root — bumping it there propagates to the CLI banner, the MCP `ServerInfo`,
 and all assembly attributes.
 
-## [Unreleased]
+## [0.6.0] — 2026-08-27
 
 ### Fixed — interrupted bundle restores recover per topic scope
 
@@ -167,8 +167,8 @@ and all assembly attributes.
 - `publish.sh`'s cleanup step, which deleted the plugin directory it had just populated, is gone.
 - Both publish scripts now take their project list from `publish.projects.tsv`, so a project added
   to one is added to both, and a test holds the manifest against the release workflow.
-- Both scripts now warn instead of silently continuing when the Vulkan native libraries are absent,
-  which previously shipped the CPU backend under a Vulkan-named build without saying so.
+- Both scripts now refuse to publish when the Vulkan native libraries are absent (exit status 1),
+  instead of silently shipping the CPU backend under a Vulkan-named build.
 
 ### Fixed — `scri hint --json` emits parseable JSON, and the documented environment form resolves
 
@@ -768,8 +768,7 @@ to a public type is listed here in full.
    halves of a link go through, refused a `~name` outright, so linking one was impossible; it now
    loads the ephemeral, applies the same metadata mutation the persistent path applies, and writes it
    back. An ephemeral memory lives in the calling process. **This replaces an earlier entry in this
-   same
-  `[Unreleased]` cycle** which said `link()` refuses before writing anything when either side is an
+   this `0.6.0` release** which said `link()` refuses before writing anything when either side is an
   ephemeral.
   - **Not reachable from the CLI**, and cannot be: an ephemeral memory lives only in the memory of
     the process that created it, and every `scri` invocation is a fresh process. `scri link ~x /y`
@@ -801,7 +800,7 @@ to a public type is listed here in full.
   one skipped inline `code` spans and frontmatter as well (proper-noun `mention` spans), while bare
   file paths and `[[wiki-links]]` were scanned over the whole content, fences included. That split
   no longer exists: see "file and memory references no longer extract from pasted code" above,
-  which landed later in this same `[Unreleased]` cycle and made bare file paths and `[[wiki-links]]`
+  which landed later in this release and made bare file paths and `[[wiki-links]]`
   fence-aware too. All extraction routes now follow the one `ProseScanner` rule — skip a properly
   closed fence, read YAML frontmatter and inline `code` spans as ordinary text — and the descriptions
   were rewritten again to state that once instead of route-by-route.
@@ -1098,12 +1097,12 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 - The legacy `local:skill` NMP/2 read fallback is deleted. `v0.4.0` contains no skill code
   at all, so such entries exist only in unreleased dev builds.
 
-### Changed — embedding provider error truncation now matches the chat providers
+### Changed — embedding provider error truncation now uses a shared helper
 
-- A truncated provider error body in the embedding provider's warning log now ends with
-  `...`, matching the three chat providers. The four call sites carried the same 500-character
-  truncation rule copied by hand, and only the embedding provider's copy had drifted to omit
-  the ellipsis. All four now go through one shared `HttpErrorBody.Truncate` helper.
+- Failed single-request and batch embedding calls now pass their provider error bodies through
+  the shared `HttpErrorBody.Truncate` helper. Bodies over 500 characters retain their first 500
+  characters followed by `...`; shorter bodies remain unchanged, preserving bounded warning logs
+  while keeping both embedding-provider failure paths consistent.
 
 ### Fixed — event-sink lifecycle
 
@@ -1788,5 +1787,6 @@ scope reduction that removed the goal/task/concern/plan vocabulary. The runtime 
 considered stable from this point — future minor releases will not break the MCP
 tool contract without a major-version bump.
 
-[Unreleased]: https://github.com/nickd-scrinia/scrinia/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/nickd-scrinia/scrinia/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/nickd-scrinia/scrinia/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nickd-scrinia/scrinia/releases/tag/v0.5.0

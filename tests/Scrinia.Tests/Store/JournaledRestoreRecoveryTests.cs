@@ -142,6 +142,58 @@ public class JournaledRestoreRecoveryTests
     }
 
     [Fact]
+    public async Task GetEntityFactStore_HoldsRecoveryBarrierAcrossFactsSidecarRead()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(new MemoryWrite("note", Scope, ["old"], Attributes: new()
+        {
+            ["person"] = ["old"]
+        }));
+        store.GetEntityFactStore().MentionCount(new EntityRef("person", "old")).Should().Be(1);
+        (await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+
+        using var sidecarReadStarted = new ManualResetEventSlim();
+        using var allowSidecarRead = new ManualResetEventSlim();
+        FileMemoryStore.ReadObserver = (path, _) =>
+        {
+            if (!path.EndsWith("facts.json", StringComparison.Ordinal))
+                return;
+            sidecarReadStarted.Set();
+            allowSidecarRead.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue(
+                "the test must release the sidecar read");
+        };
+
+        using var otherProcess = new FileMemoryStore(scope.WorkspaceDir);
+        var incoming = CreateEntry("later");
+        try
+        {
+            Task<EntityFactStore> read = Task.Run(() => store.GetEntityFactStore());
+            sidecarReadStarted.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue(
+                "the facts sidecar read must be observable");
+
+            Task write = Task.Run(() => otherProcess.ImportTopicEntries(
+                Scope, [incoming], new Dictionary<string, byte[]>
+                {
+                    [incoming.Name] = Encoding.UTF8.GetBytes("later")
+                }, overwrite: true));
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+            write.IsCompleted.Should().BeFalse(
+                "a writer must not publish recovery while a consistent facts read is in progress");
+
+            allowSidecarRead.Set();
+            await read;
+            await write;
+        }
+        finally
+        {
+            allowSidecarRead.Set();
+            FileMemoryStore.ReadObserver = null;
+        }
+    }
+
+    [Fact]
     public async Task PreparedScope_ConcurrentReadersAndWritersWaitForRecovery_WhileOtherScopesRemainAvailable()
     {
         using var scope = new TestHelpers.StoreScope();

@@ -71,7 +71,15 @@ public static class EntityFactSidecar
         Dto? dto;
         try { dto = JsonSerializer.Deserialize(json, SidecarJsonContext.Default.Dto); }
         catch (JsonException) { return null; }
-        if (dto is null) return null;
+        if (dto is null || dto.Token is null || dto.Memories is null
+            || dto.Memories.Any(memory => memory is null
+                || memory.Scope is null
+                || memory.Subject is null
+                || memory.Entities is null
+                || memory.Entities.Any(entity => entity is null
+                    || entity.Key is null
+                    || entity.Value is null)))
+            return null;
 
         // The rule itself is unchanged; it moves into DurableFormats where it is visible next
         // to every other format's, instead of living inline where nothing else can see it.

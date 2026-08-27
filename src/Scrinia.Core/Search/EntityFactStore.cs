@@ -1,5 +1,7 @@
 namespace Scrinia.Core.Search;
 
+using System.Collections.Frozen;
+
 /// <summary>
 /// A materialized, aggregatable view over memories' entities. Built from compact
 /// <see cref="MemoryEntities"/> records (derived from entries, or loaded from a persisted sidecar).
@@ -9,6 +11,9 @@ public sealed class EntityFactStore
 {
     // entity -> one row per mentioning memory (memoryId, date, that memory's full entity set)
     private readonly Dictionary<EntityRef, List<MemoryEntities>> _byEntity = new();
+    private readonly object _scoringAdjacencyGate = new();
+    private (IReadOnlyDictionary<string, IReadOnlyCollection<string>> EntityToDocs,
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>> DocToEntities)? _scoringAdjacency;
 
     public EntityFactStore(IEnumerable<MemoryEntities> memories)
     {
@@ -81,8 +86,22 @@ public sealed class EntityFactStore
     /// consumes: entity nodes as "{key}:{value}" (matching <see cref="EntityGraph"/> node identity) and
     /// doc keys as each memory's <see cref="MemoryEntities.ScoringKey"/>. Built from the existing index;
     /// no new derivation.</summary>
-    public (IReadOnlyDictionary<string, IReadOnlyCollection<string>> EntityToDocs,
-            IReadOnlyDictionary<string, IReadOnlyCollection<string>> DocToEntities) ScoringAdjacency()
+    internal (IReadOnlyDictionary<string, IReadOnlyCollection<string>> EntityToDocs,
+             IReadOnlyDictionary<string, IReadOnlyCollection<string>> DocToEntities) ScoringAdjacency()
+    {
+        lock (_scoringAdjacencyGate)
+        {
+            if (_scoringAdjacency is { } cached)
+                return cached;
+
+            var materialized = BuildScoringAdjacency();
+            _scoringAdjacency = materialized;
+            return materialized;
+        }
+    }
+
+    private (IReadOnlyDictionary<string, IReadOnlyCollection<string>> EntityToDocs,
+             IReadOnlyDictionary<string, IReadOnlyCollection<string>> DocToEntities) BuildScoringAdjacency()
     {
         var e2d = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var d2e = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
@@ -99,7 +118,13 @@ public sealed class EntityFactStore
             }
         }
 
-        return (e2d.ToDictionary(kv => kv.Key, kv => (IReadOnlyCollection<string>)kv.Value, StringComparer.OrdinalIgnoreCase),
-                d2e.ToDictionary(kv => kv.Key, kv => (IReadOnlyCollection<string>)kv.Value, StringComparer.OrdinalIgnoreCase));
+        return (e2d.ToFrozenDictionary(
+                    kv => kv.Key,
+                    kv => (IReadOnlyCollection<string>)kv.Value.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase),
+                d2e.ToFrozenDictionary(
+                    kv => kv.Key,
+                    kv => (IReadOnlyCollection<string>)kv.Value.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase));
     }
 }

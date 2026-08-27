@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using FluentAssertions.Execution;
@@ -58,20 +59,6 @@ public sealed class PublishManifestTests
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Every `dotnet publish &lt;project&gt;` line in the release workflow. This is the list that
-    /// actually produces what users download, and it is hand-maintained: rule 5 below is what
-    /// stops it drifting from the manifest.
-    /// </summary>
-    private static List<string> ReleaseWorkflowProjects()
-    {
-        string yaml = File.ReadAllText(RepoPaths.Combine(".github", "workflows", "release.yml"));
-        return Regex.Matches(yaml, @"dotnet publish\s+(\S+\.csproj)")
-            .Select(m => Path.GetFileNameWithoutExtension(m.Groups[1].Value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    /// <summary>
     /// Every project path declared by a `Project(...)` line in Scrinia.sln — the authoritative
     /// build list, not a filesystem walk over whatever happens to be on disk. A project not in
     /// the solution is not built by CI and cannot ship; a nested worktree or other stray copy
@@ -101,18 +88,166 @@ public sealed class PublishManifestTests
     /// </summary>
     private static List<ManifestRow> ReadManifest()
     {
-        var rows = new List<ManifestRow>();
         // Skip a leading run of comment lines, then exactly the header row that follows them —
         // so a banner comment ever added above the header doesn't get treated as it and let the
         // real header row be parsed as data.
-        foreach (string line in File.ReadAllLines(ManifestPath).SkipWhile(l => l.StartsWith('#')).Skip(1))
+        return ParseManifest(File.ReadAllLines(ManifestPath), ManifestPath);
+    }
+
+    private static List<ManifestRow> ParseManifest(IEnumerable<string> sourceLines, string sourceName)
+    {
+        string[] lines = sourceLines.ToArray();
+        int headerIndex = Array.FindIndex(lines, line => !line.StartsWith('#'));
+        if (headerIndex < 0 || lines[headerIndex] != ExpectedHeader)
+            throw new FormatException($"Manifest header in {sourceName} must be '{ExpectedHeader}'.");
+
+        var rows = new List<ManifestRow>();
+        foreach (string line in lines.Skip(headerIndex + 1))
         {
             if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
             string[] parts = line.Split('\t');
-            parts.Should().HaveCount(6, because: $"every manifest row has six tab-separated columns: '{line}'");
+            if (parts.Length != 6)
+                throw new FormatException(
+                    $"Manifest row in {sourceName} has {parts.Length} columns, expected 6: '{line}'");
             rows.Add(new ManifestRow(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]));
         }
         return rows;
+    }
+
+    private static string WriteManifestFixture(params string[] lines)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"scrinia-publish-{Guid.NewGuid():N}.tsv");
+        File.WriteAllLines(path, lines);
+        return path;
+    }
+
+    private static (bool Available, int ExitCode, string Output) RunPublishReader(
+        string scriptName, bool usePublisherStub, params string[] manifestLines)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia-publish-reader-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.Copy(RepoPaths.Combine(scriptName), Path.Combine(root, scriptName));
+            File.WriteAllLines(Path.Combine(root, "publish.projects.tsv"), manifestLines);
+            if (usePublisherStub)
+            {
+                string stubName = OperatingSystem.IsWindows() ? "dotnet.cmd" : "dotnet";
+                string stubPath = Path.Combine(root, stubName);
+                File.WriteAllText(stubPath, OperatingSystem.IsWindows()
+                    ? "@echo off\r\nexit /b 0\r\n"
+                    : "#!/usr/bin/env bash\nexit 0\n");
+                if (!OperatingSystem.IsWindows())
+                    System.Diagnostics.Process.Start(new ProcessStartInfo("chmod", $"+x \"{stubPath}\""))!.WaitForExit();
+            }
+
+            bool isPowerShell = scriptName.EndsWith(".ps1", StringComparison.Ordinal);
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = isPowerShell ? "pwsh" : "bash",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            if (usePublisherStub)
+                startInfo.Environment["PATH"] = root + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+            if (isPowerShell)
+            {
+                startInfo.ArgumentList.Add("-NoProfile");
+                startInfo.ArgumentList.Add("-File");
+                startInfo.ArgumentList.Add(Path.Combine(root, scriptName));
+                startInfo.ArgumentList.Add("-OutputDir");
+                startInfo.ArgumentList.Add(Path.Combine(root, "output"));
+                startInfo.ArgumentList.Add("-Platform");
+                startInfo.ArgumentList.Add("win-x64");
+            }
+            else
+            {
+                startInfo.ArgumentList.Add(Path.Combine(root, scriptName));
+                startInfo.ArgumentList.Add(Path.Combine(root, "output"));
+                startInfo.ArgumentList.Add("--platform=win-x64");
+            }
+
+            try
+            {
+                using var process = System.Diagnostics.Process.Start(startInfo);
+                process.Should().NotBeNull();
+                string output = process!.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                return (true, process.ExitCode, output);
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                return (false, -1, string.Empty);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public void PublishSh_RejectsMalformedFixtureThroughTheProductionReader()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash cannot consume Windows paths through the host WSL shim");
+        var result = RunPublishReader("publish.sh", false, ExpectedHeader,
+            "scri\tsrc/Scrinia/Scrinia.csproj\talways\ttrimmed\trid");
+        Skip.If(!result.Available, "bash is unavailable on this host");
+        result.ExitCode.Should().NotBe(0);
+        result.Output.Should().Contain("5 tab-separated columns");
+    }
+
+    [SkippableFact]
+    public void PublishPs1_RejectsMalformedFixtureThroughTheProductionReader()
+    {
+        var result = RunPublishReader("publish.ps1", false, ExpectedHeader,
+            "scri\tsrc/Scrinia/Scrinia.csproj\talways\ttrimmed\trid");
+        Skip.If(!result.Available, "pwsh is unavailable on this host");
+        result.ExitCode.Should().NotBe(0);
+        result.Output.Should().Contain("expected 6");
+    }
+
+    [SkippableFact]
+    public void PublishSh_RejectsReorderedHeaderThroughTheProductionReader()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash cannot consume Windows paths through the host WSL shim");
+        var result = RunPublishReader("publish.sh", false,
+            "id\tproject\tprofile\tcondition\toutput\trids",
+            "scri\tsrc/Scrinia/Scrinia.csproj\ttrimmed\talways\trid\tall");
+        Skip.If(!result.Available, "bash is unavailable on this host");
+        result.ExitCode.Should().NotBe(0);
+        result.Output.Should().Contain("header");
+    }
+
+    [SkippableFact]
+    public void PublishPs1_RejectsReorderedHeaderThroughTheProductionReader()
+    {
+        var result = RunPublishReader("publish.ps1", false,
+            "id\tproject\tprofile\tcondition\toutput\trids",
+            "scri\tsrc/Scrinia/Scrinia.csproj\ttrimmed\talways\trid\tall");
+        Skip.If(!result.Available, "pwsh is unavailable on this host");
+        result.ExitCode.Should().NotBe(0);
+        result.Output.Should().Contain("header");
+    }
+
+    [SkippableFact]
+    public void PublishSh_AcceptsAValidManifestThroughTheProductionReader()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash cannot consume Windows paths through the host WSL shim");
+        var result = RunPublishReader("publish.sh", true, ExpectedHeader,
+            "scri	missing.csproj	always	plain	rid	all");
+        Skip.If(!result.Available, "bash is unavailable on this host");
+        result.ExitCode.Should().Be(0);
+    }
+
+    [SkippableFact]
+    public void PublishPs1_AcceptsAValidManifestThroughTheProductionReader()
+    {
+        var result = RunPublishReader("publish.ps1", true, ExpectedHeader,
+            "scri	missing.csproj	always	plain	rid	host");
+        Skip.If(!result.Available, "pwsh is unavailable on this host");
+        result.ExitCode.Should().Be(0);
     }
 
     [Fact]
@@ -177,7 +312,8 @@ public sealed class PublishManifestTests
         ExcludedFromPublish.Values.Should().AllSatisfy(r => r.Should().NotBeNullOrWhiteSpace(),
             because: "an exclusion with no reason is exactly the unexplained absence this test exists to prevent");
 
-        var manifestProjects = ReadManifest()
+        var manifestRows = ReadManifest();
+        var manifestProjects = manifestRows
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -231,6 +367,8 @@ public sealed class PublishManifestTests
     private static readonly string[] ExpectedHeaderColumns =
         ["id", "project", "condition", "profile", "output", "rids"];
 
+    private static readonly string ExpectedHeader = string.Join('\t', ExpectedHeaderColumns);
+
     [Fact]
     public void ManifestHeader_IsExactlyTheExpectedColumnsInOrder()
     {
@@ -253,6 +391,44 @@ public sealed class PublishManifestTests
                 because: $"Import-Csv cannot see a field beyond the header's column count — it " +
                          $"silently drops an extra one rather than erroring the way publish.sh's " +
                          $"positional `read` does: '{line}'");
+        }
+    }
+
+    [Fact]
+    public void ManifestParser_RejectsAReorderedHeaderBeforeBindingColumns()
+    {
+        string path = WriteManifestFixture(
+            "id\tproject\tprofile\tcondition\toutput\trids",
+            "scri\tsrc/Scrinia/Scrinia.csproj\ttrimmed\talways\trid\tall");
+
+        try
+        {
+            Action parse = () => ParseManifest(File.ReadAllLines(path), path);
+
+            parse.Should().Throw<FormatException>().WithMessage($"*{path}*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ManifestParser_RejectsMalformedRowsWithTheirFieldCount()
+    {
+        string path = WriteManifestFixture(
+            ExpectedHeader,
+            "scri\tsrc/Scrinia/Scrinia.csproj\talways\ttrimmed\trid");
+
+        try
+        {
+            Action parse = () => ParseManifest(File.ReadAllLines(path), path);
+
+            parse.Should().Throw<FormatException>().WithMessage($"*{path}*5 columns*");
+        }
+        finally
+        {
+            File.Delete(path);
         }
     }
 
@@ -425,31 +601,379 @@ public sealed class PublishManifestTests
             reason.Should().NotBeNullOrWhiteSpace(
                 because: "an exclusion with no reason is exactly the unexplained absence this test exists to prevent");
 
-        var manifestProjects = ReadManifest()
+        var manifestRows = ReadManifest();
+        var manifestProjects = manifestRows
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         manifestProjects.Should().NotBeEmpty(because: "an emptied manifest must not make this loop vacuous");
-        var released = ReleaseWorkflowProjects();
+        manifestProjects.Should().NotBeEmpty(because: "an emptied manifest must not make this check vacuous");
 
-        released.Should().NotBeEmpty(because: "the regex must not silently match nothing");
+        var workflowTargets = ReadWorkflowPublishTargets();
+        workflowTargets.Should().NotBeEmpty(because: "the release workflow must invoke a publisher");
+
+        var expectedTargets = manifestRows
+            .SelectMany<ManifestRow, string>(row => row.Condition == "with-embeddings"
+                ? ["publish-embeddings"]
+                : ["publish", "publish-embeddings"])
+            .ToHashSet(StringComparer.Ordinal);
+        workflowTargets.Select(target => target.OutputDir).ToHashSet(StringComparer.Ordinal)
+            .Should().Equal(expectedTargets,
+                because: "the workflow must have one plain and one optional/plugin expansion " +
+                         "target, so every manifest row is covered by the scripts");
 
         using var scope = new AssertionScope();
-        foreach (string name in manifestProjects)
+        foreach (var row in ReadManifest())
         {
-            released.Any(r => string.Equals(r, name, StringComparison.OrdinalIgnoreCase))
-                .Should().BeTrue(
-                    because: $"{name} is in publish.projects.tsv but release.yml never publishes it, so " +
-                             "it would ship to nobody");
+            string requiredTarget = row.Condition == "with-embeddings" ? "publish-embeddings" : "publish";
+            workflowTargets.Should().Contain(target => target.OutputDir == requiredTarget,
+                because: $"manifest row '{row.Id}' must be covered by the {requiredTarget} expansion");
+        }
+    }
+
+    [Fact]
+    public void TheReleaseWorkflow_UsesLocalPublishScriptsAndValidatesBothArchiveLayouts()
+    {
+        string yaml = File.ReadAllText(RepoPaths.Combine(".github", "workflows", "release.yml"));
+        int expectedTargetCount = ReadManifest()
+            .SelectMany<ManifestRow, string>(row => row.Condition == "with-embeddings"
+                ? ["publish-embeddings"]
+                : ["publish", "publish-embeddings"])
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        using var scope = new AssertionScope();
+        ReadWorkflowPublishTargets().Should().HaveCount(expectedTargetCount * 2,
+            because: "each supported publish target has exactly one Windows and one Unix invocation");
+        yaml.Should().Contain("--with-embeddings");
+        yaml.Should().Contain("plugins/scri-plugin-embeddings");
+        yaml.Should().Contain("scri-plugin-embeddings");
+        yaml.Should().Contain("tar -tzf");
+        yaml.Should().Contain("Expand-Archive");
+        yaml.Should().Contain("scri-merge");
+    }
+
+    [Fact]
+    public void ReleaseContract_EnumeratesOnlySupportedRidsAndPreservesHostAotRestrictions()
+    {
+        string[] supportedRids = ["win-x64", "linux-x64", "osx-arm64"];
+        string scripts = File.ReadAllText(RepoPaths.Combine("publish.sh")) +
+                         File.ReadAllText(RepoPaths.Combine("publish.ps1"));
+        string workflow = File.ReadAllText(RepoPaths.Combine(".github", "workflows", "release.yml"));
+        string manifest = File.ReadAllText(ManifestPath);
+
+        using var scope = new AssertionScope();
+        foreach (string rid in supportedRids)
+        {
+            scripts.Should().Contain(rid);
+            workflow.Should().Contain(rid);
         }
 
-        foreach (string name in released)
+        scripts.Should().Contain("rids=host");
+        manifest.Should().Contain("scri-merge\tsrc/Scrinia.Merge/Scrinia.Merge.csproj\talways\tplain\trid\thost");
+        scripts.Should().Contain("Set-VulkanNatives");
+        scripts.Should().Contain("overwrite_vulkan_natives");
+    }
+
+    private sealed record WorkflowStep(
+        string Name, string Shell, string Condition, IReadOnlyList<string> Commands);
+
+    private sealed record WorkflowPublishTarget(
+        string StepName, string Shell, string Condition, string ScriptPath, string OutputDir,
+        bool WithEmbeddings, string Command);
+
+    [Fact]
+    public void WorkflowParser_CollectsUnnamedScalarAndBlockRunCommandsForDirectPublishChecks()
+    {
+        string[] fixture =
+        [
+            "      steps:",
+            "      - run: dotnet publish src/Unexpected/Unexpected.csproj",
+            "      - name: Literal commands",
+            "        shell: bash",
+            "        if: always()",
+            "        run: |",
+            "          dotnet restore",
+            "          dotnet publish src/Literal/Literal.csproj",
+            "      - name: Folded command",
+            "        run: >",
+            "          dotnet publish src/Folded/Folded.csproj",
+            "          --configuration Release",
+        ];
+
+        var steps = ParseWorkflowSteps(fixture);
+
+        steps.SelectMany(step => step.Commands)
+            .Should().Contain(command => ContainsDirectDotnetPublish(command));
+        steps.Should().Contain(step => step.Name == string.Empty &&
+            step.Commands.Contains("dotnet publish src/Unexpected/Unexpected.csproj"));
+        steps.Should().Contain(step => step.Name == "Literal commands" &&
+            step.Shell == "bash" && step.Condition == "always()" &&
+            step.Commands.Contains("dotnet publish src/Literal/Literal.csproj"));
+        steps.Should().Contain(step => step.Commands.Any(command =>
+            command.Contains("dotnet publish src/Folded/Folded.csproj", StringComparison.Ordinal) &&
+            command.Contains("--configuration Release", StringComparison.Ordinal)));
+    }
+
+    /// <summary>Reads every workflow step and its scalar, literal, or folded <c>run</c> command.</summary>
+    private static List<WorkflowStep> ParseWorkflowSteps(IEnumerable<string> sourceLines)
+    {
+        string[] lines = sourceLines.ToArray();
+        var steps = new List<WorkflowStep>();
+        for (int i = 0; i < lines.Length; i++)
         {
-            (manifestProjects.Contains(name) || ReleasedOutsideTheManifest.ContainsKey(name))
-                .Should().BeTrue(
-                    because: $"release.yml publishes {name}, but it is neither in publish.projects.tsv " +
-                             "nor named in ReleasedOutsideTheManifest — decide which it is and record " +
-                             "the reason. Naming it in ExcludedFromPublish is not enough: that set also " +
-                             "contains Scrinia.AppHost, which must never appear in a release");
+            if (!lines[i].StartsWith("      - ", StringComparison.Ordinal)) continue;
+            string stepName = lines[i].StartsWith("      - name: ", StringComparison.Ordinal)
+                ? lines[i][14..]
+                : string.Empty;
+            int stepEnd = i + 1;
+            while (stepEnd < lines.Length && !lines[stepEnd].StartsWith("      - ", StringComparison.Ordinal))
+                stepEnd++;
+
+            string shell = FindStepProperty(lines, i + 1, stepEnd, "shell") ?? string.Empty;
+            string condition = FindStepProperty(lines, i + 1, stepEnd, "if") ?? string.Empty;
+            bool inlineRun = lines[i].StartsWith("      - run:", StringComparison.Ordinal);
+            int runLine = inlineRun
+                ? i
+                : Array.FindIndex(lines, i + 1, stepEnd - i - 1,
+                    line => line.StartsWith("        run:", StringComparison.Ordinal));
+            if (runLine < 0)
+            {
+                steps.Add(new WorkflowStep(stepName, shell, condition, Array.Empty<string>()));
+                continue;
+            }
+
+            string runPrefix = inlineRun ? "      - run:" : "        run:";
+            string runValue = lines[runLine][runPrefix.Length..].Trim();
+            if (!runValue.StartsWith('|') && !runValue.StartsWith('>'))
+            {
+                steps.Add(new WorkflowStep(stepName, shell, condition, [runValue]));
+                continue;
+            }
+
+            var runBody = new List<string>();
+            for (int bodyLine = runLine + 1; bodyLine < stepEnd; bodyLine++)
+            {
+                if (!string.IsNullOrWhiteSpace(lines[bodyLine]) &&
+                    !lines[bodyLine].StartsWith("          ", StringComparison.Ordinal))
+                    break;
+                runBody.Add(lines[bodyLine].Length >= 10 ? lines[bodyLine][10..] : string.Empty);
+            }
+
+            IReadOnlyList<string> commands = runValue.StartsWith('>')
+                ? [string.Join(' ', runBody).Trim()]
+                : runBody;
+            steps.Add(new WorkflowStep(stepName, shell, condition, commands));
         }
+
+        return steps;
+    }
+
+    private static List<WorkflowStep> ReadWorkflowSteps() =>
+        ParseWorkflowSteps(File.ReadAllLines(RepoPaths.Combine(".github", "workflows", "release.yml")));
+
+    private static string? FindStepProperty(string[] lines, int start, int length, string property)
+    {
+        Match match = Regex.Match(string.Join('\n', lines.Skip(start).Take(length)),
+            $@"(?m)^        {Regex.Escape(property)}:\s*(?<value>.+)$");
+        return match.Success ? match.Groups["value"].Value.Trim() : null;
+    }
+
+    private static List<WorkflowPublishTarget> ReadWorkflowPublishTargets()
+    {
+        var targets = new List<WorkflowPublishTarget>();
+        foreach (WorkflowStep step in ReadWorkflowSteps()
+                     .Where(step => step.Name.StartsWith("Publish release trees", StringComparison.Ordinal)))
+        {
+            foreach (string command in step.Commands)
+            {
+                Match windows = Regex.Match(command,
+                    @"^\./publish\.ps1 -OutputDir (?<output>\S+) -Platform \$\{\{ matrix\.rid \}\}(?<emb> -WithEmbeddings)?$");
+                Match unix = Regex.Match(command,
+                    @"^\./publish\.sh (?<output>\S+) --platform=\$\{\{ matrix\.rid \}\}(?<emb> --with-embeddings)?$");
+                if (windows.Success)
+                    targets.Add(new WorkflowPublishTarget(step.Name, step.Shell, step.Condition,
+                        "./publish.ps1", windows.Groups["output"].Value, windows.Groups["emb"].Success,
+                        command));
+                else if (unix.Success)
+                    targets.Add(new WorkflowPublishTarget(step.Name, step.Shell, step.Condition,
+                        "./publish.sh", unix.Groups["output"].Value, unix.Groups["emb"].Success,
+                        command));
+            }
+        }
+
+        return targets;
+    }
+
+    private static bool ContainsDirectDotnetPublish(string command)
+    {
+        // Normalize quoting before classifying the executable token. This intentionally catches
+        // `dotnet.exe`, `command dotnet`, `sudo dotnet`, and `bash -c 'dotnet publish ...'`, while
+        // approved publish.sh/publish.ps1 invocations do not contain a dotnet executable at the
+        // workflow boundary.
+        string normalized = Regex.Replace(command, "['\"]", string.Empty).Trim();
+        return Regex.IsMatch(normalized, @"(?<![\w.-])dotnet(?:\.exe)?\s+publish\b",
+            RegexOptions.IgnoreCase);
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_UsesExactManifestPublisherInvocationsForEverySupportedTarget()
+    {
+        string[] supportedRids = ["win-x64", "linux-x64", "osx-arm64"];
+        string workflow = File.ReadAllText(RepoPaths.Combine(".github", "workflows", "release.yml"));
+        var targets = ReadWorkflowPublishTargets();
+        var publishSteps = ReadWorkflowSteps()
+            .Where(step => step.Name.StartsWith("Publish release trees", StringComparison.Ordinal))
+            .ToList();
+
+        publishSteps.Select(step => step.Name).Should().Equal(
+            "Publish release trees (Windows)", "Publish release trees (Unix)");
+        publishSteps.Select(step => step.Shell).Should().Equal("pwsh", "bash");
+        publishSteps.Select(step => step.Condition).Should().Equal(
+            "runner.os == 'Windows'", "runner.os != 'Windows'");
+        Regex.Matches(workflow,
+                @"(?ms)^\s*- rid: (?<rid>\S+)\s*\r?\n\s*os: (?<os>\S+)")
+            .Select(match => (Rid: match.Groups["rid"].Value, Os: match.Groups["os"].Value))
+            .Should().Equal(
+                ("win-x64", "windows-latest"),
+                ("linux-x64", "ubuntu-latest"),
+                ("osx-arm64", "macos-latest"));
+        targets.Where(target => target.ScriptPath == "./publish.ps1")
+            .Select(target => target.OutputDir).Should().Equal("publish", "publish-embeddings");
+        targets.Where(target => target.ScriptPath == "./publish.sh")
+            .Select(target => target.OutputDir).Should().Equal("publish", "publish-embeddings");
+        targets.Count(target => target.WithEmbeddings).Should().Be(2,
+            because: "the plugin is an optional manifest expansion, not a second hand-maintained project list");
+        targets.Count(target => !target.WithEmbeddings).Should().Be(2);
+        targets.Where(target => !target.WithEmbeddings)
+            .Select(target => target.Command)
+            .Should().OnlyContain(command => !Regex.IsMatch(command, "with-embeddings", RegexOptions.IgnoreCase));
+        targets.Where(target => target.WithEmbeddings)
+            .Select(target => Regex.Matches(target.Command, "(?:-WithEmbeddings|--with-embeddings)", RegexOptions.IgnoreCase).Count)
+            .Should().OnlyContain(count => count == 1);
+
+        ReadWorkflowSteps().SelectMany(step => step.Commands)
+            .Where(ContainsDirectDotnetPublish)
+            .Should().BeEmpty(
+                because: "release run blocks must not directly publish outside the approved scripts, " +
+                         "including dotnet.exe and shell-wrapped variants");
+
+        var matrixRids = Regex.Matches(workflow, @"^\s*-\s*rid:\s*(\S+)$", RegexOptions.Multiline)
+            .Select(match => match.Groups[1].Value).ToArray();
+        matrixRids.Should().Equal(supportedRids,
+            because: "the workflow matrix is the complete supported publish-target set");
+        foreach (string rid in supportedRids)
+        {
+            workflow.Should().Contain("${{ matrix.rid }}",
+                because: $"the {rid} target must be passed to the manifest-driven publisher");
+        }
+        targets.Select(target => target.Command)
+            .Should().OnlyContain(command => command.Contains("${{ matrix.rid }}", StringComparison.Ordinal));
+    }
+
+    private static string ExtractWorkflowBlock(string workflow, string start, string end)
+    {
+        workflow = workflow.Replace("\r\n", "\n", StringComparison.Ordinal);
+        Match match = Regex.Match(
+            workflow,
+            $"{Regex.Escape(start)}(?<block>.*?){Regex.Escape(end)}",
+            RegexOptions.Singleline);
+        match.Success.Should().BeTrue(
+            because: $"release.yml must contain a workflow block from '{start}' to '{end}'");
+        return match.Groups["block"].Value;
+    }
+
+    [Fact]
+    public void ReleaseWorkflow_ValidatesNativePayloadInTheCorrectRidBranches()
+    {
+        string workflow = File.ReadAllText(RepoPaths.Combine(".github", "workflows", "release.yml"));
+        string linuxBranch = ExtractWorkflowBlock(
+            workflow,
+            "if [[ \"${{ matrix.rid }}\" == \"linux-x64\" ]]; then",
+            "elif [[ \"${{ matrix.rid }}\" == \"osx-arm64\" ]]; then");
+        string macBranch = ExtractWorkflowBlock(
+            workflow,
+            "elif [[ \"${{ matrix.rid }}\" == \"osx-arm64\" ]]; then",
+            "\n           fi");
+        string windowsStep = ExtractWorkflowBlock(
+            workflow,
+            "      - name: Archive and validate release trees (Windows)\n",
+            "      - name: Upload release assets");
+        string[] linuxVulkanFiles =
+        ["libmtmd.so", "libllama.so", "libggml.so", "libggml-vulkan.so", "libggml-base.so"];
+        string[] macCpuFiles =
+        [
+            "ggml-metal.metal",
+            "libggml-base.dylib",
+            "libggml-blas.dylib",
+            "libggml-cpu.dylib",
+            "libggml-metal.dylib",
+            "libggml.dylib",
+            "libllama.dylib",
+            "libmtmd.dylib",
+        ];
+        string[] windowsVulkanFiles =
+        ["mtmd.dll", "llama.dll", "ggml.dll", "ggml-vulkan.dll", "ggml-base.dll"];
+
+        using var scope = new AssertionScope();
+        foreach (string file in linuxVulkanFiles)
+        {
+            linuxBranch.Should().Contain(file,
+                because: $"Linux Vulkan validation must require {file} inside the linux-x64 branch");
+            macBranch.Should().NotContain(file,
+                because: $"macOS validation must not mention Linux Vulkan file {file}");
+        }
+
+        foreach (string file in macCpuFiles)
+        {
+            macBranch.Should().Contain(file,
+                because: $"the macOS CPU fallback emitted by publish.sh must validate {file}");
+        }
+
+        foreach (string file in windowsVulkanFiles)
+        {
+            windowsStep.Should().Contain(file,
+                because: $"Windows archive validation must retain Vulkan file {file}");
+        }
+
+        windowsStep.Should().Contain("llamasharp.backend.vulkan.windows",
+            because: "Windows validation must compare against the Vulkan package source");
+        Regex.IsMatch(
+                windowsStep,
+                @"^\s*\$sourcePath\s*=\s*Join-Path \$HOME .*\.nuget/packages/\$sourcePackage/",
+                RegexOptions.Multiline)
+            .Should().BeTrue(
+            because: "Windows validation must construct the native package-source path");
+        Regex.IsMatch(
+                windowsStep,
+                @"^\s*if \(\(Get-FileHash \$archivePath -Algorithm SHA256\)\.Hash -cne " +
+                @"\(Get-FileHash \$sourcePath -Algorithm SHA256\)\.Hash\)",
+                RegexOptions.Multiline)
+            .Should().BeTrue(
+            because: "Windows validation must compare archive and package-source SHA256 hashes");
+
+        Match macNativeDeclaration = Regex.Match(
+            macBranch,
+            @"cpu_native_names=\((?<files>[^)]*)\)",
+            RegexOptions.Singleline);
+        macNativeDeclaration.Success.Should().BeTrue(
+            because: "macOS validation must declare the approved CPU fallback payload");
+        if (macNativeDeclaration.Success)
+        {
+            var declaredMacFiles = Regex.Matches(macNativeDeclaration.Groups["files"].Value, "\"([^\"]+)\"")
+                .Select(match => match.Groups[1].Value)
+                .ToHashSet(StringComparer.Ordinal);
+            declaredMacFiles.Should().BeEquivalentTo(macCpuFiles,
+                because: "the macOS fallback allowlist must be exact, not merely a set of required names");
+        }
+
+        macBranch.Should().Contain(".so",
+            because: "macOS validation must explicitly reject Linux native payloads");
+        macBranch.Should().Contain("vulkan",
+            because: "macOS validation must explicitly reject Vulkan-named artifacts");
+        macBranch.Should().Contain(".dylib",
+            because: "macOS validation must distinguish approved CPU dylibs from Vulkan dylibs");
+        Regex.IsMatch(macBranch, @"(?i)(vulkan[^\s""']*\.dylib|\.dylib[^\s""']*vulkan)")
+            .Should().BeTrue(
+                because: "macOS validation must reject Vulkan-named dylibs, not only Linux .so files");
     }
 }

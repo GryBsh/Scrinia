@@ -12,112 +12,133 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
           include-prerelease: true
-
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
       - name: Test (Scrinia.Tests)
         run: dotnet test tests/Scrinia.Tests/ --no-build -c Release
       - name: Test (Scrinia.Merge.Tests)
         run: dotnet test tests/Scrinia.Merge.Tests/ --no-build -c Release
-      # Model2Vec/Vulkan embedding-provider tests use [SkippableFact] and skip
-      # (not fail) when the model download is unavailable, so this is safe
-      # to run unconditionally in CI even without network access to the model host.
       - name: Test (Scrinia.Plugin.Embeddings.Tests)
         run: dotnet test tests/Scrinia.Plugin.Embeddings.Tests/ --no-build -c Release
       - name: Test (Scrinia.Retrieval.Benchmarks.Tests)
         run: dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests/ --no-build -c Release
 
-  build-cli:
+  build-release:
     needs: test
     strategy:
       matrix:
         include:
           - rid: win-x64
             os: windows-latest
-            ext: .exe
+            extension: .exe
           - rid: linux-x64
             os: ubuntu-latest
-            ext: ''
+            extension: ''
           - rid: osx-arm64
             os: macos-latest
-            ext: ''
-
+            extension: ''
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
           include-prerelease: true
 
-      # ── CLI only (no embeddings) ──────────────────────────────
-      - name: Publish CLI
-        run: >
-          dotnet publish src/Scrinia/Scrinia.csproj
-          --runtime ${{ matrix.rid }}
-          --self-contained
-          --configuration Release
-          -p:PublishSingleFile=true
-          -p:PublishTrimmed=true
-          --output publish
-
-      - name: Publish merge driver
-        run: >
-          dotnet publish src/Scrinia.Merge/Scrinia.Merge.csproj
-          --runtime ${{ matrix.rid }}
-          --self-contained
-          --configuration Release
-          -p:PublishSingleFile=true
-          --output publish
-
-      - name: Archive CLI (zip)
-        if: matrix.rid == 'win-x64'
+      # The checked-in scripts and manifest are the release contract. The runner is native for
+      # each supported RID, so the host-only NativeAOT merge driver is built safely as well.
+      - name: Publish release trees (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/scri-merge${{ matrix.ext }} -DestinationPath scri-${{ matrix.rid }}.zip
-
-      - name: Archive CLI (tar)
-        if: matrix.rid != 'win-x64'
-        run: tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.ext }} scri-merge${{ matrix.ext }}
-
-      # ── CLI + embeddings plugin ───────────────────────────────
-      - name: Publish embeddings plugin
-        run: >
-          dotnet publish src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj
-          --runtime ${{ matrix.rid }}
-          --configuration Release
-          --output publish/plugins
-
-      - name: Clean stray plugin artifacts
+        run: |
+          ./publish.ps1 -OutputDir publish -Platform ${{ matrix.rid }}
+          ./publish.ps1 -OutputDir publish-embeddings -Platform ${{ matrix.rid }} -WithEmbeddings
+      - name: Publish release trees (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          cd publish/plugins
-          shopt -s extglob
-          rm -rf !(scri-plugin-embeddings|scri-plugin-embeddings.exe)
+          ./publish.sh publish --platform=${{ matrix.rid }}
+          ./publish.sh publish-embeddings --platform=${{ matrix.rid }} --with-embeddings
 
-      - name: Archive CLI+embeddings (zip)
-        if: matrix.rid == 'win-x64'
+      - name: Archive and validate release trees (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/scri-merge${{ matrix.ext }},publish/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
+        run: |
+          Compress-Archive -Path publish/scri${{ matrix.extension }},publish/scri-merge${{ matrix.extension }} -DestinationPath scri-${{ matrix.rid }}.zip
+          Compress-Archive -Path publish-embeddings/scri${{ matrix.extension }},publish-embeddings/scri-merge${{ matrix.extension }},publish-embeddings/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
+          $plain = Join-Path $env:RUNNER_TEMP 'scri-release-plain'
+          $withEmbeddings = Join-Path $env:RUNNER_TEMP 'scri-release-embeddings'
+          Expand-Archive -Path scri-${{ matrix.rid }}.zip -DestinationPath $plain -Force
+          Expand-Archive -Path scri-${{ matrix.rid }}-embeddings.zip -DestinationPath $withEmbeddings -Force
+           if (-not (Test-Path (Join-Path $plain 'scri${{ matrix.extension }}'))) { throw 'CLI is missing from the plain archive' }
+           if (-not (Test-Path (Join-Path $plain 'scri-merge${{ matrix.extension }}'))) { throw 'Merge driver is missing from the plain archive' }
+           if (-not (Test-Path (Join-Path $withEmbeddings 'plugins/scri-plugin-embeddings/scri-plugin-embeddings${{ matrix.extension }}'))) { throw 'Nested embeddings executable is missing from the archive' }
+           $nativeNames = if ('${{ matrix.rid }}' -like 'win-*') { @('mtmd.dll','llama.dll','ggml.dll','ggml-vulkan.dll','ggml-base.dll') } else { @('libmtmd.so','libllama.so','libggml.so','libggml-vulkan.so','libggml-base.so') }
+           foreach ($nativeName in $nativeNames) {
+             $archivePath = Join-Path $withEmbeddings "plugins/scri-plugin-embeddings/$nativeName"
+             if (-not (Test-Path $archivePath -PathType Leaf)) { throw "Expected Vulkan native is missing from the archive: $nativeName" }
+             $sourcePackage = if ('${{ matrix.rid }}' -like 'win-*') { 'llamasharp.backend.vulkan.windows' } else { 'llamasharp.backend.vulkan.linux' }
+             $sourcePath = Join-Path $HOME ".nuget/packages/$sourcePackage/0.25.0/runtimes/${{ matrix.rid }}/native/vulkan/$nativeName"
+             if (-not (Test-Path $sourcePath -PathType Leaf)) { throw "Expected Vulkan package native is missing: $sourcePath" }
+             if ((Get-FileHash $archivePath -Algorithm SHA256).Hash -cne (Get-FileHash $sourcePath -Algorithm SHA256).Hash) { throw "Archive Vulkan native differs from its package source: $nativeName" }
+           }
 
-      - name: Archive CLI+embeddings (tar)
-        if: matrix.rid != 'win-x64'
-        run: tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish scri${{ matrix.ext }} scri-merge${{ matrix.ext }} plugins
+      - name: Archive and validate release trees (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.extension }} scri-merge${{ matrix.extension }}
+          tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish-embeddings scri${{ matrix.extension }} scri-merge${{ matrix.extension }} plugins
+          plain_contents="$(tar -tzf scri-${{ matrix.rid }}.tar.gz)"
+          embeddings_contents="$(tar -tzf scri-${{ matrix.rid }}-embeddings.tar.gz)"
+          [[ "$plain_contents" == *"scri${{ matrix.extension }}"* ]]
+           [[ "$plain_contents" == *"scri-merge${{ matrix.extension }}"* ]]
+           [[ "$embeddings_contents" == *"plugins/scri-plugin-embeddings/scri-plugin-embeddings${{ matrix.extension }}"* ]]
+           if [[ "${{ matrix.rid }}" == "linux-x64" ]]; then
+             native_names=("libmtmd.so" "libllama.so" "libggml.so" "libggml-vulkan.so" "libggml-base.so")
+             for native_name in "${native_names[@]}"; do
+               archive_path="plugins/scri-plugin-embeddings/$native_name"
+               [[ "$embeddings_contents" == *"$archive_path"* ]] || { echo "Missing Vulkan native from archive: $archive_path" >&2; exit 1; }
+               source_path="$HOME/.nuget/packages/llamasharp.backend.vulkan.linux/0.25.0/runtimes/${{ matrix.rid }}/native/vulkan/$native_name"
+               [[ -f "$source_path" ]] || { echo "Missing Vulkan package native: $source_path" >&2; exit 1; }
+               archive_hash="$(tar -xOzf "scri-${{ matrix.rid }}-embeddings.tar.gz" "$archive_path" | sha256sum | cut -d' ' -f1)"
+               source_hash="$(sha256sum "$source_path" | cut -d' ' -f1)"
+               [[ "$archive_hash" == "$source_hash" ]] || { echo "Archive Vulkan native differs from its package source: $native_name" >&2; exit 1; }
+             done
+           elif [[ "${{ matrix.rid }}" == "osx-arm64" ]]; then
+             cpu_native_names=("ggml-metal.metal" "libggml-base.dylib" "libggml-blas.dylib" "libggml-cpu.dylib" "libggml-metal.dylib" "libggml.dylib" "libllama.dylib" "libmtmd.dylib")
+              for native_name in "${cpu_native_names[@]}"; do
+                archive_path="plugins/scri-plugin-embeddings/$native_name"
+                [[ "$embeddings_contents" == *"$archive_path"* ]] || { echo "Missing macOS CPU native from archive: $archive_path" >&2; exit 1; }
+              done
+              mapfile -t actual_native_names < <(
+                printf '%s\n' "$embeddings_contents" |
+                  awk -F/ 'NF == 3 && $1 == "plugins" && $2 == "scri-plugin-embeddings" && $3 != "" { print $3 }' |
+                  sort
+              )
+              mapfile -t approved_native_names < <(printf '%s\n' "${cpu_native_names[@]}" | sort)
+              if printf '%s\n' "${actual_native_names[@]}" | grep -Eiq '.*vulkan.*\.dylib$|.*vulkan.*\.so$|.*vulkan.*\.dll$|.*vulkan.*\.a$|.*vulkan.*\.metal$'; then
+                echo "macOS archive must not contain Vulkan-named native artifacts" >&2
+                exit 1
+              fi
+              [[ "${actual_native_names[*]}" == "${approved_native_names[*]}" ]] || {
+                echo "macOS archive native payload differs from the approved CPU fallback set" >&2
+                printf 'Actual: %s\nApproved: %s\n' "${actual_native_names[*]}" "${approved_native_names[*]}" >&2
+                exit 1
+              }
+           fi
 
-      # ── Upload both archives ──────────────────────────────────
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           if [[ "${{ matrix.rid }}" == "win-x64" ]]; then
-            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.zip scri-${{ matrix.rid }}-embeddings.zip --clobber
+            gh release upload "${{ github.event.release.tag_name }}" "scri-${{ matrix.rid }}.zip" "scri-${{ matrix.rid }}-embeddings.zip" --clobber
           else
-            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.tar.gz scri-${{ matrix.rid }}-embeddings.tar.gz --clobber
+            gh release upload "${{ github.event.release.tag_name }}" "scri-${{ matrix.rid }}.tar.gz" "scri-${{ matrix.rid }}-embeddings.tar.gz" --clobber
           fi

@@ -6,7 +6,7 @@
     assembly attributes consumed via AssemblyInformationalVersionAttribute.
   -->
   <PropertyGroup>
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
     <AssemblyInformationalVersion>$(Version)+$(SourceRevisionId)</AssemblyInformationalVersion>
     <Copyright>Copyright (c) 2026 Nick Daniels</Copyright>
   </PropertyGroup>

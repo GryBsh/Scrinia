@@ -70,4 +70,17 @@ public class EntityFactSidecarTests
         string v1 = """{"version":1,"token":"x","memories":[{"id":"m1","date":"2023-01-01T00:00:00+00:00","entities":[]}]}""";
         EntityFactSidecar.TryLoad(v1).Should().BeNull();
     }
+
+    [Theory]
+    [InlineData("{\"version\":3,\"token\":\"x\",\"memories\":null}")]
+    [InlineData("{\"version\":3,\"token\":\"x\"}")]
+    [InlineData("{\"version\":3,\"token\":\"x\",\"memories\":[null]}")]
+    [InlineData("{\"version\":3,\"token\":\"x\",\"memories\":[{\"s\":\"local\",\"j\":\"m1\",\"date\":\"2023-01-01T00:00:00Z\"}]}")]
+    [InlineData("{\"version\":3,\"token\":\"x\",\"memories\":[{\"s\":\"local\",\"j\":\"m1\",\"date\":\"2023-01-01T00:00:00Z\",\"entities\":null}]}")]
+    [InlineData("{\"version\":3,\"token\":\"x\",\"memories\":[{\"s\":\"local\",\"j\":\"m1\",\"date\":\"2023-01-01T00:00:00Z\",\"entities\":[null]}]}")]
+    [InlineData("{\"version\":3,\"token\":\"x\",\"memories\":[{\"s\":\"local\",\"j\":\"m1\",\"date\":\"2023-01-01T00:00:00Z\",\"entities\":[{}]}]}")]
+    public void TryLoad_RejectsStructurallyInvalidJsonAsCacheMiss(string json)
+    {
+        EntityFactSidecar.TryLoad(json).Should().BeNull();
+    }
 }

@@ -4,9 +4,9 @@ Scrinia gives LLMs persistent, portable memory. It compresses text into compact 
 
 ## How It Works
 
-1. An LLM (or you) stores text as a named memory: `scri memory store session-notes ./notes.md`
+1. An LLM (or you) stores text as a named memory: `scri store session-notes ./notes.md`
 2. Scrinia compresses it with Brotli, indexes it for BM25 + weighted-field search, and (optionally) embeds it for semantic vector search.
-3. Later, the LLM searches for relevant context: `scri memory search "authentication flow"`
+3. Later, the LLM searches for relevant context: `scri search "authentication flow"`
 4. Scrinia returns ranked results from across all stored memories.
 
 Memories persist in a `.scrinia/` directory alongside your project (like `.git/`), travel with the code, and work across sessions.
@@ -22,11 +22,13 @@ committed like any other directory, and a merge driver resolves what conflicts. 
 
 ## Installation
 
+Shell examples marked `sh` use POSIX syntax; PowerShell examples are marked explicitly.
+
 ### Build from Source
 
 Requires [.NET 10 SDK](https://dotnet.microsoft.com/download).
 
-```bash
+```sh
 git clone https://github.com/nickd-scrinia/scrinia.git
 cd scrinia
 dotnet build
@@ -38,11 +40,16 @@ dotnet build
 .\publish.ps1 -OutputDir ./dist -Platform win-x64
 ```
 
-Produces a single-file `scri.exe` (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
+Produces a single-file `scri.exe` on Windows and `scri` on Linux/macOS (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
 
-The embedding model (`m2v-MiniLM-L6-v2`, ~22MB) downloads automatically on first `scri serve` — semantic search is built in, no plugins needed. To pre-download (e.g., before going offline or in CI):
+When `scri serve` starts, it automatically downloads the built-in Model2Vec embedding model (`m2v-MiniLM-L6-v2`, approximately 50 MB total including supporting files) on first startup unless you pass `--no-auto-setup`. The model is
+stored in `{exeDir}/models/m2v-MiniLM-L6-v2/`; if it is unavailable, semantic search falls back
+to BM25. Configured HTTP providers and the optional Vulkan provider may use their own configured
+models instead of the built-in Model2Vec model.
 
-```bash
+You can also download the built-in model explicitly with `scri setup`:
+
+```sh
 scri setup
 ```
 
@@ -54,29 +61,30 @@ For optional Vulkan GPU acceleration:
 
 ## Quick Start
 
-### 1. Initialize a Workspace
+### 1. Create the Workspace with the First Write
 
-Scrinia stores data in `.scrinia/` at your project root. It's created automatically on first use:
+Scrinia stores data in `.scrinia/` at the resolved workspace root. The first write creates the
+directory automatically:
 
-```bash
+```sh
 cd /path/to/your/project
-scri memory list    # creates .scrinia/ if needed
+scri store first-memory ./notes.md
 ```
 
 ### 2. Store a Memory
 
-```bash
+```sh
 # From a file
 scri store /api/auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
 
 # From stdin
-echo "Always use snake_case for API endpoints" | scri memory store conventions -
+echo "Always use snake_case for API endpoints" | scri store conventions -
 ```
 
 ### 3. Search
 
-```bash
-scri memory search "authentication"
+```sh
+scri search "authentication"
 ```
 
 ### 4. Connect an MCP Client
@@ -99,6 +107,11 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 its working directory; passing `--workspace-root` explicitly makes the server independent
 of whatever directory the client launches it from.
 
+Unless `--no-auto-setup` is supplied, this first `scri serve` startup also downloads the built-in
+Model2Vec model when it is missing. If you configure an HTTP embedding provider or the Vulkan
+provider, that provider may use its own model and model-download process. If the built-in model
+is not available, Scrinia still starts and search falls back to BM25.
+
 Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 
 ## Memory Naming
@@ -107,8 +120,8 @@ Memories are organized into three scopes:
 
 | Pattern | Scope | Storage | Lifetime |
 |---------|-------|---------|----------|
-| `subject` | Local | `.scrinia/store/subject.nmp2` | Persistent |
-| `/topic/subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
+| `subject` | Local | `.scrinia/memories/subject.nmp2` | Persistent |
+| `/topic/subject` | Topic | `.scrinia/memories/topic/subject.nmp2` | Persistent |
 | `~subject` | Ephemeral | In-memory only | Dies with process |
 
 **Topics** group related memories (e.g., `/api/auth`, `/api/endpoints`, `/arch/decisions`). Use them to organize knowledge by domain.

@@ -9,7 +9,8 @@ src/Scrinia/
   Scrinia.csproj            net10.0 exe, AssemblyName: scri
   Program.cs                Entry point (ConsoleAppFramework host)
   Commands/
-    ScriniaCommands.cs      11 public methods (CLI commands)
+    ScriniaCommands.cs      Partial CLI command class (split across ScriniaCommands.*.cs)
+    BundleCommands.cs        Public bundle command group; delegates to ScriniaCommands
     WorkspaceSetup.cs       Workspace init, local store configuration, plugin discovery
     WorkspaceConfig.cs      .scrinia/config.json management
     ConfigJsonContext.cs     Source-gen JSON for config
@@ -26,12 +27,11 @@ The CLI uses ConsoleAppFramework v5, a source-generated CLI framework with zero 
 // Program.cs
 var app = ConsoleApp.Create();
 app.Add<ScriniaCommands>();
-app.Add<MemoryCommands>("memory");
 app.Add<BundleCommands>("bundle");
 app.Run(args);
 ```
 
-`app.Add<T>()` registers each public method on the type as a command. `app.Add<T>("prefix")` nests them under that prefix — `MemoryCommands.List` becomes `scri memory list`, `BundleCommands.Export` becomes `scri bundle export`. Methods on `ScriniaCommands` that should NOT be top-level commands (the memory CRUD operations, the bundle file operations) are kept `internal` so the source generator skips them while the forwarder classes in `MemoryCommands` / `BundleCommands` call into them across the assembly.
+`app.Add<T>()` registers each public method on the type as a top-level command. `app.Add<T>("prefix")` nests commands under that prefix — `ScriniaCommands.Store` becomes `scri store`, while `BundleCommands.Export` becomes `scri bundle export`. The `ScriniaCommands` partials keep command implementations organized by area; helper methods that should not be commands are `internal` or `private`, so the source generator skips them. `BundleCommands` provides the public `bundle` command group and forwards its operations to the internal implementations on `ScriniaCommands`.
 
 ### Pitfalls
 
@@ -48,8 +48,8 @@ app.Run(args);
 2. If found, that repository's root is the workspace root
 3. If no enclosing repository is found, `cwd` is the workspace root and no upward search
    happens
-4. `.scrinia/store/` and `.scrinia/topics/` are created lazily, only when something is
-   written -- not during this resolution step
+4. `.scrinia/memories/` and any topic subdirectories beneath it are created lazily by the first
+   write, not during workspace-root resolution
 5. Discover and launch plugins
 
 This mirrors `git`'s own `.git/` discovery, bounded the same way `git` bounds it: at the
@@ -83,34 +83,52 @@ When `scri serve` is invoked, the CLI starts an MCP server over stdio transport:
 
 ```csharp
 builder.Services
-    .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia", Version = "1.0.0" })
+    .AddMcpServer(options => options.ServerInstructions = ScriniaPrimer.McpInstructions)
     .WithStdioServerTransport()
-    .WithTools<ScriniaMcpTools>();
+    .WithTools<ScriniaMcpTools>(ScriniaMcpTools.CreateToolSerializerOptions())
+    .WithPrompts<ScriniaMcpPrompts>()
+    .WithResources<ScriniaMcpResources>();
 ```
 
-The MCP tools are exposed by `ScriniaMcpTools`, a sealed partial class registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+The MCP server uses stdio transport and exposes tools, prompts, and resources. The tools are
+provided by `ScriniaMcpTools`, a sealed partial class registered with source-generated serializer
+options for trimmed publishing. They access the store via `MemoryStoreContext.Current`, which is
+set during workspace initialization. Server instructions are supplied through
+`ScriniaPrimer.McpInstructions`; the registration does not assert a separate server version.
 
 Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
 
 ## Embeddings Integration
 
-### Two-Step Initialization
+### Provider Selection
 
-`WorkspaceSetup.LoadPluginsAsync()` performs two-step embeddings initialization:
+`WorkspaceSetup.LoadPluginsAsync()` selects the embeddings path in this order:
 
-**Step 1: Built-in embeddings (in-process, always available):**
+An explicitly configured HTTP provider (`ollama`, `openai`, `voyageai`, `azure`, or `google`)
+takes precedence over both the Vulkan plugin and built-in Model2Vec. In that case, the plugin and
+Model2Vec initialization paths are skipped.
+
+**Built-in embeddings (in-process fallback):**
 - Create `EmbeddingOptions` from workspace config
 - `EmbeddingProviderFactory.Create(options, modelsDir, logger)` → `IEmbeddingProvider`
 - Create `VectorStore(embeddingsDir)` + `HybridReranker(provider, store, weight)`
 - Create `CoreEmbeddingEventHandler(provider, store, logger)` (in-process event sink)
 - Set `SearchContributorContext.Default` + `MemoryEventSinkContext.Default`
 
-**Step 2: Optional Vulkan plugin (child-process, overrides built-in):**
-- Discover `{exeDir}/plugins/scri-plugin-embeddings[.exe]`
-- If found: launch via `McpPluginHost`, override context defaults
-- If not found or fails: built-in remains active
+**Optional Vulkan plugin (child process, preferred when installed):**
+- Resolve the configured plugin name from `plugins:embeddings` (default:
+  `scri-plugin-embeddings`)
+- Check `{exeDir}/plugins/{name}/{name}[.exe]` first, then
+  `{exeDir}/plugins/{name}[.exe]`
+- If found: launch via `McpPluginHost`; the plugin takes ownership of the embedding path
+  and built-in Model2Vec is skipped
+- If no plugin is found: initialize the in-process provider, normally Model2Vec
+- If the installed plugin fails to start or becomes unavailable: do not initialize Model2Vec;
+  search remains available through BM25 and path scoring, but semantic plugin scoring is absent
 
-This means semantic search works out of the box with zero plugins installed.
+This means semantic search works out of the box with zero plugins installed when the built-in
+Model2Vec model files are available at `{exeDir}/models/m2v-MiniLM-L6-v2/`. An installed plugin is
+an explicit preference; if plugin startup fails, Scrinia does not silently fall back to Model2Vec.
 
 ### CoreEmbeddingEventHandler
 
@@ -144,7 +162,9 @@ It implements both extension interfaces so the CLI can use a single object for a
 
 ### Startup Sequence
 
-1. `WorkspaceSetup.LoadPluginsAsync()` scans `{exeDir}/plugins/scri-plugin-*`
+1. `WorkspaceSetup.LoadPluginsAsync()` resolves the configured plugin name from
+   `plugins:embeddings` (default: `scri-plugin-embeddings`) and checks
+   `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`
 2. For each discovered plugin executable:
    - Launch as child process via `StdioClientTransport`
    - Pass `--data-dir`, `--models-dir`, and `--config KEY=VALUE` arguments
@@ -241,7 +261,7 @@ dotnet publish src/Scrinia/Scrinia.csproj -c Release -r win-x64 --self-contained
 ### Trimming Safety
 
 The CLI is safe for trimming because:
-- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`, `ScriniaMcpJsonContext`)
+- All JSON serialization uses source-gen contexts (`BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`, `ScriniaMcpJsonContext`)
 - ConsoleAppFramework v5 is source-generated (no reflection)
 - No dynamic assembly loading (plugins are child processes)
 - `InternalsVisibleTo` for test access only

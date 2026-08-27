@@ -78,41 +78,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private volatile bool _layoutChecked;
     private readonly object _layoutGate = new();
 
-    // Merged cross-scope entity fact store. Invalidated event-driven (set to null) by
-    // Upsert / Remove. Rebuilt lazily on next GetEntityFactStore() call from each scope's
-    // facts.json sidecar (reused when its validity token matches the current index) or
-    // re-derived from entries when the sidecar is missing/stale.
-    //
-    // _factStoreLock is NEVER held while building the merged view (that requires ListScoped
-    // / LoadIndex, which take the per-scope index locks) — only at entry, to publish the
-    // built result, and at Upsert/Remove's invalidation point. Upsert/Remove take the index
-    // write-lock first and then (briefly) _factStoreLock; a build that instead held
-    // _factStoreLock across an index-lock acquisition would invert that order and deadlock
-    // against a concurrent mutation on the same scope. _factStoreGeneration guards against
-    // caching a snapshot that a mutation invalidated mid-build: a build started before gen G
-    // that finishes after a mutation bumped it to G+1 returns its result but does not cache it.
-    private readonly object _factStoreLock = new();
-    private EntityFactStore? _factStore;
-    private long _factStoreGeneration;
-    private bool _factStoreDirty;
-    private bool _factWriteInFlight;
-    private readonly object _factWriteGate = new();
-    private readonly FactFlushParticipant _factFlushParticipant;
-    private readonly Dictionary<string, PendingFactWrite> _queuedFactWrites = new(StringComparer.OrdinalIgnoreCase);
-    private readonly IBackgroundWorkRegistration _factFlushRegistration;
-    private bool _disposed;
-
-    private sealed record PendingFactWrite(string Content, long Generation);
+    private readonly EntityFactMaterializer _factMaterializer;
 
     /// <summary>Whether the materialized facts view still has a sidecar flush pending or failed.</summary>
     internal bool HasDirtyFactCache
     {
-        get { lock (_factStoreLock) return _factStoreDirty; }
-    }
-
-    private bool HasPendingFactWrites
-    {
-        get { lock (_factStoreLock) return _queuedFactWrites.Count != 0; }
+        get => _factMaterializer.IsDirty;
     }
 
     /// <summary>
@@ -237,15 +208,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
-        _factFlushParticipant = new FactFlushParticipant(this);
-        _factFlushRegistration = BackgroundWork.Register(_factFlushParticipant);
-    }
-
-    private sealed class FactFlushParticipant(FileMemoryStore store) : IBackgroundWorkParticipant
-    {
-        public bool IsDisposed => store._disposed || !store.HasDirtyFactCache;
-        public bool HasPendingWork => !store._disposed && store.HasDirtyFactCache;
-        public Task FlushAsync(CancellationToken cancellationToken) => store.FlushPendingFactWritesAsync(cancellationToken);
+        _factMaterializer = new EntityFactMaterializer(
+            items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
+            ResolveFactSidecarPath,
+            SafeReadAllText,
+            TryWriteAllText,
+            BackgroundWork.Register);
     }
 
     internal static void EnsureGitIgnore(string workspaceRoot)
@@ -383,13 +351,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             _ephemeralStore.TryRemove(oldest.Key, out _);
         }
 
-        InvalidateFactStore();
+        InvalidateEntityFacts();
     }
 
     public bool ForgetEphemeral(string key)
     {
         if (!_ephemeralStore.TryRemove(key, out _)) return false;
-        InvalidateFactStore();
+        InvalidateEntityFacts();
         return true;
     }
 
@@ -443,7 +411,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             if (_ephemeralStore.TryUpdate(key, updated, current))
             {
-                InvalidateFactStore();
+                InvalidateEntityFacts();
                 return true;
             }
         }
@@ -1316,7 +1284,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         _indexCache.Clear();
         _cachedTopics = null;
         _artifactCache.Invalidate(string.Empty);
-        InvalidateFactStore();
+        InvalidateEntityFacts();
     }
 
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
@@ -1386,7 +1354,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
 
-        InvalidateFactStore(persistentMutation: true);
+        InvalidateEntityFacts();
     }
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
@@ -1484,7 +1452,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (scopeWasEmpty && scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
 
-            InvalidateFactStore(persistentMutation: true);
+            InvalidateEntityFacts();
         });
     }
 
@@ -1561,7 +1529,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 && !Directory.EnumerateFiles(storeDir, "*.meta.json").Any())
                 _cachedTopics = null;
 
-            InvalidateFactStore(persistentMutation: true);
+            InvalidateEntityFacts();
 
             return true;
         });
@@ -1686,7 +1654,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // memory the stored content references plus once or twice for the orphan marker, on
             // every store event. H5's own shape, on the branch that removes H5.
 
-            InvalidateFactStore(persistentMutation: true);
+            InvalidateEntityFacts();
 
             return true;
         });
@@ -2258,6 +2226,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Entity Facts ─────────────────────────────────────────────────────────
 
+    private void InvalidateEntityFacts()
+    {
+        bool hadDirtyWork = _factMaterializer.IsDirty;
+        _factMaterializer.Invalidate();
+        if (hadDirtyWork)
+            BackgroundWork.Fire(_ =>
+            {
+                GetEntityFactStore();
+                return Task.CompletedTask;
+            }, "entity fact rebuild");
+    }
+
     /// <summary>
     /// The merged cross-scope <see cref="EntityFactStore"/>. Built lazily and cached; invalidated on
     /// any Upsert/Remove. Each scope's facts persist in a <c>facts.json</c> sidecar, reused when its
@@ -2267,62 +2247,34 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public EntityFactStore GetEntityFactStore()
     {
+        var items = new List<ScopedArtifact>();
+        if (IncludesEphemeral(null))
+            items.AddRange(ListEphemeral());
+
+        var persistedFacts = new Dictionary<string, PersistedFactResult>(StringComparer.Ordinal);
         foreach (string scope in ResolveReadScopes(null))
-            WithRecoveryReadBarrier(scope, static () => true);
-
-        long gen;
-        lock (_factStoreLock)
         {
-            if (_factStore is not null) return _factStore;   // fast path
-            gen = _factStoreGeneration;
-        }
-
-        // Build WITHOUT holding _factStoreLock — ListScoped/LoadIndex take the per-scope index
-        // locks below, and Upsert/Remove acquire those in the opposite order (index lock, then
-        // _factStoreLock) to invalidate. Holding _factStoreLock across this loop would invert
-        // that order and deadlock against a concurrent mutation on the same scope.
-        var merged = new List<MemoryEntities>();
-        foreach (var group in ListScoped(null).GroupBy(sa => sa.Scope, StringComparer.Ordinal))
-        {
-            string scope = group.Key;
-            var items = group.ToList();
-
-            // "ephemeral" (and any other scope with no on-disk store) has no directory to
-            // hold a sidecar — GetStoreDirForScope throws for it. Derive its facts in-memory
-            // only; everything else about the merge is unaffected.
-            string? sidecarPath = null;
-            try { sidecarPath = Path.Combine(GetStoreDirForScope(scope), "facts.json"); }
-            catch (ArgumentException) { /* no on-disk store for this scope */ }
-
-            string token = EntityFactSidecar.ComputeToken(
-                items.Select(sa => ($"{scope}|{sa.Entry.Name}",
-                                    sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt,
-                                    EntitySignature(sa.Entry))));
-
-            IReadOnlyList<MemoryEntities>? mems = null;
-            if (sidecarPath is not null && File.Exists(sidecarPath))
+            WithRecoveryReadBarrier(scope, () =>
             {
-                var loaded = EntityFactSidecar.TryLoad(SafeReadAllText(sidecarPath));
-                if (loaded is { } l && l.Token == token) mems = l.Memories;
-            }
+                var scopedItems = LoadIndexUnderRecoveryBarrier(scope)
+                    .Select(entry => new ScopedArtifact(scope, entry))
+                    .ToArray();
+                items.AddRange(scopedItems);
 
-            if (mems is null)
-            {
-                mems = items.Select(EntityFactDerivation.Derive).Where(m => m is not null).Select(m => m!).ToArray();
-                if (sidecarPath is not null)
-                    QueueFactSidecarWrite(sidecarPath, token, mems, gen);
-            }
+                string? sidecarPath = ResolveFactSidecarPath(scope);
+                if (sidecarPath is null) return true;
 
-            merged.AddRange(mems);
+                string token = EntityFactMaterializer.ComputeToken(scopedItems);
+                if (File.Exists(sidecarPath))
+                {
+                    var loaded = EntityFactSidecar.TryLoad(SafeReadAllText(sidecarPath));
+                    if (loaded is { } valid && valid.Token == token)
+                        persistedFacts[scope] = new PersistedFactResult(valid.Token, valid.Memories);
+                }
+                return true;
+            });
         }
-        var built = new EntityFactStore(merged);
-
-        lock (_factStoreLock)
-        {
-            if (_factStore is not null) return _factStore;          // another thread published while we built
-            if (_factStoreGeneration == gen) _factStore = built;    // no mutation during build -> safe to cache
-            return built;                                           // else return fresh but don't cache a stale snapshot
-        }
+        return _factMaterializer.Materialize(items, persistedFacts);
     }
 
     /// <summary>
@@ -2336,38 +2288,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// it just costs a safe rebuild; under-invalidating (missing a real entity change) is the bug
     /// this signature exists to close.
     /// </summary>
-    private static string EntitySignature(ArtifactEntry entry)
-    {
-        string attrs = entry.Attributes is null
-            ? string.Empty
-            : string.Join(";", entry.Attributes
-                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(kv => $"{kv.Key.ToLowerInvariant()}=[{string.Join(",", kv.Value.OrderBy(v => v, StringComparer.OrdinalIgnoreCase))}]"));
-
-        string kws = entry.Keywords is null
-            ? string.Empty
-            : string.Join(",", entry.Keywords.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
-
-        return $"{attrs}|kw=[{kws}]";
-    }
-
-    private void InvalidateFactStore(bool persistentMutation = false)
-    {
-        lock (_factWriteGate)
-        {
-            lock (_factStoreLock)
-            {
-                _factStore = null;
-                _factStoreGeneration++;
-                // A dequeued final payload may still be in flight. Preserve its dirty marker until
-                // the writer has observed the same generation under the lock; otherwise a mutation
-                // between dequeue and that observation can leave a stale sidecar looking clean.
-                _factStoreDirty |= _queuedFactWrites.Count != 0
-                    || persistentMutation && _factWriteInFlight;
-            }
-        }
-    }
-
     private static string SafeReadAllText(string path)
     {
         try
@@ -2379,158 +2299,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         catch { return string.Empty; }
     }
 
-    private static bool TryWriteAllText(string path, string content, out byte[] bytes)
+    private static (bool Written, byte[] Bytes) TryWriteAllText(string path, string content)
     {
-        bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(content);
         try
         {
             File.WriteAllBytes(path, bytes);
-            return true;
+            WriteObserver?.Invoke(path, bytes);
+            return (true, bytes);
         }
         catch
         {
-            bytes = [];
-            return false;
+            return (false, []);
         }
     }
 
-    private void QueueFactSidecarWrite(
-        string path, string token, IReadOnlyList<MemoryEntities> memories, long generation)
+    private string? ResolveFactSidecarPath(string scope)
     {
-        string content = EntityFactSidecar.Serialize(token, memories);
-        lock (_factStoreLock)
-        {
-            _factStoreDirty = true;
-            if (!_queuedFactWrites.TryGetValue(path, out var previous)
-                || generation >= previous.Generation)
-            {
-                _queuedFactWrites[path] = new PendingFactWrite(content, generation);
-            }
-        }
-    }
-
-    private async Task FlushPendingFactWritesAsync(CancellationToken cancellationToken)
-    {
-    nextPending:
-        while (true)
-        {
-            string pendingPath;
-            PendingFactWrite pending;
-            bool rebuildDirtyCache;
-            lock (_factStoreLock)
-            {
-                var next = _queuedFactWrites.FirstOrDefault();
-                rebuildDirtyCache = next.Key is null && _factStoreDirty;
-                if (next.Key is null && !rebuildDirtyCache) return;
-                if (rebuildDirtyCache)
-                {
-                    pendingPath = string.Empty;
-                    pending = null!;
-                }
-                else
-                {
-                    pendingPath = next.Key!;
-                    pending = next.Value;
-                    _queuedFactWrites.Remove(pendingPath);
-                    _factWriteInFlight = true;
-                }
-            }
-
-            if (rebuildDirtyCache)
-            {
-                _ = GetEntityFactStore();
-                lock (_factStoreLock)
-                {
-                    if (_queuedFactWrites.Count == 0 && _factStore is not null)
-                        _factStoreDirty = false;
-                }
-                continue;
-            }
-
-            bool stale = false;
-            byte[] writtenBytes = [];
-            bool written;
-            lock (_factWriteGate)
-            {
-                lock (_factStoreLock)
-                {
-                    stale = pending.Generation != _factStoreGeneration
-                        || _queuedFactWrites.TryGetValue(pendingPath, out var newer)
-                            && newer.Generation > pending.Generation;
-                    if (stale) _factStoreDirty = true;
-                }
-
-                written = !stale && TryWriteAllText(pendingPath, pending.Content, out writtenBytes);
-            }
-
-            if (stale)
-            {
-                _ = GetEntityFactStore();
-                lock (_factStoreLock) _factWriteInFlight = false;
-                continue;
-            }
-
-            if (written)
-                WriteObserver?.Invoke(pendingPath, writtenBytes);
-
-            while (!written)
-            {
-                bool retryIsStale;
-                lock (_factStoreLock)
-                {
-                    retryIsStale = pending.Generation != _factStoreGeneration
-                        || _queuedFactWrites.TryGetValue(pendingPath, out var newer)
-                            && newer.Generation > pending.Generation;
-                    if (retryIsStale)
-                    {
-                        if (!_queuedFactWrites.ContainsKey(pendingPath))
-                            _queuedFactWrites[pendingPath] = pending;
-                        _factStoreDirty = true;
-                        _factWriteInFlight = false;
-                    }
-                }
-                if (retryIsStale)
-                {
-                    _ = GetEntityFactStore();
-                    goto nextPending;
-                }
-
-                lock (_factStoreLock)
-                {
-                    if (!_queuedFactWrites.ContainsKey(pendingPath))
-                        _queuedFactWrites[pendingPath] = pending;
-                }
-
-                try
-                {
-                    await Task.Delay(50, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    lock (_factStoreLock)
-                    {
-                        if (!_queuedFactWrites.ContainsKey(pendingPath))
-                            _queuedFactWrites[pendingPath] = pending;
-                        _factStoreDirty = true;
-                        _factWriteInFlight = false;
-                    }
-                    return;
-                }
-
-                lock (_factWriteGate)
-                    written = TryWriteAllText(pendingPath, pending.Content, out writtenBytes);
-                if (written)
-                    WriteObserver?.Invoke(pendingPath, writtenBytes);
-            }
-
-            lock (_factStoreLock)
-            {
-                _factWriteInFlight = false;
-                bool isCurrentPayload = _queuedFactWrites.Count == 0
-                    && pending.Generation == _factStoreGeneration;
-                _factStoreDirty = !isCurrentPayload;
-            }
-        }
+        try { return Path.Combine(GetStoreDirForScope(scope), "facts.json"); }
+        catch (ArgumentException) { return null; }
     }
 
     private static List<TopicInfo> BuildTopicInfosFromCandidates(IReadOnlyList<ScopedArtifact> candidates)
@@ -3068,7 +2855,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         _artifactCache.Invalidate($"{scope}|");
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
-        InvalidateFactStore(persistentMutation: true);
+        InvalidateEntityFacts();
     }
 
     private static bool TryDeleteCompletedJournalUnsafe(string journalPath)
@@ -3174,8 +2961,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
-        _factFlushRegistration.Dispose();
+        _factMaterializer.Dispose();
         foreach (var lk in _indexLocks.Values)
             lk.Dispose();
         _indexLocks.Clear();

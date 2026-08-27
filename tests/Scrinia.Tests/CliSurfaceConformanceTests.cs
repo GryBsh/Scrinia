@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Text.RegularExpressions;
 using FluentAssertions;
 using FluentAssertions.Execution;
 using Scrinia.Commands;
@@ -51,22 +50,117 @@ public sealed class CliSurfaceConformanceTests
     /// release.yml/Scrinia.sln: the authoritative list is a file on disk, not something reflection
     /// over a running process can see here.
     ///
-    /// <para>Residual risk, not exploitable today: this regex assumes Program.cs's actual shape —
-    /// every registration written as a single-line, unqualified <c>app.Add&lt;T&gt;()</c> call,
-    /// where <c>app</c> is exactly that identifier. A registration split across lines, using a
-    /// receiver variable other than <c>app</c> (e.g. a locally-scoped builder), or
-    /// namespace-qualified (<c>app.Add&lt;Scrinia.Commands.Foo&gt;()</c>) would not match and would
-    /// silently drop that entry from the parsed set. <see cref="Entrypoints_CoverEveryTypeProgramCsRegisters"/>'s
-    /// <c>NotEmpty()</c> guard only catches the regex matching NOTHING (e.g. Program.cs rewritten
-    /// so no line matches at all) — it has no way to detect a PARTIAL match, where some
-    /// registrations are found and others are silently missed. If Program.cs's registration shape
-    /// ever changes, this regex needs to change with it.</para></summary>
+    /// <para>The parser tokenizes source first, ignoring comments and literals, then recognizes the
+    /// invocation structure. This keeps formatting and namespace qualification from changing the
+    /// inventory, while avoiding matches in prose or commented-out code.</para></summary>
     private static HashSet<string> RegisteredCommandTypeNames()
     {
         string programCs = File.ReadAllText(RepoPaths.Combine("src", "Scrinia", "Program.cs"));
-        return Regex.Matches(programCs, @"app\.Add<(\w+)>")
-            .Select(m => m.Groups[1].Value)
-            .ToHashSet(StringComparer.Ordinal);
+        return ParseRegisteredCommandTypeNames(programCs);
+    }
+
+    private static HashSet<string> ParseRegisteredCommandTypeNames(string source)
+    {
+        var tokens = TokenizeCSharp(source);
+        var registered = new HashSet<string>(StringComparer.Ordinal);
+
+        for (int index = 0; index + 4 < tokens.Count; index++)
+        {
+            if (tokens[index] != "app" || tokens[index + 1] != "." || tokens[index + 2] != "Add" ||
+                tokens[index + 3] != "<") continue;
+            if (index > 0 && tokens[index - 1] == ".") continue;
+
+            int closingAngle = FindClosingAngle(tokens, index + 3);
+            if (closingAngle < 0 || closingAngle + 1 >= tokens.Count || tokens[closingAngle + 1] != "(") continue;
+
+            string? typeName = tokens
+                .Skip(index + 4)
+                .Take(closingAngle - index - 4)
+                .LastOrDefault(token => char.IsLetter(token[0]) || token[0] == '_');
+            if (!string.IsNullOrEmpty(typeName)) registered.Add(typeName);
+        }
+
+        return registered;
+    }
+
+    private static int FindClosingAngle(IReadOnlyList<string> tokens, int openingAngle)
+    {
+        int depth = 0;
+        for (int index = openingAngle; index < tokens.Count; index++)
+        {
+            if (tokens[index] == "<") depth++;
+            if (tokens[index] != ">") continue;
+            depth--;
+            if (depth == 0) return index;
+        }
+
+        return -1;
+    }
+
+    private static List<string> TokenizeCSharp(string source)
+    {
+        var tokens = new List<string>();
+        for (int index = 0; index < source.Length;)
+        {
+            if (char.IsWhiteSpace(source[index])) { index++; continue; }
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '/')
+            {
+                index = source.IndexOf('\n', index + 2);
+                if (index < 0) break;
+                continue;
+            }
+            if (source[index] == '/' && index + 1 < source.Length && source[index + 1] == '*')
+            {
+                int end = source.IndexOf("*/", index + 2, StringComparison.Ordinal);
+                index = end < 0 ? source.Length : end + 2;
+                continue;
+            }
+            if (source[index] is '\'' or '"' ||
+                (source[index] == '@' && index + 1 < source.Length && source[index + 1] == '"'))
+            {
+                index = SkipCSharpLiteral(source, index);
+                continue;
+            }
+            if (char.IsLetter(source[index]) || source[index] == '_')
+            {
+                int start = index++;
+                while (index < source.Length && (char.IsLetterOrDigit(source[index]) || source[index] == '_')) index++;
+                tokens.Add(source[start..index]);
+                continue;
+            }
+
+            tokens.Add(source[index].ToString());
+            index++;
+        }
+
+        return tokens;
+    }
+
+    private static int SkipCSharpLiteral(string source, int start)
+    {
+        char quote = source[start] == '@' ? source[start + 1] : source[start];
+        int index = source[start] == '@' ? start + 2 : start + 1;
+        while (index < source.Length)
+        {
+            if (source[index] == '\\' && quote == '"') { index += 2; continue; }
+            if (source[index] != quote) { index++; continue; }
+            if (quote == '"' && index + 1 < source.Length && source[index + 1] == '"' && source[start] == '@')
+            {
+                index += 2;
+                continue;
+            }
+            return index + 1;
+        }
+
+        return source.Length;
+    }
+
+    [Theory]
+    [InlineData("app.Add<Scrinia.Commands.ScriniaCommands>();\napp.Add<global::Scrinia.Commands.BundleCommands>(\"bundle\");", "ScriniaCommands,BundleCommands")]
+    [InlineData("app\n    . Add <\n        ScriniaCommands\n    > ( );\napp . Add< BundleCommands >();", "ScriniaCommands,BundleCommands")]
+    public void RegistrationParser_RecognizesQualifiedAndMultilineCalls(string source, string expectedNames)
+    {
+        ParseRegisteredCommandTypeNames(source).Should().BeEquivalentTo(expectedNames.Split(','));
     }
 
     [Fact]
