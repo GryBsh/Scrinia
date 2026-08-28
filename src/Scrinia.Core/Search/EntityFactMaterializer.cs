@@ -6,7 +6,6 @@ internal sealed class EntityFactMaterializer : IDisposable
 {
     private readonly EntityFactMaterializerSource _source;
     private readonly Func<string, string?> _resolveSidecarPath;
-    private readonly Func<string, string?> _readSidecar;
     private readonly FactSidecarWriter _writeSidecar;
     private readonly object _stateGate = new();
     private readonly object _writeGate = new();
@@ -24,13 +23,11 @@ internal sealed class EntityFactMaterializer : IDisposable
     internal EntityFactMaterializer(
         EntityFactMaterializerSource source,
         Func<string, string?> resolveSidecarPath,
-        Func<string, string?> readSidecar,
         FactSidecarWriter writeSidecar,
         Func<IBackgroundWorkParticipant, IBackgroundWorkRegistration> registerParticipant)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _resolveSidecarPath = resolveSidecarPath ?? throw new ArgumentNullException(nameof(resolveSidecarPath));
-        _readSidecar = readSidecar ?? throw new ArgumentNullException(nameof(readSidecar));
         _writeSidecar = writeSidecar ?? throw new ArgumentNullException(nameof(writeSidecar));
         _flushParticipant = new FactFlushParticipant(this);
         _registration = (registerParticipant ?? throw new ArgumentNullException(nameof(registerParticipant)))

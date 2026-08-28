@@ -50,7 +50,6 @@ public sealed class EntityFactMaterializerTests
         var materializer = new EntityFactMaterializer(
             _ => sourceMemories,
             _ => "facts.json",
-            _ => null,
             (_, content) =>
             {
                 if (failFirstWrite)
@@ -93,7 +92,7 @@ public sealed class EntityFactMaterializerTests
     }
 
     private static EntityFactMaterializer CreateMaterializer(EntityFactMaterializerSource source) =>
-        new(source, _ => null, _ => null, (_, _) => (true, []), _ => new TestRegistration());
+        new(source, _ => null, (_, _) => (true, []), _ => new TestRegistration());
 
     private static ScopedArtifact Item(string scope, string name) =>
         new(scope, new ArtifactEntry(name, $"file://{name}", 1, 1, DateTimeOffset.UnixEpoch));

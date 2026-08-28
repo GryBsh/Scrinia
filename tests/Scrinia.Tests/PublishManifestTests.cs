@@ -606,7 +606,6 @@ public sealed class PublishManifestTests
             .Select(r => Path.GetFileNameWithoutExtension(r.Project))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         manifestProjects.Should().NotBeEmpty(because: "an emptied manifest must not make this loop vacuous");
-        manifestProjects.Should().NotBeEmpty(because: "an emptied manifest must not make this check vacuous");
 
         var workflowTargets = ReadWorkflowPublishTargets();
         workflowTargets.Should().NotBeEmpty(because: "the release workflow must invoke a publisher");

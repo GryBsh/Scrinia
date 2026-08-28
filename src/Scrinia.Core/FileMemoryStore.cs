@@ -211,7 +211,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
             ResolveFactSidecarPath,
-            SafeReadAllText,
             TryWriteAllText,
             BackgroundWork.Register);
     }
