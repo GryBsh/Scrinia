@@ -857,7 +857,7 @@ public sealed class PublishManifestTests
                 because: "release run blocks must not directly publish outside the approved scripts, " +
                          "including dotnet.exe and shell-wrapped variants");
 
-        var matrixRids = Regex.Matches(workflow, @"^\s*-\s*rid:\s*(\S+)$", RegexOptions.Multiline)
+        var matrixRids = Regex.Matches(workflow, @"^\s*-\s*rid:\s*(\S+)\r?$", RegexOptions.Multiline)
             .Select(match => match.Groups[1].Value).ToArray();
         matrixRids.Should().Equal(supportedRids,
             because: "the workflow matrix is the complete supported publish-target set");
