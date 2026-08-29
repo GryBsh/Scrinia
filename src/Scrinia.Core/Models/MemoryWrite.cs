@@ -82,7 +82,7 @@ public sealed record MemoryWrite
         if (!validation.IsValid)
             throw new InvalidMemoryWriteException(validation.Error!);
 
-        this.Name = Name;
+        this.Name = Address.ToString();
         this.Scope = Scope;
         RawContent = validation.Write!.RawContent;
         this.Content = validation.Write.Content;
@@ -99,7 +99,20 @@ public sealed record MemoryWrite
         if (content is null)
             throw new InvalidMemoryWriteException(Error("content_null", "Content must not be null.", "content"));
 
-        var text = content.Select(chunk => System.Text.Encoding.UTF8.GetString(chunk.Span)).ToArray();
+        string[] text = new string[content.Count];
+        var strictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+        for (int index = 0; index < content.Count; index++)
+        {
+            try
+            {
+                text[index] = strictUtf8.GetString(content[index].Span);
+            }
+            catch (DecoderFallbackException)
+            {
+                throw new InvalidMemoryWriteException(Error(
+                    "invalid_utf8", "Content contains malformed UTF-8 bytes.", $"content[{index}]"));
+            }
+        }
         var validation = TryCreate(address, text, attributes, keywords, description: description);
         if (!validation.IsValid)
             throw new InvalidMemoryWriteException(validation.Error!);
@@ -263,22 +276,6 @@ public sealed record MemoryWrite
     /// <summary>Gets or initializes raw caller keywords.</summary>
     public IReadOnlyList<string> Keywords { get; }
 
-    /// <summary>Deconstructs the write input into its public constructor values.</summary>
-    public void Deconstruct(
-        out string name,
-        out string scope,
-        out string[] content,
-        out string? description,
-        out Dictionary<string, string[]>? attributes,
-        out string[]? keywords)
-    {
-        name = Name;
-        scope = Scope;
-        content = RawContent;
-        description = Description;
-        attributes = Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
-        keywords = Keywords.ToArray();
-    }
 }
 
 /// <summary>The result of validating a write at the core boundary.</summary>

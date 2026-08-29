@@ -1,5 +1,6 @@
 using System.Text;
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Models;
 using Xunit;
 
@@ -96,6 +97,33 @@ public sealed class MemoryWriteValidationTests
     }
 
     [Fact]
+    public void MalformedUtf8_IsRejectedWithCategorizedError()
+    {
+        var action = () => new MemoryWrite(Address, [new byte[] { 0xC3, 0x28 }],
+            new Dictionary<string, IReadOnlyList<string>>(), []);
+
+        var exception = FluentActions.Invoking(action).Should().Throw<InvalidMemoryWriteException>().Which;
+
+        exception.Error.Should().BeEquivalentTo(new MemoryError(
+            MemoryErrorCategory.InvalidWriteContent, "invalid_utf8", "Content contains malformed UTF-8 bytes.",
+            "content[0]", null, null));
+    }
+
+    [Fact]
+    public async Task InvalidValidationResult_DoesNotInvokeMutationSpyWriteBoundary()
+    {
+        var result = MemoryWrite.TryCreate(Address, ["body"],
+            new Dictionary<string, IReadOnlyList<string>>(), [], DefaultOptions with { MaxContentBytesPerChunk = 1 });
+        var spy = new MutationSpyStore();
+
+        if (result.IsValid)
+            await spy.StoreAsync(result.Write!);
+
+        result.Error!.Code.Should().Be("content_chunk_too_large");
+        spy.StoreCalls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task FileMemoryStore_ValidatesBeforeCreatingProductionArtifacts()
     {
         var valid = MemoryWrite.TryCreate(Address, ["body"],
@@ -113,4 +141,15 @@ public sealed class MemoryWriteValidationTests
     }
 
     private static MemoryValidationOptions DefaultOptions => new();
+
+    private sealed class MutationSpyStore
+    {
+        public int StoreCalls { get; private set; }
+
+        public Task StoreAsync(MemoryWrite write)
+        {
+            StoreCalls++;
+            return Task.CompletedTask;
+        }
+    }
 }

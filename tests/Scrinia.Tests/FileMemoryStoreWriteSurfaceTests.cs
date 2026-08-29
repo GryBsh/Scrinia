@@ -99,19 +99,18 @@ public class FileMemoryStoreWriteSurfaceTests
     }
 
     [Fact]
-    public void MemoryWrite_RetainsItsPublicConstructionAndRecordShapes()
+    public void MemoryWrite_ExposesOnlyValidatedTypedRecordShape()
     {
-        var write = new MemoryWrite("name", "local", ["body"], "description",
-            new Dictionary<string, string[]> { ["tag"] = ["one"] }, ["keyword"]);
-        var renamed = write with { Name = "renamed" };
-        var (name, scope, content, description, attributes, keywords) = renamed;
+        var write = MemoryWrite.TryCreate(MemoryAddress.Parse("/name"), ["body"],
+            new Dictionary<string, IReadOnlyList<string>> { ["tag"] = ["one"] }, ["keyword"]).Write!;
 
-        name.Should().NotBeNull();
-        scope.Should().NotBeNull();
-        content.Should().NotBeNull();
-        description.Should().NotBeNull();
-        attributes.Should().NotBeNull();
-        keywords.Should().NotBeNull();
+        write.Address.Should().Be(MemoryAddress.Parse("/name"));
+        write.Name.Should().Be("/name");
+        write.Scope.Should().Be("local");
+        write.Content.Should().ContainSingle();
+        write.Description.Should().BeNull();
+        write.Attributes.Should().ContainKey("tag");
+        write.Keywords.Should().ContainSingle();
     }
 
     // ── Deriving ─────────────────────────────────────────────────────────────
