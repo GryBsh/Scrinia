@@ -29,6 +29,10 @@ public readonly record struct MemoryAddress
     /// <summary>The namespace represented by this address.</summary>
     public MemoryAddressKind Kind { get; }
 
+    /// <summary>Whether this value was produced by the validated parser.</summary>
+    public bool IsValid => Value is not null &&
+        (Kind is MemoryAddressKind.Persistent or MemoryAddressKind.Ephemeral);
+
     /// <summary>Parses and canonicalizes a raw logical address.</summary>
     public static MemoryAddress Parse(string raw)
     {
@@ -86,7 +90,13 @@ public readonly record struct MemoryAddress
     }
 
     /// <inheritdoc />
-    public override string ToString() => Kind == MemoryAddressKind.Ephemeral ? $"~{Value}" : Value;
+    public override string ToString()
+    {
+        if (!IsValid)
+            throw new InvalidOperationException("The memory address is invalid; use Parse or TryParse to create a canonical address.");
+
+        return Kind == MemoryAddressKind.Ephemeral ? $"~{Value}" : Value;
+    }
 
     private static bool TryParseEphemeralName(string name, out MemoryAddress address, out MemoryAddressError error)
     {

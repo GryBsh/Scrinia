@@ -48,6 +48,20 @@ public sealed class MemoryAddressTests
         JsonSerializer.Deserialize<MemoryAddress>("\"~foo\"").Should().Be(address);
     }
 
+    [Fact]
+    public void DefaultAddress_IsExplicitlyInvalidAndCannotBeRenderedOrSerialized()
+    {
+        var address = default(MemoryAddress);
+
+        address.IsValid.Should().BeFalse();
+        address.Invoking(value => value.ToString())
+            .Should().Throw<InvalidOperationException>()
+            .WithMessage("*invalid*");
+        Action serialize = () => JsonSerializer.Serialize(address);
+        serialize.Should().Throw<InvalidOperationException>()
+            .WithMessage("*invalid*");
+    }
+
     [Theory]
     [MemberData(nameof(MalformedAddresses))]
     public void TryParse_RejectsMalformedAddress(string? raw)
