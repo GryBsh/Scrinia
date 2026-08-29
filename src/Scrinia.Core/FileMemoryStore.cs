@@ -1665,8 +1665,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(write);
-        if (write.Content is null || write.Content.Length == 0)
-            throw new ArgumentException("A store writes at least one chunk.", nameof(write));
+        write.ValidateOrThrow();
 
         // Ephemerality is the store's question, not the pipeline's — it decides where the memory
         // lands, and it suppresses the auto-derived review condition (D-05).
@@ -1675,15 +1674,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // The one call. `write.Keywords` is the caller's RAW list by MemoryWrite's contract (D-01);
         // nothing this method computes is ever fed back in as input.
         var derived = MemoryDerivation.ForStore(
-            write.Content, write.Description, write.Attributes, write.Keywords,
+            write.RawContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()), write.Keywords.ToArray(),
             isEphemeral: ephemeral,
             fileHasher: HashWorkspaceFile);
 
-        string artifact = write.Content.Length == 1
-            ? Nmp2ChunkedEncoder.Encode(write.Content[0])
-            : Nmp2ChunkedEncoder.EncodeChunks(write.Content);
+        string artifact = write.RawContent.Length == 1
+            ? Nmp2ChunkedEncoder.Encode(write.RawContent[0])
+            : Nmp2ChunkedEncoder.EncodeChunks(write.RawContent);
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
-        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(write.Content));
+        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(write.RawContent));
 
         if (ephemeral)
         {
@@ -1777,10 +1776,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(write);
-        if (write.Content is null || write.Content.Length != 1)
-            throw new ArgumentException(
-                "An append adds exactly one chunk, so MemoryWrite.Content must hold one element.",
-                nameof(write));
+        write.ValidateOrThrow(isAppend: true);
 
         bool ephemeral = IsEphemeral(write.Name);
         string scope = write.Scope;
@@ -1812,7 +1808,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (existingArtifact is null)
             return await StoreAsync(write, ct);
 
-        string appended = write.Content[0];
+        string appended = write.RawContent[0];
         string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended);
 
         // The pipeline derives over the memory's FULL post-append content with the appended chunk
@@ -1840,7 +1836,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             AgentKeywords: existingEntry?.AgentKeywords ?? existingEph?.AgentKeywords);
 
         var derived = MemoryDerivation.ForAppend(
-            fullContent, write.Description, write.Attributes, write.Keywords, existing,
+            fullContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()), write.Keywords.ToArray(), existing,
             fileHasher: HashWorkspaceFile);
 
         if (ephemeral)

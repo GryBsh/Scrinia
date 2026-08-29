@@ -28,9 +28,9 @@ public class FakeMemoryStore : IMemoryStore
     // and chunk count so a test can tell which call produced it, and overriding is how a test that
     // cares about derivation gets a real answer.
     public virtual Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default) =>
-        Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.Content.Length, DateTimeOffset.UtcNow));
+        Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.RawContent.Length, DateTimeOffset.UtcNow));
     public virtual Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default) =>
-        Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.Content.Length, DateTimeOffset.UtcNow));
+        Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.RawContent.Length, DateTimeOffset.UtcNow));
     public virtual IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
     public virtual void Upsert(ArtifactEntry entry, string scope = "local") { }
     public virtual bool Remove(string name, string scope = "local") => false;
