@@ -1,6 +1,7 @@
 using System.Text;
 using FluentAssertions;
 using Scrinia.Core.Models;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Tests;
@@ -27,6 +28,14 @@ public sealed class MemoryWriteValidationTests
         result.Error.Should().BeEquivalentTo(new MemoryError(
             MemoryErrorCategory.InvalidWriteContent, "null_content_chunk", "Content chunks must not be null.",
             "content[0]", null, null));
+    }
+
+    [Fact]
+    public void NullMetadataCollections_AreRejectedAsInvalidWriteContent()
+    {
+        MemoryWrite.TryCreate(Address, ["body"], null, [], DefaultOptions).Error!.Code.Should().Be("attributes_null");
+        MemoryWrite.TryCreate(Address, ["body"], new Dictionary<string, IReadOnlyList<string>>(), null, DefaultOptions)
+            .Error!.Code.Should().Be("keywords_null");
     }
 
     [Fact]
@@ -67,12 +76,12 @@ public sealed class MemoryWriteValidationTests
         var longAddress = MemoryAddress.Parse('/' + new string('x', 20));
         var options = DefaultOptions with { MaxAddressBytes = 5, MaxAttributeKeyLength = 3, MaxAttributeValueLength = 3, MaxKeywordLength = 3 };
 
-        MemoryWrite.TryCreate(longAddress, ["ok"], [], [], options).Error!.Field.Should().Be("address");
-        MemoryWrite.TryCreate(Address, ["ok"], new Dictionary<string, IReadOnlyList<string>> { ["long"] = ["ok"] }, [], options)
+        MemoryWrite.TryCreate(longAddress, ["ok"], new Dictionary<string, IReadOnlyList<string>>(), [], options).Error!.Field.Should().Be("address");
+        MemoryWrite.TryCreate(Address, ["ok"], new Dictionary<string, IReadOnlyList<string>> { ["long"] = ["ok"] }, [], options with { MaxAddressBytes = MemoryAddress.MaxUtf8Bytes })
             .Error!.Field.Should().Be("attributes.key");
-        MemoryWrite.TryCreate(Address, ["ok"], new Dictionary<string, IReadOnlyList<string>> { ["key"] = ["long"] }, [], options)
+        MemoryWrite.TryCreate(Address, ["ok"], new Dictionary<string, IReadOnlyList<string>> { ["key"] = ["long"] }, [], options with { MaxAddressBytes = MemoryAddress.MaxUtf8Bytes })
             .Error!.Field.Should().Be("attributes[key][0]");
-        MemoryWrite.TryCreate(Address, ["ok"], [], ["long"], options).Error!.Field.Should().Be("keywords[0]");
+        MemoryWrite.TryCreate(Address, ["ok"], new Dictionary<string, IReadOnlyList<string>>(), ["long"], options with { MaxAddressBytes = MemoryAddress.MaxUtf8Bytes }).Error!.Field.Should().Be("keywords[0]");
     }
 
     [Fact]
@@ -85,6 +94,30 @@ public sealed class MemoryWriteValidationTests
         append.IsValid.Should().BeTrue();
         remember.Write!.Content.Select(chunk => Encoding.UTF8.GetString(chunk.Span)).Should().Equal("first", "second");
         append.Write!.Content.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task InvalidWrite_IsRejectedBeforeSpyStoreCanObserveIt()
+    {
+        var spy = new SpyStore();
+        var valid = new MemoryWrite("/notes/spy", "local", ["body"]);
+        var invalid = valid with { RawContent = [] };
+
+        await FluentActions.Invoking(() => spy.StoreAsync(invalid)).Should().ThrowAsync<InvalidMemoryWriteException>();
+
+        spy.StoreCalls.Should().Be(0);
+    }
+
+    private sealed class SpyStore : FakeMemoryStore
+    {
+        public int StoreCalls { get; private set; }
+
+        public override Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
+        {
+            write.ValidateOrThrow();
+            StoreCalls++;
+            return base.StoreAsync(write, ct);
+        }
     }
 
     private static MemoryValidationOptions DefaultOptions => new();

@@ -77,15 +77,18 @@ public sealed record MemoryWrite
         Dictionary<string, string[]>? Attributes = null,
         string[]? Keywords = null)
     {
-        ArgumentNullException.ThrowIfNull(Content);
         Address = MemoryAddress.Parse(Name);
+        var validation = TryCreate(Address, Content, ConvertAttributes(Attributes) ?? EmptyAttributes, Keywords ?? [], description: Description);
+        if (!validation.IsValid)
+            throw new InvalidMemoryWriteException(validation.Error!);
+
         this.Name = Name;
         this.Scope = Scope;
-        RawContent = Content;
-        this.Content = Content.Select(System.Text.Encoding.UTF8.GetBytes).Select(bytes => (ReadOnlyMemory<byte>)bytes).ToArray();
+        RawContent = validation.Write!.RawContent;
+        this.Content = validation.Write.Content;
         this.Description = Description;
-        this.Attributes = Attributes?.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value) ?? EmptyAttributes;
-        this.Keywords = Keywords ?? [];
+        this.Attributes = validation.Write.Attributes;
+        this.Keywords = validation.Write.Keywords;
     }
 
     private MemoryWrite(MemoryAddress address, IReadOnlyList<ReadOnlyMemory<byte>> content,
@@ -147,6 +150,10 @@ public sealed record MemoryWrite
             return Error("address_too_large", "Address exceeds its UTF-8 byte limit.", "address", options.MaxAddressBytes, addressBytes);
         if (content is null || content.Count == 0)
             return Error("empty_content", "Content must contain at least one chunk.", "content", 1, 0);
+        if (attributes is null)
+            return Error("attributes_null", "Attributes must not be null.", "attributes");
+        if (keywords is null)
+            return Error("keywords_null", "Keywords must not be null.", "keywords");
         if (isAppend && content.Count != 1)
             return Error("append_requires_one_chunk", "An append must contain exactly one chunk.", "content", 1, content.Count);
         if (content.Count > options.MaxChunks)
@@ -173,14 +180,24 @@ public sealed record MemoryWrite
         {
             if (string.IsNullOrWhiteSpace(attribute.Key) || attribute.Key.Length > options.MaxAttributeKeyLength)
                 return Error("attribute_key_invalid", "Attribute key is invalid or too long.", "attributes.key", options.MaxAttributeKeyLength, attribute.Key?.Length ?? 0);
+            if (attribute.Value is null)
+                return Error("attribute_values_null", "Attribute values must not be null.", $"attributes[{attribute.Key}]");
             for (int index = 0; index < attribute.Value.Count; index++)
                 if (string.IsNullOrWhiteSpace(attribute.Value[index]) || attribute.Value[index].Length > options.MaxAttributeValueLength)
                     return Error("attribute_value_invalid", "Attribute value is invalid or too long.", $"attributes[{attribute.Key}][{index}]", options.MaxAttributeValueLength, attribute.Value[index]?.Length ?? 0);
         }
         for (int index = 0; index < (keywords?.Count ?? 0); index++)
-            if (string.IsNullOrWhiteSpace(keywords![index]) || keywords[index].Length > options.MaxKeywordLength)
+            if (keywords![index] is null || string.IsNullOrWhiteSpace(keywords[index]) || keywords[index].Length > options.MaxKeywordLength)
                 return Error("keyword_invalid", "Keyword is invalid or too long.", $"keywords[{index}]", options.MaxKeywordLength, keywords[index]?.Length ?? 0);
         return null;
+    }
+
+    private static Dictionary<string, IReadOnlyList<string>>? ConvertAttributes(
+        Dictionary<string, string[]>? attributes)
+    {
+        if (attributes is null)
+            return null;
+        return attributes.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value);
     }
 
     private static MemoryError Error(string code, string message, string field, long? limit = null, long? actual = null) =>

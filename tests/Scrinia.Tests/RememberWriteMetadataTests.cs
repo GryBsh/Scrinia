@@ -133,7 +133,7 @@ public class RememberWriteMetadataTests
             attributes: new Dictionary<string, string[]> { ["org"] = ["acme"] });
 
         recording.LastAppend.Should().NotBeNull(because: "precondition: the append ran");
-        recording.LastAppend!.Content.Should().Equal(["an appended chunk"],
+        recording.LastAppend!.RawContent.Should().Equal(["an appended chunk"],
             because: "an append writes exactly one chunk; the full post-append text is the store's " +
                      "to reassemble, and a tool that reassembled it would be decoding the artifact " +
                      "to derive from it");
