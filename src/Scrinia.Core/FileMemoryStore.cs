@@ -59,6 +59,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private const int MaxEphemeralEntries = 1000;
     private readonly string _workspaceRoot;
+    private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
@@ -203,11 +204,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public RankerOptions RankerOptions { get; init; } = RankerOptions.Default;
 
-    public FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions = null)
+    public FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions = null,
+        MemoryValidationOptions? writeValidationOptions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
+        _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
             ResolveFactSidecarPath,
@@ -1665,7 +1668,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(write);
-        write.ValidateOrThrow();
+        write.ValidateOrThrow(_writeValidationOptions);
 
         // Ephemerality is the store's question, not the pipeline's — it decides where the memory
         // lands, and it suppresses the auto-derived review condition (D-05).
@@ -1776,7 +1779,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(write);
-        write.ValidateOrThrow(isAppend: true);
+        write.ValidateOrThrow(_writeValidationOptions, isAppend: true);
 
         bool ephemeral = IsEphemeral(write.Name);
         string scope = write.Scope;

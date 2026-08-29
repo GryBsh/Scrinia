@@ -1,7 +1,6 @@
 using System.Text;
 using FluentAssertions;
 using Scrinia.Core.Models;
-using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Tests;
@@ -97,27 +96,20 @@ public sealed class MemoryWriteValidationTests
     }
 
     [Fact]
-    public async Task InvalidWrite_IsRejectedBeforeSpyStoreCanObserveIt()
+    public async Task FileMemoryStore_ValidatesBeforeCreatingProductionArtifacts()
     {
-        var spy = new SpyStore();
-        var valid = new MemoryWrite("/notes/spy", "local", ["body"]);
-        var invalid = valid with { RawContent = [] };
+        var valid = MemoryWrite.TryCreate(Address, ["body"],
+            new Dictionary<string, IReadOnlyList<string>>(), [], DefaultOptions).Write!;
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-validation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        using var store = new FileMemoryStore(root,
+            writeValidationOptions: DefaultOptions with { MaxContentBytesPerChunk = 1 });
 
-        await FluentActions.Invoking(() => spy.StoreAsync(invalid)).Should().ThrowAsync<InvalidMemoryWriteException>();
+        await FluentActions.Invoking(() => store.StoreAsync(valid)).Should().ThrowAsync<InvalidMemoryWriteException>();
 
-        spy.StoreCalls.Should().Be(0);
-    }
-
-    private sealed class SpyStore : FakeMemoryStore
-    {
-        public int StoreCalls { get; private set; }
-
-        public override Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
-        {
-            write.ValidateOrThrow();
-            StoreCalls++;
-            return base.StoreAsync(write, ct);
-        }
+        Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Should().BeEmpty();
+        store.Dispose();
+        Directory.Delete(root, recursive: true);
     }
 
     private static MemoryValidationOptions DefaultOptions => new();

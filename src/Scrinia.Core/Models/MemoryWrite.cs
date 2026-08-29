@@ -78,7 +78,7 @@ public sealed record MemoryWrite
         string[]? Keywords = null)
     {
         Address = MemoryAddress.Parse(Name);
-        var validation = TryCreate(Address, Content, ConvertAttributes(Attributes) ?? EmptyAttributes, Keywords ?? [], description: Description);
+        var validation = TryCreate(Address, Content, ConvertAttributes(Attributes), Keywords, description: Description);
         if (!validation.IsValid)
             throw new InvalidMemoryWriteException(validation.Error!);
 
@@ -91,16 +91,41 @@ public sealed record MemoryWrite
         this.Keywords = validation.Write.Keywords;
     }
 
+    /// <summary>Initializes an immutable, validated UTF-8 memory write.</summary>
+    public MemoryWrite(MemoryAddress address, IReadOnlyList<ReadOnlyMemory<byte>> content,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> attributes,
+        IReadOnlyList<string> keywords, string? description = null)
+    {
+        if (content is null)
+            throw new InvalidMemoryWriteException(Error("content_null", "Content must not be null.", "content"));
+
+        var text = content.Select(chunk => System.Text.Encoding.UTF8.GetString(chunk.Span)).ToArray();
+        var validation = TryCreate(address, text, attributes, keywords, description: description);
+        if (!validation.IsValid)
+            throw new InvalidMemoryWriteException(validation.Error!);
+
+        var valid = validation.Write!;
+        Address = valid.Address;
+        Name = valid.Name;
+        Scope = valid.Scope;
+        Content = content.Select(chunk => (ReadOnlyMemory<byte>)chunk.ToArray()).ToArray();
+        RawContent = valid.RawContent;
+        Description = valid.Description;
+        Attributes = valid.Attributes;
+        Keywords = valid.Keywords;
+    }
+
     private MemoryWrite(MemoryAddress address, IReadOnlyList<ReadOnlyMemory<byte>> content,
         IReadOnlyDictionary<string, IReadOnlyList<string>> attributes, IReadOnlyList<string> keywords,
         string? description, string[] rawContent)
     {
         Address = address;
-        Content = content;
-        Attributes = attributes;
-        Keywords = keywords;
+        Content = content.Select(chunk => (ReadOnlyMemory<byte>)chunk.ToArray()).ToArray();
+        Attributes = new Dictionary<string, IReadOnlyList<string>>(attributes.ToDictionary(
+            pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value.ToArray()), StringComparer.OrdinalIgnoreCase);
+        Keywords = keywords.ToArray();
         Description = description;
-        RawContent = rawContent;
+        RawContent = rawContent.ToArray();
         Name = address.ToString();
         Scope = "local";
     }
@@ -123,7 +148,7 @@ public sealed record MemoryWrite
         var rawContent = content!.Select(value => value!).ToArray();
         var bytes = rawContent.Select(value => (ReadOnlyMemory<byte>)System.Text.Encoding.UTF8.GetBytes(value)).ToArray();
         return new(new MemoryWrite(address, (IReadOnlyList<ReadOnlyMemory<byte>>)bytes,
-            attributes ?? EmptyAttributes, keywords ?? Array.Empty<string>(), description, rawContent), null);
+            attributes!, keywords!, description, rawContent), null);
     }
 
     /// <summary>Validates this write and throws the established write exception on refusal.</summary>
@@ -217,26 +242,26 @@ public sealed record MemoryWrite
     }
 
     /// <summary>Gets or initializes the resolved memory subject.</summary>
-    public MemoryAddress Address { get; init; }
-    public string Name { get; init; }
+    public MemoryAddress Address { get; }
+    public string Name { get; }
 
     /// <summary>Gets or initializes the resolved memory scope.</summary>
-    public string Scope { get; init; }
+    public string Scope { get; }
 
     /// <summary>Gets or initializes the raw content chunks.</summary>
-    public IReadOnlyList<ReadOnlyMemory<byte>> Content { get; init; }
+    public IReadOnlyList<ReadOnlyMemory<byte>> Content { get; }
 
     /// <summary>Text chunks retained solely for the existing derivation pipeline.</summary>
-    public string[] RawContent { get; init; }
+    internal string[] RawContent { get; }
 
     /// <summary>Gets or initializes the optional curated description.</summary>
-    public string? Description { get; init; }
+    public string? Description { get; }
 
     /// <summary>Gets or initializes explicit caller attributes.</summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<string>> Attributes { get; init; }
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> Attributes { get; }
 
     /// <summary>Gets or initializes raw caller keywords.</summary>
-    public IReadOnlyList<string> Keywords { get; init; }
+    public IReadOnlyList<string> Keywords { get; }
 
     /// <summary>Deconstructs the write input into its public constructor values.</summary>
     public void Deconstruct(
