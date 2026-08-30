@@ -26,40 +26,48 @@ public partial class ScriniaCommands
         Console.WriteLine();
     }
 
-    private static void WriteJsonError(string message)
+    private static void WriteJsonError(string message, MemoryError? error = null)
     {
-        WriteJson(new CliErrorOutput(message), CliJsonContext.Default.CliErrorOutput);
+        WriteJson(new CliErrorOutput(message, error?.Category.ToString(), error?.Code,
+            error?.Field, error?.Limit, error?.Actual), CliJsonContext.Default.CliErrorOutput);
     }
 
-    /// <summary>
-    /// Canonicalizes the ephemeral surface alias, then refuses any ephemeral address.
-    ///
-    /// <para>Every ephemeral operation from the CLI is meaningless, not just the writes: a
-    /// fresh CLI process starts with an empty in-memory ephemeral map and exits before
-    /// anything can read it back. `scri store ~x` therefore reported success and exit 0 over
-    /// content it discarded (review finding C1), and `scri show ~x` could only ever answer
-    /// NOT_FOUND. Refusing loudly is the honest outcome; the alternative — inventing a
-    /// session-scoped store — is a lifecycle nothing has asked for.</para>
-    ///
-    /// <para>The message names the CANONICAL form, so a caller who used the alias learns the
-    /// real address rather than having their own spelling read back to them.</para>
-    /// </summary>
-    /// <returns>True when the command must stop and return 1.</returns>
-    private static bool RefuseEphemeral(string name, bool json, out string canonical)
+    /// <summary>Parses one CLI memory argument into a canonical persistent address.</summary>
+    private static bool TryGetPersistentAddress(string raw, bool json, out MemoryAddress address)
     {
-        canonical = MemoryNaming.CanonicalizeEphemeralAlias(name);
-        if (MemoryAddress.TryParse(canonical, out var address, out _) && address.Kind == MemoryAddressKind.Ephemeral)
-            canonical = address.ToString();
-        else if (!MemoryNaming.IsEphemeralName(canonical)) return false;
+        address = default;
+        string input = raw?.Trim() ?? "";
+        if (LooksLikeUri(input))
+            return EmitAddressError(new MemoryError(
+                MemoryErrorCategory.UnsupportedInputForm, "unsupported_input_form",
+                "Only logical memory addresses are supported; URI inputs are not accepted.", "address"), json);
 
-        string message =
-            $"'{canonical}' names an ephemeral memory. Ephemeral memories live only in the "
-            + "process that creates them, and the CLI exits immediately. Use a persistent path.";
+        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input);
+        if (!canonical.StartsWith('/') && !canonical.StartsWith('~')) canonical = "/" + canonical;
+        if (!MemoryAddress.TryParse(canonical, out address, out MemoryAddressError parseError))
+            return EmitAddressError(new MemoryError(
+                parseError.Category, parseError.Code, parseError.Message, parseError.Field,
+                parseError.Limit, parseError.Actual), json);
 
-        if (json) WriteJsonError(message);
-        else AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(message)}");
+        if (address.Kind == MemoryAddressKind.Ephemeral)
+            return EmitAddressError(new MemoryError(
+                MemoryErrorCategory.ForbiddenAddressKind, "forbidden_address_kind",
+                $"'{address}' names an ephemeral memory. Ephemeral memories are not available to the CLI; use a persistent path.",
+                "address"), json);
+
         return true;
     }
+
+    private static bool EmitAddressError(MemoryError error, bool json)
+    {
+        if (json) WriteJsonError(error.Message, error);
+        else AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(error.Message)} ({error.Category})");
+        return false;
+    }
+
+    private static bool LooksLikeUri(string input) =>
+        input.Contains("://", StringComparison.Ordinal) || input.StartsWith("//", StringComparison.Ordinal) ||
+        input.Contains(':') || input.Contains('?') || input.Contains('#') || input.Contains('%');
 
     /// <summary>
     /// Human-facing rendering of an error envelope: the message, then one indented bullet per
@@ -114,7 +122,11 @@ public partial class ScriniaCommands
         {
             if (r.IsError)
             {
-                WriteJsonError(r.Error ?? "unknown error");
+                MemoryError? writeError = action == "append" && r.ErrorCode == ErrorCodes.InvalidParameter
+                    ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
+                        r.Error ?? "invalid write content")
+                    : null;
+                WriteJsonError(r.Error ?? "unknown error", writeError);
                 return 1;
             }
 

@@ -72,7 +72,13 @@ internal sealed record CliImportOutput(string Message);
 internal sealed record CliBundleOutput(string Path, int FileCount, string Topic, long BundleBytes, string Message);
 internal sealed record CliConfigOutput(Dictionary<string, string>? Settings, string? Key, string? Value);
 internal sealed record CliReindexOutput(int Embedded, int Total, int Skipped, int Failed, string Message);
-internal sealed record CliErrorOutput(string Error);
+internal sealed record CliErrorOutput(
+    string Error,
+    string? Category = null,
+    string? Code = null,
+    string? Field = null,
+    long? Limit = null,
+    long? Actual = null);
 
 /// <summary>
 /// Shared output shape for the MCP-passthrough commands (append, compact, link,

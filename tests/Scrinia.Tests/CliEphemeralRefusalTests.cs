@@ -1,5 +1,6 @@
 using Scrinia.Commands;
 using Scrinia.Core;
+using System.Text.Json;
 
 namespace Scrinia.Tests;
 
@@ -66,6 +67,8 @@ public class CliEphemeralRefusalTests
 
             Assert.Equal(1, exit);
             Assert.Contains("ephemeral", output, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("ForbiddenAddressKind", JsonDocument.Parse(output).RootElement
+                .GetProperty("category").GetString());
         }
         finally { Directory.Delete(dir, recursive: true); }
     }

@@ -376,8 +376,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
-        name = canonicalName;
+        if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -413,7 +412,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Remember([content], MemoryAddress.Parse(canonicalName), description ?? "", tagArray,
+            response = await tools.Remember([content], address, description ?? "", tagArray,
                 keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
@@ -425,7 +424,15 @@ public partial class ScriniaCommands
         // defect already fixed at Show, Forget, Export and Import.
         if (response.IsError)
         {
-            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            if (json)
+            {
+                MemoryError? writeError = response.ErrorCode == ErrorCodes.InvalidParameter
+                    ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
+                        response.Error ?? "invalid write content")
+                    : null;
+                WriteJsonError(response.Error ?? "unknown error", writeError);
+                return 1;
+            }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
@@ -457,14 +464,13 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
-        name = canonicalName;
+        if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
 
         var tools = new ScriniaMcpTools();
         McpResponse response;
         try
         {
-            response = await tools.Recall(MemoryAddress.Parse(canonicalName), cancellationToken: cancellationToken);
+            response = await tools.Recall(address, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -485,7 +491,7 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            WriteJson(new CliShowOutput(name, result, result.Length), CliJsonContext.Default.CliShowOutput);
+            WriteJson(new CliShowOutput(address.ToString(), result, result.Length), CliJsonContext.Default.CliShowOutput);
             return 0;
         }
 
@@ -513,8 +519,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
-        name = canonicalName;
+        if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -522,7 +527,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Forget(MemoryAddress.Parse(canonicalName), cancellationToken);
+            response = await tools.Forget(address, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -541,7 +546,7 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            WriteJson(new CliForgetOutput(name, result), CliJsonContext.Default.CliForgetOutput);
+            WriteJson(new CliForgetOutput(address.ToString(), result), CliJsonContext.Default.CliForgetOutput);
             return response.IsWarning ? 1 : 0;
         }
         return RenderEnvelope(response, result);
@@ -560,8 +565,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
-        name = canonicalName;
+        if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -592,7 +596,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Append(content, MemoryAddress.Parse(canonicalName), cancellationToken: cancellationToken);
+            response = await tools.Append(content, address, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -615,8 +619,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (RefuseEphemeral(name, json, out string canonicalName)) return 1;
-        name = canonicalName;
+        if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -624,7 +627,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Compact(MemoryAddress.Parse(canonicalName), keepRecent, cancellationToken);
+            response = await tools.Compact(address, keepRecent, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -648,10 +651,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (RefuseEphemeral(from, json, out string canonicalFrom)) return 1;
-        if (RefuseEphemeral(to, json, out string canonicalTo)) return 1;
-        from = canonicalFrom;
-        to = canonicalTo;
+        if (!TryGetPersistentAddress(from, json, out MemoryAddress fromAddress)) return 1;
+        if (!TryGetPersistentAddress(to, json, out MemoryAddress toAddress)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
@@ -659,7 +660,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Link(MemoryAddress.Parse(canonicalFrom), MemoryAddress.Parse(canonicalTo), reason, cancellationToken);
+            response = await tools.Link(fromAddress, toAddress, reason, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
