@@ -233,6 +233,28 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             "self-references should be skipped — an entry should not add itself to its own ref field");
     }
 
+    [Theory]
+    [InlineData("/temp/probe", "~probe")]
+    [InlineData("~probe", "/temp/probe")]
+    public async Task AutoLink_SkipsCanonicalEphemeralSelfReferences(string sourceName, string referenceName)
+    {
+        var store = MemoryStoreContext.Current!;
+        var address = MemoryAddress.Parse(sourceName);
+        await store.StoreAsync(new MemoryWrite(
+            address.ToString(), "local", ["placeholder"], null, new(), []));
+        await _sink.OnStoredAsync(
+            address,
+            [$"This entry references [[{referenceName}]] in its own content."],
+            store,
+            CancellationToken.None);
+
+        var entry = store.GetEphemeral(address.Value)?.ToArtifactEntry();
+        entry.Should().NotBeNull();
+        entry!.Attributes?.TryGetValue("ref", out var refs).Should().NotBe(true);
+        entry.Keywords?.Any(keyword =>
+            keyword.Equals($"ref:{address}", StringComparison.OrdinalIgnoreCase)).Should().NotBe(true);
+    }
+
     [Fact]
     public async Task AutoLink_Idempotent_DoesNotDuplicate()
     {

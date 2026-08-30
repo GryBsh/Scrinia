@@ -23,14 +23,7 @@ public interface IPluginStore
     MemoryAddress ParseAddress(string rawAddress) => MemoryAddress.Parse(rawAddress);
     (string Scope, string Subject) ResolveAddress(MemoryAddress address) =>
         address.Kind == MemoryAddressKind.Ephemeral ? ("ephemeral", address.Value) :
-        ResolvePersistentAddress(address);
-
-    private static (string Scope, string Subject) ResolvePersistentAddress(MemoryAddress address)
-    {
-        var segments = address.Value[1..].Split('/');
-        return segments.Length == 1 ? ("local", segments[0]) :
-            ($"local:{string.Join('/', segments[..^1])}", segments[^1]);
-    }
+        ParseQualifiedName(address.Value);
 
     /// <summary>Reads an artifact identified by a parsed logical address.</summary>
     Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default);

@@ -95,19 +95,23 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         // 2. For each referenced memory that exists, add the source to Attributes["ref"] on the target
         foreach (var refName in memoryRefs)
         {
-            // Skip self-references
-            if (refName.Equals(address.ToString(), StringComparison.OrdinalIgnoreCase))
+            if (!TryParseReferenceAddress(refName, out var referencedAddress))
+                continue;
+
+            // Skip self-references by canonical logical identity. Surface aliases such as
+            // /temp/probe and ~probe must never create a self-link.
+            if (referencedAddress == address)
                 continue;
 
             try
             {
-                var (targetScope, targetSubject) = store.ParseQualifiedName(refName);
+                var (targetScope, targetSubject) = store.ResolveAddress(referencedAddress);
 
                 // TryUpdateEntry, not LoadIndex → mutate → Upsert: it runs under the per-scope
                 // write lock, and doing the "already linked?" check inside the callback keeps this
                 // to ONE index read. (The shape it replaced also discarded the link silently on the
                 // remote store, where Upsert was a no-op.)
-                store.TryUpdateEntry(targetSubject, targetScope, targetEntry =>
+                ArtifactEntry? AddReference(ArtifactEntry targetEntry)
                 {
                     // Write the ref attribute (unified attributes) — no more ref: keyword emission.
                     string[] existingRefs = targetEntry.Attributes is not null
@@ -119,7 +123,20 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                     var updatedAttributes = KnownAttributes.Merge(
                         targetEntry.Attributes, new() { ["ref"] = [qualifiedName] });
                     return targetEntry with { Attributes = updatedAttributes };
-                });
+                }
+
+                if (referencedAddress.Kind == MemoryAddressKind.Ephemeral)
+                {
+                    store.TryUpdateEphemeral(targetSubject, current =>
+                    {
+                        var updated = AddReference(current.ToArtifactEntry());
+                        return updated is null ? null : current.WithMetadataFrom(updated);
+                    });
+                }
+                else
+                {
+                    store.TryUpdateEntry(targetSubject, targetScope, AddReference);
+                }
             }
             catch
             {
@@ -247,5 +264,15 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
 
         return Task.CompletedTask;
+    }
+
+    private static bool TryParseReferenceAddress(string rawReference, out MemoryAddress address)
+    {
+        if (MemoryAddress.TryParse(rawReference, out address, out _))
+            return true;
+
+        return !string.IsNullOrEmpty(rawReference)
+            && rawReference[0] is not ('/' or '~')
+            && MemoryAddress.TryParse('/' + rawReference, out address, out _);
     }
 }
