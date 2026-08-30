@@ -74,6 +74,37 @@ public sealed partial class ScriniaMcpTools
         input.Contains("://", StringComparison.Ordinal) || input.StartsWith("//", StringComparison.Ordinal) ||
         input.Contains(':') || input.Contains('?') || input.Contains('#') || input.Contains('%');
 
+    private static bool TryClassifyArtifactInput(string input, out string? artifact, out McpResponse? error)
+    {
+        artifact = null;
+        error = null;
+        if (string.IsNullOrWhiteSpace(input))
+            return false;
+
+        bool isNmp2 = input.StartsWith("NMP/2", StringComparison.Ordinal);
+        bool isKnownOtherArtifact = input.StartsWith("TAMIS/2", StringComparison.Ordinal);
+        bool isArtifactHeader = System.Text.RegularExpressions.Regex.IsMatch(
+            input, "^[A-Z][A-Z0-9_-]*/[0-9]+(?:\\s|$)",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        bool isPayload = input.Contains('\n') || input.Contains('\r') || input.StartsWith('{')
+            || input.StartsWith("eyJ", StringComparison.Ordinal);
+
+        if (!isNmp2 && !isKnownOtherArtifact && !isArtifactHeader && !isPayload)
+            return false;
+
+        if (isNmp2 && Nmp2Strategy.Instance.CanDecode(input))
+        {
+            artifact = input;
+            return true;
+        }
+
+        error = ResponseBuilder.Error(
+            "The supplied value is an unsupported or incomplete artifact.",
+            ErrorCodes.UnsupportedInputForm,
+            "Provide a logical memory address or a complete NMP/2 artifact.");
+        return false;
+    }
+
     private static string CanonicalAddress(MemoryAddress address) => address.ToString();
 
     private static MemoryAddress ParseUserAddress(string input)
@@ -328,7 +359,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Skills only: when path is '/skill/{name}', return both the built-in and the project override side-by-side for merging. Ignored for non-skill paths.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
     {
-        if (TryParseInlineRecall(path, out string? inlineArtifact, out var recallError))
+        if (TryClassifyArtifactInput(path, out string? inlineArtifact, out var recallError))
         {
             return (await Recall(inlineArtifact!, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
         }
@@ -351,32 +382,6 @@ public sealed partial class ScriniaMcpTools
         {
             return RecoveryBlockedResponse(ex).ToYaml();
         }
-    }
-
-    private static bool TryParseInlineRecall(string? raw, out string? artifact, out McpResponse? error)
-    {
-        artifact = null;
-        error = null;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            error = ResponseBuilder.Error("recall requires 'path'.", ErrorCodes.InvalidParameter,
-                "recall({ path: '...' })", "list() to discover available paths");
-            return false;
-        }
-
-        string input = raw.Trim();
-        if (!input.StartsWith("NMP/2 ", StringComparison.Ordinal))
-            return false;
-        if (!Nmp2Strategy.Instance.CanDecode(input))
-        {
-            error = ResponseBuilder.Error("The inline artifact is not a valid NMP/2 artifact.",
-                ErrorCodes.UnsupportedInputForm,
-                "Provide a logical memory address or a complete NMP/2 artifact.");
-            return false;
-        }
-
-        artifact = input;
-        return true;
     }
 
     [McpServerTool(Name = "search"), Description(

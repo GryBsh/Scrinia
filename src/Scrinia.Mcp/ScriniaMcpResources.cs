@@ -30,11 +30,11 @@ public sealed class ScriniaMcpResources
         [Description("Memory name or qualified path to read.")] string name,
         CancellationToken cancellationToken = default)
     {
-        var store = MemoryStoreContext.Current
-            ?? throw new InvalidOperationException("No memory store configured for this request.");
-
         if (!ScriniaMcpTools.TryParseLogicalAddress(name, out var address, out var addressError))
             throw new McpException($"[{addressError.ErrorCode}] {addressError.Error}");
+
+        var store = MemoryStoreContext.Current
+            ?? throw new InvalidOperationException("No memory store configured for this request.");
 
         // Same resolution + decode path as the show/recall tool: resolve to the NMP/2 artifact,
         // then decode to the original UTF-8 text. Translate a missing memory into a clean MCP error
