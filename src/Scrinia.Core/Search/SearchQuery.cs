@@ -37,7 +37,7 @@ public sealed record SearchQuery(string Query) : MemorySearchRequest(Query)
     }
 
     /// <summary>Case-insensitive prefix on the qualified label, e.g. "/findings/".</summary>
-    public string? PathPrefix { get; init; }
+    internal string? PathPrefix { get; init; }
 
     /// <summary>AND across keys, OR within each key's values, case-insensitive.</summary>
     public IReadOnlyDictionary<string, string[]>? AttributeFilter { get; init; }

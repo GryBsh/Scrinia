@@ -18,12 +18,27 @@ namespace Scrinia.Core;
 /// </summary>
 public interface IPluginStore
 {
-    (string Scope, string Subject) ParseQualifiedName(string name);
-    bool IsEphemeral(string name);
-    Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
-    Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default);
+    MemoryAddress ParseAddress(string rawAddress) => MemoryAddress.Parse(rawAddress);
 
     /// <summary>Reads an artifact identified by a parsed logical address.</summary>
     Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
-        ReadArtifactAsync(address.ToString().TrimStart('~'), "local", ct);
+        throw new NotSupportedException("Typed artifact reads must be implemented by the store.");
+}
+
+/// <summary>Temporary source compatibility helpers for the physical store migration.</summary>
+internal static class PluginStoreCompatibilityExtensions
+{
+    internal static (string Scope, string Subject) ParseQualifiedName(this IPluginStore store, string raw) =>
+        (store.IsEphemeral(raw) ? "ephemeral" : "local", raw);
+
+    internal static bool IsEphemeral(this IPluginStore store, string raw) =>
+        MemoryAddress.Parse(raw).Kind == MemoryAddressKind.Ephemeral;
+
+    internal static Task<string> ResolveArtifactAsync(this IPluginStore store, string raw,
+        CancellationToken ct = default) =>
+        store.ReadArtifactAsync(MemoryAddress.Parse(raw), ct);
+
+    internal static Task<string> ReadArtifactAsync(this IPluginStore store, string subject, string scope,
+        CancellationToken ct = default) =>
+        store.ReadArtifactAsync(MemoryAddress.Parse(subject.StartsWith('/') ? subject : $"/{subject}"), ct);
 }

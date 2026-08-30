@@ -211,11 +211,14 @@ public interface IMemoryStore : IPluginStore
 
     /// <summary>Searches using the typed request shape.</summary>
     IReadOnlyList<SearchResult> SearchAll(MemorySearchRequest request) =>
-        SearchAll(new SearchQuery(request.Query));
+        SearchAll(new SearchQuery(request.Query) { Address = request.Address });
 
     /// <summary>Lists using the typed request shape.</summary>
     List<ScopedArtifact> ListAsync(MemoryListRequest request) =>
-        ListScoped(request.Scopes, request.ExcludeTopics);
+        ListScoped(request.Scopes, request.ExcludeTopics)
+            .Where(item => request.Prefix is null ||
+                item.Entry.Address.ToString().StartsWith(request.Prefix.Value.ToString(), StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
     // Listing & Search with topic exclusion
 

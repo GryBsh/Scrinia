@@ -10,15 +10,26 @@ namespace Scrinia.Core;
 public interface IMemoryEventSink
 {
     Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) =>
-        OnStoredAsync(address.ToString(), content, store, ct);
+        throw new NotSupportedException("Typed event callbacks must be implemented by the sink.");
     Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
-        OnAppendedAsync(address.ToString(), content, store, ct);
+        throw new NotSupportedException("Typed event callbacks must be implemented by the sink.");
     Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
-        OnForgottenAsync(address.ToString(), wasDeleted, store, ct);
+        throw new NotSupportedException("Typed event callbacks must be implemented by the sink.");
+}
 
-    Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct);
-    Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct);
-    Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct);
+internal static class MemoryEventSinkCompatibilityExtensions
+{
+    internal static Task OnStoredAsync(this IMemoryEventSink sink, string rawAddress, string[] content,
+        IPluginStore store, CancellationToken ct) =>
+        sink.OnStoredAsync(MemoryAddress.Parse(rawAddress), content, store, ct);
+
+    internal static Task OnAppendedAsync(this IMemoryEventSink sink, string rawAddress, string content,
+        IPluginStore store, CancellationToken ct) =>
+        sink.OnAppendedAsync(MemoryAddress.Parse(rawAddress), content, store, ct);
+
+    internal static Task OnForgottenAsync(this IMemoryEventSink sink, string rawAddress, bool wasDeleted,
+        IPluginStore store, CancellationToken ct) =>
+        sink.OnForgottenAsync(MemoryAddress.Parse(rawAddress), wasDeleted, store, ct);
 }
 
 /// <summary>

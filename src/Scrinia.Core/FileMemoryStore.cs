@@ -2374,7 +2374,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query.Query))
             return [];
 
-        bool hasPath = !string.IsNullOrWhiteSpace(query.PathPrefix);
+        string? pathPrefix = query.Address?.ToString() ?? query.PathPrefix;
+        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
         bool hasAttr = query.AttributeFilter is { Count: > 0 };
 
         // Candidates set means the caller (SearchPipeline) already materialized this slice for
@@ -2391,7 +2392,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
             ? allCandidates
-                .Where(c => SearchResultFilter.CandidateMatches(this, c, query.PathPrefix, query.AttributeFilter))
+                .Where(c => SearchResultFilter.CandidateMatches(this, c, pathPrefix, query.AttributeFilter))
                 .ToList()
             : allCandidates;
 
@@ -2403,7 +2404,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             topics = [];
         else if (hasPath)
             topics = BuildTopicInfosFromCandidates(allCandidates)
-                .Where(t => SearchResultFilter.TopicMatches(t, query.PathPrefix))
+                .Where(t => SearchResultFilter.TopicMatches(t, pathPrefix))
                 .ToList();
         else
             topics = BuildTopicInfosFromCandidates(allCandidates);
