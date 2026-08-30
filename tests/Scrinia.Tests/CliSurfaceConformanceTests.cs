@@ -273,4 +273,20 @@ public sealed class CliSurfaceConformanceTests
         }
     }
 
+    [Fact]
+    public void EveryMemoryCommandIsExplicitlyEnumerated()
+    {
+        var expected = new HashSet<string>(StringComparer.Ordinal)
+        {
+            nameof(ScriniaCommands.Store), nameof(ScriniaCommands.Show),
+            nameof(ScriniaCommands.Forget), nameof(ScriniaCommands.Append),
+            nameof(ScriniaCommands.Compact), nameof(ScriniaCommands.Link),
+        };
+
+        Entrypoints().Select(entrypoint => entrypoint.Method.Name)
+            .Where(name => expected.Contains(name) || name is "Store" or "Show" or "Forget" or "Append" or "Compact" or "Link")
+            .ToHashSet(StringComparer.Ordinal)
+            .Should().BeEquivalentTo(expected);
+    }
+
 }

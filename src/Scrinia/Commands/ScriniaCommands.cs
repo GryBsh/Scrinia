@@ -61,13 +61,13 @@ public partial class ScriniaCommands
     private static bool EmitAddressError(MemoryError error, bool json)
     {
         if (json) WriteJsonError(error.Message, error);
-        else AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(error.Message)} ({error.Category})");
+        else AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(error))}");
         return false;
     }
 
     private static bool LooksLikeUri(string input) =>
         input.Contains("://", StringComparison.Ordinal) || input.StartsWith("//", StringComparison.Ordinal) ||
-        input.Contains(':') || input.Contains('?') || input.Contains('#') || input.Contains('%');
+        input.Contains('?') || input.Contains('#');
 
     /// <summary>
     /// Human-facing rendering of an error envelope: the message, then one indented bullet per
@@ -80,9 +80,11 @@ public partial class ScriniaCommands
     /// envelope for every command, and its single <c>error</c> field stays a clean message rather
     /// than carrying embedded newlines and bullet prose.
     /// </remarks>
-    internal static string FormatCliError(McpResponse r)
+    internal static string FormatCliError(McpResponse r, MemoryError? error = null)
     {
         string message = r.Error ?? "unknown error";
+        if (error is not null)
+            message = FormatCliError(error);
         if (r.ActionNeeded is not { Length: > 0 })
             return message;
 
@@ -90,6 +92,17 @@ public partial class ScriniaCommands
         foreach (string hint in r.ActionNeeded)
             sb.Append("\n  - ").Append(hint);
         return sb.ToString();
+    }
+
+    internal static string FormatCliError(MemoryError error)
+    {
+        var details = new System.Text.StringBuilder(error.Message)
+            .Append("\n  category=").Append(error.Category)
+            .Append(" code=").Append(error.Code);
+        if (error.Field is not null) details.Append(" field=").Append(error.Field);
+        if (error.Limit is not null) details.Append(" limit=").Append(error.Limit);
+        if (error.Actual is not null) details.Append(" actual=").Append(error.Actual);
+        return details.ToString();
     }
 
     /// <summary>
@@ -136,6 +149,15 @@ public partial class ScriniaCommands
         }
         else
         {
+            if (r.IsError)
+            {
+                MemoryError? writeError = action == "append" && r.ErrorCode == ErrorCodes.InvalidParameter
+                    ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
+                        r.Error ?? "invalid write content")
+                    : null;
+                AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(r, writeError))}");
+                return 1;
+            }
             // Pass YAML straight through — same pattern as Show.
             string yaml = r.ToYaml();
             Console.Write(yaml);

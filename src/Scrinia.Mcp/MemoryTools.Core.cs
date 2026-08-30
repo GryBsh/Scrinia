@@ -238,7 +238,7 @@ public sealed partial class ScriniaMcpTools
         var (ephemeral, scope, subject) = Resolve(store, name);
         if (!ephemeral && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
             return ResponseBuilder.Error(
-                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} characters.",
+                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.",
                 ErrorCodes.InvalidParameter,
                 $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
@@ -273,10 +273,10 @@ public sealed partial class ScriniaMcpTools
     /// must resolve a name the same way.</summary>
     private static (bool Ephemeral, string Scope, string Subject) Resolve(IMemoryStore store, MemoryAddress address)
     {
-        string name = address.ToString();
         if (address.Kind == MemoryAddressKind.Ephemeral)
-            return (true, "", name);
-        var (scope, subject) = store.ParseQualifiedName(name);
+            return (true, "", address.ToString());
+
+        var (scope, subject) = store.ResolveAddress(address);
         return (false, scope, subject);
     }
 
@@ -1034,7 +1034,7 @@ public sealed partial class ScriniaMcpTools
         var (ephemeral, scope, subject) = Resolve(store, name);
         if (!ephemeral && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
             return ResponseBuilder.Error(
-                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} characters.",
+                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.",
                 ErrorCodes.InvalidParameter,
                 $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 

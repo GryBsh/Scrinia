@@ -433,7 +433,11 @@ public partial class ScriniaCommands
                 WriteJsonError(response.Error ?? "unknown error", writeError);
                 return 1;
             }
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
+            MemoryError? textWriteError = response.ErrorCode == ErrorCodes.InvalidParameter
+                ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
+                    response.Error ?? "invalid write content")
+                : null;
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response, textWriteError))}");
             return 1;
         }
 

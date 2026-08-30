@@ -1169,7 +1169,7 @@ public sealed partial class ScriniaMcpTools
             : store.ParseQualifiedName(name.ToString());
         if (name.Kind == MemoryAddressKind.Persistent && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
             return ResponseBuilder.Error(
-                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} characters.",
+                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.",
                 ErrorCodes.InvalidParameter,
                 $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
