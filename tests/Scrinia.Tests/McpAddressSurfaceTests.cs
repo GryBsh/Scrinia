@@ -2,6 +2,7 @@ using FluentAssertions;
 using ModelContextProtocol;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -65,6 +66,16 @@ public sealed class McpAddressSurfaceTests
         response.ErrorCode.Should().Be("NOT_FOUND");
     }
 
+    [Theory]
+    [InlineData("  /ordinary-name  ", "/ordinary-name")]
+    [InlineData("  ~scratch  ", "~scratch")]
+    public void LogicalAddressAdapter_TrimsAndCanonicalizesOnce(string raw, string expected)
+    {
+        ScriniaMcpTools.TryParseLogicalAddress(raw, out var address, out var error).Should().BeTrue();
+        error.Should().BeNull();
+        address.ToString().Should().Be(expected);
+    }
+
     [Fact]
     public async Task Resource_RejectsUriBeforeRequiringStore()
     {
@@ -88,5 +99,77 @@ public sealed class McpAddressSurfaceTests
 
         typeof(ScriniaMcpResources).GetMethod(nameof(ScriniaMcpResources.ReadMemory))
             .Should().NotBeNull();
+    }
+
+    [Fact]
+    public void InternalAddressOperations_RequireTypedAddresses()
+    {
+        string[] operations = ["Remember", "Recall", "UpdateMeta", "Forget", "Append", "Link", "Compact"];
+        var methods = typeof(ScriniaMcpTools).GetMethods(
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)
+            .Where(method => operations.Contains(method.Name, StringComparer.Ordinal))
+            .ToArray();
+
+        methods.Should().NotBeEmpty();
+        foreach (var method in methods)
+        {
+            method.GetParameters()
+                .Where(parameter => parameter.Name is "name" or "nameOrUri" or "from" or "to" or "address")
+                .Should().OnlyContain(parameter => parameter.ParameterType == typeof(Scrinia.Core.Models.MemoryAddress));
+        }
+    }
+
+    [Fact]
+    public void MemoryAddress_DoesNotExposeImplicitStringConversion()
+    {
+        typeof(MemoryAddress).GetMethods(System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.Static)
+            .Should().NotContain(method => method.Name == "op_Implicit" &&
+                method.ReturnType == typeof(MemoryAddress) &&
+                method.GetParameters().Length == 1 &&
+                method.GetParameters()[0].ParameterType == typeof(string));
+    }
+
+    [Theory]
+    [InlineData(" /ordinary-name ", true, null)]
+    [InlineData("~scratch", true, null)]
+    [InlineData("/temp/scratch", true, null)]
+    [InlineData("file:///tmp/memory", false, ErrorCodes.UnsupportedInputForm)]
+    [InlineData("https://example.test/memory", false, ErrorCodes.UnsupportedInputForm)]
+    [InlineData("//host/memory", false, ErrorCodes.UnsupportedInputForm)]
+    [InlineData("/memory?chunk=1", false, ErrorCodes.UnsupportedInputForm)]
+    [InlineData("/memory/%2e%2e/secret", false, ErrorCodes.UnsupportedInputForm)]
+    [InlineData("/", false, ErrorCodes.MalformedAddress)]
+    public void LogicalAddressAdapter_UsesTheAddressMatrixWithoutSideEffects(
+        string input, bool expectedSuccess, string? expectedErrorCode)
+    {
+        bool parsed = ScriniaMcpTools.TryParseLogicalAddress(input, out var address, out var error);
+
+        parsed.Should().Be(expectedSuccess);
+        if (expectedSuccess)
+        {
+            address.IsValid.Should().BeTrue();
+            error.Should().BeNull();
+            return;
+        }
+
+        error.ErrorCode.Should().Be(expectedErrorCode);
+        address.Should().Be(default(MemoryAddress));
+    }
+
+    [Fact]
+    public async Task InvalidAddress_IsRejectedBeforeStoreMutation()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string[] before = Directory.GetFiles(TestHelpers.Store.WorkspaceRoot, "*", SearchOption.AllDirectories);
+
+        var response = ResponseParser.Parse(await new ScriniaMcpTools().MemoryRemember(
+            "file:///tmp/not-a-memory", ["content"]));
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
+        Directory.GetFiles(TestHelpers.Store.WorkspaceRoot, "*", SearchOption.AllDirectories)
+            .Should().BeEquivalentTo(before);
     }
 }

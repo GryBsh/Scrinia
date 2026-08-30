@@ -413,7 +413,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Remember([content], name, description ?? "", tagArray,
+            response = await tools.Remember([content], MemoryAddress.Parse(canonicalName), description ?? "", tagArray,
                 keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
@@ -464,7 +464,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Recall(name, cancellationToken: cancellationToken);
+            response = await tools.Recall(MemoryAddress.Parse(canonicalName), cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -522,7 +522,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Forget(name, cancellationToken);
+            response = await tools.Forget(MemoryAddress.Parse(canonicalName), cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -592,7 +592,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Append(content, name, cancellationToken: cancellationToken);
+            response = await tools.Append(content, MemoryAddress.Parse(canonicalName), cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -624,7 +624,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Compact(name, keepRecent, cancellationToken);
+            response = await tools.Compact(MemoryAddress.Parse(canonicalName), keepRecent, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -659,7 +659,7 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Link(from, to, reason, cancellationToken);
+            response = await tools.Link(MemoryAddress.Parse(canonicalFrom), MemoryAddress.Parse(canonicalTo), reason, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {

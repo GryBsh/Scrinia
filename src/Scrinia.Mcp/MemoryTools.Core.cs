@@ -18,21 +18,6 @@ namespace Scrinia.Mcp;
 
 public sealed partial class ScriniaMcpTools
 {
-    internal Task<McpResponse> Recall(
-        string rawInput,
-        int? chunk = null,
-        string actionLabel = "shown",
-        CancellationToken cancellationToken = default)
-    {
-        string candidate = rawInput.Trim();
-        if (candidate.StartsWith("NMP/2 ", StringComparison.Ordinal))
-            return Recall(default, candidate, chunk, actionLabel, cancellationToken);
-
-        if (!TryParseLogicalAddress(candidate, out var address, out var error))
-            return Task.FromResult(error);
-        return Recall(address, chunk: chunk, actionLabel: actionLabel, cancellationToken: cancellationToken);
-    }
-
     /// <summary>Recall: unpack an NMP/2 artifact (or a memory resolved by name) back to its
     /// original text content. Backs the MCP <c>recall</c> tool and <c>scri show</c>.</summary>
     internal async Task<McpResponse> Recall(

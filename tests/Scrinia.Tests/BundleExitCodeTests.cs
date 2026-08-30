@@ -221,7 +221,7 @@ public class BundleExitCodeTests
     public async Task Import_OnEmptyBundle_ExitsNonZero()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["auth flow doc"], "/api/auth");
+        await new ScriniaMcpTools().Remember(["auth flow doc"], MemoryAddress.Parse("/api/auth"));
         string exportContent = ResponseParser.Parse(
             (await new ScriniaMcpTools().Export(["api"])).ToYaml()).Content!;
         string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
@@ -238,7 +238,7 @@ public class BundleExitCodeTests
     public async Task Export_OnSuccess_ExitsZero()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["auth flow doc"], "/api/auth");
+        await new ScriniaMcpTools().Remember(["auth flow doc"], MemoryAddress.Parse("/api/auth"));
 
         int exit = await new ScriniaCommands().Export("api", workspaceRoot: scope.WorkspaceDir);
 

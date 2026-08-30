@@ -292,7 +292,7 @@ public sealed class ReferenceTests : IDisposable
         // Arrange & Act — store a memory with content mentioning a file path
         await _tools.Remember(
             ["This change modifies src/Foo.cs to add new functionality."],
-            "ref-file-test");
+            MemoryAddress.Parse("/ref-file-test"));
 
         // Assert — verify the entry's Fields["file"] includes the file ref, and that the
         // legacy 'file:' prefixed keyword is no longer written.
@@ -314,7 +314,7 @@ public sealed class ReferenceTests : IDisposable
         // Arrange — store a memory that mentions a file path
         await _tools.Remember(
             ["Updated src/Bar.cs with new validation logic."],
-            "ref-bar-test");
+            MemoryAddress.Parse("/ref-bar-test"));
 
         // Act — call references with the file name
         string result = (await _tools.References("Bar.cs")).ToYaml();
@@ -328,11 +328,11 @@ public sealed class ReferenceTests : IDisposable
     public async Task Link_CreatesBidirectionalRefFields()
     {
         // Arrange — create two memories
-        await _tools.Remember(["Memory A content"], "link-test-a");
-        await _tools.Remember(["Memory B content"], "link-test-b");
+        await _tools.Remember(["Memory A content"], MemoryAddress.Parse("/link-test-a"));
+        await _tools.Remember(["Memory B content"], MemoryAddress.Parse("/link-test-b"));
 
         // Act — link them
-        string result = (await _tools.Link("link-test-a", "link-test-b", "test reason")).ToYaml();
+        string result = (await _tools.Link(MemoryAddress.Parse("/link-test-a"), MemoryAddress.Parse("/link-test-b"), "test reason")).ToYaml();
 
         // Assert — response confirms the link
         result.Should().Contain("Linked");
@@ -383,10 +383,10 @@ public sealed class ReferenceTests : IDisposable
     [Fact]
     public async Task Link_WithAnEphemeralSide_LinksBothSides()
     {
-        await _tools.Remember(["Persistent side"], "/patterns/link-target");
-        await _tools.Remember(["Ephemeral side"], "~scratch");
+        await _tools.Remember(["Persistent side"], MemoryAddress.Parse("/patterns/link-target"));
+        await _tools.Remember(["Ephemeral side"], MemoryAddress.Parse("~scratch"));
 
-        string result = (await _tools.Link("~scratch", "/patterns/link-target")).ToYaml();
+        string result = (await _tools.Link(MemoryAddress.Parse("~scratch"), MemoryAddress.Parse("/patterns/link-target"))).ToYaml();
 
         result.Should().Contain("Linked");
 
@@ -416,10 +416,10 @@ public sealed class ReferenceTests : IDisposable
     [Fact]
     public async Task Link_BetweenTwoEphemerals_LinksBothSidesAndKeepsTheirContent()
     {
-        await _tools.Remember(["alpha body text"], "~alpha-scratch");
-        await _tools.Remember(["beta body text"], "~beta-scratch");
+        await _tools.Remember(["alpha body text"], MemoryAddress.Parse("~alpha-scratch"));
+        await _tools.Remember(["beta body text"], MemoryAddress.Parse("~beta-scratch"));
 
-        string result = (await _tools.Link("~alpha-scratch", "~beta-scratch")).ToYaml();
+        string result = (await _tools.Link(MemoryAddress.Parse("~alpha-scratch"), MemoryAddress.Parse("~beta-scratch"))).ToYaml();
 
         result.Should().Contain("Linked");
 
@@ -457,11 +457,11 @@ public sealed class ReferenceTests : IDisposable
     [InlineData("/patterns/absent", MissingSide.To)]
     public async Task Link_WithAMissingSide_WritesNeither(string missing, MissingSide side)
     {
-        await _tools.Remember(["Present side"], "/patterns/present");
+        await _tools.Remember(["Present side"], MemoryAddress.Parse("/patterns/present"));
 
         var response = side == MissingSide.From
-            ? await _tools.Link(missing, "/patterns/present")
-            : await _tools.Link("/patterns/present", missing);
+            ? await _tools.Link(MemoryAddress.Parse(missing), MemoryAddress.Parse("/patterns/present"))
+            : await _tools.Link(MemoryAddress.Parse("/patterns/present"), MemoryAddress.Parse(missing));
 
         response.ToYaml().Should().Contain("not found");
 
@@ -524,12 +524,12 @@ public sealed class ReferenceTests : IDisposable
         longDestination.Length.Should().BeGreaterThan(AttributeExtractor.MaxValueLength,
             because: "a fixture that fits the cap exercises the ROUTED path and observes nothing");
 
-        await _tools.Remember(["source body"], source);
-        await _tools.Remember(["destination body"], longDestination);
+        await _tools.Remember(["source body"], MemoryAddress.Parse(source));
+        await _tools.Remember(["destination body"], MemoryAddress.Parse(longDestination));
 
         var before = ReadKeywordState(source, ephemeral);
 
-        (await _tools.Link(source, longDestination)).IsError.Should().BeFalse();
+        (await _tools.Link(MemoryAddress.Parse(source), MemoryAddress.Parse(longDestination))).IsError.Should().BeFalse();
 
         var after = ReadKeywordState(source, ephemeral);
 
@@ -558,10 +558,10 @@ public sealed class ReferenceTests : IDisposable
     [InlineData("bare-a", "bare-b")]
     public async Task Link_WithShortNames_StoresTheNameVerbatimOnBothSides(string from, string to)
     {
-        await _tools.Remember(["a body"], from);
-        await _tools.Remember(["b body"], to);
+        await _tools.Remember(["a body"], MemoryAddress.Parse(from));
+        await _tools.Remember(["b body"], MemoryAddress.Parse(to));
 
-        (await _tools.Link(from, to)).IsError.Should().BeFalse();
+        (await _tools.Link(MemoryAddress.Parse(from), MemoryAddress.Parse(to))).IsError.Should().BeFalse();
 
         bool ephemeral = from.StartsWith('~');
         var fromState = ReadKeywordState(from, ephemeral);
@@ -600,9 +600,9 @@ public sealed class ReferenceTests : IDisposable
     public async Task References_FindsLinkedMemory()
     {
         // Arrange — create two memories and link them
-        await _tools.Remember(["Alpha content"], "linked-alpha");
-        await _tools.Remember(["Beta content"], "linked-beta");
-        await _tools.Link("linked-alpha", "linked-beta");
+        await _tools.Remember(["Alpha content"], MemoryAddress.Parse("/linked-alpha"));
+        await _tools.Remember(["Beta content"], MemoryAddress.Parse("/linked-beta"));
+        await _tools.Link(MemoryAddress.Parse("/linked-alpha"), MemoryAddress.Parse("/linked-beta"));
 
         // Act — search references for alpha
         string result = (await _tools.References("linked-alpha")).ToYaml();
@@ -629,7 +629,7 @@ public sealed class ReferenceTests : IDisposable
         // Act — store a memory with codeRefs pointing to the file
         await _tools.Remember(
             ["Documents the Example class."],
-            "coderef-hash-test",
+            MemoryAddress.Parse("/coderef-hash-test"),
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Assert — verify the entry's FileHashes contains the file with a non-empty hash
@@ -652,7 +652,7 @@ public sealed class ReferenceTests : IDisposable
         // Act — store with codeRefs pointing to a missing file (should not throw)
         await _tools.Remember(
             ["References a file that doesn't exist."],
-            "coderef-missing-test",
+            MemoryAddress.Parse("/coderef-missing-test"),
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Assert — FileHashes should be empty or not contain the missing file
@@ -679,7 +679,7 @@ public sealed class ReferenceTests : IDisposable
 
         await _tools.Remember(
             ["Tracks stable.cs for drift."],
-            "drift-ok-test",
+            MemoryAddress.Parse("/drift-ok-test"),
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Act — check drift via list(mode: "drift")
@@ -703,7 +703,7 @@ public sealed class ReferenceTests : IDisposable
 
         await _tools.Remember(
             ["Tracks changing.cs for drift."],
-            "drift-changed-test",
+            MemoryAddress.Parse("/drift-changed-test"),
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Modify the file after storing
@@ -728,7 +728,7 @@ public sealed class ReferenceTests : IDisposable
 
         await _tools.Remember(
             ["Tracks ephemeral.cs for drift."],
-            "drift-missing-test",
+            MemoryAddress.Parse("/drift-missing-test"),
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Delete the file after storing
@@ -753,7 +753,7 @@ public sealed class ReferenceTests : IDisposable
 
         await _tools.Remember(
             ["Tracks drifted.cs."],
-            "drift-list-test",
+            MemoryAddress.Parse("/drift-list-test"),
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Modify the file after storing

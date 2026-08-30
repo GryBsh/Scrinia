@@ -30,8 +30,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two topic-scoped entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Source content placeholder."], "/test/source");
-        await _tools.Remember(["Target content placeholder."], "/test/target");
+        await _tools.Remember(["Source content placeholder."], MemoryAddress.Parse("/test/source"));
+        await _tools.Remember(["Target content placeholder."], MemoryAddress.Parse("/test/target"));
 
         // Act — fire OnStoredAsync with content that references /test/target
         await _sink.OnStoredAsync(
@@ -77,8 +77,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two topic-scoped entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Source content placeholder."], "/test/fencesource");
-        await _tools.Remember(["Target content placeholder."], "/test/fencetarget");
+        await _tools.Remember(["Source content placeholder."], MemoryAddress.Parse("/test/fencesource"));
+        await _tools.Remember(["Target content placeholder."], MemoryAddress.Parse("/test/fencetarget"));
 
         // Act — fire OnStoredAsync for the SOURCE, whose content mentions fencetarget only inside
         // a fenced block. Under the pre-fence-aware extractor this single call would both (a) write
@@ -121,7 +121,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create an entry with no inbound refs from any other entry
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Isolated content with no references."], "/test/lonely");
+        await _tools.Remember(["Isolated content with no references."], MemoryAddress.Parse("/test/lonely"));
 
         // Act — fire OnStoredAsync (content doesn't reference anything)
         await _sink.OnStoredAsync(
@@ -150,10 +150,10 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create entry A that has a ref:/test/linked keyword (simulating an inbound ref)
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Content of linked entry."], "/test/linked");
+        await _tools.Remember(["Content of linked entry."], MemoryAddress.Parse("/test/linked"));
 
         // Manually add ref:/test/linked keyword on some other entry to simulate an inbound reference
-        await _tools.Remember(["Some referencing content."], "/test/referrer", keywords: ["ref:/test/linked"]);
+        await _tools.Remember(["Some referencing content."], MemoryAddress.Parse("/test/referrer"), keywords: ["ref:/test/linked"]);
 
         // Act — fire OnStoredAsync for the linked entry
         await _sink.OnStoredAsync(
@@ -177,8 +177,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Alpha content."], "/test/alpha");
-        await _tools.Remember(["Beta content."], "/test/beta");
+        await _tools.Remember(["Alpha content."], MemoryAddress.Parse("/test/alpha"));
+        await _tools.Remember(["Beta content."], MemoryAddress.Parse("/test/beta"));
 
         // Act — fire OnAppendedAsync with content mentioning /test/beta
         await _sink.OnAppendedAsync(
@@ -203,7 +203,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create an entry
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Self-referencing content."], "/test/selfref");
+        await _tools.Remember(["Self-referencing content."], MemoryAddress.Parse("/test/selfref"));
 
         // Act — fire OnStoredAsync with content that references itself
         await _sink.OnStoredAsync(
@@ -260,8 +260,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Source content."], "/test/src");
-        await _tools.Remember(["Destination content."], "/test/dst");
+        await _tools.Remember(["Source content."], MemoryAddress.Parse("/test/src"));
+        await _tools.Remember(["Destination content."], MemoryAddress.Parse("/test/dst"));
 
         string[] content = ["This references [[/test/dst]] in the analysis."];
 
@@ -299,7 +299,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create an orphan entry
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Orphan content."], "/test/wasorphan");
+        await _tools.Remember(["Orphan content."], MemoryAddress.Parse("/test/wasorphan"));
 
         // Fire sink to mark it as orphan
         await _sink.OnStoredAsync(
@@ -317,7 +317,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             "entry should initially be flagged as orphan");
 
         // Act — create a referrer and fire sink for the orphan again
-        await _tools.Remember(["References [[/test/wasorphan]] here."], "/test/referrer2", keywords: ["ref:/test/wasorphan"]);
+        await _tools.Remember(["References [[/test/wasorphan]] here."], MemoryAddress.Parse("/test/referrer2"), keywords: ["ref:/test/wasorphan"]);
 
         await _sink.OnStoredAsync(
             MemoryAddress.Parse("/test/wasorphan"),
@@ -339,8 +339,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two topic-scoped entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Source content placeholder."], "/test/fieldsource");
-        await _tools.Remember(["Target content placeholder."], "/test/fieldtarget");
+        await _tools.Remember(["Source content placeholder."], MemoryAddress.Parse("/test/fieldsource"));
+        await _tools.Remember(["Target content placeholder."], MemoryAddress.Parse("/test/fieldtarget"));
 
         // Act — fire OnStoredAsync with content that references /test/fieldtarget
         await _sink.OnStoredAsync(
@@ -369,8 +369,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         // Arrange — create an entry that will be referenced, and a referrer whose
         // Fields["ref"] (not a legacy ref: keyword) points at it, simulating the new write shape.
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Content of field-linked entry."], "/test/fieldlinked");
-        await _tools.Remember(["Some referencing content."], "/test/fieldreferrer");
+        await _tools.Remember(["Content of field-linked entry."], MemoryAddress.Parse("/test/fieldlinked"));
+        await _tools.Remember(["Some referencing content."], MemoryAddress.Parse("/test/fieldreferrer"));
 
         var (referrerScope, referrerSubject) = store.ParseQualifiedName("/test/fieldreferrer");
         var referrerEntry = store.LoadIndex(referrerScope)
@@ -414,10 +414,10 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public async Task OrphanDetection_FindsInboundRefFromADifferentScope()
     {
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Content in one topic scope."], "/crossscopetarget/entry");
+        await _tools.Remember(["Content in one topic scope."], MemoryAddress.Parse("/crossscopetarget/entry"));
         await _tools.Remember(
             ["References [[/crossscopetarget/entry]] from a different topic."],
-            "/crossscopereferrer/entry",
+            MemoryAddress.Parse("/crossscopereferrer/entry"),
             keywords: ["ref:/crossscopetarget/entry"]);
 
         await _sink.OnStoredAsync(
@@ -442,8 +442,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public async Task OrphanDetection_MarksOrphan_WhenNoOtherScopeReferencesIt()
     {
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Nothing points at this, anywhere."], "/crossscopelonely/entry");
-        await _tools.Remember(["Unrelated content, no reference."], "/othertopic/unrelated");
+        await _tools.Remember(["Nothing points at this, anywhere."], MemoryAddress.Parse("/crossscopelonely/entry"));
+        await _tools.Remember(["Unrelated content, no reference."], MemoryAddress.Parse("/othertopic/unrelated"));
 
         await _sink.OnStoredAsync(
             MemoryAddress.Parse("/crossscopelonely/entry"),
@@ -511,8 +511,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public async Task LegacyOrphanKeyword_IsCleared_WhenTheEntryGainsAnInboundRef()
     {
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Content of the once-orphaned entry."], "/test/legacyorphan");
-        await _tools.Remember(["References [[/test/legacyorphan]] here."], "/test/legacyreferrer",
+        await _tools.Remember(["Content of the once-orphaned entry."], MemoryAddress.Parse("/test/legacyorphan"));
+        await _tools.Remember(["References [[/test/legacyorphan]] here."], MemoryAddress.Parse("/test/legacyreferrer"),
             keywords: ["ref:/test/legacyorphan"]);
 
         // Plant the pre-change shape: the marker as a bare keyword, with no orphan attribute.
@@ -548,8 +548,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public async Task DualMarkedEntry_HasBothCarriersCleared()
     {
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Content of the dual-marked entry."], "/test/dualmarked");
-        await _tools.Remember(["References [[/test/dualmarked]] here."], "/test/dualreferrer",
+        await _tools.Remember(["Content of the dual-marked entry."], MemoryAddress.Parse("/test/dualmarked"));
+        await _tools.Remember(["References [[/test/dualmarked]] here."], MemoryAddress.Parse("/test/dualreferrer"),
             keywords: ["ref:/test/dualmarked"]);
 
         var (scope, subject) = store.ParseQualifiedName("/test/dualmarked");
@@ -578,7 +578,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public async Task LegacyOrphanKeyword_MigratesToTheAttribute_WhenTheEntryIsStillAnOrphan()
     {
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Isolated content, nothing points at it."], "/test/legacystillorphan");
+        await _tools.Remember(["Isolated content, nothing points at it."], MemoryAddress.Parse("/test/legacystillorphan"));
 
         var (scope, subject) = store.ParseQualifiedName("/test/legacystillorphan");
         store.TryUpdateEntry(subject, scope, e => e with
@@ -607,7 +607,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public async Task OrphanMarker_AtTheAttributeKeyCap_IsReportedRatherThanSilentlyDropped()
     {
         var store = MemoryStoreContext.Current!;
-        await _tools.Remember(["Isolated content at the attribute cap."], "/test/cappedorphan");
+        await _tools.Remember(["Isolated content at the attribute cap."], MemoryAddress.Parse("/test/cappedorphan"));
 
         var (scope, subject) = store.ParseQualifiedName("/test/cappedorphan");
         var full = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);

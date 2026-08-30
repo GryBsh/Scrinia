@@ -61,7 +61,7 @@ public sealed class CompactCuratedKeywordTests
 
         await Tools().Remember(
             ["the first chunk is about widgets", " the second chunk is about gadgets"],
-            "compact-curated",
+            MemoryAddress.Parse("/compact-curated"),
             keywords: ["portcullis"]);
 
         var before = Entry("compact-curated");
@@ -70,7 +70,7 @@ public sealed class CompactCuratedKeywordTests
         before.TermFrequencies!["portcullis"].Should().Be(5);
 
         // keepRecent: 1 discards the first chunk — a genuinely truncating compaction.
-        await Tools().Compact("compact-curated", keepRecent: 1);
+        await Tools().Compact(MemoryAddress.Parse("/compact-curated"), keepRecent: 1);
 
         var after = Entry("compact-curated");
         after.Keywords.Should().Contain("portcullis",
@@ -95,13 +95,13 @@ public sealed class CompactCuratedKeywordTests
 
         await Tools().Remember(
             ["a harbour full of boats", " more about the harbour"],
-            "compact-weight",
+            MemoryAddress.Parse("/compact-weight"),
             keywords: ["harbour"]);
 
         Entry("compact-weight").TermFrequencies!["harbour"].Should().Be(7,
             because: "precondition: two occurrences plus the +5 agent boost");
 
-        await Tools().Compact("compact-weight");
+        await Tools().Compact(MemoryAddress.Parse("/compact-weight"));
 
         var after = Entry("compact-weight");
         after.Keywords.Should().Contain("harbour");
@@ -121,14 +121,14 @@ public sealed class CompactCuratedKeywordTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["boats and trains", " planes and boats"], "compact-short",
+        await Tools().Remember(["boats and trains", " planes and boats"], MemoryAddress.Parse("/compact-short"),
             keywords: ["boats"]);
 
         MemoryDerivation.CuratedKeywords(Entry("compact-short").Keywords,
             ["boats and trains", " planes and boats"])
             .Should().BeEmpty(because: "precondition: the fallback heuristic recovers nothing here");
 
-        await Tools().Compact("compact-short");
+        await Tools().Compact(MemoryAddress.Parse("/compact-short"));
 
         Entry("compact-short").TermFrequencies!["boats"].Should().Be(7,
             because: "two occurrences plus the +5 agent boost — the recorded provenance answers " +
@@ -157,8 +157,8 @@ public sealed class CompactCuratedKeywordTests
         string appended = string.Join(" ",
             Enumerable.Range(0, 10).Select(i => $"bbb{i} bbb{i} bbb{i}"));
 
-        await Tools().Remember([firstChunk], "compact-appended");
-        await Tools().Append(" " + appended, "compact-appended");
+        await Tools().Remember([firstChunk], MemoryAddress.Parse("/compact-appended"));
+        await Tools().Append(" " + appended, MemoryAddress.Parse("/compact-appended"));
 
         var afterAppend = Entry("compact-appended");
         afterAppend.AgentKeywords.Should().BeEmpty(
@@ -167,7 +167,7 @@ public sealed class CompactCuratedKeywordTests
         afterAppend.TermFrequencies!["aaa0"].Should().Be(3,
             because: "one occurrence plus the AUTO boost of +2, not the agent +5");
 
-        await Tools().Compact("compact-appended", keepRecent: 1);
+        await Tools().Compact(MemoryAddress.Parse("/compact-appended"), keepRecent: 1);
 
         var after = Entry("compact-appended");
         after.Keywords.Should().NotContain("aaa0",
@@ -188,8 +188,8 @@ public sealed class CompactCuratedKeywordTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["a note about boats"], "append-provenance", keywords: ["portcullis"]);
-        await Tools().Append(" a note about trains", "append-provenance", keywords: ["harbour"]);
+        await Tools().Remember(["a note about boats"], MemoryAddress.Parse("/append-provenance"), keywords: ["portcullis"]);
+        await Tools().Append(" a note about trains", MemoryAddress.Parse("/append-provenance"), keywords: ["harbour"]);
 
         var after = Entry("append-provenance");
         after.AgentKeywords.Should().BeEquivalentTo(["portcullis", "harbour"],
@@ -212,15 +212,15 @@ public sealed class CompactCuratedKeywordTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["a note about boats", " and trains"], "update-provenance");
+        await Tools().Remember(["a note about boats", " and trains"], MemoryAddress.Parse("/update-provenance"));
         Entry("update-provenance").AgentKeywords.Should().BeEmpty(
             because: "precondition: nobody supplied a keyword to the store call");
 
-        await Tools().UpdateMeta("update-provenance", keywords: ["portcullis"]);
+        await Tools().UpdateMeta(MemoryAddress.Parse("/update-provenance"), keywords: ["portcullis"]);
 
         Entry("update-provenance").AgentKeywords.Should().Contain("portcullis");
 
-        await Tools().Compact("update-provenance");
+        await Tools().Compact(MemoryAddress.Parse("/update-provenance"));
 
         Entry("update-provenance").TermFrequencies!["portcullis"].Should().Be(5,
             because: "the keyword the caller added through UpdateMeta is as curated as one supplied " +
@@ -240,10 +240,10 @@ public sealed class CompactCuratedKeywordTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["a harbour full of boats"], "append-legacy", keywords: ["harbour"]);
+        await Tools().Remember(["a harbour full of boats"], MemoryAddress.Parse("/append-legacy"), keywords: ["harbour"]);
         ForgetProvenance("append-legacy");
 
-        await Tools().Append(" a note about trains", "append-legacy");
+        await Tools().Append(" a note about trains", MemoryAddress.Parse("/append-legacy"));
 
         var after = Entry("append-legacy");
         after.Keywords.Should().Contain("harbour", because: "D-12: an append destroys no keyword");
@@ -268,11 +268,11 @@ public sealed class CompactCuratedKeywordTests
 
         await Tools().Remember(
             ["the first chunk is about widgets", " the second chunk is about gadgets"],
-            "compact-legacy",
+            MemoryAddress.Parse("/compact-legacy"),
             keywords: ["portcullis"]);
         ForgetProvenance("compact-legacy");
 
-        await Tools().Compact("compact-legacy", keepRecent: 1);
+        await Tools().Compact(MemoryAddress.Parse("/compact-legacy"), keepRecent: 1);
 
         var after = Entry("compact-legacy");
         after.Keywords.Should().Contain("portcullis");
@@ -296,11 +296,11 @@ public sealed class CompactCuratedKeywordTests
 
         await Tools().Remember(
             ["a harbour full of boats", " more about the harbour"],
-            "compact-legacy-limit",
+            MemoryAddress.Parse("/compact-legacy-limit"),
             keywords: ["harbour"]);
         ForgetProvenance("compact-legacy-limit");
 
-        await Tools().Compact("compact-legacy-limit");
+        await Tools().Compact(MemoryAddress.Parse("/compact-legacy-limit"));
 
         var after = Entry("compact-legacy-limit");
         after.Keywords.Should().Contain("harbour",
@@ -326,11 +326,11 @@ public sealed class CompactCuratedKeywordTests
         string appended = string.Join(" ",
             Enumerable.Range(0, 10).Select(i => $"bbb{i} bbb{i} bbb{i}"));
 
-        await Tools().Remember([firstChunk], "compact-legacy-append");
-        await Tools().Append(" " + appended, "compact-legacy-append");
+        await Tools().Remember([firstChunk], MemoryAddress.Parse("/compact-legacy-append"));
+        await Tools().Append(" " + appended, MemoryAddress.Parse("/compact-legacy-append"));
         ForgetProvenance("compact-legacy-append");
 
-        await Tools().Compact("compact-legacy-append", keepRecent: 1);
+        await Tools().Compact(MemoryAddress.Parse("/compact-legacy-append"), keepRecent: 1);
 
         // Asserted over the whole family rather than one probe term: which of the 25 fall out of
         // the JOINED top-25 depends on the frequency tie-break, and the guarantee is that none of
@@ -362,12 +362,12 @@ public sealed class CompactCuratedKeywordTests
 
         // Two chunks, because compact() answers "already a single chunk" before writing anything.
         await Tools().Remember(
-            ["a note about boats", " and another note about trains"], "compact-legacy-prefixed");
+            ["a note about boats", " and another note about trains"], MemoryAddress.Parse("/compact-legacy-prefixed"));
         MemoryStoreContext.Current!.TryUpdateEntry("compact-legacy-prefixed", "local",
             e => e with { Keywords = [.. e.Keywords ?? [], "person:maria"], AgentKeywords = null })
             .Should().BeTrue(because: "precondition: the legacy keyword has to reach the entry");
 
-        await Tools().Compact("compact-legacy-prefixed", keepRecent: 1);
+        await Tools().Compact(MemoryAddress.Parse("/compact-legacy-prefixed"), keepRecent: 1);
 
         var after = Entry("compact-legacy-prefixed");
         after.Attributes.Should().ContainKey("person");

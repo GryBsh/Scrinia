@@ -90,7 +90,7 @@ public class RememberWriteMetadataTests
         MemoryStoreContext.Current = recording;
 
         await new ScriniaMcpTools().Remember(
-            ["a body"], "/findings/carrier",
+            ["a body"], MemoryAddress.Parse("/findings/carrier"),
             tags: ["alpha"],
             anchors: ["how do widgets work"],
             reviewAfter: "2026-08-01",
@@ -128,7 +128,7 @@ public class RememberWriteMetadataTests
         MemoryStoreContext.Current = recording;
 
         await new ScriniaMcpTools().Append(
-            "an appended chunk", "note",
+            "an appended chunk", MemoryAddress.Parse("/note"),
             tags: ["delta"], keywords: ["harbour"],
             attributes: new Dictionary<string, string[]> { ["org"] = ["acme"] });
 
@@ -263,7 +263,7 @@ public class RememberWriteMetadataTests
         using var scope = new TestHelpers.StoreScope();
         MemoryStoreContext.Current = new UnindexedRecordingStore();
 
-        var unindexed = await new ScriniaMcpTools().Compact("note");
+        var unindexed = await new ScriniaMcpTools().Compact(MemoryAddress.Parse("/note"));
         unindexed.Content.Should().NotContain("Original archived.");
         unindexed.Content.Should().Contain("Compacted",
             because: "precondition: the compaction itself still ran — this is about what it says, " +
@@ -272,7 +272,7 @@ public class RememberWriteMetadataTests
         // The other side of the branch, so the assertion above cannot pass by the message losing
         // that sentence altogether.
         MemoryStoreContext.Current = new SeededRecordingStore();
-        var indexed = await new ScriniaMcpTools().Compact("note");
+        var indexed = await new ScriniaMcpTools().Compact(MemoryAddress.Parse("/note"));
         indexed.Content.Should().Contain("Original archived.");
     }
 

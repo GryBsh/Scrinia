@@ -88,7 +88,7 @@ public sealed class CliReviewGapTests
     public async Task Store_JsonUsesThePersistedCanonicalNameWhenInputCaseDiffers()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["original content"], "MixedCase");
+        await new ScriniaMcpTools().Remember(["original content"], MemoryAddress.Parse("/MixedCase"));
         string contentFile = Path.Combine(scope.TempDir, "content.md");
         await File.WriteAllTextAsync(contentFile, "replacement content");
 
@@ -103,7 +103,7 @@ public sealed class CliReviewGapTests
     public async Task Forget_JsonSerializesTheRevisedGeneratedSchema()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["forget json content"], "/findings/forget-json");
+        await new ScriniaMcpTools().Remember(["forget json content"], MemoryAddress.Parse("/findings/forget-json"));
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Forget("/findings/forget-json", scope.WorkspaceDir, json: true));
@@ -120,7 +120,7 @@ public sealed class CliReviewGapTests
     public async Task Export_JsonSerializesTheRevisedGeneratedSchema()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["export json content"], "/api/export-json");
+        await new ScriniaMcpTools().Remember(["export json content"], MemoryAddress.Parse("/api/export-json"));
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Export("api", scope.WorkspaceDir, json: true));
@@ -172,7 +172,7 @@ public sealed class CliReviewGapTests
     public async Task CompactWithoutEnoughChunks_ExitsOne()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["only chunk"], "/findings/no-op-compact");
+        await new ScriniaMcpTools().Remember(["only chunk"], MemoryAddress.Parse("/findings/no-op-compact"));
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Compact("/findings/no-op-compact", workspaceRoot: scope.WorkspaceDir, json: true));
@@ -185,7 +185,7 @@ public sealed class CliReviewGapTests
     public async Task CompactWithMultipleChunks_ExitsZero()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().Remember(["first chunk", "second chunk"], "/findings/mutating-compact");
+        await new ScriniaMcpTools().Remember(["first chunk", "second chunk"], MemoryAddress.Parse("/findings/mutating-compact"));
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Compact("/findings/mutating-compact", workspaceRoot: scope.WorkspaceDir, json: true));

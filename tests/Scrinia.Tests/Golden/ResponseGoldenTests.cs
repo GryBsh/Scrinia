@@ -163,7 +163,7 @@ public class ResponseGoldenTests
             // is the cleanest of the three warning producers to drive — it needs no new seed
             // state (auth-flow already exists via Seed()) and no filesystem/formatter setup,
             // unlike an empty bundle import or a facts() entity lookup that matches nothing.
-            "update-warning"  => (await tools.UpdateMeta("/findings/auth-flow")).ToYaml(),
+            "update-warning"  => (await tools.UpdateMeta(MemoryAddress.Parse("/findings/auth-flow"))).ToYaml(),
             "recall-truncated" => await tools.MemoryRecall("/findings/long-note"),
             "compact-multichunk" => await tools.MemoryCompact("/findings/multi-note"),
             // link's refusal envelope for a side that does not exist — no seed helper needed, an

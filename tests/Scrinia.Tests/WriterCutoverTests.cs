@@ -58,7 +58,7 @@ public sealed class WriterCutoverTests
 
         await Tools().Remember(
             ["Widget subsystem depends on the probe."],
-            "writer-cutover-store",
+            MemoryAddress.Parse("/writer-cutover-store"),
             tags: ["widgets"],
             reviewAfter: "2026-08-01",
             anchors: ["how does the widget subsystem work"],
@@ -86,10 +86,10 @@ public sealed class WriterCutoverTests
         // Base entry deliberately carries no review data — anything under "review" below
         // can only have come from THIS UpdateMeta call's own Forward pass, not carried
         // over from Store's.
-        await Tools().Remember(["base content"], "writer-cutover-update");
+        await Tools().Remember(["base content"], MemoryAddress.Parse("/writer-cutover-update"));
 
         await Tools().UpdateMeta(
-            "writer-cutover-update",
+            MemoryAddress.Parse("/writer-cutover-update"),
             reviewAfter: "2026-09-01",
             reviewWhen: "when the widget API changes");
 
@@ -109,13 +109,13 @@ public sealed class WriterCutoverTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(
             ["Initial content about the auth flow."],
-            "writer-cutover-append",
+            MemoryAddress.Parse("/writer-cutover-append"),
             tags: ["auth"],
             anchors: ["how does login work"]);
 
         await Tools().Append(
             "Additional detail about token refresh.",
-            "writer-cutover-append",
+            MemoryAddress.Parse("/writer-cutover-append"),
             tags: ["auth", "tokens"],
             anchors: ["how does login work", "what triggers a token refresh"]);
 
@@ -134,7 +134,7 @@ public sealed class WriterCutoverTests
 
         await Tools().Remember(
             ["Ephemeral scratch note about the widget subsystem."],
-            "~writer-cutover-eph-store",
+            MemoryAddress.Parse("~writer-cutover-eph-store"),
             tags: ["widgets"],
             anchors: ["how does the widget subsystem work"]);
 
@@ -156,13 +156,13 @@ public sealed class WriterCutoverTests
 
         await Tools().Remember(
             ["Initial ephemeral note about the auth flow."],
-            "~writer-cutover-eph-append",
+            MemoryAddress.Parse("~writer-cutover-eph-append"),
             tags: ["auth"],
             anchors: ["how does login work"]);
 
         await Tools().Append(
             "Additional detail about token refresh.",
-            "~writer-cutover-eph-append",
+            MemoryAddress.Parse("~writer-cutover-eph-append"),
             tags: ["auth", "tokens"],
             anchors: ["how does login work", "what triggers a token refresh"]);
 
@@ -192,7 +192,7 @@ public sealed class WriterCutoverTests
 
         await Tools().Remember(
             ["Ephemeral scratch note about the widget subsystem."],
-            "~writer-cutover-eph-list",
+            MemoryAddress.Parse("~writer-cutover-eph-list"),
             tags: ["widgets"],
             anchors: ["how does the widget subsystem work"]);
 

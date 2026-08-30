@@ -147,7 +147,7 @@ public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
         var tools = new ScriniaMcpTools();
         await tools.Remember(
             ["This fact should be marked stale."],
-            "/debug/stale-test",
+            MemoryAddress.Parse("/debug/stale-test"),
             description: "Test staleness",
             reviewAfter: "2020-01-01");
 

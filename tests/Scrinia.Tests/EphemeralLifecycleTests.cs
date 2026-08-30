@@ -225,7 +225,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
         // misses or returns an unrelated persistent memory of that name.
         var tools = new ScriniaMcpTools();
 
-        await tools.Remember(["see src/thing.cs"], "~scratch");
+        await tools.Remember(["see src/thing.cs"], MemoryAddress.Parse("~scratch"));
         _store.GetEphemeral("scratch")!.FileHashes.Should().ContainKey("src/thing.cs",
             because: "precondition: without a baseline the drift scan skips this entry and the " +
                      "assertion below would be vacuous");
@@ -248,9 +248,9 @@ public sealed class EphemeralLifecycleTests : IDisposable
         // and suggested running list() to find it.
         var tools = new ScriniaMcpTools();
 
-        await tools.Remember(["the first chunk"], "~scratch");
-        await tools.Append(" the second chunk", "~scratch");
-        await tools.Append(" the third chunk", "~scratch");
+        await tools.Remember(["the first chunk"], MemoryAddress.Parse("~scratch"));
+        await tools.Append(" the second chunk", MemoryAddress.Parse("~scratch"));
+        await tools.Append(" the third chunk", MemoryAddress.Parse("~scratch"));
 
         _store.GetEphemeral("scratch")!.ChunkCount.Should().Be(3,
             because: "precondition: three writes, three chunks");
@@ -273,9 +273,9 @@ public sealed class EphemeralLifecycleTests : IDisposable
         // removed entirely — a vacuity trap the task brief calls out explicitly.
         var tools = new ScriniaMcpTools();
 
-        await tools.Remember(["a fox jumps"], "~scratch", description: "curated", keywords: ["vulpine"]);
-        await tools.Append(" over a lazy dog", "~scratch");
-        await tools.Append(" and keeps running", "~scratch");
+        await tools.Remember(["a fox jumps"], MemoryAddress.Parse("~scratch"), description: "curated", keywords: ["vulpine"]);
+        await tools.Append(" over a lazy dog", MemoryAddress.Parse("~scratch"));
+        await tools.Append(" and keeps running", MemoryAddress.Parse("~scratch"));
 
         string result = await tools.MemoryCompact("~scratch");
 

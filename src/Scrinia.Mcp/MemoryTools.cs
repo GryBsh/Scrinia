@@ -46,7 +46,7 @@ public sealed partial class ScriniaMcpTools
             return false;
         }
 
-        string input = raw;
+        string input = raw.Trim();
         if (LooksLikeUri(input))
         {
             error = ResponseBuilder.Error("Only logical memory addresses are supported; URI inputs are not accepted.",
@@ -282,7 +282,7 @@ public sealed partial class ScriniaMcpTools
         McpResponse response;
         try
         {
-            response = await Remember(content, path,
+            response = await Remember(content, parsedPath,
                 keywords: keywords, attributes: attributes,
                 actionLabel: "remembered", cancellationToken: cancellationToken);
         }
@@ -500,7 +500,7 @@ public sealed partial class ScriniaMcpTools
         McpResponse response;
         try
         {
-            response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
+            response = await Append(content, parsedPath, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException ex)
         {
@@ -542,7 +542,7 @@ public sealed partial class ScriniaMcpTools
         if (skillRoute is not null) return (await skillRoute).ToYaml();
         try
         {
-            return (await Forget(path, cancellationToken)).ToYaml();
+            return (await Forget(parsedPath, cancellationToken)).ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {
@@ -572,7 +572,7 @@ public sealed partial class ScriniaMcpTools
         path = CanonicalAddress(parsedPath);
         try
         {
-            return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
+            return (await Compact(parsedPath, keepRecent, cancellationToken)).ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {
@@ -611,7 +611,7 @@ public sealed partial class ScriniaMcpTools
         destination = CanonicalAddress(parsedDestination);
         try
         {
-            return (await Link(path, destination, reason, cancellationToken)).ToYaml();
+            return (await Link(parsedPath, parsedDestination, reason, cancellationToken)).ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {

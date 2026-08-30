@@ -15,11 +15,11 @@ public sealed class CompactNotificationTests
         MemoryEventSinkContext.Current = sink;
         var tools = new ScriniaMcpTools();
 
-        await tools.Remember(["first", "second"], "compact-notify");
+        await tools.Remember(["first", "second"], MemoryAddress.Parse("/compact-notify"));
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
         sink.Stored.Clear();
 
-        await tools.Compact("compact-notify");
+        await tools.Compact(MemoryAddress.Parse("/compact-notify"));
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
 
         sink.Stored.Should().ContainSingle();
@@ -33,8 +33,8 @@ public sealed class CompactNotificationTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
 
-        await tools.Remember(["first", "second"], "~compact-ephemeral");
-        var response = await tools.Compact("~compact-ephemeral");
+        await tools.Remember(["first", "second"], MemoryAddress.Parse("~compact-ephemeral"));
+        var response = await tools.Compact(MemoryAddress.Parse("~compact-ephemeral"));
 
         response.Content.Should().NotContain("Files in .scrinia/ were updated");
     }
@@ -47,11 +47,11 @@ public sealed class CompactNotificationTests
         MemoryEventSinkContext.Current = sink;
         var tools = new ScriniaMcpTools();
 
-        await tools.Remember(["single"], "compact-noop");
+        await tools.Remember(["single"], MemoryAddress.Parse("/compact-noop"));
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
         sink.Stored.Clear();
 
-        var response = await tools.Compact("compact-noop");
+        var response = await tools.Compact(MemoryAddress.Parse("/compact-noop"));
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
 
         response.Content.Should().Contain("Already a single chunk");

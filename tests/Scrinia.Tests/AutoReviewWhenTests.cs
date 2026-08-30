@@ -20,7 +20,7 @@ public sealed class AutoReviewWhenTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["We have 835 tests and 35 tools"], "test-counts");
+        await Tools().Remember(["We have 835 tests and 35 tools"], MemoryAddress.Parse("/test-counts"));
 
         var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-counts").Which;
@@ -33,7 +33,7 @@ public sealed class AutoReviewWhenTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["We have 835 tests"], "test-counts-explicit",
+        await Tools().Remember(["We have 835 tests"], MemoryAddress.Parse("/test-counts-explicit"),
             reviewWhen: "custom condition");
 
         var entries = MemoryStoreContext.Current!.LoadIndex("local");
@@ -47,7 +47,7 @@ public sealed class AutoReviewWhenTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Remember(["This is a normal memory"], "test-normal");
+        await Tools().Remember(["This is a normal memory"], MemoryAddress.Parse("/test-normal"));
 
         var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-normal").Which;
@@ -62,7 +62,7 @@ public sealed class AutoReviewWhenTests
 
         // Ephemeral memories take a different code path and don't have ReviewWhen.
         // This test verifies the ephemeral path doesn't error on content with count patterns.
-        string result = (await Tools().Remember(["We have 835 tests"], "~scratch")).ToYaml();
+        string result = (await Tools().Remember(["We have 835 tests"], MemoryAddress.Parse("~scratch"))).ToYaml();
 
         result.Should().Contain("ephemeral");
     }

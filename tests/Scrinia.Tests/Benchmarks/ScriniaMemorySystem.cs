@@ -19,7 +19,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
             string name = $"/{fact.Topic}/{fact.Key}";
             McpResponse response = await _tools.Remember(
                 [fact.Content],
-                name,
+                MemoryAddress.Parse(name),
                 description: fact.Question,
                 keywords: fact.UniqueTerms);
             ThrowIfWriteFailed(response, name);
@@ -57,7 +57,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
             // Show the top result to simulate actual retrieval
             if (names.Count > 0)
             {
-                McpResponse recalled = await _tools.Recall(names[0]);
+                McpResponse recalled = await _tools.Recall(MemoryAddress.Parse(names[0]));
                 string showResult = recalled.ToYaml();
                 charsConsumed += showResult.Length;
                 if (!recalled.IsError)
@@ -83,7 +83,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     public async Task<string> RawSearchAsync(string query) => (await _tools.Search(query, limit: 10)).ToYaml();
 
     /// <summary>Raw stored content, for checking whether a hit reflects old content.</summary>
-    public async Task<string> RawRecallAsync(string name) => (await _tools.Recall(name)).ToYaml();
+    public async Task<string> RawRecallAsync(string name) => (await _tools.Recall(MemoryAddress.Parse(name))).ToYaml();
 
     public override int GetColdStartTokens() => 0; // Nothing loaded until queried
 
@@ -99,7 +99,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
         string name = $"/{updated.Topic}/{updated.Key}";
         McpResponse response = await _tools.Remember(
             [updated.Content],
-            name,
+            MemoryAddress.Parse(name),
             description: updated.Question,
             keywords: updated.UniqueTerms);
         ThrowIfWriteFailed(response, name);
