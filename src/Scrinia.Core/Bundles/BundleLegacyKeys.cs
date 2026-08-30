@@ -23,6 +23,18 @@ namespace Scrinia.Core.Bundles;
 /// </summary>
 internal static class BundleLegacyKeys
 {
+    private static readonly HashSet<string> PhysicalLocationKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "uri",
+        "artifactUri",
+        "artifactPath",
+        "filePath",
+        "physicalPath",
+        "physicalUri",
+        "path",
+        "location",
+    };
+
     /// <summary>
     /// Rewrites legacy keys on every entry of a bundle topic index, in place. No-op for an index
     /// with no <c>entries</c> array, and for entries that already carry only modern keys.
@@ -44,6 +56,18 @@ internal static class BundleLegacyKeys
 
     private static void NormalizeEntry(JsonObject entry, int entryIndex)
     {
+        // These names were physical identity in older bundle shapes. They are deliberately
+        // removed before source-generated deserialization can place them in ArtifactEntry.Unknown;
+        // otherwise import followed by export would preserve a path from the source workspace.
+        // Only the known physical carriers are discarded: unrelated unknown metadata remains
+        // losslessly available through ArtifactEntry.Unknown.
+        foreach (string key in entry.Select(property => property.Key)
+            .Where(key => PhysicalLocationKeys.Contains(key))
+            .ToArray())
+        {
+            entry.Remove(key);
+        }
+
         // Pre-address bundles carried only a subject name. Preserve their logical location at the
         // bundle boundary so the typed deserializer can still create a trusted entry; modern
         // bundles retain the exact address they exported.

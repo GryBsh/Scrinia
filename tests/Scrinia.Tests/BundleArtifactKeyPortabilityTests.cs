@@ -66,6 +66,35 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
             .Should().Equal("qualified body");
     }
 
+    [Fact]
+    public void LegacyPhysicalLocationMetadata_IsDroppedAcrossImportAndExport_WhileUnknownMetadataSurvives()
+    {
+        string targetRoot = Path.Combine(_root, "legacy-target");
+        Directory.CreateDirectory(targetRoot);
+        using var target = new FileMemoryStore(targetRoot);
+
+        using (var zip = OpenZip(CreateLegacyBundleWithPhysicalMetadata()))
+            BundleFormatService.ImportTopicsFromZip(zip, target, filterTopics: null, overwrite: true);
+
+        ArtifactEntry imported = target.LoadIndex("local:portable").Should().ContainSingle().Subject;
+        imported.Unknown.Should().ContainKey("futureMetadata");
+        imported.Unknown!["futureMetadata"].GetString().Should().Be("retain-me");
+        imported.Unknown.Keys.Should().NotContain(key =>
+            key.Equals("uri", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("artifactPath", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("filePath", StringComparison.OrdinalIgnoreCase));
+
+        using var exported = OpenZip(Export(target));
+        using var reader = new StreamReader(exported.GetEntry("topics/portable/index.json")!.Open());
+        JsonObject exportedEntry = JsonNode.Parse(reader.ReadToEnd())!["entries"]![0]!.AsObject();
+        exportedEntry.Should().ContainKey("futureMetadata");
+        exportedEntry["futureMetadata"]!.GetValue<string>().Should().Be("retain-me");
+        exportedEntry.Should().NotContainKey("uri");
+        exportedEntry.Should().NotContainKey("artifactPath");
+        exportedEntry.Should().NotContainKey("filePath");
+        exportedEntry.ToJsonString().Should().NotContain(targetRoot);
+    }
+
     [Theory]
     [InlineData("/rooted")]
     [InlineData("C:/workspace/note.nmp2")]
@@ -120,6 +149,34 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
                     ["chunkCount"] = 1,
                     ["createdAt"] = DateTimeOffset.UnixEpoch.ToString("o"),
                     ["contentPreview"] = "note",
+                }),
+            };
+            WriteText(zip, "topics/portable/index.json", index.ToJsonString());
+            WriteText(zip, "topics/portable/note.nmp2", "body");
+            WriteText(zip, "manifest.json", "{\"version\":1,\"topics\":[\"portable\"],\"totalEntries\":1}");
+        }
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateLegacyBundleWithPhysicalMetadata()
+    {
+        using var stream = new MemoryStream();
+        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var index = new JsonObject
+            {
+                ["entries"] = new JsonArray(new JsonObject
+                {
+                    ["address"] = "/portable/note",
+                    ["artifactKey"] = "artifacts/portable/note.nmp2",
+                    ["originalBytes"] = 4,
+                    ["chunkCount"] = 1,
+                    ["createdAt"] = DateTimeOffset.UnixEpoch.ToString("o"),
+                    ["contentPreview"] = "note",
+                    ["uri"] = "file:///source/workspace/.scrinia/memories/portable/note.nmp2",
+                    ["artifactPath"] = "C:/source/workspace/.scrinia/memories/portable/note.nmp2",
+                    ["filePath"] = "\\\\source\\workspace\\note.nmp2",
+                    ["futureMetadata"] = "retain-me",
                 }),
             };
             WriteText(zip, "topics/portable/index.json", index.ToJsonString());
