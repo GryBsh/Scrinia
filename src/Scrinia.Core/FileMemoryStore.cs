@@ -194,6 +194,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(IndexFile))]
     [JsonSerializable(typeof(ArtifactEntry))]
+    [JsonSerializable(typeof(MemoryAddress))]
+    [JsonSerializable(typeof(MemoryAddressKind))]
+    [JsonSerializable(typeof(MemoryWrite))]
+    [JsonSerializable(typeof(MemoryError))]
+    [JsonSerializable(typeof(MemoryAddressError))]
+    [JsonSerializable(typeof(MemorySearchRequest))]
+    [JsonSerializable(typeof(MemoryListRequest))]
     private partial class FileStoreJsonContext : JsonSerializerContext;
 
     /// <summary>

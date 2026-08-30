@@ -25,6 +25,13 @@ namespace Scrinia.Mcp;
 // FileMemoryStore's read-time forward-fill) without a contextless JsonSerializer call — see
 // WriterCutoverTests.ReadSidecarDirect.
 [JsonSerializable(typeof(ArtifactEntry))]
+[JsonSerializable(typeof(MemoryAddress))]
+[JsonSerializable(typeof(MemoryAddressKind))]
+[JsonSerializable(typeof(MemoryWrite))]
+[JsonSerializable(typeof(MemoryError))]
+[JsonSerializable(typeof(MemoryAddressError))]
+[JsonSerializable(typeof(MemorySearchRequest))]
+[JsonSerializable(typeof(MemoryListRequest))]
 public partial class ScriniaMcpJsonContext : JsonSerializerContext;
 
 public sealed partial class ScriniaMcpTools

@@ -22,11 +22,20 @@ public sealed record BundleManifest(
     Dictionary<string, List<string>>? FileEntities = null);
 
 [JsonSourceGenerationOptions(
-    WriteIndented = true,
-    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+     WriteIndented = true,
+     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(BundleIndex))]
 [JsonSerializable(typeof(BundleManifest))]
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
+[JsonSerializable(typeof(MemoryAddress))]
+[JsonSerializable(typeof(MemoryAddressKind))]
+[JsonSerializable(typeof(MemoryWrite))]
+[JsonSerializable(typeof(MemoryError))]
+[JsonSerializable(typeof(MemoryAddressError))]
+[JsonSerializable(typeof(MemorySearchRequest))]
+[JsonSerializable(typeof(MemoryListRequest))]
+[JsonSerializable(typeof(ArtifactEntry))]
 public partial class BundleJsonContext : JsonSerializerContext;
 
 /// <summary>
