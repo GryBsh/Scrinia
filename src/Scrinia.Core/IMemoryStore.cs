@@ -87,8 +87,6 @@ public interface IMemoryStore : IPluginStore
     // go via LoadIndex and GetEphemeral respectively — and are safe for their own reasons,
     // documented on each.
 
-    // CRUD — ResolveArtifactAsync moved to IPluginStore (inherited).
-
     /// <summary>
     /// The scope's index entries. <b>The returned list may be a live view of the store's internal
     /// cache — callers must not mutate it.</b> Call <c>ToList()</c> first if you need to.
@@ -388,13 +386,4 @@ public interface IMemoryStore : IPluginStore
     List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
     void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite);
-}
-
-/// <summary>Compatibility bridge for URI removal, which is completed by Task 4.</summary>
-public static class MemoryStoreCompatibilityExtensions
-{
-    public static string ArtifactUri(this IMemoryStore store, string name, string scope = "local") =>
-        store is FileMemoryStore fileStore
-            ? fileStore.ArtifactUri(name, scope)
-            : throw new NotSupportedException("This store does not expose physical artifact locations.");
 }

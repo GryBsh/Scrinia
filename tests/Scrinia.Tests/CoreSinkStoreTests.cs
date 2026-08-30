@@ -15,7 +15,6 @@ public class CoreSinkStoreTests
     {
         public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
         public bool IsEphemeral(string name) => false;
-        public Task<string> ResolveArtifactAsync(string n, CancellationToken ct = default) => Task.FromResult("");
         public Task<string> ReadArtifactAsync(string s, string sc, CancellationToken ct = default) => Task.FromResult("");
     }
 

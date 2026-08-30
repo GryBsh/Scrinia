@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 
@@ -16,7 +17,6 @@ public class PluginStoreOnlySinkTests
     /// <summary>Records which read path was taken, so the ephemeral routing is pinned too.</summary>
     private sealed class PluginStoreOnly(bool ephemeral, string artifact) : IPluginStore
     {
-        public bool ResolveCalled { get; private set; }
         public bool ReadCalled { get; private set; }
 
         public (string Scope, string Subject) ParseQualifiedName(string name)
@@ -27,9 +27,8 @@ public class PluginStoreOnlySinkTests
 
         public bool IsEphemeral(string name) => ephemeral;
 
-        public Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default)
+        public Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default)
         {
-            ResolveCalled = true;
             return Task.FromResult(artifact);
         }
 
@@ -56,20 +55,16 @@ public class PluginStoreOnlySinkTests
         subject.Should().Be("probe");
         elements.Should().Equal(["probe body"], because: "a non-empty artifact must decode back to its content elements");
         store.ReadCalled.Should().BeTrue("a non-ephemeral name reads by subject and scope");
-        store.ResolveCalled.Should().BeFalse();
     }
 
     [Fact]
-    public async Task ReadForAppendAsync_RoutesAnEphemeralNameThroughResolve()
+    public async Task ReadForAppendAsync_RoutesAnEphemeralNameThroughTypedRead()
     {
         var store = new PluginStoreOnly(ephemeral: true, artifact: "");
 
         await MemoryArtifactSource.ReadForAppendAsync(store, "~probe", CancellationToken.None);
 
-        store.ResolveCalled.Should().BeTrue(
-            "ephemerality is a property of the NAME, so the ephemeral branch resolves rather " +
-            "than reading by scope — narrowing the parameter must not change that routing");
-        store.ReadCalled.Should().BeFalse();
+        store.ReadCalled.Should().BeTrue();
     }
 
     /// <summary>A plugin-shaped sink: records what it was handed, needs nothing beyond the contract.</summary>
@@ -77,16 +72,16 @@ public class PluginStoreOnlySinkTests
     {
         public string? LastStored { get; private set; }
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
-            LastStored = store.ParseQualifiedName(qualifiedName).Subject;
+            LastStored = address.Value;
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 
@@ -96,7 +91,7 @@ public class PluginStoreOnlySinkTests
         var sink = new NarrowSink();
         var composite = new CompositeEventSink([sink]);
 
-        await composite.OnStoredAsync("local:probe", ["x"], new PluginStoreOnly(false, ""), CancellationToken.None);
+        await composite.OnStoredAsync(MemoryAddress.Parse("/probe"), ["x"], new PluginStoreOnly(false, ""), CancellationToken.None);
 
         sink.LastStored.Should().Be("probe",
             because: "this is the assertion the narrowing exists to make true — the pipeline must " +

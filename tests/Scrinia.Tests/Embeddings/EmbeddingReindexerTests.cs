@@ -36,7 +36,8 @@ public class EmbeddingReindexerTests : IDisposable
 
     private void AddMemory(string name, string content)
     {
-        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow);
+        var entry = new ArtifactEntry(MemoryAddress.Parse($"/{name}"), "artifacts/local/" + name + ".nmp2",
+            content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, "local");
         string path = _store.ArtifactPath(name, "local");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -192,7 +193,8 @@ public class EmbeddingReindexerTests : IDisposable
         result.Embedded.Should().Be(2);
         result.Failed.Should().Be(0);
         sink.Stored.Should().HaveCount(2);
-        sink.Stored.Select(s => s.qualifiedName).Should().BeEquivalentTo(["alpha", "beta"]);
+        sink.Stored.Select(s => s.address).Should().BeEquivalentTo(
+            [MemoryAddress.Parse("/alpha"), MemoryAddress.Parse("/beta")]);
         // Decoded payload should be the original raw content, not the encoded artifact.
         sink.Stored.Should().OnlyContain(s => s.content.Single().Contains("content body"));
     }
@@ -203,7 +205,7 @@ public class EmbeddingReindexerTests : IDisposable
         AddMemory("good", "this one succeeds");
         AddMemory("bad", "this one throws");
 
-        var sink = new CaptureSink(failOnQualifiedName: "bad");
+        var sink = new CaptureSink(failOnAddress: MemoryAddress.Parse("/bad"));
 
         var result = await EmbeddingReindexer.ReindexViaSinkAsync(
             _store, sink, NullLogger.Instance, progress: null, CancellationToken.None);
@@ -215,25 +217,25 @@ public class EmbeddingReindexerTests : IDisposable
 
     private sealed class CaptureSink : IMemoryEventSink
     {
-        private readonly string? _failOnQualifiedName;
-        public List<(string qualifiedName, string[] content)> Stored { get; } = [];
+        private readonly MemoryAddress? _failOnAddress;
+        public List<(MemoryAddress address, string[] content)> Stored { get; } = [];
 
-        public CaptureSink(string? failOnQualifiedName = null)
+        public CaptureSink(MemoryAddress? failOnAddress = null)
         {
-            _failOnQualifiedName = failOnQualifiedName;
+            _failOnAddress = failOnAddress;
         }
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
-            if (qualifiedName == _failOnQualifiedName)
+            if (address == _failOnAddress)
                 throw new InvalidOperationException("simulated sink failure");
-            Stored.Add((qualifiedName, content));
+            Stored.Add((address, content));
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 

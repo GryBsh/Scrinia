@@ -128,53 +128,24 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task ResolveArtifact_finds_persistent_memory()
+    public async Task ReadArtifact_finds_persistent_memory()
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Resolve me");
         await _store.WriteArtifactAsync("resolve-test", "local", artifact);
         _store.Upsert(new ArtifactEntry("resolve-test", "", 100, 1, DateTimeOffset.UtcNow));
 
-        string resolved = await _store.ResolveArtifactAsync("resolve-test");
+        string resolved = await _store.ReadArtifactAsync(MemoryAddress.Parse("/resolve-test"));
         resolved.Should().Be(artifact);
     }
 
     [Fact]
-    public async Task ResolveArtifact_finds_ephemeral()
+    public async Task ReadArtifact_finds_ephemeral()
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Ephemeral data");
         _store.RememberEphemeral("eph", new EphemeralEntry("eph", artifact, 100, 1, DateTimeOffset.UtcNow));
 
-        string resolved = await _store.ResolveArtifactAsync("~eph");
+        string resolved = await _store.ReadArtifactAsync(MemoryAddress.Parse("~eph"));
         resolved.Should().Be(artifact);
-    }
-
-    [Fact]
-    public async Task ResolveArtifact_file_uri_rejects_sibling_prefix_escape()
-    {
-        // ".scrinia-backup" shares the ".scrinia" prefix but is a sibling directory,
-        // not a nested path — a naive StartsWith(scriniDir) check would incorrectly
-        // allow this to escape the sandbox.
-        string backupDir = Path.Combine(_tempDir, ".scrinia-backup");
-        Directory.CreateDirectory(backupDir);
-        string secretPath = Path.Combine(backupDir, "secret");
-        await File.WriteAllTextAsync(secretPath, "top secret");
-
-        Func<Task> act = async () => await _store.ResolveArtifactAsync($"file://{secretPath}");
-
-        await act.Should().ThrowAsync<UnauthorizedAccessException>();
-    }
-
-    [Fact]
-    public async Task ResolveArtifact_file_uri_allows_path_under_scrinia_dir()
-    {
-        string scriniaDir = Path.Combine(_tempDir, ".scrinia");
-        Directory.CreateDirectory(scriniaDir);
-        string okPath = Path.Combine(scriniaDir, "ok");
-        await File.WriteAllTextAsync(okPath, "legit content");
-
-        string resolved = await _store.ResolveArtifactAsync($"file://{okPath}");
-
-        resolved.Should().Be("legit content");
     }
 
     [Fact]
@@ -978,33 +949,6 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         result.Should().Be("my notes.v2",
             because: "spaces and dots are valid filename characters and must not be replaced");
-    }
-
-    // ── NameFromUri ───────────────────────────────────────────────────────────
-
-    [Fact]
-    public void NameFromUri_StoreUri_ReturnsBaseName()
-    {
-        string storeDir = _store.GetStoreDirForScope("local");
-        // Normalise slashes for the test assertion (Windows vs Unix)
-        string uri = $"file://{storeDir}/session-notes.nmp2".Replace('\\', '/');
-
-        string name = FileMemoryStore.NameFromUri(uri);
-
-        name.Should().Be("session-notes",
-            because: "NameFromUri must strip the .nmp2 extension and return the file base name");
-    }
-
-    [Fact]
-    public void NameFromUri_TempUri_ReturnsGuidSegment()
-    {
-        string guid = Guid.NewGuid().ToString("N");
-        string uri = $"file://{Path.GetTempPath()}scrinia_{guid}.nmp2";
-
-        string name = FileMemoryStore.NameFromUri(uri);
-
-        name.Should().Be($"scrinia_{guid}",
-            because: "NameFromUri must handle temp-dir URIs gracefully, returning the file base name");
     }
 
     // ── SaveIndex (atomic write) ──────────────────────────────────────────────

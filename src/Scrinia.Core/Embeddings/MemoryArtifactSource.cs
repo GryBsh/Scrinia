@@ -1,4 +1,5 @@
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Core.Embeddings;
 
@@ -52,16 +53,21 @@ public static class MemoryArtifactSource
     /// <see cref="ReadForAppendAsync"/>.
     ///
     /// <para>Resolves by (scope, subject) rather than round-tripping through
-    /// <c>FormatQualifiedName</c> → <c>ResolveArtifactAsync</c> → <c>ParseQualifiedName</c>: for a
-    /// v1 namespaced topic scope (e.g. <c>local:memory/api</c>) <c>FormatQualifiedName</c>
-    /// intentionally strips the <c>memory/</c> prefix for display, so re-parsing that string
-    /// reconstructs the wrong scope and the artifact can never be found.</para>
+     /// Address-based reads avoid reconstructing a path from a display-oriented scope label.
+     /// This preserves namespaced topic addresses exactly.</para>
     /// </summary>
     public static Task<string> ReadArtifactAsync(
         IMemoryStore store, string scope, string subject, CancellationToken ct) =>
         IsEphemeral(scope)
-            ? store.ResolveArtifactAsync($"~{subject}", ct)
+            ? store.ReadArtifactAsync(MemoryAddress.Parse($"~{subject}"), ct)
             : store.ReadArtifactAsync(subject, scope, ct);
+
+    public static async Task<string[]> ReadContentElementsAsync(
+        IMemoryStore store, MemoryAddress address, CancellationToken ct)
+    {
+        string artifact = await store.ReadArtifactAsync(address, ct);
+        return DecodeContentElements(artifact);
+    }
 
     /// <summary>
     /// Reads a memory and decodes it back into the content array a write would have carried —
@@ -95,7 +101,7 @@ public static class MemoryArtifactSource
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
 
         string artifact = store.IsEphemeral(qualifiedName)
-            ? await store.ResolveArtifactAsync(qualifiedName, ct)
+            ? await store.ReadArtifactAsync(MemoryAddress.Parse(qualifiedName), ct)
             : await store.ReadArtifactAsync(subject, scope, ct);
 
         return (scope, subject, DecodeContentElements(artifact));

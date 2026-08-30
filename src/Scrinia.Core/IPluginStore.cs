@@ -36,11 +36,6 @@ internal static class PluginStoreCompatibilityExtensions
     internal static bool IsEphemeral(this IPluginStore store, string raw) =>
         raw.StartsWith('~') || raw.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase);
 
-    internal static Task<string> ResolveArtifactAsync(this IPluginStore store, string raw,
-        CancellationToken ct = default) =>
-        store.ReadArtifactAsync(MemoryAddress.TryParse(raw, out var address, out _) ? address :
-            MemoryAddress.Parse("/" + raw.TrimStart('/')), ct);
-
     internal static Task<string> ReadArtifactAsync(this IPluginStore store, string subject, string scope,
         CancellationToken ct = default) =>
         store.ReadArtifactAsync(MemoryAddress.Parse(subject.StartsWith('/') ? subject : $"/{subject}"), ct);

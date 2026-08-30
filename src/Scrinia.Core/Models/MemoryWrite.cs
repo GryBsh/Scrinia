@@ -78,7 +78,7 @@ public sealed record MemoryWrite
         Dictionary<string, string[]>? Attributes = null,
         string[]? Keywords = null)
     {
-        Address = MemoryAddress.Parse(Name);
+        Address = MemoryAddress.Parse(Name.StartsWith('/') || Name.StartsWith('~') ? Name : $"/{Name}");
         var validation = TryCreate(Address, Content, ConvertAttributes(Attributes), Keywords, description: Description);
         if (!validation.IsValid)
             throw new InvalidMemoryWriteException(validation.Error!);

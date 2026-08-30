@@ -1337,7 +1337,8 @@ public sealed partial class ScriniaMcpTools
         var stored = await store.StoreAsync(write, cancellationToken);
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
-        await FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, compacted, store, cancellationToken));
+        await FireEventSinkAsync(sink => sink.OnStoredAsync(
+            MemoryAddress.Parse(qualifiedName), compacted, store, cancellationToken));
         int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no
@@ -1497,7 +1498,7 @@ public sealed partial class ScriniaMcpTools
         // Checkpoint:latest — followUp if exists
         try
         {
-            string checkpointArtifact = await store.ResolveArtifactAsync("/checkpoint/latest", cancellationToken);
+            string checkpointArtifact = await store.ReadArtifactAsync(MemoryAddress.Parse("/checkpoint/latest"), cancellationToken);
             if (!string.IsNullOrEmpty(checkpointArtifact))
                 followUpNames.Add("/checkpoint/latest");
         }
@@ -1507,7 +1508,7 @@ public sealed partial class ScriniaMcpTools
         try
         {
             string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-            await store.ResolveArtifactAsync($"/sessions/{today}", cancellationToken);
+            await store.ReadArtifactAsync(MemoryAddress.Parse($"/sessions/{today}"), cancellationToken);
             followUpNames.Add($"/sessions/{today}");
         }
         catch (FileNotFoundException) { /* no session log for today */ }

@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Formats;
 
 namespace Scrinia.Mcp;
@@ -20,9 +21,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Resolves inline NMP/2 artifacts without requiring a configured store.
-    /// Returns null if the input requires store-based resolution (memory name, file://, ephemeral, etc.).
-    /// file:// URIs are deliberately NOT handled here — they require store-based resolution
-    /// for workspace sandbox validation (see FileMemoryStore.ResolveArtifactAsync).
+    /// Returns null if the input requires store-based resolution (memory name or ephemeral address).
     /// </summary>
     private static Task<string?> TryResolveWithoutStore(string input, CancellationToken ct)
     {
@@ -34,6 +33,14 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult<string?>(input);
 
         return Task.FromResult<string?>(null);
+    }
+
+    private static MemoryAddress ParseUserAddress(string input)
+    {
+        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input);
+        if (canonical.StartsWith('/') || canonical.StartsWith('~'))
+            return MemoryAddress.Parse(canonical);
+        return MemoryAddress.Parse($"/{canonical}");
     }
 
     [McpServerTool(Name = "guide"), Description(
@@ -445,7 +452,7 @@ public sealed partial class ScriniaMcpTools
         "Example: forget({ path: '/temp/scratch' }), or forget({ path: '/skill/qa' }) to drop a " +
         "stored skill.")]
     public async Task<string> MemoryForget(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch') or a file:// URI.")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch').")] string path,
         CancellationToken cancellationToken = default)
     {
         // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and

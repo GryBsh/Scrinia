@@ -4,6 +4,7 @@ using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
 
@@ -44,7 +45,8 @@ public sealed class ScriniaMcpResources
         string artifact;
         try
         {
-            artifact = await store.ResolveArtifactAsync(name, cancellationToken);
+            artifact = await store.ReadArtifactAsync(MemoryAddress.Parse(
+                name.StartsWith('/') || name.StartsWith('~') ? name : $"/{name}"), cancellationToken);
         }
         catch (FileNotFoundException)
         {

@@ -37,7 +37,7 @@ public class JournaledRestoreRecoveryTests
         File.ReadAllBytes(Path.Combine(storeDirectory, "daily-log.meta.json")).Should().Equal(
             JsonSerializer.SerializeToUtf8Bytes(incoming with
             {
-                Uri = store.ArtifactUri(incoming.Name, Scope)
+                ArtifactKey = $"artifacts/{Scope}/{incoming.Name}.nmp2"
             }, new JsonSerializerOptions
             {
                 WriteIndented = true,
@@ -71,8 +71,7 @@ public class JournaledRestoreRecoveryTests
         WritePreparedJournal(store, Scope, CreateEntry("note"), Encoding.UTF8.GetBytes("recovered"));
 
         (await store.ReadArtifactAsync("note", Scope)).Should().Be("recovered");
-        (await store.ResolveArtifactAsync("/notes/note")).Should().Be("recovered");
-        (await store.ResolveArtifactAsync(store.ArtifactUri("note", Scope))).Should().Be("recovered");
+        (await store.ReadArtifactAsync(MemoryAddress.Parse("/notes/note"))).Should().Be("recovered");
     }
 
     [Fact]

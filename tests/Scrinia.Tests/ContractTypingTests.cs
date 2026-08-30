@@ -41,6 +41,9 @@ public sealed class ContractTypingTests
             method.Name == "ResolveArtifactAsync" || method.GetParameters().Any(parameter =>
                 parameter.ParameterType == typeof(string) &&
                 parameter.Name == "name" || parameter.Name == "subject" || parameter.Name == "qualifiedName"));
+        typeof(FileMemoryStore).GetMethods().Should().NotContain(method =>
+            method.Name == "ArtifactUri" || method.Name == "ResolveArtifactAsync" ||
+            method.GetParameters().Any(parameter => parameter.ParameterType == typeof(Uri)));
     }
 
     [Fact]
@@ -111,10 +114,14 @@ public sealed class ContractTypingTests
         var sink = new TypedSink();
         var address = MemoryAddress.Parse("~scratch");
 
-        await ((IMemoryEventSink)new CompositeEventSink([sink]))
-            .OnStoredAsync(address, ["content"], new AddressCapturingStore(), CancellationToken.None);
+        var composite = (IMemoryEventSink)new CompositeEventSink([sink]);
+        await composite.OnStoredAsync(address, ["content"], new AddressCapturingStore(), CancellationToken.None);
+        await composite.OnAppendedAsync(address, "content", new AddressCapturingStore(), CancellationToken.None);
+        await composite.OnForgottenAsync(address, true, new AddressCapturingStore(), CancellationToken.None);
 
         sink.StoredAddress.Should().Be(address);
+        sink.AppendedAddress.Should().Be(address);
+        sink.ForgottenAddress.Should().Be(address);
     }
 
     [Fact]
@@ -144,6 +151,8 @@ public sealed class ContractTypingTests
     private sealed class TypedSink : IMemoryEventSink
     {
         public MemoryAddress? StoredAddress { get; private set; }
+        public MemoryAddress? AppendedAddress { get; private set; }
+        public MemoryAddress? ForgottenAddress { get; private set; }
 
         public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
@@ -151,10 +160,16 @@ public sealed class ContractTypingTests
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
-            Task.CompletedTask;
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
+        {
+            AppendedAddress = address;
+            return Task.CompletedTask;
+        }
 
-        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
-            Task.CompletedTask;
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        {
+            ForgottenAddress = address;
+            return Task.CompletedTask;
+        }
     }
 }

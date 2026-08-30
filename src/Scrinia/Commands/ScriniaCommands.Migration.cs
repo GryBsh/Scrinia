@@ -331,7 +331,7 @@ public partial class ScriniaCommands
             try
             {
                 string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                await sink.OnStoredAsync(qualifiedName, [fullText], store, ct);
+                await sink.OnStoredAsync(MemoryAddress.Parse(qualifiedName), [fullText], store, ct);
             }
             catch (Exception ex)
             {

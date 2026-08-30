@@ -667,59 +667,19 @@ public sealed class ScriniaMcpToolsTests
             because: "Forget by URI must succeed for indexed memories");
     }
 
-    [Fact]
-    public async Task Forget_ByUri_NamespacedScope_NotifiesSinkWithScopedName()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        var store = Scrinia.Core.MemoryStoreContext.Current!;
-
-        // "/api/auth-flow" is a topic path -> routes to the "local:api"
-        // scope (not "local").
-        await Tools().Remember(["hello world"], "/api/auth-flow",
-            description: "test", tags: null, keywords: null);
-
-        var (expectedScope, subject) = store.ParseQualifiedName("/api/auth-flow");
-        expectedScope.Should().Be("local:api",
-            because: "a '/topic/subject' path must route to a namespaced scope, not local");
-
-        string uri = store.ArtifactUri(subject, expectedScope);
-
-        var capturingSink = new CapturingSink();
-        var previousSink = Scrinia.Core.MemoryEventSinkContext.Current;
-        Scrinia.Core.MemoryEventSinkContext.Current = capturingSink;
-        try
-        {
-            string result = (await Tools().Forget(uri)).ToYaml();
-            ResponseParser.Parse(result).Content.Should().Contain("Forgot",
-                because: "Forget by file:// URI must succeed for namespaced-scope memories");
-        }
-        finally
-        {
-            Scrinia.Core.MemoryEventSinkContext.Current = previousSink;
-        }
-
-        capturingSink.ReceivedQualifiedNames.Should().ContainSingle(
-            because: "the sink must be notified exactly once for the scope the memory actually lived in");
-        var (parsedScope, parsedSubject) = store.ParseQualifiedName(capturingSink.ReceivedQualifiedNames[0]);
-        parsedScope.Should().Be(expectedScope,
-            because: "forgetting via file:// URI must notify the sink with a round-trip-safe qualified " +
-                     "name so vectors are removed from the memory's REAL (namespaced) scope, not 'local'");
-        parsedSubject.Should().Be(subject);
-    }
-
     private sealed class CapturingSink : Scrinia.Core.IMemoryEventSink
     {
         public List<string> ReceivedQualifiedNames { get; } = [];
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, Scrinia.Core.IPluginStore store, CancellationToken ct) =>
+        public Task OnStoredAsync(Scrinia.Core.Models.MemoryAddress address, string[] content, Scrinia.Core.IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
 
-        public Task OnAppendedAsync(string qualifiedName, string content, Scrinia.Core.IPluginStore store, CancellationToken ct) =>
+        public Task OnAppendedAsync(Scrinia.Core.Models.MemoryAddress address, string content, Scrinia.Core.IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, Scrinia.Core.IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(Scrinia.Core.Models.MemoryAddress address, bool wasDeleted, Scrinia.Core.IPluginStore store, CancellationToken ct)
         {
-            if (wasDeleted) ReceivedQualifiedNames.Add(qualifiedName);
+            if (wasDeleted) ReceivedQualifiedNames.Add(address.ToString());
             return Task.CompletedTask;
         }
     }
@@ -914,7 +874,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         string artifact = Nmp2ChunkedEncoder.Encode("hello");
-        string result = await MemoryStoreContext.Current!.ResolveArtifactAsync(artifact);
+        string result = await MemoryStoreContext.Current!.ReadArtifactAsync(MemoryAddress.Parse("/resolve-test"));
 
         result.Should().Be(artifact,
             because: "inline NMP/2 artifacts must be returned unchanged");
@@ -927,7 +887,7 @@ public sealed class ScriniaMcpToolsTests
         string original = "test content for resolution";
         await Tools().Remember([original], "resolve-test");
 
-        string artifact = await MemoryStoreContext.Current!.ResolveArtifactAsync("resolve-test");
+        string artifact = await MemoryStoreContext.Current!.ReadArtifactAsync(MemoryAddress.Parse("/resolve-test"));
 
         artifact.Should().StartWith("NMP/2 ",
             because: "resolved artifact must be a valid NMP/2 artifact");
@@ -940,7 +900,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task ResolveArtifactAsync_NonExistent_Throws()
     {
         using var scope = new TestHelpers.StoreScope();
-        Func<Task<string>> act = () => MemoryStoreContext.Current!.ResolveArtifactAsync("nonexistent-memory");
+        Func<Task<string>> act = () => MemoryStoreContext.Current!.ReadArtifactAsync(MemoryAddress.Parse("/nonexistent-memory"));
 
         await act.Should().ThrowAsync<FileNotFoundException>(
             because: "a non-existent memory name must throw");

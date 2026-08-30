@@ -491,9 +491,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     internal string MetaPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".meta.json");
 
-    public string ArtifactUri(string name, string scope = "local") =>
-        $"file://{ArtifactPath(name, scope)}";
-
     public string FindArtifactPath(string subject, string normalizedScope) =>
         ArtifactPath(subject, normalizedScope);
 
@@ -1907,8 +1904,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived,
         ArtifactEntry? prior) =>
         AttributeMigration.Forward(new ArtifactEntry(
-            Name: subject,
-            Uri: ArtifactUri(subject, scope),
+            Address: MemoryAddress.Parse(FormatQualifiedName(scope, subject)),
+            ArtifactKey: BuildArtifactKey(subject, scope),
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
@@ -2063,7 +2060,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // and not the other turned a correct no-op into a partial delete reported as success.
             //
             // Fixed here rather than at the three forget() call sites: DeleteArtifact is a public
-            // store primitive, the pairing with Remove is what has to agree, and the file:// forget
+            // store primitive, the pairing with Remove is what has to agree, and the forget path
             // path (MemoryTools.Core.cs) sweeps every read scope with a name taken from a URI and
             // has no entry in hand to canonicalize from. Aligning the primitive fixes all callers,
             // including any added later; canonicalizing at call sites fixes only the ones edited.
@@ -2101,48 +2098,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return true;
     }
 
-    // ── Resolve ──────────────────────────────────────────────────────────────
+    private static string BuildArtifactKey(string subject, string scope) =>
+        $"artifacts/{scope.Replace(':', '/')}/{subject}.nmp2";
 
-    public async Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default)
+    // ── Typed artifact reads ────────────────────────────────────────────────
+
+    public async Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(nameOrArtifact))
-            throw new ArgumentException("Input must not be empty.", nameof(nameOrArtifact));
-
-        // 1. Inline artifact
-        if (nameOrArtifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
-            return nameOrArtifact;
-
-        // 2. file:// URI (backward compat — restricted to workspace)
-        if (nameOrArtifact.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        if (address.Kind == MemoryAddressKind.Ephemeral)
         {
-            string filePath = Path.GetFullPath(nameOrArtifact[7..]);
-            string scriniDir = Path.GetFullPath(Path.Combine(_workspaceRoot, ".scrinia"));
-            if (!PathContainment.IsWithin(scriniDir, filePath))
-                throw new UnauthorizedAccessException(
-                    $"file:// URIs are restricted to the workspace .scrinia/ directory.");
-            string? pathScope = GetArtifactPathScope(filePath);
-            if (pathScope is null)
-                return await File.ReadAllTextAsync(filePath, ct);
-            return await WithRecoveryReadBarrierAsync(pathScope, () => File.ReadAllTextAsync(filePath, ct));
-        }
-
-        // 3. Ephemeral memory (~name)
-        if (IsEphemeral(nameOrArtifact))
-        {
-            string key = MemoryNaming.StripEphemeralPrefix(nameOrArtifact);
-            var entry = GetEphemeral(key);
+            var entry = GetEphemeral(address.Value);
             if (entry is null)
-                throw new FileNotFoundException($"Ephemeral memory '~{key}' not found.");
+                throw new FileNotFoundException($"Ephemeral memory '~{address.Value}' not found.");
             return entry.Artifact;
         }
 
-        // 4. Qualified name resolution
-        var (scope, subject) = ParseQualifiedName(nameOrArtifact);
+        var (scope, subject) = ParseQualifiedName(address.ToString());
         return await WithRecoveryReadBarrierAsync(scope, async () =>
         {
             string path = FindArtifactPath(subject, scope);
             if (!File.Exists(path))
-                throw new FileNotFoundException($"Memory '{nameOrArtifact}' not found.", path);
+                throw new FileNotFoundException($"Memory '{address}' not found.", path);
             return await File.ReadAllTextAsync(path, ct);
         });
     }
@@ -2686,7 +2662,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
                 candidates.Add(entry with
                 {
-                    ArtifactKey = ArtifactUri(entry.Name, topicScope),
+                    ArtifactKey = BuildArtifactKey(entry.Name, topicScope),
                     CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                 });
             }
@@ -2949,14 +2925,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     [Obsolete("Use MemoryNaming.FormatScopeLabel instead.")]
     public static string FormatScopeLabel(string scope) =>
         MemoryNaming.FormatScopeLabel(scope);
-
-    public static string NameFromUri(string uri)
-    {
-        if (!uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
-            return uri;
-        string path = uri[7..];
-        return Path.GetFileNameWithoutExtension(path);
-    }
 
     public void Dispose()
     {

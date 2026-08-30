@@ -57,9 +57,8 @@ public static class EmbeddingReindexer
 
             try
             {
-                // MemoryArtifactSource owns the read: it resolves by (scope, subject) rather than
-                // round-tripping through FormatQualifiedName -> ResolveArtifactAsync ->
-                // ParseQualifiedName (for a v1 namespaced topic scope like "local:memory/api",
+                // MemoryArtifactSource owns the read by the entry's logical address (for a v1
+                // namespaced topic scope like "local:memory/api",
                 // FormatQualifiedName strips the "memory/" prefix for display, so re-parsing that
                 // string reconstructs the WRONG scope), and it reconstructs the memory's content
                 // array rather than one decoded blob. Reindex must reproduce the layout a write
@@ -67,8 +66,7 @@ public static class EmbeddingReindexer
                 // exact path, so a reindex that collapsed a memory to element 1 would mean the
                 // element contract held only for memories written after this branch. An empty
                 // result covers "no artifact text" and "nothing embeddable in it" alike.
-                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
-                    store, item.Scope, item.Entry.Name, ct);
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(store, item.Entry.Address, ct);
                 if (elements.Length == 0)
                 {
                     skipped++;
@@ -183,19 +181,14 @@ public static class EmbeddingReindexer
                 // See the matching comment in ReindexAsync above. A regular write carries the real
                 // content array, so replaying with a single decoded element would produce a
                 // different layout than the write this is supposed to reproduce.
-                var elements = await MemoryArtifactSource.ReadContentElementsAsync(
-                    store, item.Scope, item.Entry.Name, ct);
+                var elements = await MemoryArtifactSource.ReadContentElementsAsync(store, item.Entry.Address, ct);
                 if (elements.Length == 0)
                 {
                     skipped++;
                     continue;
                 }
 
-                // The sink re-parses this string (possibly out-of-process, over MCP, for external
-                // plugins) to decide which scope to store vectors under. Under v3
-                // FormatQualifiedName is round-trip-safe for every scope, so this is safe.
-                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                await sink.OnStoredAsync(qualifiedName, elements, store, ct);
+                await sink.OnStoredAsync(item.Entry.Address, elements, store, ct);
                 embedded++;
             }
             catch (OperationCanceledException) { throw; }

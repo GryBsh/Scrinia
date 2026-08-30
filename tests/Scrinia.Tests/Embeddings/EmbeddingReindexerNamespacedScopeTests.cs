@@ -49,7 +49,8 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
     /// a normal v1 "topic:subject" remember() call lands on disk.</summary>
     private void SeedEntry(string scope, string name, string content)
     {
-        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow);
+        var address = MemoryAddress.Parse(_store.FormatQualifiedName(scope, name));
+        var entry = new ArtifactEntry(address, $"artifacts/{scope.Replace(':', '/')}/{name}.nmp2", content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, scope);
         string path = _store.ArtifactPath(name, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

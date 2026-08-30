@@ -180,10 +180,8 @@ public class RememberWriteMetadataTests
         private static string TwoChunks() =>
             Scrinia.Core.Encoding.Nmp2ChunkedEncoder.EncodeChunks(["first chunk", "second chunk"]);
 
-        // Both: compact reads the existing artifact through ReadArtifactAsync, and append does too
-        // for a persistent name (it takes ResolveArtifactAsync only for an ephemeral one). Both are
-        // overridden so this double keeps working whichever seam a caller reaches for.
-        public override Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) =>
+        // Both compact and append read the existing artifact through the typed address seam.
+        public override Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
             Task.FromResult(TwoChunks());
 
         public override Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) =>

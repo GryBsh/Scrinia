@@ -506,7 +506,7 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
             string content;
             try
             {
-                string artifact = await _store.ResolveArtifactAsync(entry.Uri, ct);
+                string artifact = await _store.ReadArtifactAsync(entry.Address, ct);
                 content = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(artifact));
             }
             catch (Exception ex)

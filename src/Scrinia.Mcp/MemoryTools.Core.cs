@@ -48,7 +48,7 @@ public sealed partial class ScriniaMcpTools
 
         string artifact;
 
-        // Fast path: inline NMP/2 artifacts and file:// URIs don't need a store
+        // Fast path: inline NMP/2 artifacts don't need a store
         var resolved = await TryResolveWithoutStore(artifactOrName, cancellationToken);
         if (resolved != null)
         {
@@ -67,7 +67,7 @@ public sealed partial class ScriniaMcpTools
 
             try
             {
-                artifact = await store.ResolveArtifactAsync(artifactOrName, cancellationToken);
+                artifact = await store.ReadArtifactAsync(ParseUserAddress(artifactOrName), cancellationToken);
             }
             catch (FileNotFoundException)
             {
@@ -232,10 +232,8 @@ public sealed partial class ScriniaMcpTools
 
         // Await the event sink after the durable artifact write so indexing has the same
         // completion and cancellation semantics on MCP and CLI paths.
-        // The sink re-parses this name to decide which scope to embed under; under v3
-        // FormatQualifiedName is round-trip-safe for every scope, so it is the same value the
-        // response displays.
-        await FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, cancellationToken));
+        await FireEventSinkAsync(sink => sink.OnStoredAsync(
+            MemoryAddress.Parse(qualifiedName), content, store, cancellationToken));
 
         return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
     }
@@ -920,7 +918,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Removes a stored artifact and its index entry.</summary>
     internal async Task<McpResponse> Forget(
-        [Description("The artifact name (e.g. \"session-notes\", \"/api/auth\", \"/temp/scratch\") or its file:// URI.")] string nameOrUri,
+        [Description("The memory path (e.g. \"session-notes\", \"/api/auth\", \"/temp/scratch\").")] string nameOrUri,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -935,56 +933,14 @@ public sealed partial class ScriniaMcpTools
                     ErrorCodes.NotFound,
                     "list() to see ephemeral memories currently held in process");
 
-            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync($"~{key}", true, store, cancellationToken) ?? Task.CompletedTask); }
+            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(MemoryAddress.Parse($"~{key}"), true, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
             return ResponseBuilder.Success($"Forgot: ~{key}").WithAction("forgotten");
         }
 
-        // Backward compat: resolve file:// URIs to their memory name, then delete by name
-        if (nameOrUri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
-        {
-            string name = FileMemoryStore.NameFromUri(nameOrUri);
-
-            bool removedAny = false;
-            var removedScopes = new List<string>();
-            foreach (string s in store.ResolveReadScopes())
-            {
-                store.DeleteArtifact(name, s);
-                if (store.Remove(name, s))
-                {
-                    removedScopes.Add(s);
-                    removedAny = true;
-                }
-            }
-
-            if (!removedAny)
-                return ResponseBuilder.Error(
-                    $"No artifact found with name or URI '{nameOrUri}'.",
-                    ErrorCodes.NotFound,
-                    "list() to see available memories");
-
-            var sink = MemoryEventSinkContext.Current;
-            if (sink is not null)
-            {
-                foreach (string s in removedScopes)
-                {
-                    // Notify per scope the memory lived in, so vectors are removed from EVERY
-                    // scope's index — not just `local` (see the matching comment on the
-                    // non-file:// path below).
-                    try { await sink.OnForgottenAsync(store.FormatQualifiedName(s, name), true, store, cancellationToken); }
-                    catch { /* plugin errors must not block forget */ }
-                }
-            }
-
-            return ResponseBuilder.Success($"Forgot: {name}.").WithFileChanges().WithAction("forgotten");
-        }
-
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
-        string qualifiedName = store.FormatQualifiedName(scope, subject);
-        // The sink re-parses this to find which scope's vectors to remove. Under v3
-        // FormatQualifiedName is round-trip-safe, so this equals qualifiedName above.
-        string sinkQualifiedName = store.FormatQualifiedName(scope, subject);
+        var address = MemoryAddress.Parse(store.FormatQualifiedName(scope, subject));
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -997,10 +953,10 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.NotFound,
                 "list() to see available memories");
 
-        try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(sinkQualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
+        try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(address, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block forget */ }
 
-        return ResponseBuilder.Success($"Forgot: {qualifiedName}.").WithFileChanges().WithAction("forgotten");
+        return ResponseBuilder.Success($"Forgot: {address}.").WithFileChanges().WithAction("forgotten");
     }
 
     // ── Append/Reflect/Budget tools ─────────────────────────────────────────
@@ -1069,9 +1025,10 @@ public sealed partial class ScriniaMcpTools
         // OnStored sink — which is what append() has always returned for that case, when it
         // returned Remember()'s own response.
         bool created = entry.UpdatedAt is null;
+        var address = MemoryAddress.Parse(qualifiedName);
         await FireEventSinkAsync(sink => created
-            ? sink.OnStoredAsync(qualifiedName, [content], store, cancellationToken)
-            : sink.OnAppendedAsync(qualifiedName, content, store, cancellationToken));
+            ? sink.OnStoredAsync(address, [content], store, cancellationToken)
+            : sink.OnAppendedAsync(address, content, store, cancellationToken));
 
         if (created)
             return StoredResponse(entry, qualifiedName, ephemeral, "stored");
