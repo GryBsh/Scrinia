@@ -1748,7 +1748,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
 
         string scope = write.Scope;
-        string subject = write.Name;
+        string subject = write.Address.Value.Trim('/').Split('/')[^1];
 
         // Case-insensitive, and the resolved entry's own casing travels forward. SanitizeName does
         // not fold case, so an ordinal match here reports "new memory" for a re-store under a
@@ -1835,7 +1835,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         bool ephemeral = IsEphemeral(write.Name);
         string scope = write.Scope;
-        string subject = write.Name;
+        string subject = write.Address.Value.Trim('/').Split('/')[^1];
         ArtifactEntry? existingEntry = null;
         EphemeralEntry? existingEph = null;
         string? existingArtifact = null;
@@ -1959,7 +1959,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived,
         ArtifactEntry? prior) =>
         AttributeMigration.Forward(new ArtifactEntry(
-            Address: MemoryAddress.Parse(FormatQualifiedName(scope, subject)),
+            Address: MemoryAddress.Parse(scope == "local"
+                ? $"/{subject}"
+                : FormatQualifiedName(scope, subject)),
             ArtifactKey: BuildArtifactKey(subject, scope),
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,

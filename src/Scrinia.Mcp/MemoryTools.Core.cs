@@ -27,18 +27,38 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "shown",
         CancellationToken cancellationToken = default)
     {
+        string input = artifactOrName?.Trim() ?? string.Empty;
+        if (input.StartsWith("NMP/2 ", StringComparison.Ordinal))
+        {
+            if (!Nmp2Strategy.Instance.CanDecode(input))
+                return ResponseBuilder.Error(
+                    "The inline artifact is not a valid NMP/2 artifact.",
+                    ErrorCodes.UnsupportedInputForm,
+                    "Provide a logical memory address or a complete NMP/2 artifact.");
+
+            // A valid artifact contains a CRC32 header field, so it must bypass
+            // URI-shape checks before the store-independent decode path.
+        }
+        else if (LooksLikeUri(input))
+        {
+            return ResponseBuilder.Error(
+                "Only logical memory addresses are supported; URI inputs are not accepted.",
+                ErrorCodes.UnsupportedInputForm,
+                "Provide a logical memory address or a complete NMP/2 artifact.");
+        }
+
         // ── Agent config: read .md file first, NMP/2 fallback ────────────
-        if (artifactOrName.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
+        if (input.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
             var agentStore = MemoryStoreContext.Current;
             if (agentStore is not null)
             {
-                string agentSubject = artifactOrName["/agent/".Length..].Trim();
+                string agentSubject = input["/agent/".Length..].Trim();
                 if (PathRouter.TryToFileEntityPath("agent", agentSubject, agentStore.WorkspaceRoot, out string agentFilePath)
                     && File.Exists(agentFilePath))
                 {
                     string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
-                    SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
+                    SessionBudget.RecordAccess(input, mdContent.Length);
                     return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
                         .WithTruncationAdvice(RecallTruncationAdvice);
                 }
@@ -49,7 +69,7 @@ public sealed partial class ScriniaMcpTools
         string artifact;
 
         // Fast path: inline NMP/2 artifacts don't need a store
-        var resolved = await TryResolveWithoutStore(artifactOrName, cancellationToken);
+        var resolved = await TryResolveWithoutStore(input, cancellationToken);
         if (resolved != null)
         {
             artifact = resolved;
@@ -67,7 +87,7 @@ public sealed partial class ScriniaMcpTools
 
             try
             {
-                artifact = await store.ReadArtifactAsync(ParseUserAddress(artifactOrName), cancellationToken);
+                artifact = await store.ReadArtifactAsync(ParseUserAddress(input), cancellationToken);
             }
             catch (FileNotFoundException)
             {
@@ -90,14 +110,14 @@ public sealed partial class ScriniaMcpTools
         if (chunk is not null)
         {
             string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
-            SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
+            SessionBudget.RecordAccess(input, chunkContent.Length);
             return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel)
                 .WithTruncationAdvice(RecallTruncationAdvice);
         }
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         string decoded = System.Text.Encoding.UTF8.GetString(bytes);
-        SessionBudget.RecordAccess(artifactOrName, decoded.Length);
+        SessionBudget.RecordAccess(input, decoded.Length);
 
         if (chunkCount > 1)
             return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel)
@@ -219,7 +239,8 @@ public sealed partial class ScriniaMcpTools
         try
         {
             write = new MemoryWrite(subject, scope, content, description,
-                WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen), keywords);
+                WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen)
+                    ?? new Dictionary<string, string[]>(), keywords ?? []);
         }
         catch (InvalidMemoryWriteException ex)
         {
@@ -233,7 +254,7 @@ public sealed partial class ScriniaMcpTools
         // Await the event sink after the durable artifact write so indexing has the same
         // completion and cancellation semantics on MCP and CLI paths.
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            MemoryAddress.Parse(qualifiedName), content, store, cancellationToken));
+            ParseUserAddress(qualifiedName), content, store, cancellationToken));
 
         return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
     }
@@ -940,7 +961,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
-        var address = MemoryAddress.Parse(store.FormatQualifiedName(scope, subject));
+        var address = ParseUserAddress(store.FormatQualifiedName(scope, subject));
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -1008,7 +1029,8 @@ public sealed partial class ScriniaMcpTools
         try
         {
             write = new MemoryWrite(subject, scope, [content], description,
-                WriteAttributes(attributes, tags, anchors), keywords);
+                WriteAttributes(attributes, tags, anchors)
+                    ?? new Dictionary<string, string[]>(), keywords ?? []);
         }
         catch (InvalidMemoryWriteException ex)
         {
@@ -1025,7 +1047,7 @@ public sealed partial class ScriniaMcpTools
         // OnStored sink — which is what append() has always returned for that case, when it
         // returned Remember()'s own response.
         bool created = entry.UpdatedAt is null;
-        var address = MemoryAddress.Parse(qualifiedName);
+        var address = ParseUserAddress(qualifiedName);
         await FireEventSinkAsync(sink => created
             ? sink.OnStoredAsync(address, [content], store, cancellationToken)
             : sink.OnAppendedAsync(address, content, store, cancellationToken));

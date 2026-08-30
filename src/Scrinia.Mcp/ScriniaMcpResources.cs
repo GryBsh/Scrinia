@@ -33,11 +33,8 @@ public sealed class ScriniaMcpResources
         var store = MemoryStoreContext.Current
             ?? throw new InvalidOperationException("No memory store configured for this request.");
 
-        // Surface-level canonicalization — this resource IS an agent-facing surface (an @-mention
-        // target), the same class of caller MemoryTools' facade methods canonicalize for. Without
-        // this, `/temp/x` would resolve to the persistent scope `local:temp` instead of the
-        // in-memory ephemeral `~x` that `remember`/`recall` use for that same address.
-        name = MemoryNaming.CanonicalizeEphemeralAlias(name);
+        if (!ScriniaMcpTools.TryParseLogicalAddress(name, out var address, out var addressError))
+            throw new McpException($"[{addressError.ErrorCode}] {addressError.Error}");
 
         // Same resolution + decode path as the show/recall tool: resolve to the NMP/2 artifact,
         // then decode to the original UTF-8 text. Translate a missing memory into a clean MCP error
@@ -45,8 +42,7 @@ public sealed class ScriniaMcpResources
         string artifact;
         try
         {
-            artifact = await store.ReadArtifactAsync(MemoryAddress.Parse(
-                name.StartsWith('/') || name.StartsWith('~') ? name : $"/{name}"), cancellationToken);
+            artifact = await store.ReadArtifactAsync(address, cancellationToken);
         }
         catch (FileNotFoundException)
         {
@@ -56,4 +52,5 @@ public sealed class ScriniaMcpResources
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         return Encoding.UTF8.GetString(bytes);
     }
+
 }

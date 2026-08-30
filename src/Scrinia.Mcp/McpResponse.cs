@@ -39,6 +39,12 @@ public static class ErrorCodes
     /// <summary>The operation needs a capability the active store does not have — in practice,
     /// an operation the active store cannot perform.</summary>
     public const string NotSupported = "NOT_SUPPORTED";
+
+    /// <summary>The caller supplied a URI or an invalid inline artifact where a logical address was required.</summary>
+    public const string UnsupportedInputForm = "UNSUPPORTED_INPUT_FORM";
+
+    /// <summary>The caller supplied a logical address that cannot be parsed.</summary>
+    public const string MalformedAddress = "MALFORMED_ADDRESS";
 }
 
 /// <summary>

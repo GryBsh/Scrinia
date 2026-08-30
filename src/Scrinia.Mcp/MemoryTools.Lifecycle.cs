@@ -1190,7 +1190,7 @@ public sealed partial class ScriniaMcpTools
         {
             try
             {
-                artifact = await store.ReadArtifactAsync(MemoryAddress.Parse(name), cancellationToken);
+                artifact = await store.ReadArtifactAsync(ParseUserAddress(name), cancellationToken);
             }
             catch (FileNotFoundException)
             {
@@ -1323,7 +1323,7 @@ public sealed partial class ScriniaMcpTools
         {
             write = new MemoryWrite(ephemeral ? name : subject, scope, compacted,
                 Description: existingPreview,
-                Attributes: existingAttributes,
+                Attributes: existingAttributes ?? new Dictionary<string, string[]>(),
                 Keywords: curatedKeywords);
         }
         catch (InvalidMemoryWriteException ex)
@@ -1338,7 +1338,7 @@ public sealed partial class ScriniaMcpTools
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            MemoryAddress.Parse(qualifiedName), compacted, store, cancellationToken));
+            ParseUserAddress(qualifiedName), compacted, store, cancellationToken));
         int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no

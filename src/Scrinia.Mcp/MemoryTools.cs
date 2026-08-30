@@ -5,6 +5,7 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Formats;
+using Scrinia.Core.Encoding;
 
 namespace Scrinia.Mcp;
 
@@ -35,12 +36,52 @@ public sealed partial class ScriniaMcpTools
         return Task.FromResult<string?>(null);
     }
 
+    internal static bool TryParseLogicalAddress(string? raw, out MemoryAddress address, out McpResponse error)
+    {
+        address = default;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            error = ResponseBuilder.Error("Memory address must not be empty.", ErrorCodes.MalformedAddress,
+                "Provide a logical address such as '/api/auth' or '~scratch'.");
+            return false;
+        }
+
+        string input = raw.Trim();
+        if (LooksLikeUri(input))
+        {
+            error = ResponseBuilder.Error("Only logical memory addresses are supported; URI inputs are not accepted.",
+                ErrorCodes.UnsupportedInputForm,
+                "Provide a logical address such as '/api/auth' or '~scratch'.");
+            return false;
+        }
+
+        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input);
+        if (!canonical.StartsWith('/') && !canonical.StartsWith('~'))
+            canonical = "/" + canonical;
+
+        if (MemoryAddress.TryParse(canonical, out address, out var addressError))
+        {
+            error = null!;
+            return true;
+        }
+
+        error = ResponseBuilder.Error(addressError.Message, ErrorCodes.MalformedAddress,
+            "Provide a logical address such as '/api/auth' or '~scratch'.");
+        return false;
+    }
+
+    private static bool LooksLikeUri(string input) =>
+        input.Contains("://", StringComparison.Ordinal) || input.StartsWith("//", StringComparison.Ordinal) ||
+        input.Contains(':') || input.Contains('?') || input.Contains('#') || input.Contains('%');
+
+    private static string CanonicalAddress(MemoryAddress address) => address.ToString();
+
     private static MemoryAddress ParseUserAddress(string input)
     {
-        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input);
-        if (canonical.StartsWith('/') || canonical.StartsWith('~'))
-            return MemoryAddress.Parse(canonical);
-        return MemoryAddress.Parse($"/{canonical}");
+        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input.Trim());
+        if (!canonical.StartsWith('/') && !canonical.StartsWith('~'))
+            canonical = "/" + canonical;
+        return MemoryAddress.Parse(canonical);
     }
 
     [McpServerTool(Name = "guide"), Description(
@@ -119,8 +160,6 @@ public sealed partial class ScriniaMcpTools
     /// own boundary; wrapping a one-line call used once would add indirection without
     /// consolidation. The facade and CLI policies are pinned behaviourally by the test suite.</para>
     /// </summary>
-    private static string Address(string raw) => MemoryNaming.CanonicalizeEphemeralAlias(raw);
-
     [McpServerTool(Name = "remember"), Description(
         "Persist a memory at a path. content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
@@ -174,6 +213,16 @@ public sealed partial class ScriniaMcpTools
                      "every element here was typed on purpose. A plain keyword (no colon) stays a keyword.")] string[]? keywords = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(path))
+            return ResponseBuilder.Error(
+                "remember requires 'path'.",
+                ErrorCodes.InvalidParameter,
+                "remember({ path: '/findings/example', content: [...] })").ToYaml();
+
+        if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
+            return addressError.ToYaml();
+        path = CanonicalAddress(parsedPath);
+
         // Skill-path routing: '/skill/{name}' → SkillCreate.
         var skillRoute = TryRouteSkillRemember(path, content, attributes, keywords, cancellationToken);
         if (skillRoute is not null)
@@ -197,11 +246,6 @@ public sealed partial class ScriniaMcpTools
                 "remember requires 'content' (a non-empty string array).",
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '...', content: ['chunk 1', 'chunk 2'] })").ToYaml();
-        if (string.IsNullOrWhiteSpace(path))
-            return ResponseBuilder.Error(
-                "remember requires 'path'.",
-                ErrorCodes.InvalidParameter,
-                "remember({ path: '/findings/example', content: [...] })").ToYaml();
         foreach (var element in content)
         {
             if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
@@ -211,7 +255,6 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
-        path = Address(path);
         McpResponse response;
         try
         {
@@ -285,19 +328,21 @@ public sealed partial class ScriniaMcpTools
         [Description("Skills only: when path is '/skill/{name}', return both the built-in and the project override side-by-side for merging. Ignored for non-skill paths.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
     {
+        if (TryParseInlineRecall(path, out string? inlineArtifact, out var recallError))
+        {
+            return (await Recall(inlineArtifact!, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+        }
+        if (recallError is not null)
+            return recallError.ToYaml();
+        if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
+            return addressError.ToYaml();
+        path = CanonicalAddress(parsedPath);
+
         // Skill-path routing: '/skill/...' → SkillLoad. Handles both '/skill/{name}' (load)
         // and '/skill' or '/skill/' (list view).
         var skillRoute = TryRouteSkillRecall(path, withBuiltin, cancellationToken);
         if (skillRoute is not null) return (await skillRoute).ToYaml();
 
-        if (string.IsNullOrWhiteSpace(path))
-            return ResponseBuilder.Error(
-                "recall requires 'path'.",
-                ErrorCodes.InvalidParameter,
-                "recall({ path: '...' })",
-                "list() to discover available paths").ToYaml();
-
-        path = Address(path);
         try
         {
             return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
@@ -306,6 +351,32 @@ public sealed partial class ScriniaMcpTools
         {
             return RecoveryBlockedResponse(ex).ToYaml();
         }
+    }
+
+    private static bool TryParseInlineRecall(string? raw, out string? artifact, out McpResponse? error)
+    {
+        artifact = null;
+        error = null;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            error = ResponseBuilder.Error("recall requires 'path'.", ErrorCodes.InvalidParameter,
+                "recall({ path: '...' })", "list() to discover available paths");
+            return false;
+        }
+
+        string input = raw.Trim();
+        if (!input.StartsWith("NMP/2 ", StringComparison.Ordinal))
+            return false;
+        if (!Nmp2Strategy.Instance.CanDecode(input))
+        {
+            error = ResponseBuilder.Error("The inline artifact is not a valid NMP/2 artifact.",
+                ErrorCodes.UnsupportedInputForm,
+                "Provide a logical memory address or a complete NMP/2 artifact.");
+            return false;
+        }
+
+        artifact = input;
+        return true;
     }
 
     [McpServerTool(Name = "search"), Description(
@@ -425,7 +496,9 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "Split the append into multiple smaller append calls.").ToYaml();
 
-        path = Address(path);
+        if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
+            return addressError.ToYaml();
+        path = CanonicalAddress(parsedPath);
         McpResponse response;
         try
         {
@@ -455,18 +528,20 @@ public sealed partial class ScriniaMcpTools
         [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch').")] string path,
         CancellationToken cancellationToken = default)
     {
-        // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and
-        // remember, so the three tools agree about who owns the namespace.
-        var skillRoute = TryRouteSkillForget(path, cancellationToken);
-        if (skillRoute is not null) return (await skillRoute).ToYaml();
-
         if (string.IsNullOrWhiteSpace(path))
             return ResponseBuilder.Error(
                 "forget requires 'path'.",
                 ErrorCodes.InvalidParameter,
                 "forget({ path: '...' })").ToYaml();
 
-        path = Address(path);
+        if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
+            return addressError.ToYaml();
+        path = CanonicalAddress(parsedPath);
+
+        // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and
+        // remember, so the three tools agree about who owns the namespace.
+        var skillRoute = TryRouteSkillForget(path, cancellationToken);
+        if (skillRoute is not null) return (await skillRoute).ToYaml();
         try
         {
             return (await Forget(path, cancellationToken)).ToYaml();
@@ -494,7 +569,9 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "compact({ path: '...', keepRecent: 3 })").ToYaml();
 
-        path = Address(path);
+        if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
+            return addressError.ToYaml();
+        path = CanonicalAddress(parsedPath);
         try
         {
             return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
@@ -528,8 +605,12 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "link({ path: '...', destination: '...' })").ToYaml();
 
-        path = Address(path);
-        destination = Address(destination);
+        if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
+            return addressError.ToYaml();
+        if (!TryParseLogicalAddress(destination, out var parsedDestination, out var destinationError))
+            return destinationError.ToYaml();
+        path = CanonicalAddress(parsedPath);
+        destination = CanonicalAddress(parsedDestination);
         try
         {
             return (await Link(path, destination, reason, cancellationToken)).ToYaml();

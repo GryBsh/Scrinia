@@ -164,33 +164,17 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Show_FileUri_SingleChunk_ExactOriginal()
+    public async Task Show_FileUri_IsRejectedAsUnsupportedInputForm()
     {
-        using var scope = new TestHelpers.StoreScope();
-        string original = TestHelpers.Facts.Fact13;
-        string artifact = Nmp2ChunkedEncoder.Encode(original);
-        string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
-        await File.WriteAllTextAsync(path, artifact);
-
-        string result = (await Tools().Recall($"file://{path}")).ToYaml();
-        ResponseParser.Parse(result).Content.Should().Be(original,
-            because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
+        var response = await Tools().Recall("file:///tmp/memory.nmp2");
+        response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
     }
 
     [Fact]
-    public async Task Show_FileUri_MultiChunk_ExactOriginal()
+    public async Task Show_InvalidInlineNmp2_IsRejectedAsUnsupportedInputForm()
     {
-        using var scope = new TestHelpers.StoreScope();
-        string[] parts = ["Part A: alpha.", "Part B: bravo."];
-        string artifact = Nmp2ChunkedEncoder.EncodeChunks(parts);
-        string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
-        await File.WriteAllTextAsync(path, artifact);
-
-        string result = (await Tools().Recall($"file://{path}")).ToYaml();
-        // Multi-chunk Show prepends "(N chunks)\n\n" header
-        string expected = string.Concat(parts);
-        ResponseParser.Parse(result).Content.Should().Contain(expected,
-            because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
+        var response = await Tools().Recall("NMP/2 invalid");
+        response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
     }
 
     [Fact]
@@ -251,22 +235,10 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Show_NonExistentFileUri_ReturnsError()
+    public async Task Show_UriShapedInput_ReturnsUnsupportedInputForm()
     {
-        using var scope = new TestHelpers.StoreScope();
-        string badUri = $"file://{Path.GetTempPath()}scrinia_nonexistent_{Guid.NewGuid():N}.nmp2";
-
-        // file:// URI outside workspace is blocked by sandbox — returns error or throws
-        try
-        {
-            string result = (await Tools().Recall(badUri)).ToYaml();
-            ResponseParser.Parse(result).Status.Should().Be("error",
-                because: "file:// URI outside workspace must return an error");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Also acceptable — sandbox threw before Show could catch
-        }
+        var response = await Tools().Recall("https://memory.example/item");
+        response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
     }
 
     // ── Show via memory name (2 tests) ─────────────────────────────────────
@@ -310,7 +282,7 @@ public sealed class ScriniaMcpToolsTests
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("success",
-            because: "Store must return a success status");
+            because: result);
         parsed.Content.Should().Contain("Remembered:",
             because: "Store must return a confirmation string");
         parsed.Content.Should().Contain("test-memory",
