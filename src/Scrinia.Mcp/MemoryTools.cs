@@ -46,7 +46,7 @@ public sealed partial class ScriniaMcpTools
             return false;
         }
 
-        string input = raw.Trim();
+        string input = raw;
         if (LooksLikeUri(input))
         {
             error = ResponseBuilder.Error("Only logical memory addresses are supported; URI inputs are not accepted.",
@@ -81,20 +81,21 @@ public sealed partial class ScriniaMcpTools
         if (string.IsNullOrWhiteSpace(input))
             return false;
 
-        bool isNmp2 = input.StartsWith("NMP/2", StringComparison.Ordinal);
-        bool isKnownOtherArtifact = input.StartsWith("TAMIS/2", StringComparison.Ordinal);
+        string candidate = input.Trim();
+        bool isNmp2 = candidate.StartsWith("NMP/2", StringComparison.Ordinal);
+        bool isKnownOtherArtifact = candidate.StartsWith("TAMIS/2", StringComparison.Ordinal);
         bool isArtifactHeader = System.Text.RegularExpressions.Regex.IsMatch(
-            input, "^[A-Z][A-Z0-9_-]*/[0-9]+(?:\\s|$)",
+            candidate, "^[A-Z][A-Z0-9_-]*/[0-9]+(?:\\s|$)",
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-        bool isPayload = input.Contains('\n') || input.Contains('\r') || input.StartsWith('{')
-            || input.StartsWith("eyJ", StringComparison.Ordinal);
+        bool isPayload = candidate.Contains('\n') || candidate.Contains('\r') || candidate.StartsWith('{')
+            || candidate.StartsWith("eyJ", StringComparison.Ordinal);
 
         if (!isNmp2 && !isKnownOtherArtifact && !isArtifactHeader && !isPayload)
             return false;
 
-        if (isNmp2 && Nmp2Strategy.Instance.CanDecode(input))
+        if (isNmp2 && Nmp2Strategy.Instance.CanDecode(candidate))
         {
-            artifact = input;
+            artifact = candidate;
             return true;
         }
 

@@ -46,6 +46,26 @@ public sealed class McpAddressSurfaceTests
     }
 
     [Fact]
+    public async Task Recall_TrimsOnlyInlineArtifactForm()
+    {
+        string artifact = $"  {Nmp2ChunkedEncoder.Encode("trimmed artifact")}  ";
+
+        var response = ResponseParser.Parse(await new ScriniaMcpTools().MemoryRecall(artifact));
+
+        response.Status.Should().Be("success");
+        response.Content.Should().Be("trimmed artifact");
+    }
+
+    [Fact]
+    public async Task Recall_UsesMemoryAddressParserRulesForLogicalAddressInput()
+    {
+        var response = ResponseParser.Parse(await new ScriniaMcpTools().MemoryRecall(" /ordinary-name "));
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be("NOT_FOUND");
+    }
+
+    [Fact]
     public async Task Resource_RejectsUriBeforeRequiringStore()
     {
         Func<Task> action = () => ScriniaMcpResources.ReadMemory("file:///tmp/memory.nmp2");

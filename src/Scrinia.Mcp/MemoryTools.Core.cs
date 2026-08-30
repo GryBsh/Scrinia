@@ -254,7 +254,7 @@ public sealed partial class ScriniaMcpTools
         // Await the event sink after the durable artifact write so indexing has the same
         // completion and cancellation semantics on MCP and CLI paths.
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            ParseUserAddress(qualifiedName), content, store, cancellationToken));
+            entry.Address, content, store, cancellationToken));
 
         return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
     }
@@ -961,7 +961,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
-        var address = ParseUserAddress(store.FormatQualifiedName(scope, subject));
+        var address = MemoryAddress.Parse(store.FormatQualifiedName(scope, subject));
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -1047,7 +1047,7 @@ public sealed partial class ScriniaMcpTools
         // OnStored sink — which is what append() has always returned for that case, when it
         // returned Remember()'s own response.
         bool created = entry.UpdatedAt is null;
-        var address = ParseUserAddress(qualifiedName);
+        var address = entry.Address;
         await FireEventSinkAsync(sink => created
             ? sink.OnStoredAsync(address, [content], store, cancellationToken)
             : sink.OnAppendedAsync(address, content, store, cancellationToken));
