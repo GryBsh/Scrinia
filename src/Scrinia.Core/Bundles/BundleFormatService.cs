@@ -321,18 +321,15 @@ public static class BundleFormatService
                         $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
                         "with a missing or empty name.");
 
-                // Bundle entries bypass MemoryWrite, so enforce the same durable-leaf bound at
-                // the parse boundary. Refusing during the build pass leaves no topic journal or
-                // live artifact for this crafted entry.
+                string subject = SubjectFromAddress(deserialized.Address);
                 try
                 {
-                    MemoryWrite.ValidatePersistentSubject(deserialized.Name);
+                    MemoryWrite.ValidatePersistentSubject(subject);
                 }
                 catch (InvalidMemoryWriteException ex)
                 {
                     throw new InvalidOperationException(
-                        $"Invalid bundle — topic '{topic}' has an entry '{deserialized.Name}' " +
-                        $"that {ex.Message}", ex);
+                        $"Invalid bundle — topic '{topic}' has an entry '{subject}' that {ex.Message}", ex);
                 }
 
                 // Same "refuse before any write" reasoning as the nameless-entry check above.
@@ -354,7 +351,7 @@ public static class BundleFormatService
                 // hand-parse never did this, so such a bundle lost its attributes entirely. It is a
                 // FALLBACK, not a merge: an entry carrying both "fields" and legacy "tags" keeps
                 // only the tags-derived attributes, exactly as it does today.
-                var entry = deserialized.NormalizeAttributesKey();
+                var entry = deserialized.NormalizeAttributesKey() with { Name = subject };
 
                 // The deleted hand-parse defaulted a missing "chunkCount" to 1; the deserializer
                 // leaves it at 0. Modern bundles always carry the key, so this only bites
@@ -507,6 +504,15 @@ public static class BundleFormatService
             throw new InvalidOperationException(
                 $"Invalid bundle — manifest.json is not valid JSON: {ex.Message}", ex);
         }
+    }
+
+    private static string SubjectFromAddress(MemoryAddress address)
+    {
+        if (address.Kind == MemoryAddressKind.Ephemeral)
+            return address.Value;
+
+        int separator = address.Value.LastIndexOf('/');
+        return separator >= 0 ? address.Value[(separator + 1)..] : address.Value;
     }
 
     /// <summary>

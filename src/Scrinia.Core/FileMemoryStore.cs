@@ -2656,9 +2656,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(topicScope);
         foreach (var entry in entries)
         {
-            string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
+            string subject = entry.Address.Kind == MemoryAddressKind.Persistent
+                ? entry.Address.Value.Trim('/').Split('/')[^1]
+                : entry.Address.Value;
+            string filePath = Path.Combine(storeDir, SanitizeName(subject) + ".nmp2");
             if (File.Exists(filePath))
-                result.Add((entry.Name, filePath));
+                result.Add((subject, filePath));
         }
         return result;
     }

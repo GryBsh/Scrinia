@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
@@ -21,14 +22,11 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
     }
 
     [Fact]
-    public void ExportedIndexContainsLogicalAddressAndPortableKeyOnly()
+    public async Task ExportedIndexContainsLogicalAddressAndPortableKeyOnly()
     {
         using var source = new FileMemoryStore(Path.Combine(_root, "source"));
-        var entry = new ArtifactEntry(
-            MemoryAddress.Parse("/portable/note"),
-            "artifacts/portable/note.nmp2", 4, 1, DateTimeOffset.UnixEpoch, "note");
-        source.Upsert(entry, "local:portable");
-        source.WriteArtifactAsync("note", "local:portable", "body").GetAwaiter().GetResult();
+        await source.StoreAsync(new MemoryWrite(
+            "/portable/note", "local:portable", ["body"], Attributes: [], Keywords: []));
 
         byte[] bundle = Export(source);
         using var stream = new MemoryStream(bundle);
@@ -45,6 +43,29 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
             .Should().NotContain(value => value.Contains("file://", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task QualifiedPersistentAddress_RoundTripsContentAndScopeIntoASecondWorkspace()
+    {
+        string sourceRoot = Path.Combine(_root, "qualified-source");
+        string targetRoot = Path.Combine(_root, "qualified-target");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(targetRoot);
+        using var source = new FileMemoryStore(sourceRoot);
+        using var target = new FileMemoryStore(targetRoot);
+        await source.StoreAsync(new MemoryWrite(
+            "/portable/note", "local:portable", ["qualified body"], Attributes: [], Keywords: []));
+
+        using var zip = OpenZip(Export(source));
+        BundleFormatService.ImportTopicsFromZip(zip, target, filterTopics: null, overwrite: true);
+
+        ArtifactEntry imported = target.LoadIndex("local:portable").Should().ContainSingle().Subject;
+        imported.Address.Should().Be(MemoryAddress.Parse("/portable/note"));
+        imported.ArtifactKey.Should().Be("artifacts/portable/note.nmp2");
+        string artifact = await target.ReadArtifactAsync(MemoryAddress.Parse("/portable/note"));
+        Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks
+            .Should().Equal("qualified body");
+    }
+
     [Theory]
     [InlineData("/rooted")]
     [InlineData("C:/workspace/note.nmp2")]
@@ -54,7 +75,9 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
     [InlineData("https://host/note.nmp2")]
     public void ImportRejectsPhysicalOrTraversalArtifactKeysBeforeWriting(string artifactKey)
     {
-        using var target = new FileMemoryStore(Path.Combine(_root, "target"));
+        string targetRoot = Path.Combine(_root, "target");
+        Directory.CreateDirectory(targetRoot);
+        using var target = new FileMemoryStore(targetRoot);
         byte[] bundle = CreateBundle(artifactKey);
 
         Action import = () =>
@@ -66,6 +89,9 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
 
         import.Should().Throw<InvalidOperationException>().WithMessage("*ArtifactKey*");
         target.LoadIndex("local:portable").Should().BeEmpty();
+        Directory.EnumerateFiles(target.WorkspaceRoot, "*", SearchOption.AllDirectories)
+            .Where(path => path.Contains("portable", StringComparison.OrdinalIgnoreCase))
+            .Should().BeEmpty();
     }
 
     private byte[] Export(FileMemoryStore store)
@@ -75,6 +101,9 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
             BundleFormatService.ExportTopicsToZip(zip, store, ["portable"]);
         return stream.ToArray();
     }
+
+    private static ZipArchive OpenZip(byte[] bytes) =>
+        new(new MemoryStream(bytes), ZipArchiveMode.Read);
 
     private static byte[] CreateBundle(string artifactKey)
     {
