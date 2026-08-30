@@ -27,7 +27,7 @@ public sealed class ScriniaMcpResources
      Description("Read a stored Scrinia memory by its name/path (as shown by list, " +
                  "e.g. 'session-notes' or '/api/auth-flow').")]
     public static async Task<string> ReadMemory(
-        [Description("Memory name or qualified path to read.")] string name,
+         [Description("Memory name or qualified path to read.")] string? name,
         CancellationToken cancellationToken = default)
     {
         if (!ScriniaMcpTools.TryParseLogicalAddress(name, out var address, out var addressError))

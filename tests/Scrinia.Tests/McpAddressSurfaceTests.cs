@@ -172,4 +172,47 @@ public sealed class McpAddressSurfaceTests
         Directory.GetFiles(TestHelpers.Store.WorkspaceRoot, "*", SearchOption.AllDirectories)
             .Should().BeEquivalentTo(before);
     }
+
+    [Fact]
+    public async Task NullRequiredAddressInputs_ReturnCategorizedResponses()
+    {
+        var tools = new ScriniaMcpTools();
+
+        foreach (string yaml in new[]
+        {
+            await tools.MemoryRemember(null, ["content"]),
+            await tools.MemoryRecall(null),
+            await tools.MemoryAppend(null, "content"),
+            await tools.MemoryForget(null),
+            await tools.MemoryCompact(null),
+            await tools.MemoryLink(null, "/target"),
+            await tools.MemoryLink("/source", null)
+        })
+        {
+            var response = ResponseParser.Parse(yaml);
+            response.Status.Should().Be("error");
+            response.ErrorCode.Should().BeOneOf(ErrorCodes.InvalidParameter, ErrorCodes.MalformedAddress);
+        }
+    }
+
+    [Fact]
+    public async Task NullContentInputs_ReturnCategorizedResponses()
+    {
+        var tools = new ScriniaMcpTools();
+
+        var remember = ResponseParser.Parse(await tools.MemoryRemember("/address", null));
+        var append = ResponseParser.Parse(await tools.MemoryAppend("/address", null));
+
+        remember.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+        append.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+    }
+
+    [Fact]
+    public async Task ResourceNullAddress_IsReportedAsMalformedAddress()
+    {
+        Func<Task> action = () => ScriniaMcpResources.ReadMemory(null);
+
+        var exception = await action.Should().ThrowAsync<ModelContextProtocol.McpException>();
+        exception.Which.Message.Should().Contain(ErrorCodes.MalformedAddress);
+    }
 }

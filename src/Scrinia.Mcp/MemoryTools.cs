@@ -74,7 +74,7 @@ public sealed partial class ScriniaMcpTools
         input.Contains("://", StringComparison.Ordinal) || input.StartsWith("//", StringComparison.Ordinal) ||
         input.Contains(':') || input.Contains('?') || input.Contains('#') || input.Contains('%');
 
-    private static bool TryClassifyArtifactInput(string input, out string? artifact, out McpResponse? error)
+    private static bool TryClassifyArtifactInput(string? input, out string? artifact, out McpResponse? error)
     {
         artifact = null;
         error = null;
@@ -194,7 +194,7 @@ public sealed partial class ScriniaMcpTools
         "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string? path,
         [Description("Content array — each element becomes one independently retrievable chunk. Everything " +
                      "below follows one rule: extraction reads all of the text except inside a properly " +
                      "closed fenced code block (```) — YAML frontmatter and inline `code` spans are read as " +
@@ -212,7 +212,7 @@ public sealed partial class ScriniaMcpTools
                      "'mention' attribute. So a pasted build log or diff still contributes every path in it " +
                      "as a 'file' attribute unless you wrap it in a properly closed fenced code block — do " +
                      "that when you want sample content excluded from drift tracking, wiki-links, and " +
-                     "mentions.")] string[] content,
+                      "mentions.")] string[]? content,
         [Description("Optional typed attributes — a map of key to values. Combines with what content and " +
                      "keywords derive: person/place/org/thing/topic/file/ref (and the auto-derived 'mention') " +
                      "union with the derived value; every other key — including review, anchor, and tag — is " +
@@ -347,7 +347,7 @@ public sealed partial class ScriniaMcpTools
         "Read a memory by path. Returns the full content unless a chunk index is provided. " +
         "Example: recall({ path: '/findings/SEC-001' }), or recall({ path: '/skill/qa' }) to load a skill.")]
     public async Task<string> MemoryRecall(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '/api/auth-flow'). '/skill/' alone lists available skills.")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '/api/auth-flow'). '/skill/' alone lists available skills.")] string? path,
         [Description("Optional 1-based chunk index to retrieve a single chunk.")] int? chunk = null,
         [Description("Skills only: when path is '/skill/{name}', return both the built-in and the project override side-by-side for merging. Ignored for non-skill paths.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
@@ -440,7 +440,7 @@ public sealed partial class ScriniaMcpTools
         "the same way from inline content prose. Example: append({ path: '/sessions/2026-05-11', " +
         "content: 'session note', attributes: { topic: ['standup'] } }).")]
     public async Task<string> MemoryAppend(
-        [Description("Memory path to append to.")] string path,
+        [Description("Memory path to append to.")] string? path,
         [Description("Text content for the new chunk. Every attribute route below follows one rule: none " +
                      "of them read inside a properly closed fenced code block (```), but all of them read " +
                      "YAML frontmatter and inline `code` spans as ordinary text. An opener ``` that never " +
@@ -461,7 +461,7 @@ public sealed partial class ScriniaMcpTools
                      "before this change persists on this memory until it's re-stored with remember. " +
                      "Unlike remember, this text is not scanned for proper-noun 'mention' spans — only " +
                      "whole-memory writes (remember, compact) do that; create-via-append is unaffected " +
-                     "since it delegates to a whole-memory write internally.")] string content,
+                      "since it delegates to a whole-memory write internally.")] string? content,
         [Description("Optional attributes merged into the memory's existing attributes. person/place/org/" +
                      "thing/topic/file/ref/mention always union with what's already stored. tag and anchor " +
                      "also union here (append-only: a tag or anchor you pass adds to the existing set rather " +
@@ -523,7 +523,7 @@ public sealed partial class ScriniaMcpTools
         "Example: forget({ path: '/temp/scratch' }), or forget({ path: '/skill/qa' }) to drop a " +
         "stored skill.")]
     public async Task<string> MemoryForget(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch').")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '~scratch').")] string? path,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -557,7 +557,7 @@ public sealed partial class ScriniaMcpTools
         "version to archive. A compact no-op is returned as a warning. The response says which happened. " +
         "Example: compact({ path: '/sessions/2026-05-11', keepRecent: 3 }).")]
     public async Task<string> MemoryCompact(
-        [Description("Memory path to compact.")] string path,
+        [Description("Memory path to compact.")] string? path,
         [Description("Keep only the N most recent chunks. 0 (default) merges all into one.")] int keepRecent = 0,
         CancellationToken cancellationToken = default)
     {
@@ -587,8 +587,8 @@ public sealed partial class ScriniaMcpTools
         "written, so there is never a link pointing at nothing. " +
         "Example: link({ path: '~scratch', destination: '/patterns/auth' }).")]
     public async Task<string> MemoryLink(
-        [Description("Source memory path.")] string path,
-        [Description("Target memory path.")] string destination,
+        [Description("Source memory path.")] string? path,
+        [Description("Target memory path.")] string? destination,
         [Description("Optional reason for the link, shown only in this call's response text — not persisted on either memory.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {

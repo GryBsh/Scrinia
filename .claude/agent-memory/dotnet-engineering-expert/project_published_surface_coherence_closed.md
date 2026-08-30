@@ -65,3 +65,16 @@ this branch.
 - Verification: focused address conformance tests pass (6); solution build passes with existing
   analyzer warnings. Historical documentation and the untracked server/Task 11 files were left
   untouched.
+
+## Task 10 review remediation (2026-08-30)
+
+- MCP remember, recall, append, forget, compact, and link address-bearing adapter inputs are now
+  nullable; nullable content is also accepted at the boundary. Nulls return categorized protocol
+  responses instead of binder failures, with resource nulls reported as malformed-address MCP
+  errors.
+- Added protocol null tests and reflective nullable-parameter coverage for every MCP tool address
+  adapter and the MCP resource. Public Core/store/plugin address routes remain typed; raw strings
+  remain only in explicit adapters or physical/internal helpers.
+- Focused migration/conformance/protocol tests pass (39); solution build passes with existing
+  analyzer warnings. Historical and current docs, the untracked server tree, and Task 11 remain
+  untouched.

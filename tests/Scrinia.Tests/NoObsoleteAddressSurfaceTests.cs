@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
+using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
 
@@ -68,5 +69,29 @@ public sealed class NoObsoleteAddressSurfaceTests
             .Should().NotContain(method => method.Name == "RemoveAsync" &&
                 method.GetParameters().Length > 0 &&
                 method.GetParameters()[0].ParameterType == typeof(string));
+    }
+
+    [Fact]
+    public void Protocol_address_adapters_accept_json_null()
+    {
+        var nullability = new NullabilityInfoContext();
+        var addressParameterNames = new HashSet<string>(StringComparer.Ordinal)
+            { "path", "destination", "name" };
+
+        foreach (var method in typeof(ScriniaMcpTools).GetMethods(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (!method.GetCustomAttributes(false).Any(attribute =>
+                    attribute.GetType().Name == "McpServerToolAttribute"))
+                continue;
+
+            foreach (var parameter in method.GetParameters().Where(parameter =>
+                         addressParameterNames.Contains(parameter.Name ?? "")))
+                nullability.Create(parameter).ReadState.Should().Be(NullabilityState.Nullable,
+                    $"MCP adapter {method.Name}.{parameter.Name} must classify JSON null itself");
+        }
+
+        var resourceParameter = typeof(ScriniaMcpResources).GetMethod(nameof(ScriniaMcpResources.ReadMemory))!
+            .GetParameters().Single(parameter => parameter.Name == "name");
+        nullability.Create(resourceParameter).ReadState.Should().Be(NullabilityState.Nullable);
     }
 }
