@@ -4,8 +4,8 @@ namespace Scrinia.Core;
 
 /// <summary>
 /// The store surface an <see cref="IMemoryEventSink"/> is handed. Four members, because four is
-/// what the sink path uses: <c>ParseQualifiedName</c> to key the write, and the ephemeral-aware
-/// read trio that <see cref="Embeddings.MemoryArtifactSource.ReadForAppendAsync"/> needs.
+/// what the sink path uses: typed address resolution and the ephemeral-aware read surface that
+/// <see cref="Embeddings.MemoryArtifactSource.ReadForAppendAsync"/> needs.
 ///
 /// <para>Sinks used to receive the whole <see cref="IMemoryStore"/> — 30 instance members — which
 /// said nothing about what a sink may rely on. Narrowing states the contract. It does not enforce
@@ -18,12 +18,7 @@ namespace Scrinia.Core;
 /// </summary>
 public interface IPluginStore
 {
-    (string Scope, string Subject) ParseQualifiedName(string name);
-    bool IsEphemeral(string name);
-    MemoryAddress ParseAddress(string rawAddress) => MemoryAddress.Parse(rawAddress);
-    (string Scope, string Subject) ResolveAddress(MemoryAddress address) =>
-        address.Kind == MemoryAddressKind.Ephemeral ? ("ephemeral", address.Value) :
-        ParseQualifiedName(address.Value);
+    (string Scope, string Subject) ResolveAddress(MemoryAddress address);
 
     /// <summary>Reads an artifact identified by a parsed logical address.</summary>
     Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default);

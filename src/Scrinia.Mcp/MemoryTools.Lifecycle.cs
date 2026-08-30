@@ -1166,7 +1166,7 @@ public sealed partial class ScriniaMcpTools
         var store = CurrentStore;
         var (scope, subject) = name.Kind == MemoryAddressKind.Ephemeral
             ? (string.Empty, name.ToString())
-            : store.ParseQualifiedName(name.ToString());
+            : store.ResolveAddress(name);
         if (name.Kind == MemoryAddressKind.Persistent && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
             return ResponseBuilder.Error(
                 $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.",
@@ -1328,9 +1328,9 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = new MemoryWrite(name, compacted.Select(ToUtf8).ToArray(),
+            write = MemoryWrite.Create(name, compacted,
                 WriteAttributesAsBytes(existingAttributes ?? new Dictionary<string, string[]>()),
-                curatedKeywords ?? [], existingPreview);
+                curatedKeywords ?? [], description: existingPreview);
         }
         catch (InvalidMemoryWriteException ex)
         {
@@ -1344,7 +1344,7 @@ public sealed partial class ScriniaMcpTools
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            stored.Address, compacted, store, cancellationToken));
+            stored.Address, write.RawContent, store, cancellationToken));
         int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no
@@ -1482,7 +1482,7 @@ public sealed partial class ScriniaMcpTools
 
                 if (!usedMdFiles)
                 {
-                    var (agentScope, _) = store.ParseQualifiedName("/agent/placeholder");
+                    var (agentScope, _) = store.ResolveAddress(MemoryAddress.Parse("/agent/placeholder"));
                     var agentEntries = store.LoadIndex(agentScope);
                     foreach (var entry in agentEntries)
                         followUpNames.Add($"/agent/{entry.Name}");
@@ -1494,7 +1494,7 @@ public sealed partial class ScriniaMcpTools
         // Collect patterns/* names for followUp
         try
         {
-            var (patternsScope, _) = store.ParseQualifiedName("/patterns/placeholder");
+                    var (patternsScope, _) = store.ResolveAddress(MemoryAddress.Parse("/patterns/placeholder"));
             var patternsEntries = store.LoadIndex(patternsScope);
             foreach (var entry in patternsEntries)
                 followUpNames.Add($"/patterns/{entry.Name}");

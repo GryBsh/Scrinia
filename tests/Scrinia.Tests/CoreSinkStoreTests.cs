@@ -14,8 +14,7 @@ public class CoreSinkStoreTests
 {
     private sealed class NotAMemoryStore : IPluginStore
     {
-        public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
-        public bool IsEphemeral(string name) => false;
+        public (string Scope, string Subject) ResolveAddress(MemoryAddress address) => ("local", address.Value);
         public Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) => Task.FromResult("");
     }
 

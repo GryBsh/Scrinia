@@ -44,7 +44,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
         // silently yields the corrupt path `rc/thing.cs`. The supported forms are a bare path in
         // content (this one), `file:path` in the `keywords` argument, an explicit `attributes` map,
         // or a line-start `file: path` WITH whitespace after the colon.
-        var written = await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"]));
+        var written = await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["see src/thing.cs"]));
 
         written.FileHashes.Should().ContainKey("src/thing.cs");
 
@@ -62,14 +62,14 @@ public sealed class EphemeralLifecycleTests : IDisposable
         // MemoryDerivation.ForAppend's HashFileRefs would treat "src/thing.cs" as never-baselined
         // and re-hash it against whatever the file currently contains — silently moving the
         // baseline to drifted content and destroying the exact signal D-21 exists to provide.
-        var written = await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"]));
+        var written = await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["see src/thing.cs"]));
         string originalHash = written.FileHashes!["src/thing.cs"];
 
         // Mutate the file AFTER the baseline was recorded. A correct append must not notice.
         File.WriteAllText(Path.Combine(_workspace, "src", "thing.cs"), "// changed after baseline");
 
         var appended = await _store.AppendAsync(
-            new MemoryWrite("~scratch", "local", ["no new file reference in this chunk"]));
+            MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["no new file reference in this chunk"]));
 
         appended.FileHashes.Should().ContainKey("src/thing.cs").WhoseValue.Should().Be(originalHash,
             because: "an append must carry the ORIGINAL baseline forward, not silently re-hash the " +
@@ -84,7 +84,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
         // Three projections of one ephemeral memory exist (PersistEphemeral's stored entry, its
         // returned entry, and ListEphemeral's). A field present in some and null in others means
         // the answer depends on which read you came through.
-        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"]));
+        await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["see src/thing.cs"]));
 
         var listed = _store.ListEphemeral().Single().Entry;
         // ContainKey first: BeEquivalentTo alone passes over two nulls, so it would stay green
@@ -107,10 +107,9 @@ public sealed class EphemeralLifecycleTests : IDisposable
     [Fact]
     public async Task EphemeralEntry_ProjectionPair_RoundTrips()
     {
-        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"],
-            Keywords: ["curated-term"], Description: "a curated preview"));
+        await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["see src/thing.cs"], keywords: ["curated-term"], description: "a curated preview"));
         // Appended so the record carries a second chunk (ChunkEntries) and an UpdatedAt as well.
-        await _store.AppendAsync(new MemoryWrite("~scratch", "local", ["a second chunk"]));
+        await _store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["a second chunk"]));
         var original = _store.GetEphemeral("scratch")!;
 
         // Every field the pair has to carry is actually populated here, or the round trip is
@@ -142,7 +141,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
     [Fact]
     public async Task TryUpdateEphemeral_ReAppliesToTheNewerEntry_WhenAConcurrentWriterWinsTheSwap()
     {
-        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["body text"]));
+        await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["body text"]));
         // The encoded NMP/2 artifact, captured to compare against — a metadata swap must leave the
         // memory's content byte-identical.
         string originalArtifact = _store.GetEphemeral("scratch")!.Artifact;
@@ -198,7 +197,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
     [Fact]
     public async Task TryUpdateEphemeral_InvalidatesTheMergedFactStore()
     {
-        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["body text"]));
+        await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["body text"]));
 
         var maria = new Scrinia.Core.Search.EntityRef("person", "maria");
         _store.GetEntityFactStore().MentionCount(maria).Should().Be(0);

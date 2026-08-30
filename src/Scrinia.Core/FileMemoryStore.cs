@@ -279,7 +279,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Naming ───────────────────────────────────────────────────────────────
 
-    public (string Scope, string Subject) ParseQualifiedName(string name)
+    internal (string Scope, string Subject) ParseQualifiedName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
@@ -319,7 +319,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             ? $"/{scope["local:".Length..]}/{subject}"
             : subject;
 
-    public bool IsEphemeral(string name) =>
+    internal bool IsEphemeral(string name) =>
         MemoryNaming.IsEphemeralName(name);
 
     public (string Scope, string Subject) ResolveAddress(MemoryAddress address)

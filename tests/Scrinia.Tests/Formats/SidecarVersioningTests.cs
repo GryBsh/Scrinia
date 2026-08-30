@@ -149,7 +149,7 @@ public sealed partial class SidecarVersioningTests
         // by hand inside the fix for this one.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["body"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("ordinary".StartsWith("/") || "ordinary".StartsWith("~") ? "ordinary" : "/" + "ordinary"), "local:notes", ["body"]));
 
         WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
 
@@ -215,7 +215,7 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["body"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("ordinary".StartsWith("/") || "ordinary".StartsWith("~") ? "ordinary" : "/" + "ordinary"), "local:notes", ["body"]));
         File.WriteAllText(SidecarPath(scope, "local:notes", "broken"), "{ not json");
 
         store.LoadIndex("local:notes").Select(e => e.Name).Should().Contain("ordinary");
@@ -237,10 +237,10 @@ public sealed partial class SidecarVersioningTests
         // separates a working extension bucket from a decorative one.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
 
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["totally new content"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["totally new content"]));
 
         ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
     }
@@ -250,10 +250,10 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
 
-        await store.AppendAsync(new MemoryWrite("seed", "local:notes", ["second"]));
+        await store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["second"]));
 
         ReadSidecarJson(scope, "local:notes", "seed").Should().Contain("futureThing");
     }
@@ -269,10 +269,10 @@ public sealed partial class SidecarVersioningTests
         // version BuildDerivedEntry writes is the PRIOR entry's explicit 1, not null.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 1);
 
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["totally new content"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["totally new content"]));
 
         ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(1);
     }
@@ -283,10 +283,10 @@ public sealed partial class SidecarVersioningTests
         // Version 1, not 2, for the same reason as the test above: 2 now hits Task 4's refusal.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 1);
 
-        await store.AppendAsync(new MemoryWrite("seed", "local:notes", ["second"]));
+        await store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["second"]));
 
         ReadSidecarSchemaVersion(scope, "local:notes", "seed").Should().Be(1);
     }
@@ -301,11 +301,11 @@ public sealed partial class SidecarVersioningTests
         // consequence Task 4 is expected to wire up, and should be un-skipped there.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
 
         var act = async () => await store.StoreAsync(
-            new MemoryWrite("seed", "local:notes", ["overwrite attempt"]));
+            MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["overwrite attempt"]));
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
     }
@@ -324,10 +324,10 @@ public sealed partial class SidecarVersioningTests
         // entry for a memory it never actually changed.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
 
-        try { await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["overwrite attempt"])); }
+        try { await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["overwrite attempt"])); }
         catch (ScopeReadOnlyException) { }
 
         Directory.Exists(Path.Combine(scope.TempDir, "notes", "versions")).Should().BeFalse(
@@ -339,7 +339,7 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
 
         string bodyPath = store.ArtifactPath("seed", "local:notes");
         string sidecarPath = SidecarPath(scope, "local:notes", "seed");
@@ -354,7 +354,7 @@ public sealed partial class SidecarVersioningTests
         sidecarBefore = File.ReadAllBytes(sidecarPath);
 
         var act = async () => await store.StoreAsync(
-            new MemoryWrite("seed", "local:notes", ["overwrite attempt"]));
+            MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["overwrite attempt"]));
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
 
@@ -374,11 +374,11 @@ public sealed partial class SidecarVersioningTests
         // the previous content back, so content and metadata still agree after the refusal.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
         byte[] before = File.ReadAllBytes(store.ArtifactPath("seed", "local:notes"));
 
-        try { await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["overwrite"])); }
+        try { await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["overwrite"])); }
         catch (ScopeReadOnlyException) { }
 
         File.ReadAllBytes(store.ArtifactPath("seed", "local:notes")).Should().Equal(before);
@@ -437,11 +437,11 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
         var prior = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
 
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["new content"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["new content"]));
         var rebuilt = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
 
         rebuilt.Unknown.Should().NotBeSameAs(prior.Unknown);
@@ -479,11 +479,11 @@ public sealed partial class SidecarVersioningTests
         // a sibling is newer. Remembering something unrelated touches nothing.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
 
         var act = async () => await store.StoreAsync(
-            new MemoryWrite("unrelated", "local:notes", ["body"]));
+            MemoryWrite.Create(MemoryAddress.Parse("unrelated".StartsWith("/") || "unrelated".StartsWith("~") ? "unrelated" : "/" + "unrelated"), "local:notes", ["body"]));
 
         await act.Should().NotThrowAsync();
     }
@@ -495,7 +495,7 @@ public sealed partial class SidecarVersioningTests
         // it strands the user until they upgrade.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
 
         var act = () => store.Remove("seed", "local:notes");
@@ -508,7 +508,7 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("ordinary", "local:notes", ["findable body text"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("ordinary".StartsWith("/") || "ordinary".StartsWith("~") ? "ordinary" : "/" + "ordinary"), "local:notes", ["findable body text"]));
         WriteRawSidecar(scope, "local:notes", "from-the-future", schemaVersion: 2);
         ((FileMemoryStore)store).InvalidateCaches();   // NOT on IMemoryStore -- cast required
 
@@ -630,7 +630,7 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("resident", "local:notes", ["resident body"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("resident".StartsWith("/") || "resident".StartsWith("~") ? "resident" : "/" + "resident"), "local:notes", ["resident body"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "resident", 2);
 
         // The bundle does not mention "resident" at all.
@@ -661,8 +661,8 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("keeper", "local:notes", ["keeper body"]));
-        await store.StoreAsync(new MemoryWrite("orphan", "local:notes", ["orphan body"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("keeper".StartsWith("/") || "keeper".StartsWith("~") ? "keeper" : "/" + "keeper"), "local:notes", ["keeper body"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("orphan".StartsWith("/") || "orphan".StartsWith("~") ? "orphan" : "/" + "orphan"), "local:notes", ["orphan body"]));
 
         // A list that omits "orphan" (so the sweep would delete it) and carries a newer entry.
         var keeper = store.LoadIndex("local:notes").Single(e => e.Name == "keeper");
@@ -751,7 +751,7 @@ public sealed partial class SidecarVersioningTests
         // sidecar is one more reason.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(new MemoryWrite("seed", "local:notes", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
         byte[] before = File.ReadAllBytes(SidecarPath(scope, "local:notes", "seed"));
 

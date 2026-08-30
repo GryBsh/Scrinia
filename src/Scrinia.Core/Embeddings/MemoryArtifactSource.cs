@@ -43,7 +43,7 @@ public static class MemoryArtifactSource
     /// <summary>The scope name whose memories live outside the (scope, subject) artifact layout.</summary>
     public const string EphemeralScope = "ephemeral";
 
-    public static bool IsEphemeral(string scope) =>
+    internal static bool IsEphemeral(string scope) =>
         scope.Equals(EphemeralScope, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
@@ -56,7 +56,7 @@ public static class MemoryArtifactSource
      /// Address-based reads avoid reconstructing a path from a display-oriented scope label.
      /// This preserves namespaced topic addresses exactly.</para>
     /// </summary>
-    public static Task<string> ReadArtifactAsync(
+    internal static Task<string> ReadArtifactAsync(
         IMemoryStore store, string scope, string subject, CancellationToken ct) =>
         IsEphemeral(scope)
             ? store.ReadArtifactAsync(MemoryAddress.Parse($"~{subject}"), ct)

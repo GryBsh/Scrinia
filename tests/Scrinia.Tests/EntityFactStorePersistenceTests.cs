@@ -189,11 +189,7 @@ public sealed class EntityFactStorePersistenceTests
 
                 const long historicalBaselineWriteBytes = 86790;
 
-                var newEntry = await store.StoreAsync(new MemoryWrite(
-                    "repository-copy-measurement",
-                    "local:measurement",
-                    [newContent],
-                    Attributes: new() { ["topic"] = ["h6-measurement"] }));
+                var newEntry = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("repository-copy-measurement".StartsWith("/") || "repository-copy-measurement".StartsWith("~") ? "repository-copy-measurement" : "/" + "repository-copy-measurement"), "local:measurement", [newContent], attributes: new() { ["topic"] = ["h6-measurement"] }));
                 newEntry.OriginalBytes.Should().Be(expectedLogicalPayloadBytes,
                     "the measurement must account for the real logical payload written to the store");
                 _ = store.GetEntityFactStore();

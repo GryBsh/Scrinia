@@ -240,8 +240,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         var store = MemoryStoreContext.Current!;
         var address = MemoryAddress.Parse(sourceName);
-        await store.StoreAsync(new MemoryWrite(
-            address.ToString(), "local", ["placeholder"], null, new(), []));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(address.ToString().StartsWith("/") || address.ToString().StartsWith("~") ? address.ToString() : "/" + address.ToString()), "local", ["placeholder"], null, new(), []));
         await _sink.OnStoredAsync(
             address,
             [$"This entry references [[{referenceName}]] in its own content."],

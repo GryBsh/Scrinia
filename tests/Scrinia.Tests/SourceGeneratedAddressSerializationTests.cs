@@ -138,10 +138,7 @@ public sealed class SourceGeneratedAddressSerializationTests
             ArtifactEntry written;
             using (var store = new FileMemoryStore(root))
             {
-                written = await store.StoreAsync(new MemoryWrite(
-                    MemoryAddress.Parse("/context/note"),
-                    [new ReadOnlyMemory<byte>("body"u8.ToArray())],
-                    new Dictionary<string, IReadOnlyList<string>>(), []));
+                written = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/context/note"), [new ReadOnlyMemory<byte>("body"u8.ToArray())], new Dictionary<string, IReadOnlyList<string>>(), []));
             }
 
             using var coldStore = new FileMemoryStore(root);

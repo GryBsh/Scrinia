@@ -45,8 +45,8 @@ public sealed class ReconcileScanTests
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
 
-        await store.StoreAsync(new Scrinia.Core.Models.MemoryWrite(
-            Name: "cached", Scope: "local", Content: ["original body"]), default);
+        await store.StoreAsync(MemoryWrite.Create(
+            MemoryAddress.Parse("/cached"), "local", ["original body"]), default);
 
         // Warm the index cache, then repair the sidecar behind the store's back the way a
         // conflict resolve does.

@@ -79,7 +79,7 @@ public class HintReadPathBenchmarks
         for (int i = 0; i < EntryCount; i++)
         {
             string body = $"{Topics[i % Topics.Length]} (entry {i}, revision {i % 7})";
-            _store.StoreAsync(new MemoryWrite($"entry-{i}", "local", [body]))
+            _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse($"entry-{i}".StartsWith("/") || $"entry-{i}".StartsWith("~") ? $"entry-{i}" : "/" + $"entry-{i}"), "local", [body]))
                 .GetAwaiter().GetResult();
         }
 

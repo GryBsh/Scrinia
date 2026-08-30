@@ -202,7 +202,7 @@ public sealed class MemoryVectorIndexer
     }
 
     /// <summary>Drops every vector held for <paramref name="subject"/> in <paramref name="scope"/>.</summary>
-    public async Task RemoveAsync(string scope, string subject, CancellationToken ct)
+    private async Task RemoveByPhysicalIdentityAsync(string scope, string subject, CancellationToken ct)
     {
         try
         {
@@ -217,7 +217,7 @@ public sealed class MemoryVectorIndexer
     public Task RemoveAsync(MemoryAddress address, IPluginStore store, CancellationToken ct)
     {
         var (scope, subject) = store.ResolveAddress(address);
-        return RemoveAsync(scope, subject, ct);
+        return RemoveByPhysicalIdentityAsync(scope, subject, ct);
     }
 
     /// <summary>
@@ -228,16 +228,4 @@ public sealed class MemoryVectorIndexer
     /// <c>IMemoryOperationHook.OnAfterForgetAsync</c> on the REST path with no surrounding
     /// try/catch, so a throw there would propagate into the forget request itself.
     /// </summary>
-    public async Task RemoveAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
-    {
-        try
-        {
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            await _store.RemoveAsync(scope, subject, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to remove vectors for '{Name}'", qualifiedName);
-        }
-    }
 }

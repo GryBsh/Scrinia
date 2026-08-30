@@ -25,8 +25,6 @@ public class FakeMemoryStore : IMemoryStore
         ValueTask.FromException<ArtifactEntry>(new NotSupportedException("Fake store does not support typed writes."));
     public virtual ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default) =>
         ValueTask.FromException(new NotSupportedException("Fake store does not support typed deletes."));
-    public virtual (string Scope, string Subject) ParseQualifiedName(string name) =>
-        ResolveAddress(MemoryAddress.Parse(name));
     public virtual (string Scope, string Subject) ResolveAddress(MemoryAddress address) =>
         address.Kind == MemoryAddressKind.Ephemeral ? ("ephemeral", address.Value) :
         ResolvePersistentAddress(address);
@@ -38,7 +36,6 @@ public class FakeMemoryStore : IMemoryStore
             : ($"local:{string.Join('/', segments[..^1])}", segments[^1]);
     }
     public virtual string FormatQualifiedName(string scope, string subject) => $"{scope}:{subject}";
-    public virtual bool IsEphemeral(string name) => MemoryAddress.Parse(name).Kind == MemoryAddressKind.Ephemeral;
     public virtual string SanitizeName(string name) => name;
     // Derives nothing, like every other member here: the returned entry echoes the write's own name
     // and chunk count so a test can tell which call produced it, and overriding is how a test that

@@ -69,29 +69,6 @@ public sealed record MemoryWrite
     /// <summary>Maximum length of a sanitized persistent subject.</summary>
     public const int MaxPersistentSubjectLength = 182;
 
-    /// <summary>Initializes the raw write input.</summary>
-    internal MemoryWrite(
-        string Name,
-        string Scope,
-        string[] Content,
-        string? Description = null,
-        Dictionary<string, string[]>? Attributes = null,
-        string[]? Keywords = null)
-    {
-        Address = MemoryAddress.Parse(Name.StartsWith('/') || Name.StartsWith('~') ? Name : $"/{Name}");
-        var validation = TryCreate(Address, Content, ConvertAttributes(Attributes), Keywords, description: Description);
-        if (!validation.IsValid)
-            throw new InvalidMemoryWriteException(validation.Error!);
-
-        this.Name = Address.ToString();
-        this.Scope = Scope;
-        RawContent = validation.Write!.RawContent;
-        this.Content = validation.Write.Content;
-        this.Description = Description;
-        this.Attributes = validation.Write.Attributes;
-        this.Keywords = validation.Write.Keywords;
-    }
-
     /// <summary>Initializes an immutable, validated UTF-8 memory write.</summary>
     public MemoryWrite(MemoryAddress address, IReadOnlyList<ReadOnlyMemory<byte>> content,
         IReadOnlyDictionary<string, IReadOnlyList<string>> attributes,
@@ -127,6 +104,30 @@ public sealed record MemoryWrite
         Description = valid.Description;
         Attributes = valid.Attributes;
         Keywords = valid.Keywords;
+    }
+
+    /// <summary>Creates a write from already encoded content.</summary>
+    internal static MemoryWrite Create(MemoryAddress address,
+        IReadOnlyList<ReadOnlyMemory<byte>> content,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> attributes,
+        IReadOnlyList<string> keywords, string? description = null) =>
+        new(address, content, attributes, keywords, description);
+
+    /// <summary>Creates a validated write for a resolved address and physical scope.</summary>
+    internal static MemoryWrite Create(MemoryAddress address, string scope, string[] content,
+        string? description = null, Dictionary<string, string[]>? attributes = null,
+        string[]? keywords = null)
+    {
+        var effectiveAddress = address.Kind == MemoryAddressKind.Ephemeral || scope == "local"
+            ? address
+            : MemoryAddress.Parse($"/{scope["local:".Length..]}/{address.Value.TrimStart('/')}");
+        var write = Create(effectiveAddress, content,
+            attributes?.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value)
+                ?? new Dictionary<string, IReadOnlyList<string>>(),
+            keywords ?? [], description: description);
+        return write.Readdress(effectiveAddress, scope, effectiveAddress.Kind == MemoryAddressKind.Ephemeral
+            ? effectiveAddress.Value
+            : effectiveAddress.Value[(effectiveAddress.Value.LastIndexOf('/') + 1)..]);
     }
 
     private MemoryWrite(MemoryAddress address, IReadOnlyList<ReadOnlyMemory<byte>> content,
@@ -169,6 +170,23 @@ public sealed record MemoryWrite
         var bytes = rawContent.Select(value => (ReadOnlyMemory<byte>)System.Text.Encoding.UTF8.GetBytes(value)).ToArray();
         return new(new MemoryWrite(address, (IReadOnlyList<ReadOnlyMemory<byte>>)bytes,
             attributes!, keywords!, description, rawContent), null);
+    }
+
+    /// <summary>Creates a validated UTF-8 write from logical text content.</summary>
+    public static MemoryWrite Create(
+        MemoryAddress address,
+        IReadOnlyList<string?>? content,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? attributes,
+        IReadOnlyList<string>? keywords,
+        MemoryValidationOptions? options = null,
+        bool isAppend = false,
+        string? description = null)
+    {
+        var result = TryCreate(address, content, attributes, keywords, options, isAppend, description);
+        if (result.Write is not null)
+            return result.Write;
+
+        throw new InvalidMemoryWriteException(result.Error!);
     }
 
     /// <summary>Validates this write and throws the established write exception on refusal.</summary>
@@ -235,14 +253,6 @@ public sealed record MemoryWrite
             if (keywords![index] is null || string.IsNullOrWhiteSpace(keywords[index]) || keywords[index].Length > options.MaxKeywordLength)
                 return Error("keyword_invalid", "Keyword is invalid or too long.", $"keywords[{index}]", options.MaxKeywordLength, keywords[index]?.Length ?? 0);
         return null;
-    }
-
-    private static Dictionary<string, IReadOnlyList<string>>? ConvertAttributes(
-        Dictionary<string, string[]>? attributes)
-    {
-        if (attributes is null)
-            return null;
-        return attributes.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value);
     }
 
     private static MemoryError Error(string code, string message, string field, long? limit = null, long? actual = null) =>

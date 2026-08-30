@@ -99,8 +99,7 @@ public sealed class MemoryWriteValidationTests
     [Fact]
     public void MalformedUtf8_IsRejectedWithCategorizedError()
     {
-        var action = () => new MemoryWrite(Address, [new byte[] { 0xC3, 0x28 }],
-            new Dictionary<string, IReadOnlyList<string>>(), []);
+        var action = () => new MemoryWrite(Address, [new byte[] { 0xC3, 0x28 }], new Dictionary<string, IReadOnlyList<string>>(), []);
 
         var exception = FluentActions.Invoking(action).Should().Throw<InvalidMemoryWriteException>().Which;
 

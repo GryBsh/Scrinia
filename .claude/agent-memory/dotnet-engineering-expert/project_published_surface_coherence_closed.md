@@ -33,3 +33,35 @@ this branch.
 - Verification: `dotnet test Scrinia.sln --no-restore` completed with 187 failures, 2,036 passed,
   and 20 skipped out of 2,243 tests. The failures are in the broader in-progress address migration
   and were not changed by this close-out commit.
+
+## Task 10 addressing follow-up verification (2026-08-30)
+
+- Fresh verification: `dotnet test Scrinia.sln --no-restore` completed with 208 failures, 2,016
+  passed, and 20 skipped out of 2,244 tests in `Scrinia.Tests`; `Scrinia.Plugin.Embeddings.Tests`
+  passed 32 of 32 tests. The failures remain in the broader in-progress address migration.
+- Commit status: not committed by this agent; the Task 10 candidate changes remain in the worktree
+  for the orchestrator to commit. Unrelated `src/Scrinia.Server/` and Task 11 conformance test files
+  remain untracked and untouched.
+
+## Task 10 review follow-up (2026-08-30)
+
+- MCP remember, append, and compact now construct writes through `MemoryWrite.Create`, so nullable
+  content is categorized by shared `InvalidWriteContent` validation before UTF-8 encoding or store
+  mutation.
+- `IPluginStore` and `MemoryVectorIndexer` no longer publish raw logical-address parsing/removal
+  routes; physical vector identity remains private, while plugin resolution is typed.
+- Focused validation and obsolete-surface tests pass (14 tests). The untracked server and Task 11
+  conformance files were not modified.
+
+## Task 10 completion migration (2026-08-30)
+
+- Removed the internal raw `(Name, Scope, Content)` `MemoryWrite` constructor. All live production,
+  test, and benchmark construction sites now use `MemoryWrite.Create` and typed `MemoryAddress`.
+- Removed raw logical-name members from `IPluginStore`; concrete parsing and scope-only helpers are
+  internal, while typed address resolution remains the plugin boundary. Physical vector removal is
+  private and only the typed indexer route is public.
+- Added reflection conformance coverage for Core contracts, store/plugin routes, and physical helper
+  visibility. Nullable MCP content continues through categorized `InvalidWriteContent` validation.
+- Verification: focused address conformance tests pass (6); solution build passes with existing
+  analyzer warnings. Historical documentation and the untracked server/Task 11 files were left
+  untouched.

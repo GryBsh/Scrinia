@@ -135,7 +135,7 @@ public sealed partial class ScriniaMcpTools
     internal async Task<McpResponse> Remember(
         [Description("The text content to compress and store. " +
                      "Pass a single element for a single-chunk artifact, or multiple elements to control " +
-                     "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
+                     "chunk boundaries — each element becomes one independently retrievable chunk.")] string?[] content,
         [Description("Human-readable name for this artifact (e.g. \"session-notes\", \"my-codebase\"). " +
                      "Invalid filename characters are replaced with '_'. " +
                       "Naming: '/path/to/memory' (e.g. '/api/auth-flow'), '/temp/subject' (ephemeral).")] MemoryAddress name,
@@ -242,28 +242,22 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
-        MemoryWrite write;
         try
         {
-            write = new MemoryWrite(name, content.Select(ToUtf8).ToArray(), WriteAttributesAsBytes(
+            var write = MemoryWrite.Create(name, content, WriteAttributesAsBytes(
                     WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen)
-                        ?? new Dictionary<string, string[]>()), keywords ?? [], description);
+                        ?? new Dictionary<string, string[]>()), keywords ?? [], description: description);
+
+            var entry = await store.StoreAsync(write, cancellationToken);
+            string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
+            await FireEventSinkAsync(sink => sink.OnStoredAsync(
+                entry.Address, write.RawContent, store, cancellationToken));
+            return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
         }
         catch (InvalidMemoryWriteException ex)
         {
             return InvalidMemoryWriteResponse(ex);
         }
-
-        var entry = await store.StoreAsync(write, cancellationToken);
-
-        string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
-
-        // Await the event sink after the durable artifact write so indexing has the same
-        // completion and cancellation semantics on MCP and CLI paths.
-        await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            entry.Address, content, store, cancellationToken));
-
-        return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
     }
 
     /// <summary>Splits a user-facing name into the resolved <c>(scope, subject)</c> pair every
@@ -353,9 +347,6 @@ public sealed partial class ScriniaMcpTools
             pair => (IReadOnlyList<string>)pair.Value,
             StringComparer.OrdinalIgnoreCase);
 
-    private static ReadOnlyMemory<byte> ToUtf8(string content) =>
-        System.Text.Encoding.UTF8.GetBytes(content);
-
     /// <summary>Update metadata on an existing memory without re-encoding its content.
     ///
     /// <para><paramref name="attributes"/> is the DIRECT road to <c>Attributes</c>;
@@ -436,7 +427,7 @@ public sealed partial class ScriniaMcpTools
         }
         else
         {
-            var (scope, subject) = store.ParseQualifiedName(name.ToString());
+            var (scope, subject) = store.ResolveAddress(name);
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
             // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
@@ -978,7 +969,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         var address = nameOrUri;
-        var (scope, subject) = store.ParseQualifiedName(address.ToString());
+            var (scope, subject) = store.ResolveAddress(address);
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -1007,7 +998,7 @@ public sealed partial class ScriniaMcpTools
     /// query for, and the metadata `remember` set must not be silently discarded on append.
     /// </summary>
     internal async Task<McpResponse> Append(
-        [Description("The text content to append.")] string content,
+        [Description("The text content to append.")] string? content,
         [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] MemoryAddress name,
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
         [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
@@ -1050,9 +1041,10 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = new MemoryWrite(name, [ToUtf8(content)],
+            write = MemoryWrite.Create(name, [content],
                 WriteAttributesAsBytes(WriteAttributes(attributes, tags, anchors)
-                    ?? new Dictionary<string, string[]>()), keywords ?? [], description);
+                    ?? new Dictionary<string, string[]>()), keywords ?? [], isAppend: true,
+                description: description);
         }
         catch (InvalidMemoryWriteException ex)
         {
@@ -1071,8 +1063,8 @@ public sealed partial class ScriniaMcpTools
         bool created = entry.UpdatedAt is null;
         var address = entry.Address;
         await FireEventSinkAsync(sink => created
-            ? sink.OnStoredAsync(address, [content], store, cancellationToken)
-            : sink.OnAppendedAsync(address, content, store, cancellationToken));
+            ? sink.OnStoredAsync(address, write.RawContent, store, cancellationToken)
+            : sink.OnAppendedAsync(address, write.RawContent[0], store, cancellationToken));
 
         if (created)
             return StoredResponse(entry, qualifiedName, ephemeral, "stored");
@@ -1154,7 +1146,7 @@ public sealed partial class ScriniaMcpTools
         if (address.Kind == MemoryAddressKind.Ephemeral)
             return store.GetEphemeral(address.Value) is not null;
 
-        var (scope, subject) = store.ParseQualifiedName(address.ToString());
+        var (scope, subject) = store.ResolveAddress(address);
         bool found = false;
         store.TryUpdateEntry(subject, scope, _ => { found = true; return null; });
         return found;
