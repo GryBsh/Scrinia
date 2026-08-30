@@ -57,6 +57,7 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
         // ImportTopicEntries rewrites Uri for THIS machine's store root. The exporting
         // machine's URI is wrong here, so preserving it would be the bug.
         nameof(ArtifactEntry.Uri),
+        nameof(ArtifactEntry.ArtifactKey),
     };
 
     /// <summary>Members a load seam deliberately CLEARS before an entry escapes. Excluded from
@@ -149,7 +150,7 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     /// thing the guard actually means, needs no per-type rules, and cannot be blind to a type it
     /// has never seen.
     /// </summary>
-    private static ArtifactEntry BaselineEntry() => new("", "", 0, 0, default);
+    private static ArtifactEntry BaselineEntry() => new("baseline", "artifacts/baseline.nmp2", 0, 0, default);
 
     /// <summary>True when the probe's value for a member is indistinguishable from the value that
     /// member has on a default-constructed entry — i.e. the probe did not set it.</summary>
@@ -216,16 +217,13 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     }
 
     [Fact]
-    public void Uri_IsRecomputedForTheImportingStore_NotCarriedFromTheBundle()
+    public void ArtifactKey_IsRegeneratedForTheImportingStore_NotCarriedFromTheBundle()
     {
         var (imported, targetRoot) = RoundTrip(FullyPopulatedEntry());
 
-        imported.Uri.Should().NotBe("file:///somewhere/else/probe.nmp2");
-        // "not the bundle's value" and "not empty" would both still pass if Uri were recomputed
-        // against the SOURCE store's root instead of the importing one — which is the half this
-        // test's name actually claims. Assert the URI names the IMPORTING store, specifically.
-        imported.Uri.Should().StartWith($"file://{targetRoot}",
-            "the store rewrites Uri to point at the IMPORTING store's own root, not the source's");
+        imported.ArtifactKey.Should().Be("artifacts/totality-source/probe.nmp2");
+        imported.ArtifactKey.Should().NotContain(targetRoot);
+        imported.ArtifactKey.Should().NotContain("file://");
     }
 
     // ── Legacy bundles ───────────────────────────────────────────────────────

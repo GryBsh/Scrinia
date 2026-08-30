@@ -34,15 +34,33 @@ internal static class BundleLegacyKeys
         if (index["entries"] is not JsonArray entries)
             return;
 
-        foreach (JsonNode? entryNode in entries)
+        for (int entryIndex = 0; entryIndex < entries.Count; entryIndex++)
         {
+            JsonNode? entryNode = entries[entryIndex];
             if (entryNode is JsonObject entry)
-                NormalizeEntry(entry);
+                NormalizeEntry(entry, entryIndex);
         }
     }
 
-    private static void NormalizeEntry(JsonObject entry)
+    private static void NormalizeEntry(JsonObject entry, int entryIndex)
     {
+        // Pre-address bundles carried only a subject name. Preserve their logical location at the
+        // bundle boundary so the typed deserializer can still create a trusted entry; modern
+        // bundles retain the exact address they exported.
+        if (entry["address"] is null && entry["name"] is JsonValue nameValue
+            && nameValue.TryGetValue(out string? name) && !string.IsNullOrWhiteSpace(name))
+        {
+            string address = name.StartsWith('/') || name.StartsWith('~')
+                ? name
+                : $"/{name}";
+            entry["address"] = address;
+        }
+
+        // The old bundle shape had no key. It is discarded after parsing, but must be a valid
+        // opaque value while source-generated deserialization constructs ArtifactEntry.
+        if (entry["artifactKey"] is null)
+            entry["artifactKey"] = $"artifacts/bundle/{entryIndex}.nmp2";
+
         // "description" was the display carrier before "contentPreview" existed. DeepClone is
         // required: a JsonNode has one parent, so the value cannot be re-attached in place.
         if (entry["contentPreview"] is null && entry["description"] is JsonNode description)

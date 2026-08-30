@@ -282,7 +282,7 @@ public static class BundleFormatService
 
                 index = indexObject.Deserialize(BundleJsonContext.Default.BundleIndex);
             }
-            catch (JsonException ex)
+            catch (Exception ex) when (ex is JsonException or ArgumentException)
             {
                 throw new InvalidOperationException(
                     $"Invalid bundle — topic '{topic}' has an unreadable index: {ex.Message}", ex);
@@ -316,7 +316,7 @@ public static class BundleFormatService
                 //     above.
                 // This runs in the build pass, before any topic is written, so refusing here
                 // cannot leave an earlier valid topic half-imported.
-                if (string.IsNullOrEmpty(deserialized.Name))
+                if (!deserialized.Address.IsValid || string.IsNullOrEmpty(deserialized.Name))
                     throw new InvalidOperationException(
                         $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
                         "with a missing or empty name.");
