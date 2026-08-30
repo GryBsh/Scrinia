@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Commands;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
@@ -14,23 +15,22 @@ namespace Scrinia.Tests;
 public sealed class SourceGeneratedAddressSerializationTests
 {
     [Fact]
-    public void Production_contexts_register_all_typed_memory_contracts()
+    public void Production_contexts_register_their_owned_contracts()
     {
-        Type[] coreContracts =
-        [
+        AssertRegistered(BundleJsonContext.Default,
             typeof(MemoryAddress), typeof(MemoryAddressKind), typeof(MemoryWrite),
             typeof(MemoryError), typeof(MemoryAddressError), typeof(MemorySearchRequest),
-            typeof(MemoryListRequest), typeof(ArtifactEntry)
-        ];
-
-        foreach (JsonSerializerContext context in AllContexts())
-        foreach (Type contract in coreContracts)
-            context.GetTypeInfo(contract).Should().NotBeNull(
-                $"{context.GetType().Name} must register {contract.Name} for trimming-safe serialization");
-
-        BundleJsonContext.Default.GetTypeInfo(typeof(BundleIndex)).Should().NotBeNull();
-        BundleJsonContext.Default.GetTypeInfo(typeof(BundleManifest)).Should().NotBeNull();
-        BundleJsonContext.Default.GetTypeInfo(typeof(Dictionary<string, List<string>>)).Should().NotBeNull();
+            typeof(MemoryListRequest));
+        AssertRegistered(BundleJsonContext.Default,
+            typeof(BundleIndex), typeof(BundleManifest), typeof(Dictionary<string, List<string>>),
+            typeof(ArtifactEntry));
+        AssertRegistered(ScriniaMcpJsonContext.Default,
+            typeof(SkillFileMeta), typeof(AgentFileMeta), typeof(Dictionary<string, string[]>),
+            typeof(ArtifactEntry), typeof(MemoryAddress));
+        AssertRegistered(CliJsonContext.Default,
+            typeof(CliErrorOutput), typeof(MemoryAddress));
+        AssertRegistered(ConfigJsonContext.Default, typeof(Dictionary<string, string>));
+        AssertRegistered(PluginClientJsonContext.Default, typeof(Dictionary<string, double>));
     }
 
     [Fact]
@@ -97,7 +97,8 @@ public sealed class SourceGeneratedAddressSerializationTests
             MemoryAddress.Parse("/topic/note"), [new ReadOnlyMemory<byte>("body"u8.ToArray())],
             new Dictionary<string, IReadOnlyList<string>> { ["tag"] = ["x"] }, ["keyword"]);
 
-        foreach (JsonSerializerContext context in AllContexts())
+        foreach (JsonSerializerContext context in new JsonSerializerContext[]
+                 { BundleJsonContext.Default, CliJsonContext.Default })
         {
             MemoryError errorRoundTrip = RoundTrip(error, TypeInfo<MemoryError>(context));
             MemorySearchRequest searchRoundTrip = RoundTrip(search, TypeInfo<MemorySearchRequest>(context));
@@ -112,6 +113,52 @@ public sealed class SourceGeneratedAddressSerializationTests
         }
     }
 
+    [Fact]
+    public async Task File_store_round_trip_uses_the_private_durable_context()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-json-context-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            ArtifactEntry written;
+            using (var store = new FileMemoryStore(root))
+            {
+                written = await store.StoreAsync(new MemoryWrite(
+                    MemoryAddress.Parse("/context/note"),
+                    [new ReadOnlyMemory<byte>("body"u8.ToArray())],
+                    new Dictionary<string, IReadOnlyList<string>>(), []));
+            }
+
+            using var coldStore = new FileMemoryStore(root);
+            ArtifactEntry reloaded = coldStore.LoadIndex("local").Should().ContainSingle().Subject;
+            reloaded.Address.Should().Be(written.Address);
+            reloaded.ArtifactKey.Should().Be(written.ArtifactKey);
+            reloaded.ContentPreview.Should().Be(written.ContentPreview);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Categorized_error_serialization_preserves_category_in_core_and_cli_surfaces()
+    {
+        MemoryError error = new(MemoryErrorCategory.ForbiddenAddressKind,
+            "forbidden_address_kind", "Ephemeral addresses are not available to the CLI.", "address");
+
+        MemoryError roundTrip = RoundTrip(error, TypeInfo<MemoryError>(BundleJsonContext.Default));
+        roundTrip.Category.Should().Be(MemoryErrorCategory.ForbiddenAddressKind);
+
+        var cli = new CliErrorOutput(error.Message, error.Category.ToString(), error.Code, error.Field);
+        string cliJson = JsonSerializer.Serialize(cli, CliJsonContext.Default.CliErrorOutput);
+        cliJson.Should().Contain("\"category\": \"ForbiddenAddressKind\"");
+        cliJson.Should().Contain("\"code\": \"forbidden_address_kind\"");
+
+        string mcpYaml = ResponseBuilder.Error(error.Message, ErrorCodes.UnsupportedInputForm).ToYaml();
+        mcpYaml.Should().Contain("errorCode: UNSUPPORTED_INPUT_FORM");
+    }
+
     private static IEnumerable<JsonSerializerContext> AllContexts()
     {
         yield return BundleJsonContext.Default;
@@ -123,6 +170,13 @@ public sealed class SourceGeneratedAddressSerializationTests
 
     private static JsonTypeInfo<T> TypeInfo<T>(JsonSerializerContext context) =>
         (JsonTypeInfo<T>)context.GetTypeInfo(typeof(T))!;
+
+    private static void AssertRegistered(JsonSerializerContext context, params Type[] expectedTypes)
+    {
+        foreach (Type expectedType in expectedTypes)
+            context.GetTypeInfo(expectedType).Should().NotBeNull(
+                $"{context.GetType().Name} owns {expectedType.Name} and must register it for trimming-safe serialization");
+    }
 
     private static T RoundTrip<T>(T value, JsonTypeInfo<T> typeInfo) =>
         JsonSerializer.Deserialize(JsonSerializer.Serialize(value, typeInfo), typeInfo)!;
