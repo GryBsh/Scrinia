@@ -77,6 +77,20 @@ applies to the sanitized persistent subject, not the whole scoped display path. 
 ephemeral and is exempt from this filesystem limit, although the CLI refuses ephemeral addresses
 because each invocation exits immediately.
 
+#### Address input
+
+All CLI memory commands accept logical addresses. A bare subject is normalized as a persistent
+address; `/topic/subject` is a persistent topic address. `~name` and `/temp/name` are canonical and
+alias spellings for an ephemeral address, but the CLI refuses both with exit status 1 and a
+`forbidden_address_kind` error. Use an MCP client with the long-lived `scri serve` process when an
+ephemeral memory is required.
+
+URI and physical-path inputs are not supported. URI syntax such as `file://` is rejected with
+`unsupported_input_form`; other malformed physical-path forms are rejected as malformed addresses.
+They are never resolved against the local filesystem. In .NET code,
+use `MemoryAddress.Parse(raw)` or `MemoryAddress.TryParse(raw, out address, out error)` to obtain
+the validated typed address used by store-facing APIs.
+
 `scri store --json` emits `name`, `originalBytes`, and `message`. Consumers must stop reading
 `chunkCount`; use the documented input echo and response message instead.
 
@@ -758,6 +772,11 @@ The configuration pattern is the same -- point your MCP client at `scri serve` o
 | `~subject` | Ephemeral | In-memory only (dies with process). **Not available from the CLI.** |
 
 Names are sanitized for filesystem safety: `..` is stripped, `/` and `\` are replaced with `_`, and invalid filename characters are removed.
+
+Artifact locations are implementation details. `ArtifactEntry.Address` is the logical address and
+`ArtifactEntry.ArtifactKey` is an opaque, store-relative key suitable for portable persistence.
+Clients must not treat the key as a URI or construct a filesystem location from it; the store owns
+artifact resolution.
 
 ### Reserved Path Conventions
 

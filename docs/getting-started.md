@@ -81,6 +81,22 @@ scri store /api/auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
 echo "Always use snake_case for API endpoints" | scri store conventions -
 ```
 
+### Addressing rules
+
+Scrinia uses logical memory addresses rather than filesystem paths or URIs. Persistent memories
+use a path such as `/api/auth-flow`; a bare subject such as `session-notes` is accepted by the CLI
+and normalized to a persistent address. Ephemeral memories use the canonical `~name` form, and
+`/temp/name` is an alias for the same in-process memory.
+
+`file://` values, drive-letter paths, and other URI or physical-path forms are rejected. In .NET
+integrations, parse input with `MemoryAddress.Parse(raw)` or validate it with
+`MemoryAddress.TryParse(raw, out address, out error)` rather than passing raw address strings
+through the store or plugin contracts.
+
+The CLI is persistent-only: its memory commands reject `~name` and `/temp/name` because each
+invocation exits immediately, so an ephemeral write could not survive. Use an MCP client connected
+to the long-lived `scri serve` process for ephemeral memories.
+
 ### 3. Search
 
 ```sh
@@ -127,6 +143,9 @@ Memories are organized into three scopes:
 **Topics** group related memories (e.g., `/api/auth`, `/api/endpoints`, `/arch/decisions`). Use them to organize knowledge by domain.
 
 **Ephemeral** memories are scratch space that disappears when the process exits. Useful for temporary context within a session.
+
+The two spellings `~subject` and `/temp/subject` address the same ephemeral memory; responses use
+the canonical `~subject` spelling. The CLI does not support either spelling.
 
 ## MCP Tools Overview
 

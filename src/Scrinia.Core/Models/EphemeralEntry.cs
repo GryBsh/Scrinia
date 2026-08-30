@@ -40,13 +40,12 @@ public sealed record EphemeralEntry(
     /// projection means adding a field to <see cref="EphemeralEntry"/> cannot silently miss a site.
     /// </para>
     ///
-    /// <para><see cref="ArtifactEntry.Uri"/> is empty because an ephemeral memory has no backing
-    /// file. <see cref="ArtifactEntry.Name"/> is BARE — the <c>~</c> belongs to a caller-facing
-    /// address, and is added by whoever builds one, never carried on the record.</para>
+    /// <para>Ephemeral memories have no durable artifact. The <c>~</c> belongs to the
+    /// caller-facing address and is added by whoever builds one, never carried on the record.</para>
     /// </summary>
     public ArtifactEntry ToArtifactEntry() => new(
-        Name: Name,
-        Uri: "",
+        Address: MemoryAddress.Parse($"~{Name}"),
+        ArtifactKey: $"ephemeral/{Name}",
         OriginalBytes: OriginalBytes,
         ChunkCount: ChunkCount,
         CreatedAt: CreatedAt,
@@ -65,8 +64,8 @@ public sealed record EphemeralEntry(
     /// <para><b>One-sided, not an inverse.</b> <c>e.WithMetadataFrom(e.ToArtifactEntry())</c> is
     /// <c>e</c> — that direction holds, because <see cref="ToArtifactEntry"/> drops no shared field.
     /// The other direction does NOT: <c>a</c> is not
-    /// <c>e.WithMetadataFrom(a).ToArtifactEntry()</c> whenever <c>a.Uri</c> is non-empty, since
-    /// <see cref="EphemeralEntry"/> has no <c>Uri</c> to hold it and the projection back out writes
+    /// <c>e.WithMetadataFrom(a).ToArtifactEntry()</c> whenever <c>a.ArtifactKey</c> is non-empty, since
+    /// <see cref="EphemeralEntry"/> has no durable key to hold it and the projection back out writes
     /// the empty placeholder. Harmless as used — every caller applies this to an entry derived from
     /// an ephemeral, which has no backing file and so no address — but "the inverse" claimed a
     /// symmetry the pair does not have.</para>

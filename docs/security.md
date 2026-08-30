@@ -47,6 +47,11 @@ write reach the decoder.
 constrained to the workspace root before any file I/O. A memory name cannot address a file outside
 `.scrinia/`.
 
+Memory addresses are logical and validated before they reach storage. `file://` and other URI
+forms, drive-letter paths, query/fragment syntax, and physical filesystem paths are rejected rather
+than resolved. Persisted `ArtifactKey` values are opaque store-relative keys; callers must not use
+them as URIs or bypass the store's path validation.
+
 ### Response injection
 
 MCP responses are hand-built YAML. The serialiser escapes control characters and quotes problematic

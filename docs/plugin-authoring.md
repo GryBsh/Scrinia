@@ -43,6 +43,21 @@ same process boundary a second time.
 The executable may configure itself with `EmbeddingsPlugin.Configure(IConfiguration)`. There is no
 HTTP endpoint-registration or web-host contract for plugins.
 
+## Memory address contract
+
+Plugin callbacks receive the validated `MemoryAddress` value type in their event payloads and
+callback methods. Use `MemoryAddress.Parse(raw)` when converting trusted configuration or
+`MemoryAddress.TryParse(raw, out address, out error)` when handling external input. Do not add raw
+string address parameters, URI resolvers, or `file://` handling to a plugin.
+
+`MemoryAddress` distinguishes persistent addresses from ephemeral addresses. `~name` is the
+canonical ephemeral spelling; `/temp/name` is its accepted alias. The host's CLI is
+persistent-only, while a long-lived MCP server process can dispatch events for ephemeral memories.
+
+`ArtifactEntry.Address` identifies the logical memory. `ArtifactEntry.ArtifactKey` is an opaque,
+store-relative portability key. Pass the typed address back to the supplied `IPluginStore` for
+reads; do not interpret or concatenate the artifact key as a filesystem path or URI.
+
 ## Testing
 
 Instantiate the plugin directly and call its methods. Inject a deterministic `IEmbeddingProvider`

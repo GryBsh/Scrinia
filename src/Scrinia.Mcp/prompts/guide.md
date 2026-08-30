@@ -8,6 +8,10 @@ Scrinia is persistent, project-scoped memory and reusable skill prompts, exposed
 
 A memory is content stored at a **path** like `/findings/SEC-001`. Paths are hierarchical and auto-tagged for search — `/api/auth-flow` is findable by `api`, `auth`, `flow`. Scope a search to a prefix: `search({ query: 'auth', pathPrefix: '/api/' })`.
 
+Memory addresses are logical values, not filesystem paths or URIs. Persistent addresses use `/topic/name` (or a bare name at the tool boundary); ephemeral addresses use the canonical `~name` form. `/temp/name` is accepted as an alias and canonicalized to `~name`. Do not pass `file://`, other URIs, drive-letter paths, or physical filesystem paths.
+
+When writing integrations in .NET, use `MemoryAddress.Parse(raw)` when invalid input should throw, or `MemoryAddress.TryParse(raw, out address, out error)` when it should be reported to the caller. Store and plugin contracts use the typed `MemoryAddress`; artifact locations are opaque `ArtifactKey` values and must not be interpreted as URIs.
+
 ### Chunks
 
 A memory's `content` is an **array of chunks**, each stored and retrieved independently. Split a memory along its semantically distinct parts — like the sections of a document — not by size:
@@ -135,6 +139,8 @@ Any path works; a few prefixes carry first-class behavior:
 | `/temp/...` | Ephemeral — dies on process exit. An alias for `~name`; both spell the same memory. |
 
 Any other path is plain memory, grouped by its first segment.
+
+The CLI is persistent-only. Its memory commands reject both `~name` and `/temp/name` with a forbidden-address error because each CLI invocation is a short-lived process. Use an MCP client connected to the long-lived `scri serve` process for ephemeral memories. URI-shaped or physical paths are rejected as unsupported input rather than resolved.
 
 ### Reading responses
 

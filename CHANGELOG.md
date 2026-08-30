@@ -10,6 +10,34 @@ and all assembly attributes.
 
 ## [0.6.0] — 2026-08-27
 
+### Changed (breaking) — unified logical memory addressing
+
+- All public memory-facing contracts use the typed `MemoryAddress` value. .NET callers must use
+  `MemoryAddress.Parse(raw)` or `MemoryAddress.TryParse(raw, out address, out error)` instead of
+  passing raw address strings through stores, callbacks, or event payloads.
+- Persistent addresses remain logical paths such as `/api/auth-flow`; bare subjects are normalized
+  at the CLI/tool boundary. Ephemeral addresses have one canonical display form, `~name`.
+- `/temp/name` is a supported alias for the ephemeral address `~name`. The alias is canonicalized
+  before lookup and responses use the `~name` spelling, so the two forms cannot create separate
+  memories.
+- The CLI is persistent-only. `scri store`, `show`, `forget`, `append`, `compact`, and `link`
+  reject `~name` and `/temp/name` with `forbidden_address_kind` and exit status 1. Use MCP through
+  the long-lived `scri serve` process for ephemeral memories.
+- MCP address inputs accept logical names and paths only. `file://` URIs and other URI forms are
+  rejected with `UNSUPPORTED_INPUT_FORM`; drive paths and other physical filesystem paths are
+  rejected as malformed. Scrinia does not resolve caller-supplied addresses to arbitrary files.
+- `ArtifactEntry` now exposes the logical `Address` and an opaque, store-relative `ArtifactKey`.
+  Artifact keys are portable persistence data, not URIs; stores own their resolution and callers
+  must not construct filesystem paths from them.
+- Plugin callbacks and `IPluginStore` artifact reads use typed addresses. Plugin authors must pass
+  `MemoryAddress` values and use the supplied store for artifact access rather than implementing
+  URI resolution or relying on physical locations.
+
+Existing persisted metadata is read through the current sidecar/bundle migration path. Legacy
+physical-location fields are discarded at bundle import; a legacy subject is converted to a
+logical address and a missing artifact key receives a synthetic portable key. Physical URI-shaped
+artifact metadata is not a supported public input or output.
+
 ### Fixed — interrupted bundle restores recover per topic scope
 
 - Bundle topic restore now records a durable, versioned journal containing the final artifact body and

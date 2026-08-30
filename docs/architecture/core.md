@@ -328,7 +328,8 @@ that cannot answer must throw. `FileMemoryStore` is the current filesystem imple
 derived out (see `MemoryDerivation`, above). Neither has a default body: a store added later must
 say how it derives rather than silently inheriting a derivation that is wrong for it.
 
-**CRUD:** `LoadIndex`, `Upsert`, `Remove`, `ResolveArtifactAsync`
+**CRUD:** `ReadAsync(MemoryAddress)`, `WriteAsync(MemoryAddress, MemoryWrite)`,
+`DeleteAsync(MemoryAddress)`, plus index maintenance through `LoadIndex`, `Upsert`, and `Remove`
 
 **Listing:** `ListScoped(scopes)`
 
@@ -345,9 +346,10 @@ build."
 
 **Ephemeral:** `RememberEphemeral`, `ForgetEphemeral`, `GetEphemeral`
 
-**File I/O:** `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact`
+**File I/O:** `WriteArtifactAsync`, `ReadArtifactAsync(MemoryAddress)`, `DeleteArtifact`
 
-**Naming / addressing:** `ArtifactUri`
+**Naming / addressing:** `MemoryAddress` is the typed logical address. `ArtifactEntry.Address` carries
+the logical address and `ArtifactEntry.ArtifactKey` is an opaque, store-relative persistence key.
 
 **Archive:** `ArchiveVersion`
 
@@ -397,11 +399,10 @@ Instance-based implementation of `IMemoryStore`, and the only one. One instance 
 
 **Name sanitization:** Strips `..`, replaces `/` and `\` with `_`, removes invalid filename characters, extracts final path component.
 
-**Artifact resolution** (`ResolveArtifactAsync`):
-1. If input starts with `NMP/2` → return as-is (inline artifact)
-2. If input starts with `file://` → read file at URI path
-3. If input starts with `~` → read from ephemeral store
-4. Otherwise → parse as qualified name, read from filesystem
+**Artifact resolution:** callers provide a parsed `MemoryAddress` to `ReadAsync` or
+`ReadArtifactAsync`. Inline NMP/2 decoding is an MCP recall concern, not a store address form.
+The store owns mapping the opaque `ArtifactKey` to its local filesystem and never accepts caller
+supplied file URIs.
 
 ### Journaled Bundle Restore Recovery
 
@@ -592,15 +593,15 @@ Dispatch via `SearchContributorContext`:
 
 Plugin hook for reacting to store/append/forget events. Takes `IPluginStore`, not the full
 `IMemoryStore` — the four-member surface (`ParseQualifiedName`, `IsEphemeral`,
-`ResolveArtifactAsync`, `ReadArtifactAsync`) is what the sink path actually uses; a sink needing
+`ReadArtifactAsync`) is what the sink path actually uses; a sink needing
 more can cast to `IMemoryStore`:
 
 ```csharp
 public interface IMemoryEventSink
 {
-    Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct);
-    Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct);
-    Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct);
+    Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct);
+    Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct);
+    Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct);
 }
 ```
 
