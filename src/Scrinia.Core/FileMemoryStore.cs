@@ -483,7 +483,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // and PersistEphemeral's are two views of ONE memory, and a field present in one and
             // null in the other means the answer depends on which read you came through — the
             // reason Keywords and AgentKeywords both had to be added to it after the fact.
-            result.Add(new ScopedArtifact("ephemeral", kvp.Value.ToArtifactEntry()));
+            result.Add(new ScopedArtifact("ephemeral", ProjectEphemeralEntry(kvp.Value)));
         }
         return result;
     }
@@ -541,7 +541,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public string WorkspaceRoot => _workspaceRoot;
 
     public string ArtifactPath(string name, string scope = "local") =>
-        Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".nmp2");
+        MapArtifactKey(BuildArtifactKey(SanitizeName(name), scope));
 
     internal string MetaPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".meta.json");
@@ -1612,7 +1612,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             // DISK-AUTHORITATIVE, and it has to be. This does not merely READ the entry: `mutate`
             // and MemoryDerivation.ForMetadataUpdate below build the full entry that gets written
-            // back FROM it, so every field the mutation leaves alone (Uri, OriginalBytes,
+            // back FROM it, so every field the mutation leaves alone (ArtifactKey, OriginalBytes,
             // ChunkEntries, ContentPreview, TermFrequencies, ...) is copied from whatever this
             // lookup returned. Serving it from `_indexCache` would therefore not just answer with
             // stale data, it would PERSIST stale data over a concurrent writer's — and staleness
@@ -2026,7 +2026,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             AgentKeywords: derived.AgentKeywords);
 
         RememberEphemeral(key, stored);
-        return stored.ToArtifactEntry();
+        return ProjectEphemeralEntry(stored);
+    }
+
+    private static ArtifactEntry ProjectEphemeralEntry(EphemeralEntry entry)
+    {
+        string address = $"~{entry.Name}";
+        return entry.ToArtifactEntry() with
+        {
+            Address = MemoryAddress.Parse(address),
+            ArtifactKey = BuildArtifactKey(entry.Name, "ephemeral")
+        };
     }
 
     /// <summary>
@@ -2116,7 +2126,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             //
             // Fixed here rather than at the three forget() call sites: DeleteArtifact is a public
             // store primitive, the pairing with Remove is what has to agree, and the forget path
-            // path (MemoryTools.Core.cs) sweeps every read scope with a name taken from a URI and
+            // path (MemoryTools.Core.cs) sweeps every read scope with a name taken from an address and
             // has no entry in hand to canonicalize from. Aligning the primitive fixes all callers,
             // including any added later; canonicalizing at call sites fixes only the ones edited.
             //
@@ -2153,8 +2163,45 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return true;
     }
 
-    private static string BuildArtifactKey(string subject, string scope) =>
-        $"artifacts/{scope.Replace(':', '/')}/{subject}.nmp2";
+    private static string BuildArtifactKey(string subject, string scope)
+    {
+        string topic = scope.Equals("local", StringComparison.Ordinal)
+            ? ""
+            : scope.Equals("ephemeral", StringComparison.Ordinal)
+                ? "ephemeral/"
+            : scope.StartsWith("local:", StringComparison.Ordinal)
+                ? scope["local:".Length..] + "/"
+                : throw new ArgumentException($"Unknown scope: {scope}", nameof(scope));
+        return $"artifacts/{topic}{subject}.nmp2";
+    }
+
+    private string MapArtifactKey(string artifactKey)
+    {
+        ValidateArtifactKey(artifactKey);
+
+        const string prefix = "artifacts/";
+        string relativePath = artifactKey[prefix.Length..];
+        string candidate = Path.GetFullPath(Path.Combine(MemoriesRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        if (!PathContainment.IsWithin(MemoriesRoot, candidate))
+            throw new ArgumentException("ArtifactKey resolves outside the store root.", nameof(artifactKey));
+        return candidate;
+    }
+
+    private static void ValidateArtifactKey(string artifactKey)
+    {
+        if (string.IsNullOrWhiteSpace(artifactKey) ||
+            artifactKey.Contains('\\') ||
+            artifactKey.Contains(':') ||
+            artifactKey.StartsWith('/') ||
+            !artifactKey.StartsWith("artifacts/", StringComparison.Ordinal) ||
+            Uri.TryCreate(artifactKey, UriKind.Absolute, out _))
+            throw new ArgumentException("ArtifactKey must be a portable store-relative key.", nameof(artifactKey));
+
+        string relative = artifactKey["artifacts/".Length..];
+        string[] segments = relative.Split('/');
+        if (segments.Length == 0 || segments.Any(segment => segment is "" or "." or ".."))
+            throw new ArgumentException("ArtifactKey must not contain traversal segments.", nameof(artifactKey));
+    }
 
     // ── Typed artifact reads ────────────────────────────────────────────────
 
@@ -2176,22 +2223,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 throw new FileNotFoundException($"Memory '{address}' not found.", path);
             return await File.ReadAllTextAsync(path, ct);
         });
-    }
-
-    private string? GetArtifactPathScope(string artifactPath)
-    {
-        if (!artifactPath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
-            return null;
-
-        string memoriesRoot = Path.GetFullPath(MemoriesRoot);
-        string artifactDirectory = Path.GetDirectoryName(artifactPath)!;
-        if (!PathContainment.IsWithin(memoriesRoot, artifactDirectory))
-            return null;
-
-        string relativeDirectory = Path.GetRelativePath(memoriesRoot, artifactDirectory);
-        return relativeDirectory == "."
-            ? "local"
-            : $"local:{relativeDirectory.Replace(Path.DirectorySeparatorChar, '/')}";
     }
 
     // ── Listing & Search ─────────────────────────────────────────────────────
@@ -2708,7 +2739,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 if (exists && !overwrite || !artifactBytes.ContainsKey(entry.Name))
                     continue;
 
-                    // Uri is recomputed deliberately: it encodes THIS store's root, so the exporting
+                    // ArtifactKey is recomputed deliberately: it identifies THIS store's layout, so the exporting
                     // machine's value is wrong here. CreatedAt is NOT — a restore reinstates the
                     // memory as it was, and overwriting it reset every memory's creation date on
                     // every restore (design review finding M4). A bundle carrying no "createdAt" key

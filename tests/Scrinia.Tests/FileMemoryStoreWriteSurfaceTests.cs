@@ -445,6 +445,8 @@ public class FileMemoryStoreWriteSurfaceTests
 
         var listed = tmp.Store.ListScoped(null).Single(s => s.Scope == "ephemeral").Entry;
 
+        listed.Address.Should().Be(MemoryAddress.Parse("~scratch"));
+        listed.ArtifactKey.Should().Be("artifacts/ephemeral/scratch.nmp2");
         listed.AgentKeywords.Should().Equal(written.AgentKeywords,
             because: "two projections of one record must not disagree about it");
         listed.Keywords.Should().Equal(written.Keywords,
