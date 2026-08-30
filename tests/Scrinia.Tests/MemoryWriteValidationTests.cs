@@ -110,16 +110,31 @@ public sealed class MemoryWriteValidationTests
     }
 
     [Fact]
+    public void ValidatedCollections_RejectMutationThroughMutableInterfaces()
+    {
+        var write = MemoryWrite.TryCreate(Address, ["body"],
+            new Dictionary<string, IReadOnlyList<string>> { ["tag"] = ["one"] }, ["keyword"]).Write!;
+
+        FluentActions.Invoking(() => ((IList<ReadOnlyMemory<byte>>)write.Content).Add(ReadOnlyMemory<byte>.Empty))
+            .Should().Throw<NotSupportedException>();
+        FluentActions.Invoking(() => ((IDictionary<string, IReadOnlyList<string>>)write.Attributes).Clear())
+            .Should().Throw<NotSupportedException>();
+        FluentActions.Invoking(() => ((IList<string>)write.Attributes["tag"]!).Clear())
+            .Should().Throw<NotSupportedException>();
+        FluentActions.Invoking(() => ((IList<string>)write.Keywords).Clear())
+            .Should().Throw<NotSupportedException>();
+    }
+
+    [Fact]
     public async Task InvalidValidationResult_DoesNotInvokeMutationSpyWriteBoundary()
     {
-        var result = MemoryWrite.TryCreate(Address, ["body"],
-            new Dictionary<string, IReadOnlyList<string>>(), [], DefaultOptions with { MaxContentBytesPerChunk = 1 });
+        var write = MemoryWrite.TryCreate(Address, ["body"],
+            new Dictionary<string, IReadOnlyList<string>>(), [], DefaultOptions).Write!;
         var spy = new MutationSpyStore();
 
-        if (result.IsValid)
-            await spy.StoreAsync(result.Write!);
+        await FluentActions.Invoking(() => spy.StoreAsync(write, DefaultOptions with { MaxContentBytesPerChunk = 1 }))
+            .Should().ThrowAsync<InvalidMemoryWriteException>();
 
-        result.Error!.Code.Should().Be("content_chunk_too_large");
         spy.StoreCalls.Should().Be(0);
     }
 
@@ -146,8 +161,9 @@ public sealed class MemoryWriteValidationTests
     {
         public int StoreCalls { get; private set; }
 
-        public Task StoreAsync(MemoryWrite write)
+        public Task StoreAsync(MemoryWrite write, MemoryValidationOptions options)
         {
+            write.ValidateOrThrow(options);
             StoreCalls++;
             return Task.CompletedTask;
         }

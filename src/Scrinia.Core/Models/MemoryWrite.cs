@@ -1,4 +1,5 @@
 using System.Text;
+using System.Collections.ObjectModel;
 using Scrinia.Core.Encoding;
 
 namespace Scrinia.Core.Models;
@@ -69,7 +70,7 @@ public sealed record MemoryWrite
     public const int MaxPersistentSubjectLength = 182;
 
     /// <summary>Initializes the raw write input.</summary>
-    public MemoryWrite(
+    internal MemoryWrite(
         string Name,
         string Scope,
         string[] Content,
@@ -121,7 +122,7 @@ public sealed record MemoryWrite
         Address = valid.Address;
         Name = valid.Name;
         Scope = valid.Scope;
-        Content = content.Select(chunk => (ReadOnlyMemory<byte>)chunk.ToArray()).ToArray();
+        Content = valid.Content;
         RawContent = valid.RawContent;
         Description = valid.Description;
         Attributes = valid.Attributes;
@@ -133,10 +134,13 @@ public sealed record MemoryWrite
         string? description, string[] rawContent)
     {
         Address = address;
-        Content = content.Select(chunk => (ReadOnlyMemory<byte>)chunk.ToArray()).ToArray();
-        Attributes = new Dictionary<string, IReadOnlyList<string>>(attributes.ToDictionary(
-            pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value.ToArray()), StringComparer.OrdinalIgnoreCase);
-        Keywords = keywords.ToArray();
+        Content = new ReadOnlyCollection<ReadOnlyMemory<byte>>(
+            content.Select(chunk => (ReadOnlyMemory<byte>)chunk.ToArray()).ToArray());
+        Attributes = new ReadOnlyDictionary<string, IReadOnlyList<string>>(
+            attributes.ToDictionary(pair => pair.Key,
+                pair => (IReadOnlyList<string>)new ReadOnlyCollection<string>(pair.Value.ToArray()),
+                StringComparer.OrdinalIgnoreCase));
+        Keywords = new ReadOnlyCollection<string>(keywords.ToArray());
         Description = description;
         RawContent = rawContent.ToArray();
         Name = address.ToString();
