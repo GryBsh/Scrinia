@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Plugin.Abstractions;
 
@@ -7,7 +8,7 @@ namespace Scrinia.Plugin.Abstractions;
 public sealed class BeforeStoreContext
 {
     public required IMemoryStore Store { get; init; }
-    public required string Name { get; init; }
+    public required MemoryAddress Address { get; init; }
     public required string[] Content { get; init; }
     public required string? Description { get; init; }
     public required string[]? Tags { get; init; }
@@ -23,8 +24,7 @@ public sealed class BeforeStoreContext
 public sealed class AfterStoreContext
 {
     public required IMemoryStore Store { get; init; }
-    public required string Name { get; init; }
-    public required string QualifiedName { get; init; }
+    public required MemoryAddress Address { get; init; }
     public required int ChunkCount { get; init; }
     public required long OriginalBytes { get; init; }
 
@@ -37,7 +37,7 @@ public sealed class AfterStoreContext
 public sealed class BeforeAppendContext
 {
     public required IMemoryStore Store { get; init; }
-    public required string Name { get; init; }
+    public required MemoryAddress Address { get; init; }
     public required string Content { get; init; }
 
     public bool Cancel { get; set; }
@@ -47,7 +47,7 @@ public sealed class BeforeAppendContext
 public sealed class AfterAppendContext
 {
     public required IMemoryStore Store { get; init; }
-    public required string Name { get; init; }
+    public required MemoryAddress Address { get; init; }
     public required int ChunkCount { get; init; }
     public required long OriginalBytes { get; init; }
 
@@ -60,7 +60,7 @@ public sealed class AfterAppendContext
 public sealed class BeforeForgetContext
 {
     public required IMemoryStore Store { get; init; }
-    public required string Name { get; init; }
+    public required MemoryAddress Address { get; init; }
 
     public bool Cancel { get; set; }
     public string? CancelReason { get; set; }
@@ -69,6 +69,6 @@ public sealed class BeforeForgetContext
 public sealed class AfterForgetContext
 {
     public required IMemoryStore Store { get; init; }
-    public required string Name { get; init; }
+    public required MemoryAddress Address { get; init; }
     public required bool WasDeleted { get; init; }
 }

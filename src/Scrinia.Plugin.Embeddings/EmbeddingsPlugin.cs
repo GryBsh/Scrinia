@@ -248,17 +248,17 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     public async Task OnAfterStoreAsync(AfterStoreContext ctx, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(ctx.Store.ParseAddress(ctx.QualifiedName), ctx.Content, ctx.Store, ct);
+        await EmbedAndIndexAsync(ctx.Address, ctx.Content, ctx.Store, ct);
     }
 
     public async Task OnAfterAppendAsync(AfterAppendContext ctx, CancellationToken ct)
     {
-        await ReembedFullMemoryAsync(ctx.Store.ParseAddress(ctx.Name), ctx.Store, ct);
+        await ReembedFullMemoryAsync(ctx.Address, ctx.Store, ct);
     }
 
     public async Task OnAfterForgetAsync(AfterForgetContext ctx, CancellationToken ct)
     {
-        await RemoveVectorsAsync(ctx.Store.ParseAddress(ctx.Name), ctx.WasDeleted, ctx.Store, ct);
+        await RemoveVectorsAsync(ctx.Address, ctx.WasDeleted, ctx.Store, ct);
     }
 
     // -- IMemoryEventSink (MCP path) --

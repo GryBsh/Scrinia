@@ -208,7 +208,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         // malformed name) on every store/append when it was never going to call out anyway.
         if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
-        var (scope, name) = store.ParseQualifiedName(address.ToString());
+        var (scope, name) = store.ResolveAddress(address);
 
         if (_hasIndex)
         {
@@ -256,7 +256,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         // See OnStoredAsync — same early-return-before-parse fix, same reason.
         if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
-        var (scope, name) = store.ParseQualifiedName(address.ToString());
+        var (scope, name) = store.ResolveAddress(address);
 
         if (_hasIndex)
         {
@@ -297,7 +297,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     {
         if (!wasDeleted || _degraded || !_hasRemove) return;
 
-        var (scope, name) = store.ParseQualifiedName(address.ToString());
+        var (scope, name) = store.ResolveAddress(address);
         await CallToolWithRetryAsync("remove", new Dictionary<string, object?>
         {
             ["scope"] = scope,

@@ -42,7 +42,7 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
     {
         if (!provider.IsAvailable) return;
 
-        var (scope, subject) = store.ParseQualifiedName(address.ToString());
+        var (scope, subject) = store.ResolveAddress(address);
 
         // Case-insensitive to match IMemoryStore's default TryUpdateEntry: SanitizeName does not
         // fold case, so an ordinal match here gated a case-mismatched name out of promotion

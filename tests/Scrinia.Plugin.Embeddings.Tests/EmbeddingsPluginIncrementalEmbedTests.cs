@@ -194,7 +194,7 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         var ctx = new AfterAppendContext
         {
             Store = _store,
-            Name = qn,
+            Address = MemoryAddress.Parse(qn),
             ChunkCount = 1,
             OriginalBytes = 5,
             Content = "ABCDE",

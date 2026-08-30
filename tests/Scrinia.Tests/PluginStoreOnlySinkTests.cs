@@ -27,6 +27,10 @@ public class PluginStoreOnlySinkTests
 
         public bool IsEphemeral(string name) => ephemeral;
 
+        public (string Scope, string Subject) ResolveAddress(MemoryAddress address) =>
+            address.Kind == MemoryAddressKind.Ephemeral ? ("ephemeral", address.Value) :
+            ("local:memory/api", address.Value.TrimStart('/').Split('/')[^1]);
+
         public Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default)
         {
             ReadCalled = true;
