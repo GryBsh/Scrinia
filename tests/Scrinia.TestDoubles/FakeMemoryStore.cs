@@ -19,6 +19,12 @@ namespace Scrinia.TestDoubles;
 /// </summary>
 public class FakeMemoryStore : IMemoryStore
 {
+    public virtual ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default) =>
+        ValueTask.FromException<ArtifactEntry?>(new NotSupportedException("Fake store does not support typed reads."));
+    public virtual ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write, CancellationToken ct = default) =>
+        ValueTask.FromException<ArtifactEntry>(new NotSupportedException("Fake store does not support typed writes."));
+    public virtual ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default) =>
+        ValueTask.FromException(new NotSupportedException("Fake store does not support typed deletes."));
     public virtual (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
     public virtual string FormatQualifiedName(string scope, string subject) => $"{scope}:{subject}";
     public virtual bool IsEphemeral(string name) => name.StartsWith('~');
@@ -39,10 +45,10 @@ public class FakeMemoryStore : IMemoryStore
     public virtual bool ForgetEphemeral(string key) => false;
     public virtual EphemeralEntry? GetEphemeral(string key) => null;
     public virtual void ArchiveVersion(string subject, string scope = "local") { }
-    public virtual Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) => Task.FromResult("");
+    public virtual Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
+        Task.FromException<string>(new NotSupportedException("Fake store does not support artifact reads."));
     public virtual Task WriteArtifactAsync(string subject, string scope, string artifactText,
         CancellationToken ct = default) => Task.CompletedTask;
-    public virtual Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
     public virtual bool DeleteArtifact(string subject, string scope) => false;
     public virtual string[] DiscoverTopics() => [];
     public virtual List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null) => [];

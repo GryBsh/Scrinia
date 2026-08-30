@@ -90,7 +90,7 @@ public sealed class DualModeParseTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(legacyDir, "frontend.nmp2"), "v1 stored content");
 
         var (scope, subject) = _store.ParseQualifiedName("/research/frontend");
-        string content = await _store.ReadArtifactAsync(subject, scope);
+        string content = await _store.ReadArtifactAsync(MemoryAddress.Parse("/research/frontend"));
 
         content.Should().Be("v1 stored content");
         File.Exists(Path.Combine(_root, ".scrinia", "memories", "research", "frontend.nmp2"))
@@ -107,7 +107,7 @@ public sealed class DualModeParseTests : IDisposable
         string v2Path = _store.ArtifactPath(subjectV2, scopeV2);
         File.Exists(v2Path).Should().BeTrue("v2 write should create the file");
 
-        string v2Content = await _store.ReadArtifactAsync(subjectV2, scopeV2);
+        string v2Content = await _store.ReadArtifactAsync(MemoryAddress.Parse("/api/auth-flow"));
         v2Content.Should().Be("v2 stored content");
     }
 
@@ -124,7 +124,7 @@ public sealed class DualModeParseTests : IDisposable
 
         // Read via v2 path — should fall back to the v1 location
         var (scope, subject) = _store.ParseQualifiedName("/api/auth-flow");
-        string content = await _store.ReadArtifactAsync(subject, scope);
+        string content = await _store.ReadArtifactAsync(MemoryAddress.Parse("/api/auth-flow"));
 
         content.Should().Be("legacy v1 content");
     }
@@ -147,7 +147,7 @@ public sealed class DualModeParseTests : IDisposable
         await File.WriteAllTextAsync(nsFile, "namespaced legacy content");
 
         var (scope, subject) = _store.ParseQualifiedName("/skill/frontend");
-        string content = await _store.ReadArtifactAsync(subject, scope);
+        string content = await _store.ReadArtifactAsync(MemoryAddress.Parse("/skill/frontend"));
 
         content.Should().Be("namespaced legacy content");
         File.Exists(Path.Combine(_root, ".scrinia", "memories", "skill", "frontend.nmp2"))
@@ -171,7 +171,7 @@ public sealed class DualModeParseTests : IDisposable
         await File.WriteAllTextAsync(legacyFile, "v1 legacy content");
 
         // Reading should return v2 primary content, not legacy
-        string content = await _store.ReadArtifactAsync(subject, scope);
+        string content = await _store.ReadArtifactAsync(MemoryAddress.Parse("/goal/G-5/research/frontend"));
         content.Should().Be("v2 primary content");
     }
 

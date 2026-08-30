@@ -264,7 +264,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             // vectors atomically — sending only the appended fragment would destroy every vector
             // for the rest of the memory. Re-read the current artifact and send the full
             // post-append content array, same reasoning as CoreEmbeddingEventHandler.
-            string artifact = await store.ReadArtifactAsync(name, scope, ct);
+            string artifact = await store.ReadArtifactAsync(address, ct);
             if (string.IsNullOrWhiteSpace(artifact)) return;
 
             var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;

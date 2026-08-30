@@ -66,12 +66,12 @@ public sealed class CoreEmbeddingEventHandlerEphemeralAppendTests : IDisposable
 
         // Drive OnStoredAsync the way the real store call site does, so the store path's vectors
         // exist to compare the append path's write against.
-        await handler.OnStoredAsync(qualifiedName, ["first element"], _store, CancellationToken.None);
+        await handler.OnStoredAsync(MemoryAddress.Parse(qualifiedName), ["first element"], _store, CancellationToken.None);
 
         // Grow the memory (still ephemeral) and drive the append path — mirrors
         // MemoryTools.Core.cs's append call site, which passes only the appended fragment.
         await _store.AppendAsync(new MemoryWrite("~note", "local", ["second element"]));
-        await handler.OnAppendedAsync(qualifiedName, "second element", _store, CancellationToken.None);
+        await handler.OnAppendedAsync(MemoryAddress.Parse(qualifiedName), "second element", _store, CancellationToken.None);
 
         // Assertion 1: vectors exist for EVERY element, under the (scope, subject) the store path
         // used. Fails against unfixed code — the append's read throws FileNotFoundException

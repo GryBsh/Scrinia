@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
 
@@ -106,7 +107,7 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
             MemoryEventSinkContext.Default.Should().BeOfType<CompositeEventSink>();
 
             await MemoryEventSinkContext.Default!.OnStoredAsync(
-                "test:topic", ["chunk"], null!, CancellationToken.None);
+                MemoryAddress.Parse("/test/topic"), ["chunk"], null!, CancellationToken.None);
 
             order.Should().Equal(
                 ["a", "b"],
@@ -143,7 +144,7 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
             MemoryEventSinkContext.InstallDefault(sink, sink);
 
             await MemoryEventSinkContext.Default!.OnStoredAsync(
-                "test", ["content"], null!, CancellationToken.None);
+                MemoryAddress.Parse("/test"), ["content"], null!, CancellationToken.None);
 
             order.Should().Equal("one");
         }
@@ -155,28 +156,28 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
 
     private sealed class RecordingSink(string name, List<string> order) : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
             order.Add(name);
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 
     private sealed class NoOpSink : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 }

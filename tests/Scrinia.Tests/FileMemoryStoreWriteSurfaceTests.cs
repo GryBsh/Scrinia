@@ -43,7 +43,7 @@ public class FileMemoryStoreWriteSurfaceTests
 
     private static async Task<string> DecodeAsync(FileMemoryStore store, string subject, string scope = "local")
     {
-        string artifact = await store.ReadArtifactAsync(subject, scope);
+        string artifact = await store.ReadArtifactAsync(MemoryAddress.Parse("/writesurface/item"));
         int count = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         return string.Concat(Enumerable.Range(1, count).Select(i => Nmp2ChunkedEncoder.DecodeChunk(artifact, i)));
     }

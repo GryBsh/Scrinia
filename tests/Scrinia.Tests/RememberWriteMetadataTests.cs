@@ -184,8 +184,6 @@ public class RememberWriteMetadataTests
         public override Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
             Task.FromResult(TwoChunks());
 
-        public override Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) =>
-            Task.FromResult(TwoChunks());
     }
 
     /// <summary>

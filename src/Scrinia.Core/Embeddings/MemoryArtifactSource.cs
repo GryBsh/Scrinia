@@ -60,7 +60,17 @@ public static class MemoryArtifactSource
         IMemoryStore store, string scope, string subject, CancellationToken ct) =>
         IsEphemeral(scope)
             ? store.ReadArtifactAsync(MemoryAddress.Parse($"~{subject}"), ct)
-            : store.ReadArtifactAsync(subject, scope, ct);
+            : ReadPersistentArtifactAsync(store, scope, subject, ct);
+
+    private static async Task<string> ReadPersistentArtifactAsync(
+        IMemoryStore store, string scope, string subject, CancellationToken ct)
+    {
+        var entry = store.LoadIndex(scope).FirstOrDefault(candidate =>
+            candidate.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (entry is null)
+            throw new FileNotFoundException($"Memory '{subject}' was not found in scope '{scope}'.");
+        return await store.ReadArtifactAsync(entry.Address, ct).ConfigureAwait(false);
+    }
 
     public static async Task<string[]> ReadContentElementsAsync(
         IMemoryStore store, MemoryAddress address, CancellationToken ct)
@@ -99,10 +109,13 @@ public static class MemoryArtifactSource
         IPluginStore store, string qualifiedName, CancellationToken ct)
     {
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+        var address = store.IsEphemeral(qualifiedName)
+            ? MemoryAddress.Parse(qualifiedName.StartsWith('~') ? qualifiedName : $"~{subject}")
+            : MemoryAddress.Parse(scope.Equals("local", StringComparison.OrdinalIgnoreCase)
+                ? $"/{subject}"
+                : $"/{scope["local:".Length..]}/{subject}");
 
-        string artifact = store.IsEphemeral(qualifiedName)
-            ? await store.ReadArtifactAsync(MemoryAddress.Parse(qualifiedName), ct)
-            : await store.ReadArtifactAsync(subject, scope, ct);
+        string artifact = await store.ReadArtifactAsync(address, ct);
 
         return (scope, subject, DecodeContentElements(artifact));
     }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Core.Embeddings;
 

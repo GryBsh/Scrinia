@@ -1190,7 +1190,7 @@ public sealed partial class ScriniaMcpTools
         {
             try
             {
-                artifact = await store.ReadArtifactAsync(subject, scope, cancellationToken);
+                artifact = await store.ReadArtifactAsync(MemoryAddress.Parse(name), cancellationToken);
             }
             catch (FileNotFoundException)
             {

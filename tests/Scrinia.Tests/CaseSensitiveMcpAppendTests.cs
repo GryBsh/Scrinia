@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 using Scrinia.Mcp;
 using Scrinia.TestDoubles;
 
@@ -56,7 +57,7 @@ public sealed class CaseSensitiveMcpAppendTests : IDisposable
         // gone. Assert content first, before anything else, because a CreatedAt-only assertion
         // would pass with the bug fully present (StoreAsync/Remember preserve CreatedAt on the
         // fall-through path too).
-        string artifact = await store.ReadArtifactAsync("MixedCase", "local");
+        string artifact = await store.ReadArtifactAsync(MemoryAddress.Parse("/MixedCase"));
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         string fullText = System.Text.Encoding.UTF8.GetString(bytes);
         fullText.Should().Contain("the original body",

@@ -57,7 +57,7 @@ public sealed class EmbeddingsPluginScoringTests
 
         // Two content elements -> two window vectors at ChunkIndex 1000 (element 1, sim 1.0) and
         // 2000 (element 2, sim 0.6), written through the plugin's real write path.
-        await plugin.OnStoredAsync("/note", ["elementA", "elementB"], store, default);
+        await plugin.OnStoredAsync(MemoryAddress.Parse("/note"), ["elementA", "elementB"], store, default);
 
         var candidates = new[]
         {

@@ -127,7 +127,7 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
 
         // First store: 3 short content elements -> one window each -> 3 vectors, one per element
         // (chunk indices 1000, 2000, 3000 — elementIndex * ChunkIndexStride + windowOrdinal 0).
-        await plugin.OnStoredAsync(qn, new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
+        await plugin.OnStoredAsync(MemoryAddress.Parse(qn), new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
         _vectors.GetVectors(scope).Where(v => v.Name == "notes").Select(v => v.ChunkIndex)
             .Should().BeEquivalentTo([1000, 2000, 3000],
                 because: "a memory must end up with one vector per content element");
@@ -135,7 +135,7 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         // Re-store: 1 element -> exactly one vector. Without Remove-first, the 3 old chunk
         // vectors would remain (count 4: the new one plus the 3 stale). With the fix: exactly 1 —
         // re-indexing replaces rather than accumulates.
-        await plugin.OnStoredAsync(qn, new[] { "single" }, _store, CancellationToken.None);
+        await plugin.OnStoredAsync(MemoryAddress.Parse(qn), new[] { "single" }, _store, CancellationToken.None);
         var after = _vectors.GetVectors(scope).Where(v => v.Name == "notes").ToList();
         after.Should().HaveCount(1);
         after[0].ChunkIndex.Should().Be(1000);
@@ -150,16 +150,16 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         const string qn = "/memory/log"; // parses to scope "local:memory", subject "log"
 
         SeedArtifact(scope, subject, "0123456789"); // length 10
-        await plugin.OnStoredAsync(qn, new[] { "0123456789" }, _store, CancellationToken.None);
+        await plugin.OnStoredAsync(MemoryAddress.Parse(qn), new[] { "0123456789" }, _store, CancellationToken.None);
 
         // Append 5 chars on disk (simulating the store's append behavior), then fire the append
         // event with only the fragment — mirrors how OnAppendedAsync (MCP path) is invoked by the
         // real append path (content = just what was appended, not the full memory).
-        string artifact = await _store.ReadArtifactAsync(subject, scope, CancellationToken.None);
+        string artifact = await _store.ReadArtifactAsync(MemoryAddress.Parse(qn), CancellationToken.None);
         string decoded = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks[0];
         string appendedFull = decoded + "ABCDE";
         SeedArtifact(scope, subject, appendedFull); // full content now length 15
-        await plugin.OnAppendedAsync(qn, "ABCDE", _store, CancellationToken.None);
+        await plugin.OnAppendedAsync(MemoryAddress.Parse(qn), "ABCDE", _store, CancellationToken.None);
 
         // The memory has one content element, so exactly one window vector must survive — its
         // value must encode the DECODED full current content length (15), not the 5-char
@@ -184,9 +184,9 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         const string qn = "/memory/log2";
 
         SeedArtifact(scope, subject, "0123456789"); // length 10
-        await plugin.OnStoredAsync(qn, new[] { "0123456789" }, _store, CancellationToken.None);
+        await plugin.OnStoredAsync(MemoryAddress.Parse(qn), new[] { "0123456789" }, _store, CancellationToken.None);
 
-        string artifact = await _store.ReadArtifactAsync(subject, scope, CancellationToken.None);
+        string artifact = await _store.ReadArtifactAsync(MemoryAddress.Parse(qn), CancellationToken.None);
         string decoded = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks[0];
         string appendedFull = decoded + "ABCDE";
         SeedArtifact(scope, subject, appendedFull); // full content now length 15
@@ -216,7 +216,7 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
 
         // Store with the good deterministic provider first: 3 short elements -> 3 vectors, one
         // per element.
-        await plugin.OnStoredAsync(qn, new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
+        await plugin.OnStoredAsync(MemoryAddress.Parse(qn), new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
         int before = _vectors.GetVectors(scope).Count(v => v.Name == "notes");
         before.Should().Be(3);
 
@@ -227,7 +227,7 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         // original 3 vectors are untouched.
         SwapProvider(plugin, new EmptyBatchProvider(), _vectors);
 
-        Func<Task> act = () => plugin.OnStoredAsync(qn, new[] { "ddd" }, _store, CancellationToken.None);
+        Func<Task> act = () => plugin.OnStoredAsync(MemoryAddress.Parse(qn), new[] { "ddd" }, _store, CancellationToken.None);
         await act.Should().NotThrowAsync();
 
         _vectors.GetVectors(scope).Count(v => v.Name == "notes").Should().Be(before,

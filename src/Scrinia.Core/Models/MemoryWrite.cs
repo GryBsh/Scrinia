@@ -131,7 +131,7 @@ public sealed record MemoryWrite
 
     private MemoryWrite(MemoryAddress address, IReadOnlyList<ReadOnlyMemory<byte>> content,
         IReadOnlyDictionary<string, IReadOnlyList<string>> attributes, IReadOnlyList<string> keywords,
-        string? description, string[] rawContent)
+        string? description, string[] rawContent, string scope = "local", string? name = null)
     {
         Address = address;
         Content = new ReadOnlyCollection<ReadOnlyMemory<byte>>(
@@ -143,9 +143,12 @@ public sealed record MemoryWrite
         Keywords = new ReadOnlyCollection<string>(keywords.ToArray());
         Description = description;
         RawContent = rawContent.ToArray();
-        Name = address.ToString();
-        Scope = "local";
+        Name = name ?? address.ToString();
+        Scope = scope;
     }
+
+    internal MemoryWrite Readdress(MemoryAddress address, string scope, string subject) =>
+        new(address, Content, Attributes, Keywords, Description, RawContent, scope, subject);
 
     /// <summary>Creates a validated write and reports the first policy violation.</summary>
     public static MemoryWriteValidationResult TryCreate(

@@ -1,9 +1,9 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
-using Scrinia.Core.Models;
 using Xunit;
 
 namespace Scrinia.Tests.Embeddings;
@@ -163,16 +163,16 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
     {
         public List<string> ReceivedQualifiedNames { get; } = [];
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
-            ReceivedQualifiedNames.Add(qualifiedName);
+            ReceivedQualifiedNames.Add(address.ToString());
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct) =>
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
     }
 }

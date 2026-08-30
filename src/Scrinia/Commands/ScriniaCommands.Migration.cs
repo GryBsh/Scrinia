@@ -296,7 +296,7 @@ public partial class ScriniaCommands
         string path = store.FindArtifactPath(item.Entry.Name, item.Scope);
         if (!File.Exists(path)) return;
 
-        string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
+        string artifact = await store.ReadArtifactAsync(item.Entry.Address, ct);
         if (Nmp2ChunkedEncoder.GetChunkCount(artifact) <= 1) return;
 
         store.ArchiveVersion(item.Entry.Name, item.Scope);

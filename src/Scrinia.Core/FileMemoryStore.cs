@@ -315,7 +315,57 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public bool IsEphemeral(string name) =>
         MemoryNaming.IsEphemeralName(name);
 
+    public (string Scope, string Subject) ResolveAddress(MemoryAddress address)
+    {
+        if (!address.IsValid)
+            throw new ArgumentException("The memory address must be valid.", nameof(address));
+        if (address.Kind == MemoryAddressKind.Ephemeral)
+            return ("ephemeral", address.Value);
+        return ParseQualifiedName(address.Value);
+    }
+
     public string SanitizeName(string name) => SanitizeNameCore(name);
+
+    public ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default)
+    {
+        var (scope, subject) = ResolveAddress(address);
+        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+        {
+            var ephemeral = GetEphemeral(subject);
+            return ValueTask.FromResult<ArtifactEntry?>(ephemeral is null
+                ? null
+                : ephemeral.ToArtifactEntry() with { Address = address });
+        }
+
+        if (!File.Exists(FindArtifactPath(subject, scope)))
+            return ValueTask.FromResult<ArtifactEntry?>(null);
+
+        return ValueTask.FromResult<ArtifactEntry?>(LoadIndex(scope).FirstOrDefault(entry =>
+            entry.Address == address || entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    public async ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        if (write.Address != address)
+            throw new ArgumentException("The write address must match the requested address.", nameof(write));
+        var (scope, subject) = ResolveAddress(address);
+        return await StoreAsync(write.Readdress(address, scope, subject), ct).ConfigureAwait(false);
+    }
+
+    public ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default)
+    {
+        var (scope, subject) = ResolveAddress(address);
+        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            ForgetEphemeral(subject);
+        else
+        {
+            Remove(subject, scope);
+            DeleteArtifact(subject, scope);
+        }
+        return ValueTask.CompletedTask;
+    }
 
     /// <summary>Static core of <see cref="SanitizeName"/> — no instance state, so it is also
     /// usable from <see cref="WriteSidecarCore"/>/<see cref="ExpandLegacyIndexEntries"/>, which
@@ -2016,7 +2066,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         await Task.CompletedTask;
     }
 
-    public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
+    private async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
     {
         return await WithRecoveryReadBarrierAsync(scope, async () =>
         {

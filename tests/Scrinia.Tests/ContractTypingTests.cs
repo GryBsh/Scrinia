@@ -38,9 +38,9 @@ public sealed class ContractTypingTests
 
         methods.Should().NotContain(method => method.Name == "ArtifactUri");
         typeof(IPluginStore).GetMethods().Should().NotContain(method =>
-            method.Name == "ResolveArtifactAsync" || method.GetParameters().Any(parameter =>
-                parameter.ParameterType == typeof(string) &&
-                parameter.Name == "name" || parameter.Name == "subject" || parameter.Name == "qualifiedName"));
+            method.Name == "ResolveArtifactAsync" ||
+            method.Name == "OnStoredAsync" || method.Name == "OnAppendedAsync" || method.Name == "OnForgottenAsync" ||
+            method.Name == "ReadArtifactAsync" && method.GetParameters().First().ParameterType == typeof(string));
         typeof(FileMemoryStore).GetMethods().Should().NotContain(method =>
             method.Name == "ArtifactUri" || method.Name == "ResolveArtifactAsync" ||
             method.GetParameters().Any(parameter => parameter.ParameterType == typeof(Uri)));
@@ -106,6 +106,41 @@ public sealed class ContractTypingTests
 
         store.SearchAddress.Should().Be(matching);
         listed.Select(item => item.Entry.Address).Should().Equal(exactPrefix, descendant);
+    }
+
+    [Fact]
+    public void Typed_crud_contract_methods_are_required_not_default_adapters()
+    {
+        foreach (var name in new[] { "ReadAsync", "WriteAsync", "DeleteAsync" })
+            typeof(IMemoryStore).GetMethod(name)!.IsAbstract.Should().BeTrue(name);
+
+        typeof(IPluginStore).GetMethod(nameof(IPluginStore.ReadArtifactAsync))!.IsAbstract.Should().BeTrue();
+        typeof(IMemoryEventSink).GetMethods().Should().OnlyContain(method => method.IsAbstract);
+    }
+
+    [Fact]
+    public async Task File_store_typed_crud_routes_the_canonical_address()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_contract_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var store = new FileMemoryStore(root);
+            var address = MemoryAddress.Parse("/review/item");
+            var write = MemoryWrite.TryCreate(address, ["typed body"],
+                new Dictionary<string, IReadOnlyList<string>>(), []).Write!;
+
+            var written = await store.WriteAsync(address, write);
+            (await store.ReadAsync(address))!.Address.Should().Be(address);
+            written.Address.Should().Be(address);
+
+            await store.DeleteAsync(address);
+            (await store.ReadAsync(address)).Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

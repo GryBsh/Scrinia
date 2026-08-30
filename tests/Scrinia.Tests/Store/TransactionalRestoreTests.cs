@@ -219,7 +219,7 @@ public sealed class TransactionalRestoreTests
         const string existingName = "keeper";
         const string existingContent = "original body";
         await store.StoreAsync(new MemoryWrite(existingName, Scope, [existingContent]));
-        string bodyBefore = await store.ReadArtifactAsync(existingName, Scope);
+        string bodyBefore = await store.ReadArtifactAsync(MemoryAddress.Parse($"/{existingName}"));
         string storeDir = Path.Combine(scope.TempDir, "notes");
         string rejectedName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
 
@@ -230,7 +230,7 @@ public sealed class TransactionalRestoreTests
             overwrite: true);
 
         import.Should().Throw<InvalidMemoryWriteException>();
-        (await store.ReadArtifactAsync(existingName, Scope)).Should().Be(bodyBefore,
+        (await store.ReadArtifactAsync(MemoryAddress.Parse($"/{existingName}"))).Should().Be(bodyBefore,
             because: "a rejected prepared restore must not mutate an existing live artifact");
         Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty(
             because: "the name is refused before a restore body can be staged");
@@ -316,7 +316,7 @@ public sealed class TransactionalRestoreTests
         foreach (string name in new[] { "alpha", "beta" })
         {
             var entry = cold.LoadIndex(Scope).Single(e => e.Name == name);
-            string body = await cold.ReadArtifactAsync(name, Scope);
+            string body = await cold.ReadArtifactAsync(MemoryAddress.Parse($"/notes/{name}"));
             entry.OriginalBytes.Should().Be(contents[name].Length, because:
                 $"{name}'s sidecar must describe the body actually on disk after a commit");
             body.Should().NotBeNullOrEmpty();
@@ -391,7 +391,7 @@ public sealed class TransactionalRestoreTests
         alphaBodyBytes.Should().NotBeEmpty("alpha's committed body must be present on cold disk");
         alphaSidecarBytes.Should().NotBeEmpty("alpha's committed sidecar must be present on cold disk");
         var alpha = cold.LoadIndex(Scope).Single(e => e.Name == "alpha");
-        string alphaBody = await cold.ReadArtifactAsync("alpha", Scope);
+        string alphaBody = await cold.ReadArtifactAsync(MemoryAddress.Parse("/notes/alpha"));
 
         alphaBody.Should().Be("alpha v2 body",
             "alpha's commit completed before beta's failed");

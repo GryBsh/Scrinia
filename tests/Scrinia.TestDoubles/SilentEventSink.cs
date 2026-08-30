@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.TestDoubles;
 
@@ -34,18 +35,13 @@ namespace Scrinia.TestDoubles;
 /// </summary>
 public sealed class SilentEventSink : IMemoryEventSink
 {
+    public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) => Task.CompletedTask;
+    public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) => Task.CompletedTask;
+    public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) => Task.CompletedTask;
     /// <summary>The one instance. Stateless, so sharing it across every scope is free and makes
     /// "is the sentinel installed?" answerable by reference equality.</summary>
     public static readonly SilentEventSink Instance = new();
 
     private SilentEventSink() { }
 
-    public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct) =>
-        Task.CompletedTask;
-
-    public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct) =>
-        Task.CompletedTask;
-
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
-        Task.CompletedTask;
 }

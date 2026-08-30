@@ -49,7 +49,7 @@ public class EntityTypingEventHandlerTests
         var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
         var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
 
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Seraphim."], store, default);
 
         var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "note");
         reloaded.Attributes!.TryGetValue("mention", out var m);
@@ -77,7 +77,7 @@ public class EntityTypingEventHandlerTests
         var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
         var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
 
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Seraphim."], store, default);
 
         var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "note");
         reloaded.Attributes!.TryGetValue("mention", out var m);
@@ -95,7 +95,7 @@ public class EntityTypingEventHandlerTests
         store.Upsert(Mentioning("note", "seraphim"), "local:findings");
 
         var sink = new EntityTypingEventHandler(new UnavailableEmbeddingProvider());
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Seraphim."], store, default);
 
         store.LoadIndex("local:findings").Single(e => e.Name == "note")
             .Attributes!["mention"].Should().Contain("seraphim");
@@ -127,7 +127,7 @@ public class EntityTypingEventHandlerTests
         store.Upsert(new ArtifactEntry("note", "uri", 2, 1, DateTimeOffset.UtcNow,
             Attributes: new(StringComparer.OrdinalIgnoreCase) { ["mention"] = ["different"] }), "local:findings");
 
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Seraphim."], store, default);
 
         // The newer write is intact; no stale "seraphim" resurrected.
         var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "note");
@@ -169,7 +169,7 @@ public class EntityTypingEventHandlerTests
         });
         var sink = new EntityTypingEventHandler(provider);
 
-        await sink.OnStoredAsync("/findings/note", ["We saw Jolene."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Jolene."], store, default);
 
         var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "note");
         reloaded.Attributes!.Should().NotContainKey("person",
@@ -202,7 +202,7 @@ public class EntityTypingEventHandlerTests
         var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
 
         // Lowercase subject; the entry is stored as "Note".
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Seraphim."], store, default);
 
         var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "Note");
         (reloaded.Attributes!.TryGetValue("mention", out var m) ? m : []).Should().NotContain("seraphim",
@@ -226,7 +226,7 @@ public class EntityTypingEventHandlerTests
         var narrowStore = new NarrowPluginStore();
 
         var act = async () => await sink.OnStoredAsync(
-            "/test/narrow", ["content"], narrowStore, CancellationToken.None);
+            MemoryAddress.Parse("/test/narrow"), ["content"], narrowStore, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*EntityTypingEventHandler is a Core-internal event handler*",
@@ -242,7 +242,7 @@ internal sealed class NarrowPluginStore : IPluginStore
 {
     public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
     public bool IsEphemeral(string name) => false;
-    public Task<string> ReadArtifactAsync(string s, string sc, CancellationToken ct = default) => Task.FromResult("");
+    public Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) => Task.FromResult("");
 }
 
 internal sealed class UnavailableEmbeddingProvider : Scrinia.Core.Embeddings.IEmbeddingProvider

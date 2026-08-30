@@ -96,7 +96,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         string artifact = Nmp2ChunkedEncoder.Encode("Hello, store!");
         await _store.WriteArtifactAsync("greet", "local", artifact);
 
-        string read = await _store.ReadArtifactAsync("greet", "local");
+        string read = await _store.ReadArtifactAsync(MemoryAddress.Parse("/greet"));
         read.Should().Be(artifact);
     }
 
@@ -312,11 +312,11 @@ public sealed class FileMemoryStoreTests : IDisposable
         await _store.WriteArtifactAsync("cache-hit", "local", artifact);
 
         // First read — cache miss, reads from disk
-        string read1 = await _store.ReadArtifactAsync("cache-hit", "local");
+        string read1 = await _store.ReadArtifactAsync(MemoryAddress.Parse("/cache-hit"));
         read1.Should().Be(artifact);
 
         // Second read — should be cache hit (same content)
-        string read2 = await _store.ReadArtifactAsync("cache-hit", "local");
+        string read2 = await _store.ReadArtifactAsync(MemoryAddress.Parse("/cache-hit"));
         read2.Should().Be(artifact);
     }
 
@@ -327,7 +327,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         await _store.WriteArtifactAsync("invalidate", "local", v1);
 
         // Read to populate cache
-        string read1 = await _store.ReadArtifactAsync("invalidate", "local");
+        string read1 = await _store.ReadArtifactAsync(MemoryAddress.Parse("/invalidate"));
         read1.Should().Be(v1);
 
         // Overwrite
@@ -335,7 +335,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         await _store.WriteArtifactAsync("invalidate", "local", v2);
 
         // Should read v2, not cached v1
-        string read2 = await _store.ReadArtifactAsync("invalidate", "local");
+        string read2 = await _store.ReadArtifactAsync(MemoryAddress.Parse("/invalidate"));
         read2.Should().Be(v2);
     }
 
@@ -346,13 +346,13 @@ public sealed class FileMemoryStoreTests : IDisposable
         await _store.WriteArtifactAsync("del-cache", "local", artifact);
 
         // Populate cache
-        await _store.ReadArtifactAsync("del-cache", "local");
+        await _store.ReadArtifactAsync(MemoryAddress.Parse("/del-cache"));
 
         // Delete
         _store.DeleteArtifact("del-cache", "local").Should().BeTrue();
 
         // Read should now throw
-        var act = () => _store.ReadArtifactAsync("del-cache", "local");
+        var act = () => _store.ReadArtifactAsync(MemoryAddress.Parse("/del-cache"));
         await act.Should().ThrowAsync<FileNotFoundException>();
     }
 
@@ -492,7 +492,7 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         // First store access triggers the automatic v3 migration, moving the file into
         // memories/ before the read below — there is no more legacy-path fallback to exercise.
-        string read = await _store.ReadArtifactAsync("my-task", "local:task");
+        string read = await _store.ReadArtifactAsync(MemoryAddress.Parse("/task/my-task"));
         read.Should().Be(artifact,
             because: "migration moves legacy artifacts into the v3 layout before any read observes them");
 

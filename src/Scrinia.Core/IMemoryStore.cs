@@ -63,19 +63,14 @@ public interface IMemoryStore : IPluginStore
     Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default);
 
     /// <summary>Reads a logical memory address.</summary>
-    ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default) =>
-        ValueTask.FromResult<ArtifactEntry?>(null);
+    ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default);
 
     /// <summary>Writes a validated payload at a logical memory address.</summary>
-    async ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write,
-        CancellationToken ct = default) => await StoreAsync(write, ct).ConfigureAwait(false);
+    ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write,
+        CancellationToken ct = default);
 
     /// <summary>Deletes a logical memory address.</summary>
-    ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default)
-    {
-        DeleteArtifact(address.ToString().TrimStart('~'), "local");
-        return ValueTask.CompletedTask;
-    }
+    ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default);
 
     // Neither StoreAsync nor AppendAsync has a default implementation, deliberately: every store
     // implements both, so a store added later cannot silently inherit a derivation that is wrong

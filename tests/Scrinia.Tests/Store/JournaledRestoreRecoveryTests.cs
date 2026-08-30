@@ -66,11 +66,11 @@ public class JournaledRestoreRecoveryTests
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
         await store.WriteArtifactAsync("note", Scope, "old");
-        (await store.ReadArtifactAsync("note", Scope)).Should().Be("old");
+        (await store.ReadArtifactAsync(MemoryAddress.Parse("/notes/note"))).Should().Be("old");
 
         WritePreparedJournal(store, Scope, CreateEntry("note"), Encoding.UTF8.GetBytes("recovered"));
 
-        (await store.ReadArtifactAsync("note", Scope)).Should().Be("recovered");
+        (await store.ReadArtifactAsync(MemoryAddress.Parse("/notes/note"))).Should().Be("recovered");
         (await store.ReadArtifactAsync(MemoryAddress.Parse("/notes/note"))).Should().Be("recovered");
     }
 

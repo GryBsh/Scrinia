@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -61,16 +62,16 @@ public sealed class CompactNotificationTests
     {
         public List<(string Name, string[] Content)> Stored { get; } = [];
 
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
-            Stored.Add((qualifiedName, content));
+            Stored.Add((address.ToString(), content));
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct) =>
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
     }
 }

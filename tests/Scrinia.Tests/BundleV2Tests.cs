@@ -439,11 +439,10 @@ public sealed class BundleV2Tests : IDisposable
         // Verify the imported topic artifact content matches
         // Task 13: the constructor sanitizes each segment itself — see SeedTopic. Wrapping it in
         // SanitizeName would flatten '/' to '_' and resolve a DIFFERENT scope than import wrote to.
-        string importScope = MemoryNaming.BuildScopedTopicScope("patterns");
-        var retryContent = await importStore.ReadArtifactAsync("retry", importScope);
+        var retryContent = await importStore.ReadArtifactAsync(MemoryAddress.Parse("/patterns/retry"));
         retryContent.Should().Be("## Retry pattern\nExponential backoff.");
 
-        var cbContent = await importStore.ReadArtifactAsync("circuit-breaker", importScope);
+        var cbContent = await importStore.ReadArtifactAsync(MemoryAddress.Parse("/patterns/circuit-breaker"));
         cbContent.Should().Be("## Circuit breaker\nFail fast.");
     }
 

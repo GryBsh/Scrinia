@@ -1,6 +1,4 @@
 using Scrinia.Core.Models;
-using System.Reflection;
-using System.Diagnostics.CodeAnalysis;
 
 namespace Scrinia.Core;
 
@@ -20,40 +18,10 @@ namespace Scrinia.Core;
 /// </summary>
 public interface IPluginStore
 {
+    (string Scope, string Subject) ParseQualifiedName(string name);
+    bool IsEphemeral(string name);
     MemoryAddress ParseAddress(string rawAddress) => MemoryAddress.Parse(rawAddress);
 
     /// <summary>Reads an artifact identified by a parsed logical address.</summary>
-    Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
-        LegacyPluginStoreBridge.ReadArtifactAsync(this, address, ct);
-}
-
-/// <summary>Temporary source compatibility helpers for the physical store migration.</summary>
-internal static class PluginStoreCompatibilityExtensions
-{
-    internal static (string Scope, string Subject) ParseQualifiedName(this IPluginStore store, string raw) =>
-        (store.IsEphemeral(raw) ? "ephemeral" : "local", raw);
-
-    internal static bool IsEphemeral(this IPluginStore store, string raw) =>
-        raw.StartsWith('~') || raw.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase);
-
-    internal static Task<string> ReadArtifactAsync(this IPluginStore store, string subject, string scope,
-        CancellationToken ct = default) =>
-        store.ReadArtifactAsync(MemoryAddress.Parse(subject.StartsWith('/') ? subject : $"/{subject}"), ct);
-}
-
-internal static class LegacyPluginStoreBridge
-{
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Legacy compatibility bridge is only used for pre-typed in-process test/plugin implementations.")]
-    internal static Task<string> ReadArtifactAsync(IPluginStore store, MemoryAddress address, CancellationToken ct)
-    {
-        if (store is IMemoryStore memoryStore)
-            return memoryStore.ReadArtifactAsync(address.Value, address.Kind == MemoryAddressKind.Ephemeral ? "ephemeral" : "local", ct);
-
-        var method = store.GetType().GetMethod("ReadArtifactAsync", BindingFlags.Instance | BindingFlags.Public,
-            [typeof(string), typeof(string), typeof(CancellationToken)]);
-        if (method?.Invoke(store, [address.Value, address.Kind == MemoryAddressKind.Ephemeral ? "ephemeral" : "local", ct]) is Task<string> result)
-            return result;
-
-        return Task.FromException<string>(new NotSupportedException("Typed artifact reads must be implemented by the store."));
-    }
+    Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default);
 }

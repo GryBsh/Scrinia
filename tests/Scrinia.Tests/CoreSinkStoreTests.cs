@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
 
@@ -15,7 +16,7 @@ public class CoreSinkStoreTests
     {
         public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
         public bool IsEphemeral(string name) => false;
-        public Task<string> ReadArtifactAsync(string s, string sc, CancellationToken ct = default) => Task.FromResult("");
+        public Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) => Task.FromResult("");
     }
 
     [Fact]

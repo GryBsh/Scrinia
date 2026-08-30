@@ -54,7 +54,7 @@ public sealed class McpPluginHostNegotiationTests
         // "local:topic:subject" (v1 colon syntax) was removed by Task 13 — ParseQualifiedName now
         // rejects it. A bare name (no leading '/') still parses to ("local", name), so it exercises
         // the same ParseQualifiedName call the brief's literal "local:note" no longer can.
-        await host.OnStoredAsync("note", ["one", "two", "three"], NewStore(), default);
+        await host.OnStoredAsync(MemoryAddress.Parse("/note"), ["one", "two", "three"], NewStore(), default);
 
         caller.Calls.Should().ContainSingle();
         caller.Calls[0].Tool.Should().Be("index");
@@ -69,7 +69,7 @@ public sealed class McpPluginHostNegotiationTests
         var caller = new RecordingCaller();
         var host = new McpPluginHost(caller, ["upsert", "search", "remove"]);
 
-        await host.OnStoredAsync("note", ["one", "two"], NewStore(), default);
+        await host.OnStoredAsync(MemoryAddress.Parse("/note"), ["one", "two"], NewStore(), default);
 
         caller.Calls.Should().OnlyContain(c => c.Tool == "upsert");
         caller.Calls.Should().HaveCount(3, because: "one joined document vector plus one per element");
@@ -97,7 +97,7 @@ public sealed class McpPluginHostNegotiationTests
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, Nmp2ChunkedEncoder.EncodeChunks(["a", "b", "c"]));
 
-        await host.OnAppendedAsync("note", "c", store, default);
+        await host.OnAppendedAsync(MemoryAddress.Parse("/note"), "c", store, default);
 
         caller.Calls.Should().ContainSingle();
         caller.Calls[0].Tool.Should().Be("index");
@@ -113,7 +113,7 @@ public sealed class McpPluginHostNegotiationTests
         var host = new McpPluginHost(caller, ["upsert"]);
 
         for (int attempt = 0; attempt < 4; attempt++)
-            await host.OnStoredAsync("note", ["content"], NewStore(), default);
+            await host.OnStoredAsync(MemoryAddress.Parse("/note"), ["content"], NewStore(), default);
 
         caller.CallCount.Should().Be(4,
             because: "a structured plugin failure must not reset the host failure counter");

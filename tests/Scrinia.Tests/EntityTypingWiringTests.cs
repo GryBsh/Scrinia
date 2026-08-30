@@ -49,7 +49,7 @@ public class EntityTypingWiringTests
             new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3)),
         ]);
 
-        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+        await sink.OnStoredAsync(MemoryAddress.Parse("/findings/note"), ["We saw Seraphim."], store, default);
 
         store.LoadIndex("local:findings").Single(e => e.Name == "note")
             .Attributes!["thing"].Should().Contain("seraphim");
@@ -74,7 +74,7 @@ public class EntityTypingWiringTests
 
             MemoryEventSinkContext.Default.Should().BeOfType<CompositeEventSink>(because: installationSite);
             await MemoryEventSinkContext.Default!.OnStoredAsync(
-                "/findings/wiring", ["content"], tmp.Store, CancellationToken.None);
+                MemoryAddress.Parse("/findings/wiring"), ["content"], tmp.Store, CancellationToken.None);
 
             order.Should().Equal(["entity-typing", "downstream"],
                 because: $"the {installationSite} pipeline must keep maintenance before typing and "
@@ -83,7 +83,7 @@ public class EntityTypingWiringTests
             order.Clear();
             WorkspaceSetup.InstallEmbeddingEventSinks(downstream, new ThrowingSink());
             await MemoryEventSinkContext.Default!.OnStoredAsync(
-                "/findings/wiring", ["content"], tmp.Store, CancellationToken.None);
+                MemoryAddress.Parse("/findings/wiring"), ["content"], tmp.Store, CancellationToken.None);
 
             order.Should().Equal(["downstream"],
                 because: $"a failing entity-typing sink in the {installationSite} pipeline must "
@@ -97,28 +97,28 @@ public class EntityTypingWiringTests
 
     private sealed class RecordingSink(string name, List<string> order) : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
             order.Add(name);
             return Task.CompletedTask;
         }
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => Task.CompletedTask;
     }
 
     private sealed class ThrowingSink : IMemoryEventSink
     {
-        public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("entity typing failed");
 
-        public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("entity typing failed");
 
-        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("entity typing failed");
     }
 }

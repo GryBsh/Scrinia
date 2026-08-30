@@ -29,11 +29,6 @@ public class PluginStoreOnlySinkTests
 
         public Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default)
         {
-            return Task.FromResult(artifact);
-        }
-
-        public Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
-        {
             ReadCalled = true;
             return Task.FromResult(artifact);
         }
@@ -93,8 +88,7 @@ public class PluginStoreOnlySinkTests
 
         await composite.OnStoredAsync(MemoryAddress.Parse("/probe"), ["x"], new PluginStoreOnly(false, ""), CancellationToken.None);
 
-        sink.LastStored.Should().Be("probe",
-            because: "this is the assertion the narrowing exists to make true — the pipeline must " +
-                     "carry a store that is not an IMemoryStore at all");
+        sink.LastStored.Should().Be("/probe",
+            because: "typed callbacks carry the canonical logical address");
     }
 }

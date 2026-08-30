@@ -35,7 +35,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnStoredAsync with content that references /test/target
         await _sink.OnStoredAsync(
-            "/test/source",
+            MemoryAddress.Parse("/test/source"),
             ["This analysis references [[/test/target]] in its findings."],
             store,
             CancellationToken.None);
@@ -86,7 +86,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         // after, against fencesource) see that fresh write and clear fencesource's orphan flag —
         // proven by reverting ReferenceExtractor and confirming this test fails (see task-6-report.md).
         await _sink.OnStoredAsync(
-            "/test/fencesource",
+            MemoryAddress.Parse("/test/fencesource"),
             ["Prose has no link here.\n```\nSee [[/test/fencetarget]] in this pasted snippet.\n```\n"],
             store,
             CancellationToken.None);
@@ -125,7 +125,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnStoredAsync (content doesn't reference anything)
         await _sink.OnStoredAsync(
-            "/test/lonely",
+            MemoryAddress.Parse("/test/lonely"),
             ["Isolated content with no references."],
             store,
             CancellationToken.None);
@@ -157,7 +157,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnStoredAsync for the linked entry
         await _sink.OnStoredAsync(
-            "/test/linked",
+            MemoryAddress.Parse("/test/linked"),
             ["Content of linked entry."],
             store,
             CancellationToken.None);
@@ -182,7 +182,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnAppendedAsync with content mentioning /test/beta
         await _sink.OnAppendedAsync(
-            "/test/alpha",
+            MemoryAddress.Parse("/test/alpha"),
             "Appended note: see [[/test/beta]] for related work.",
             store,
             CancellationToken.None);
@@ -207,7 +207,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnStoredAsync with content that references itself
         await _sink.OnStoredAsync(
-            "/test/selfref",
+            MemoryAddress.Parse("/test/selfref"),
             ["This entry references [[/test/selfref]] in its own content."],
             store,
             CancellationToken.None);
@@ -244,8 +244,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         string[] content = ["This references [[/test/dst]] in the analysis."];
 
         // Act — fire OnStoredAsync twice
-        await _sink.OnStoredAsync("/test/src", content, store, CancellationToken.None);
-        await _sink.OnStoredAsync("/test/src", content, store, CancellationToken.None);
+        await _sink.OnStoredAsync(MemoryAddress.Parse("/test/src"), content, store, CancellationToken.None);
+        await _sink.OnStoredAsync(MemoryAddress.Parse("/test/src"), content, store, CancellationToken.None);
 
         // Assert — target should have "/test/src" in Fields["ref"] exactly once
         var (dstScope, dstSubject) = store.ParseQualifiedName("/test/dst");
@@ -266,7 +266,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Act & Assert — OnForgottenAsync should complete without error
         var store = MemoryStoreContext.Current!;
-        var act = async () => await _sink.OnForgottenAsync("/test/gone", true, store, CancellationToken.None);
+        var act = async () => await _sink.OnForgottenAsync(MemoryAddress.Parse("/test/gone"), true, store, CancellationToken.None);
 
         await act.Should().NotThrowAsync(
             "OnForgottenAsync is a no-op and should never throw");
@@ -281,7 +281,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Fire sink to mark it as orphan
         await _sink.OnStoredAsync(
-            "/test/wasorphan",
+            MemoryAddress.Parse("/test/wasorphan"),
             ["Orphan content."],
             store,
             CancellationToken.None);
@@ -298,7 +298,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         await _tools.Remember(["References [[/test/wasorphan]] here."], "/test/referrer2", keywords: ["ref:/test/wasorphan"]);
 
         await _sink.OnStoredAsync(
-            "/test/wasorphan",
+            MemoryAddress.Parse("/test/wasorphan"),
             ["Orphan content."],
             store,
             CancellationToken.None);
@@ -322,7 +322,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnStoredAsync with content that references /test/fieldtarget
         await _sink.OnStoredAsync(
-            "/test/fieldsource",
+            MemoryAddress.Parse("/test/fieldsource"),
             ["This analysis references [[/test/fieldtarget]] in its findings."],
             store,
             CancellationToken.None);
@@ -364,7 +364,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         // Act — fire OnStoredAsync for the linked entry
         await _sink.OnStoredAsync(
-            "/test/fieldlinked",
+            MemoryAddress.Parse("/test/fieldlinked"),
             ["Content of field-linked entry."],
             store,
             CancellationToken.None);
@@ -399,7 +399,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             keywords: ["ref:/crossscopetarget/entry"]);
 
         await _sink.OnStoredAsync(
-            "/crossscopetarget/entry",
+            MemoryAddress.Parse("/crossscopetarget/entry"),
             ["Content in one topic scope."],
             store,
             CancellationToken.None);
@@ -424,7 +424,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         await _tools.Remember(["Unrelated content, no reference."], "/othertopic/unrelated");
 
         await _sink.OnStoredAsync(
-            "/crossscopelonely/entry",
+            MemoryAddress.Parse("/crossscopelonely/entry"),
             ["Nothing points at this, anywhere."],
             store,
             CancellationToken.None);
@@ -460,7 +460,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         try
         {
             Console.SetError(captured);
-            await sink.OnStoredAsync("/test/narrow", ["content"], narrowStore, CancellationToken.None);
+            await sink.OnStoredAsync(MemoryAddress.Parse("/test/narrow"), ["content"], narrowStore, CancellationToken.None);
         }
         finally
         {
@@ -501,7 +501,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         }).Should().BeTrue();
 
         await _sink.OnStoredAsync(
-            "/test/legacyorphan", ["Content of the once-orphaned entry."], store, CancellationToken.None);
+            MemoryAddress.Parse("/test/legacyorphan"), ["Content of the once-orphaned entry."], store, CancellationToken.None);
 
         var entry = store.LoadIndex(scope).First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -538,7 +538,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         }).Should().BeTrue();
 
         await _sink.OnStoredAsync(
-            "/test/dualmarked", ["Content of the dual-marked entry."], store, CancellationToken.None);
+            MemoryAddress.Parse("/test/dualmarked"), ["Content of the dual-marked entry."], store, CancellationToken.None);
 
         var entry = store.LoadIndex(scope).First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -565,7 +565,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         }).Should().BeTrue();
 
         await _sink.OnStoredAsync(
-            "/test/legacystillorphan", ["Isolated content, nothing points at it."], store, CancellationToken.None);
+            MemoryAddress.Parse("/test/legacystillorphan"), ["Isolated content, nothing points at it."], store, CancellationToken.None);
 
         var entry = store.LoadIndex(scope).First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -598,7 +598,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         {
             Console.SetError(captured);
             await _sink.OnStoredAsync(
-                "/test/cappedorphan", ["Isolated content at the attribute cap."], store, CancellationToken.None);
+                MemoryAddress.Parse("/test/cappedorphan"), ["Isolated content at the attribute cap."], store, CancellationToken.None);
         }
         finally
         {
@@ -657,7 +657,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             }));
         store.Writes.Clear();
 
-        await _sink.OnStoredAsync("target", ["Content with no outbound references."], store,
+        await _sink.OnStoredAsync(MemoryAddress.Parse("/target"), ["Content with no outbound references."], store,
             CancellationToken.None);
 
         var entry = store.LoadIndex().Single(e => e.Name == "target");
@@ -689,7 +689,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             Keywords: ["orphan"]));
         store.Writes.Clear();
 
-        await _sink.OnStoredAsync("lonely", ["Nothing points at this."], store,
+        await _sink.OnStoredAsync(MemoryAddress.Parse("/lonely"), ["Nothing points at this."], store,
             CancellationToken.None);
 
         var entry = store.LoadIndex().Single(e => e.Name == "lonely");

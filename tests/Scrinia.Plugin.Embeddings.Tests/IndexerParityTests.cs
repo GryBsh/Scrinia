@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
 
@@ -49,7 +50,7 @@ public sealed class IndexerParityTests
         // to scope "local", subject "note" — matching side B's direct (scope, subject) call below.
         using var plugin = new EmbeddingsPlugin();
         plugin.InitializeForTests(new StubProvider(), a, NullLogger.Instance, options);
-        await plugin.OnStoredAsync("/note", content, store, default);
+        await plugin.OnStoredAsync(MemoryAddress.Parse("/note"), content, store, default);
 
         // Side B: the shared indexer directly, over an independent store.
         await new MemoryVectorIndexer(new StubProvider(), b, NullLogger.Instance, options)

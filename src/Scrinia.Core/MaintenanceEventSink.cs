@@ -130,7 +130,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         // 3. Orphan detection — check if this entry has inbound refs
         try
         {
-            var (sourceScope, sourceSubject) = store.ParseQualifiedName(qualifiedName);
+            var (sourceScope, sourceSubject) = store.ParseQualifiedName(address.ToString());
 
             string sourceQualified = store.FormatQualifiedName(sourceScope, sourceSubject);
             string inboundRefKey = $"ref:{sourceQualified}";

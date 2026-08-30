@@ -62,7 +62,7 @@ public sealed class CoreEmbeddingEventHandlerAppendTests : IDisposable
         // Only the appended fragment is passed in — exactly what the real append call site
         // does. The fix must ignore this parameter's shape and re-read the memory's actual,
         // full on-disk content instead.
-        await handler.OnAppendedAsync(qualifiedName, "second element", _store, CancellationToken.None);
+        await handler.OnAppendedAsync(MemoryAddress.Parse(qualifiedName), "second element", _store, CancellationToken.None);
 
         vectorStore.GetVectors(scope)
             .Select(v => MemoryVectorIndexer.ElementIndexOf(v.ChunkIndex!.Value))
