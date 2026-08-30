@@ -17,7 +17,7 @@ public sealed partial class ArtifactEntrySerializationTests
     private partial class TestCtx : JsonSerializerContext;
 
     private static ArtifactEntry Sample(Dictionary<string, string[]>? attrs) => new(
-        Name: "n", Uri: "mem://n", OriginalBytes: 10, ChunkCount: 1,
+        Address: MemoryAddress.Parse("/n"), ArtifactKey: "artifacts/n.nmp2", OriginalBytes: 10, ChunkCount: 1,
         CreatedAt: DateTimeOffset.UnixEpoch, Attributes: attrs);
 
     [Fact]
@@ -32,7 +32,7 @@ public sealed partial class ArtifactEntrySerializationTests
     [Fact]
     public void Reads_new_attributes_key()
     {
-        const string json = """{"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","attributes":{"tag":["x"]}}""";
+        const string json = """{"address":"/n","artifactKey":"artifacts/n.nmp2","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","attributes":{"tag":["x"]}}""";
         var e = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!.NormalizeAttributesKey();
         e.Attributes.Should().ContainKey("tag");
     }
@@ -40,7 +40,7 @@ public sealed partial class ArtifactEntrySerializationTests
     [Fact]
     public void Reads_legacy_fields_key_into_attributes()
     {
-        const string json = """{"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","fields":{"tag":["x"]}}""";
+        const string json = """{"address":"/n","artifactKey":"artifacts/n.nmp2","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","fields":{"tag":["x"]}}""";
         var e = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!.NormalizeAttributesKey();
         e.Attributes.Should().ContainKey("tag");
     }
@@ -48,7 +48,7 @@ public sealed partial class ArtifactEntrySerializationTests
     [Fact]
     public void New_key_wins_when_both_present()
     {
-        const string json = """{"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","attributes":{"tag":["new"]},"fields":{"tag":["old"]}}""";
+        const string json = """{"address":"/n","artifactKey":"artifacts/n.nmp2","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","attributes":{"tag":["new"]},"fields":{"tag":["old"]}}""";
         var e = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!.NormalizeAttributesKey();
         e.Attributes!["tag"].Should().Equal("new");
     }
@@ -56,7 +56,7 @@ public sealed partial class ArtifactEntrySerializationTests
     [Fact]
     public void Normalized_entry_reserializes_without_fields_key()
     {
-        const string json = """{"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","fields":{"tag":["x"]}}""";
+        const string json = """{"address":"/n","artifactKey":"artifacts/n.nmp2","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","description":"d","fields":{"tag":["x"]}}""";
         var e = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!.NormalizeAttributesKey();
         var round = JsonSerializer.Serialize(e, TestCtx.Default.ArtifactEntry);
         round.Should().Contain("\"attributes\":");
@@ -81,7 +81,7 @@ public sealed partial class ArtifactEntrySerializationTests
         var round = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!;
         round.AgentKeywords.Should().Equal(["alpha"]);
 
-        const string legacy = """{"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","keywords":["alpha"]}""";
+        const string legacy = """{"address":"/n","artifactKey":"artifacts/n.nmp2","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","keywords":["alpha"]}""";
         JsonSerializer.Deserialize(legacy, TestCtx.Default.ArtifactEntry)!.AgentKeywords
             .Should().BeNull(because: "a pre-provenance sidecar is UNKNOWN, not \"nothing curated\"");
     }
@@ -119,7 +119,7 @@ public sealed partial class ArtifactEntrySerializationTests
     public void Reads_legacy_sidecar_with_all_removed_keys_and_fields_key_WithoutThrowing()
     {
         const string json = """
-            {"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,
+            {"address":"/n","artifactKey":"artifacts/n.nmp2","originalBytes":10,"chunkCount":1,
             "createdAt":"1970-01-01T00:00:00+00:00","description":"old desc",
             "tags":["old-tag"],"reviewAfter":"2026-01-01T00:00:00+00:00",
             "reviewWhen":"when old","retrievalAnchors":["old anchor"],

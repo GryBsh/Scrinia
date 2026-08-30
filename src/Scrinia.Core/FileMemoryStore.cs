@@ -2685,7 +2685,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
                 candidates.Add(entry with
                 {
-                    Uri = ArtifactUri(entry.Name, topicScope),
+                    ArtifactKey = ArtifactUri(entry.Name, topicScope),
                     CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                 });
             }

@@ -8,7 +8,7 @@ namespace Scrinia.Core.Search;
 /// <c>Limit</c> results whenever a filter was selective. A single member with no default body
 /// means a store that cannot filter fails to compile rather than quietly under-filling.
 /// </summary>
-public sealed record SearchQuery(string Query)
+public sealed record SearchQuery(string Query) : MemorySearchRequest(Query)
 {
     private readonly IReadOnlyList<string>? _scopes;
     private readonly IReadOnlyList<string>? _excludeTopics;

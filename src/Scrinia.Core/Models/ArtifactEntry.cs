@@ -1,17 +1,11 @@
 namespace Scrinia.Core.Models;
 
-public sealed record ArtifactEntry(
-    string Name,
-    string Uri,
-    long OriginalBytes,
-    int ChunkCount,
-    DateTimeOffset CreatedAt,
-    string? ContentPreview = null,
-    // v3 fields:
-    string[]? Keywords = null,
-    Dictionary<string, int>? TermFrequencies = null,
-    DateTimeOffset? UpdatedAt = null,
-    ChunkEntry[]? ChunkEntries = null,
+public sealed record ArtifactEntry
+{
+    public ArtifactEntry(MemoryAddress Address, string ArtifactKey, long OriginalBytes, int ChunkCount,
+        DateTimeOffset CreatedAt, string? ContentPreview = null, string[]? Keywords = null,
+        Dictionary<string, int>? TermFrequencies = null, DateTimeOffset? UpdatedAt = null,
+        ChunkEntry[]? ChunkEntries = null,
     /// <summary>
     /// The <c>file</c> attribute's private drift baseline: dependency file path → content SHA hash,
     /// captured at write time. Drift detection re-hashes each path and compares. The path KEYS are
@@ -19,16 +13,14 @@ public sealed record ArtifactEntry(
     /// private behavior state, never displayed or scored. Persisted under the legacy JSON key
     /// <c>"codeRefs"</c> (kept stable — no migration; renamed from the old <c>CodeRefs</c> member).
     /// </summary>
-    [property: System.Text.Json.Serialization.JsonPropertyName("codeRefs")]
-    Dictionary<string, string>? FileHashes = null,
+        Dictionary<string, string>? FileHashes = null,
     /// <summary>
     /// Unified multi-valued **attributes** — key:value facts from agent-supplied keywords
     /// (person:x routed at write time), mechanical content extraction, and reference
     /// extraction (file/ref). Keys lowercase, values verbatim. See Search.AttributeExtractor
     /// and Search.KnownAttributes. Null for pre-attributes entries (graceful degradation).
     /// </summary>
-    [property: System.Text.Json.Serialization.JsonPropertyName("attributes")]
-    Dictionary<string, string[]>? Attributes = null,
+        Dictionary<string, string[]>? Attributes = null,
     /// <summary>
     /// Which of <see cref="Keywords"/> the CALLER supplied, as opposed to the ones derivation
     /// extracted from the content. Recorded at write time, because that is the only moment it is
@@ -49,11 +41,69 @@ public sealed record ArtifactEntry(
     /// made exact, because a curated keyword that the content also yields is genuinely
     /// indistinguishable after the merge.</para>
     /// </summary>
-    [property: System.Text.Json.Serialization.JsonPropertyName("agentKeywords")]
-    string[]? AgentKeywords = null,
-    [property: System.Text.Json.Serialization.JsonPropertyName("v")]
-    int? SchemaVersion = null)
-{
+        string[]? AgentKeywords = null, int? SchemaVersion = null)
+    {
+        this.Address = Address; this.ArtifactKey = ArtifactKey; this.OriginalBytes = OriginalBytes;
+        this.ChunkCount = ChunkCount; this.CreatedAt = CreatedAt; this.ContentPreview = ContentPreview;
+        this.Keywords = Keywords; this.TermFrequencies = TermFrequencies; this.UpdatedAt = UpdatedAt;
+        this.ChunkEntries = ChunkEntries; this.FileHashes = FileHashes; this.Attributes = Attributes;
+        this.AgentKeywords = AgentKeywords; this.SchemaVersion = SchemaVersion;
+    }
+
+    public MemoryAddress Address { get; init; }
+    public string ArtifactKey { get; init; } = string.Empty;
+    public long OriginalBytes { get; init; }
+    public int ChunkCount { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+    public string? ContentPreview { get; init; }
+    public string[]? Keywords { get; init; }
+    public Dictionary<string, int>? TermFrequencies { get; init; }
+    public DateTimeOffset? UpdatedAt { get; init; }
+    public ChunkEntry[]? ChunkEntries { get; init; }
+    [System.Text.Json.Serialization.JsonPropertyName("codeRefs")]
+    public Dictionary<string, string>? FileHashes { get; init; }
+    [System.Text.Json.Serialization.JsonPropertyName("attributes")]
+    public Dictionary<string, string[]>? Attributes { get; init; }
+    [System.Text.Json.Serialization.JsonPropertyName("agentKeywords")]
+    public string[]? AgentKeywords { get; init; }
+    [System.Text.Json.Serialization.JsonPropertyName("v")]
+    public int? SchemaVersion { get; init; }
+
+    /// <summary>Creates an entry for property-based JSON deserialization.</summary>
+    public ArtifactEntry() { }
+
+    /// <summary>Compatibility construction adapter; the second value is retained as opaque key data.</summary>
+    public ArtifactEntry(string Name, string Uri, long OriginalBytes, int ChunkCount,
+        DateTimeOffset CreatedAt, string? ContentPreview = null,
+        string[]? Keywords = null, Dictionary<string, int>? TermFrequencies = null,
+        DateTimeOffset? UpdatedAt = null, ChunkEntry[]? ChunkEntries = null,
+        Dictionary<string, string>? FileHashes = null, Dictionary<string, string[]>? Attributes = null,
+        string[]? AgentKeywords = null, int? SchemaVersion = null)
+        : this(MemoryAddress.Parse(Name.StartsWith('~') || Name.StartsWith('/')
+                ? Name : $"/{Name}"),
+            Uri, OriginalBytes, ChunkCount, CreatedAt, ContentPreview, Keywords, TermFrequencies,
+            UpdatedAt, ChunkEntries, FileHashes, Attributes, AgentKeywords, SchemaVersion)
+    {
+    }
+
+    /// <summary>Gets the canonical display name derived from <see cref="Address"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Name
+    {
+        get => _name ?? Address.ToString().TrimStart('~');
+        init => _name = value;
+    }
+
+    /// <summary>Legacy URI-shaped compatibility view; physical URI removal belongs to Task 4.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Uri
+    {
+        get => ArtifactKey;
+        init { }
+    }
+
+    private readonly string? _name;
+
     // Back-compat ingest: sidecars written before the Fields→Attributes rename stored the
     // dict under JSON key "fields". Deserialization routes that key here so old sidecars load
     // losslessly. The getter stays observable (so AttributeMigration.MigratesTo can detect a

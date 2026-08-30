@@ -1,3 +1,5 @@
+using Scrinia.Core.Models;
+
 namespace Scrinia.Core;
 
 /// <summary>
@@ -20,4 +22,8 @@ public interface IPluginStore
     bool IsEphemeral(string name);
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
     Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default);
+
+    /// <summary>Reads an artifact identified by a parsed logical address.</summary>
+    Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
+        ReadArtifactAsync(address.ToString().TrimStart('~'), "local", ct);
 }

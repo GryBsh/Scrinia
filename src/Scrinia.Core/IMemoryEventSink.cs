@@ -1,3 +1,5 @@
+using Scrinia.Core.Models;
+
 namespace Scrinia.Core;
 
 /// <summary>
@@ -7,6 +9,13 @@ namespace Scrinia.Core;
 /// </summary>
 public interface IMemoryEventSink
 {
+    Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) =>
+        OnStoredAsync(address.ToString(), content, store, ct);
+    Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
+        OnAppendedAsync(address.ToString(), content, store, ct);
+    Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+        OnForgottenAsync(address.ToString(), wasDeleted, store, ct);
+
     Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct);
     Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct);
     Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct);

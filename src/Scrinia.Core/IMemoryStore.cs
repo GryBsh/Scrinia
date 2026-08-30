@@ -62,6 +62,21 @@ public interface IMemoryStore : IPluginStore
     /// refused rather than merged.</exception>
     Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default);
 
+    /// <summary>Reads a logical memory address.</summary>
+    ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default) =>
+        ValueTask.FromResult<ArtifactEntry?>(null);
+
+    /// <summary>Writes a validated payload at a logical memory address.</summary>
+    async ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write,
+        CancellationToken ct = default) => await StoreAsync(write, ct).ConfigureAwait(false);
+
+    /// <summary>Deletes a logical memory address.</summary>
+    ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default)
+    {
+        DeleteArtifact(address.ToString().TrimStart('~'), "local");
+        return ValueTask.CompletedTask;
+    }
+
     // Neither StoreAsync nor AppendAsync has a default implementation, deliberately: every store
     // implements both, so a store added later cannot silently inherit a derivation that is wrong
     // for it. This is a rule about DERIVATION, not a policy for the whole interface — six members
@@ -137,7 +152,7 @@ public interface IMemoryStore : IPluginStore
     /// partial.</para>
     /// </summary>
     EntityFactStore GetEntityFactStore() =>
-        EntityFactDerivation.BuildStore(ListScoped(null));
+        EntityFactDerivation.BuildStore(ListScoped((IReadOnlyList<string>?)null));
 
     // Listing & Search
 
@@ -193,6 +208,14 @@ public interface IMemoryStore : IPluginStore
     /// interface follows.
     /// </summary>
     IReadOnlyList<SearchResult> SearchAll(SearchQuery query);
+
+    /// <summary>Searches using the typed request shape.</summary>
+    IReadOnlyList<SearchResult> SearchAll(MemorySearchRequest request) =>
+        SearchAll(new SearchQuery(request.Query));
+
+    /// <summary>Lists using the typed request shape.</summary>
+    List<ScopedArtifact> ListAsync(MemoryListRequest request) =>
+        ListScoped(request.Scopes, request.ExcludeTopics);
 
     // Listing & Search with topic exclusion
 
@@ -318,7 +341,6 @@ public interface IMemoryStore : IPluginStore
     void ArchiveVersion(string subject, string scope = "local");
 
     // Naming / addressing
-    string ArtifactUri(string name, string scope = "local");
 
     // Artifact file I/O — ReadArtifactAsync moved to IPluginStore (inherited).
     /// <summary>Writes the artifact text for <paramref name="subject"/>.</summary>
@@ -353,4 +375,13 @@ public interface IMemoryStore : IPluginStore
     List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
     void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite);
+}
+
+/// <summary>Compatibility bridge for URI removal, which is completed by Task 4.</summary>
+public static class MemoryStoreCompatibilityExtensions
+{
+    public static string ArtifactUri(this IMemoryStore store, string name, string scope = "local") =>
+        store is FileMemoryStore fileStore
+            ? fileStore.ArtifactUri(name, scope)
+            : throw new NotSupportedException("This store does not expose physical artifact locations.");
 }
