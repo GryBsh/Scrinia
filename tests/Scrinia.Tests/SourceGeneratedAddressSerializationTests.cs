@@ -98,18 +98,33 @@ public sealed class SourceGeneratedAddressSerializationTests
             new Dictionary<string, IReadOnlyList<string>> { ["tag"] = ["x"] }, ["keyword"]);
 
         foreach (JsonSerializerContext context in new JsonSerializerContext[]
-                 { BundleJsonContext.Default, CliJsonContext.Default })
+                 {
+                     BundleJsonContext.Default, CliJsonContext.Default,
+                     ConfigJsonContext.Default, PluginClientJsonContext.Default
+                 })
         {
             MemoryError errorRoundTrip = RoundTrip(error, TypeInfo<MemoryError>(context));
             MemorySearchRequest searchRoundTrip = RoundTrip(search, TypeInfo<MemorySearchRequest>(context));
             MemoryListRequest listRoundTrip = RoundTrip(list, TypeInfo<MemoryListRequest>(context));
             MemoryWrite writeRoundTrip = RoundTrip(write, TypeInfo<MemoryWrite>(context));
+            MemoryAddress addressRoundTrip = RoundTrip(search.Address.Value, TypeInfo<MemoryAddress>(context));
+            MemoryAddressKind kindRoundTrip = RoundTrip(addressRoundTrip.Kind, TypeInfo<MemoryAddressKind>(context));
+            MemoryAddressError addressErrorRoundTrip = RoundTrip(
+                new MemoryAddressError(MemoryErrorCategory.MalformedAddress, "malformed_address",
+                    "Malformed address", "address"), TypeInfo<MemoryAddressError>(context));
+            ArtifactEntry entryRoundTrip = RoundTrip(
+                new ArtifactEntry(MemoryAddress.Parse("/topic/entry"), "artifacts/topic/entry.nmp2",
+                    4, 1, DateTimeOffset.UnixEpoch), TypeInfo<ArtifactEntry>(context));
 
             errorRoundTrip.Should().Be(error);
             searchRoundTrip.Address!.Value.ToString().Should().Be("/topic/note");
             listRoundTrip.Prefix!.Value.ToString().Should().Be("~scratch");
             writeRoundTrip.Address.ToString().Should().Be("/topic/note");
             writeRoundTrip.Content.Single().Span.SequenceEqual("body"u8).Should().BeTrue();
+            addressRoundTrip.Should().Be(search.Address.Value);
+            kindRoundTrip.Should().Be(addressRoundTrip.Kind);
+            addressErrorRoundTrip.Category.Should().Be(MemoryErrorCategory.MalformedAddress);
+            entryRoundTrip.ArtifactKey.Should().Be("artifacts/topic/entry.nmp2");
         }
     }
 
@@ -142,21 +157,35 @@ public sealed class SourceGeneratedAddressSerializationTests
     }
 
     [Fact]
-    public void Categorized_error_serialization_preserves_category_in_core_and_cli_surfaces()
+    public async Task Categorized_error_serialization_uses_production_category_translation_path()
     {
-        MemoryError error = new(MemoryErrorCategory.ForbiddenAddressKind,
-            "forbidden_address_kind", "Ephemeral addresses are not available to the CLI.", "address");
+        string workspace = Path.Combine(Path.GetTempPath(), "scrinia-json-error-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            using var output = new StringWriter();
+            TextWriter previous = Console.Out;
+            Console.SetOut(output);
+            try
+            {
+                int exit = await new ScriniaCommands().Show("/temp/scratch", workspace, json: true);
+                exit.Should().Be(1);
+            }
+            finally
+            {
+                Console.SetOut(previous);
+            }
 
-        MemoryError roundTrip = RoundTrip(error, TypeInfo<MemoryError>(BundleJsonContext.Default));
-        roundTrip.Category.Should().Be(MemoryErrorCategory.ForbiddenAddressKind);
-
-        var cli = new CliErrorOutput(error.Message, error.Category.ToString(), error.Code, error.Field);
-        string cliJson = JsonSerializer.Serialize(cli, CliJsonContext.Default.CliErrorOutput);
-        cliJson.Should().Contain("\"category\": \"ForbiddenAddressKind\"");
-        cliJson.Should().Contain("\"code\": \"forbidden_address_kind\"");
-
-        string mcpYaml = ResponseBuilder.Error(error.Message, ErrorCodes.UnsupportedInputForm).ToYaml();
-        mcpYaml.Should().Contain("errorCode: UNSUPPORTED_INPUT_FORM");
+            CliErrorOutput translated = JsonSerializer.Deserialize(
+                output.ToString(), CliJsonContext.Default.CliErrorOutput)!;
+            translated.Category.Should().Be(nameof(MemoryErrorCategory.ForbiddenAddressKind));
+            translated.Code.Should().Be("forbidden_address_kind");
+            translated.Field.Should().Be("address");
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
     }
 
     private static IEnumerable<JsonSerializerContext> AllContexts()
