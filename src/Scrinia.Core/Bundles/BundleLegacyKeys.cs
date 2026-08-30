@@ -23,6 +23,12 @@ namespace Scrinia.Core.Bundles;
 /// </summary>
 internal static class BundleLegacyKeys
 {
+    /// <summary>
+    /// The complete set of historical physical-location carriers that must not cross the bundle
+    /// boundary: <c>uri</c>, <c>artifactUri</c>, <c>artifactPath</c>, <c>filePath</c>,
+    /// <c>physicalPath</c>, <c>physicalUri</c>, <c>path</c>, and <c>location</c>. Matching is
+    /// case-insensitive because legacy JSON producers did not share one casing convention.
+    /// </summary>
     private static readonly HashSet<string> PhysicalLocationKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "uri",

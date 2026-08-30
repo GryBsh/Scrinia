@@ -66,32 +66,46 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
             .Should().Equal("qualified body");
     }
 
-    [Fact]
-    public void LegacyPhysicalLocationMetadata_IsDroppedAcrossImportAndExport_WhileUnknownMetadataSurvives()
+    public static IEnumerable<object[]> PhysicalMetadataKeys() =>
+    [
+        ["uri"], ["URI"],
+        ["artifactUri"], ["ARTIFACTURI"],
+        ["artifactPath"], ["ARTIFACTPATH"],
+        ["filePath"], ["FILEPATH"],
+        ["physicalPath"], ["PHYSICALPATH"],
+        ["physicalUri"], ["PHYSICALURI"],
+        ["path"], ["PATH"],
+        ["location"], ["LOCATION"],
+    ];
+
+    [Theory]
+    [MemberData(nameof(PhysicalMetadataKeys))]
+    public void LegacyPhysicalLocationMetadata_IsDroppedAcrossImportAndExport_WhileUnknownMetadataSurvives(
+        string physicalKey)
     {
         string targetRoot = Path.Combine(_root, "legacy-target");
         Directory.CreateDirectory(targetRoot);
         using var target = new FileMemoryStore(targetRoot);
 
-        using (var zip = OpenZip(CreateLegacyBundleWithPhysicalMetadata()))
+        using (var zip = OpenZip(CreateLegacyBundleWithPhysicalMetadata(physicalKey)))
             BundleFormatService.ImportTopicsFromZip(zip, target, filterTopics: null, overwrite: true);
 
         ArtifactEntry imported = target.LoadIndex("local:portable").Should().ContainSingle().Subject;
         imported.Unknown.Should().ContainKey("futureMetadata");
         imported.Unknown!["futureMetadata"].GetString().Should().Be("retain-me");
         imported.Unknown.Keys.Should().NotContain(key =>
-            key.Equals("uri", StringComparison.OrdinalIgnoreCase) ||
-            key.Equals("artifactPath", StringComparison.OrdinalIgnoreCase) ||
-            key.Equals("filePath", StringComparison.OrdinalIgnoreCase));
+            PhysicalMetadataKeys().Select(values => (string)values[0])
+                .Contains(key, StringComparer.OrdinalIgnoreCase));
 
         using var exported = OpenZip(Export(target));
         using var reader = new StreamReader(exported.GetEntry("topics/portable/index.json")!.Open());
         JsonObject exportedEntry = JsonNode.Parse(reader.ReadToEnd())!["entries"]![0]!.AsObject();
         exportedEntry.Should().ContainKey("futureMetadata");
         exportedEntry["futureMetadata"]!.GetValue<string>().Should().Be("retain-me");
-        exportedEntry.Should().NotContainKey("uri");
-        exportedEntry.Should().NotContainKey("artifactPath");
-        exportedEntry.Should().NotContainKey("filePath");
+        exportedEntry.Select(property => property.Key)
+            .Should().NotContain(key =>
+                PhysicalMetadataKeys().Select(values => (string)values[0])
+                    .Contains(key, StringComparer.OrdinalIgnoreCase));
         exportedEntry.ToJsonString().Should().NotContain(targetRoot);
     }
 
@@ -158,7 +172,7 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
         return stream.ToArray();
     }
 
-    private static byte[] CreateLegacyBundleWithPhysicalMetadata()
+    private static byte[] CreateLegacyBundleWithPhysicalMetadata(string physicalKey)
     {
         using var stream = new MemoryStream();
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
@@ -173,9 +187,7 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
                     ["chunkCount"] = 1,
                     ["createdAt"] = DateTimeOffset.UnixEpoch.ToString("o"),
                     ["contentPreview"] = "note",
-                    ["uri"] = "file:///source/workspace/.scrinia/memories/portable/note.nmp2",
-                    ["artifactPath"] = "C:/source/workspace/.scrinia/memories/portable/note.nmp2",
-                    ["filePath"] = "\\\\source\\workspace\\note.nmp2",
+                    [physicalKey] = "file:///source/workspace/.scrinia/memories/portable/note.nmp2",
                     ["futureMetadata"] = "retain-me",
                 }),
             };

@@ -316,10 +316,10 @@ public static class BundleFormatService
                 //     above.
                 // This runs in the build pass, before any topic is written, so refusing here
                 // cannot leave an earlier valid topic half-imported.
-                if (!deserialized.Address.IsValid || string.IsNullOrEmpty(deserialized.Name))
+                if (!deserialized.Address.IsValid)
                     throw new InvalidOperationException(
                         $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
-                        "with a missing or empty name.");
+                        "with a missing or invalid address.");
 
                 string subject = SubjectFromAddress(deserialized.Address);
                 try
