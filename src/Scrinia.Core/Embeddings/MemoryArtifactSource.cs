@@ -72,13 +72,6 @@ public static class MemoryArtifactSource
         return await store.ReadArtifactAsync(entry.Address, ct).ConfigureAwait(false);
     }
 
-    public static async Task<string[]> ReadContentElementsAsync(
-        IMemoryStore store, MemoryAddress address, CancellationToken ct)
-    {
-        string artifact = await store.ReadArtifactAsync(address, ct);
-        return DecodeContentElements(artifact);
-    }
-
     /// <summary>
     /// Reads a memory and decodes it back into the content array a write would have carried —
     /// the layout <see cref="MemoryVectorIndexer"/> must reproduce, not a single decoded blob.
@@ -87,9 +80,9 @@ public static class MemoryArtifactSource
     /// see the class doc.
     /// </summary>
     public static async Task<string[]> ReadContentElementsAsync(
-        IMemoryStore store, string scope, string subject, CancellationToken ct)
+        IMemoryStore store, MemoryAddress address, CancellationToken ct)
     {
-        string artifact = await ReadArtifactAsync(store, scope, subject, ct);
+        string artifact = await store.ReadArtifactAsync(address, ct);
         return DecodeContentElements(artifact);
     }
 
@@ -105,19 +98,11 @@ public static class MemoryArtifactSource
     /// instead, and still returns the <c>ParseQualifiedName</c>-derived pair for indexing, so the
     /// three append call sites index under exactly what the store path indexed under.</para>
     /// </summary>
-    public static async Task<(string Scope, string Subject, string[] Elements)> ReadForAppendAsync(
-        IPluginStore store, string qualifiedName, CancellationToken ct)
+    public static async Task<string[]> ReadForAppendAsync(
+        IPluginStore store, MemoryAddress address, CancellationToken ct)
     {
-        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-        var address = store.IsEphemeral(qualifiedName)
-            ? MemoryAddress.Parse(qualifiedName.StartsWith('~') ? qualifiedName : $"~{subject}")
-            : MemoryAddress.Parse(scope.Equals("local", StringComparison.OrdinalIgnoreCase)
-                ? $"/{subject}"
-                : $"/{scope["local:".Length..]}/{subject}");
-
         string artifact = await store.ReadArtifactAsync(address, ct);
-
-        return (scope, subject, DecodeContentElements(artifact));
+        return DecodeContentElements(artifact);
     }
 
     private static string[] DecodeContentElements(string artifact)

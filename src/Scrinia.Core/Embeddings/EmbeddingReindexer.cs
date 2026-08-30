@@ -77,7 +77,7 @@ public static class EmbeddingReindexer
                 // propagate to the catch ladder below instead of being retried for up to 42s
                 // per memory and then swallowed to false, which would stall the whole run and
                 // mis-count "vectors unavailable" as skipped rather than failed.
-                if (await indexer.IndexAsync(item.Scope, item.Entry.Name, elements, ct, retryOnUnavailable: false))
+                if (await indexer.IndexAsync(item.Entry.Address, store, elements, ct, retryOnUnavailable: false))
                     embedded++;
                 else
                     skipped++;

@@ -194,6 +194,13 @@ public sealed class MemoryVectorIndexer
         return true;
     }
 
+    public Task<bool> IndexAsync(MemoryAddress address, IPluginStore store, string[] content,
+        CancellationToken ct, bool retryOnUnavailable = true)
+    {
+        var (scope, subject) = store.ResolveAddress(address);
+        return IndexAsync(scope, subject, content, ct, retryOnUnavailable);
+    }
+
     /// <summary>Drops every vector held for <paramref name="subject"/> in <paramref name="scope"/>.</summary>
     public async Task RemoveAsync(string scope, string subject, CancellationToken ct)
     {
@@ -205,6 +212,12 @@ public sealed class MemoryVectorIndexer
         {
             _logger.LogWarning(ex, "Failed to remove vectors for '{Scope}/{Name}'", scope, subject);
         }
+    }
+
+    public Task RemoveAsync(MemoryAddress address, IPluginStore store, CancellationToken ct)
+    {
+        var (scope, subject) = store.ResolveAddress(address);
+        return RemoveAsync(scope, subject, ct);
     }
 
     /// <summary>

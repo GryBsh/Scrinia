@@ -51,7 +51,10 @@ public sealed class EmbeddingsPluginReindexTests : IDisposable
 
     private void SeedEntry(string scope, string name, string content)
     {
-        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow);
+        var address = scope.StartsWith("local:memory/", StringComparison.OrdinalIgnoreCase)
+            ? MemoryAddress.Parse($"/memory/{scope["local:memory/".Length..]}/{name}")
+            : MemoryAddress.Parse($"/{name}");
+        var entry = new ArtifactEntry(address, $"artifacts/{name}.nmp2", content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, scope);
         string path = _store.ArtifactPath(name, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

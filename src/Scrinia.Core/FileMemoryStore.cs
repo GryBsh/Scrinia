@@ -321,7 +321,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             throw new ArgumentException("The memory address must be valid.", nameof(address));
         if (address.Kind == MemoryAddressKind.Ephemeral)
             return ("ephemeral", address.Value);
-        return ParseQualifiedName(address.Value);
+
+        var segments = address.Value[1..].Split('/');
+        if (segments.Length == 1)
+            return ("local", SanitizeName(segments[0]));
+
+        return (MemoryNaming.BuildScopedTopicScope(segments[..^1]), SanitizeName(segments[^1]));
     }
 
     public string SanitizeName(string name) => SanitizeNameCore(name);

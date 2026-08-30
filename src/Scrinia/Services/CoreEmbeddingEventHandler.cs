@@ -29,7 +29,7 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
 
     public async Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore memoryStore, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(address.ToString(), content, memoryStore, ct);
+        await EmbedAndIndexAsync(address, content, memoryStore, ct);
     }
 
     public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore memoryStore, CancellationToken ct)
@@ -49,10 +49,10 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
             // ReadForAppendAsync checks ephemerality on the NAME instead, and still returns the
             // ParseQualifiedName-derived (scope, subject) pair, so the index write below lands on
             // exactly the same key the store path used.
-            var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(memoryStore, address.ToString(), ct);
+            var elements = await MemoryArtifactSource.ReadForAppendAsync(memoryStore, address, ct);
             if (elements.Length == 0) return;
 
-            await _indexer.IndexAsync(scope, subject, elements, ct);
+            await _indexer.IndexAsync(address, memoryStore, elements, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -71,16 +71,15 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         // Uses the (qualifiedName, store) overload, which owns the ParseQualifiedName call
         // inside its own try — a malformed qualifiedName must not throw out of an event-sink
         // handler with no guard of its own.
-        await _indexer.RemoveAsync(address.ToString(), memoryStore, ct);
+        await _indexer.RemoveAsync(address, memoryStore, ct);
     }
 
     private async Task EmbedAndIndexAsync(
-        string qualifiedName, string[] content, IPluginStore memoryStore, CancellationToken ct)
+        MemoryAddress address, string[] content, IPluginStore memoryStore, CancellationToken ct)
     {
         try
         {
-            var (scope, subject) = memoryStore.ParseQualifiedName(qualifiedName);
-            await _indexer.IndexAsync(scope, subject, content, ct);
+            await _indexer.IndexAsync(address, memoryStore, content, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -88,7 +87,7 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to embed memory '{Name}'", qualifiedName);
+            _logger.LogWarning(ex, "Failed to embed memory '{Name}'", address);
         }
     }
 }

@@ -43,11 +43,8 @@ public class PluginStoreOnlySinkTests
         string artifact = Nmp2ChunkedEncoder.Encode("probe body");
         var store = new PluginStoreOnly(ephemeral: false, artifact: artifact);
 
-        var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(
-            store, "local:probe", CancellationToken.None);
-
-        scope.Should().Be("local");
-        subject.Should().Be("probe");
+        var elements = await MemoryArtifactSource.ReadForAppendAsync(
+            store, MemoryAddress.Parse("/probe"), CancellationToken.None);
         elements.Should().Equal(["probe body"], because: "a non-empty artifact must decode back to its content elements");
         store.ReadCalled.Should().BeTrue("a non-ephemeral name reads by subject and scope");
     }
@@ -57,9 +54,20 @@ public class PluginStoreOnlySinkTests
     {
         var store = new PluginStoreOnly(ephemeral: true, artifact: "");
 
-        await MemoryArtifactSource.ReadForAppendAsync(store, "~probe", CancellationToken.None);
+        await MemoryArtifactSource.ReadForAppendAsync(store, MemoryAddress.Parse("~probe"), CancellationToken.None);
 
         store.ReadCalled.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ResolveAddress_PreservesCanonicalNamespaceForPluginOnlyStores()
+    {
+        var store = new PluginStoreOnly(ephemeral: false, artifact: "");
+
+        store.ResolveAddress(MemoryAddress.Parse("/memory/api/notes"))
+            .Should().Be(("local:memory/api", "notes"));
+        store.ResolveAddress(MemoryAddress.Parse("~notes"))
+            .Should().Be(("ephemeral", "notes"));
     }
 
     /// <summary>A plugin-shaped sink: records what it was handed, needs nothing beyond the contract.</summary>

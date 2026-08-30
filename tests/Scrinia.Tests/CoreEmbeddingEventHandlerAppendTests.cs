@@ -57,7 +57,7 @@ public sealed class CoreEmbeddingEventHandlerAppendTests : IDisposable
         using var vectorStore = new VectorStore(embeddingsDir, expectedSignature: null);
         var handler = new CoreEmbeddingEventHandler(new FakeProvider(), vectorStore, NullLogger.Instance);
 
-        string qualifiedName = _store.FormatQualifiedName(scope, name);
+        string qualifiedName = $"/{name}";
 
         // Only the appended fragment is passed in — exactly what the real append call site
         // does. The fix must ignore this parameter's shape and re-read the memory's actual,

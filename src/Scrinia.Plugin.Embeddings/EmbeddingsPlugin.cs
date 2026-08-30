@@ -248,40 +248,40 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     public async Task OnAfterStoreAsync(AfterStoreContext ctx, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(ctx.QualifiedName, ctx.Content, ctx.Store, ct);
+        await EmbedAndIndexAsync(ctx.Store.ParseAddress(ctx.QualifiedName), ctx.Content, ctx.Store, ct);
     }
 
     public async Task OnAfterAppendAsync(AfterAppendContext ctx, CancellationToken ct)
     {
-        await ReembedFullMemoryAsync(ctx.Name, ctx.Store, ct);
+        await ReembedFullMemoryAsync(ctx.Store.ParseAddress(ctx.Name), ctx.Store, ct);
     }
 
     public async Task OnAfterForgetAsync(AfterForgetContext ctx, CancellationToken ct)
     {
-        await RemoveVectorsAsync(ctx.Name, ctx.WasDeleted, ctx.Store, ct);
+        await RemoveVectorsAsync(ctx.Store.ParseAddress(ctx.Name), ctx.WasDeleted, ctx.Store, ct);
     }
 
     // -- IMemoryEventSink (MCP path) --
 
     public async Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(address.ToString(), content, store, ct);
+        await EmbedAndIndexAsync(address, content, store, ct);
     }
 
     public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
     {
-        await ReembedFullMemoryAsync(address.ToString(), store, ct);
+        await ReembedFullMemoryAsync(address, store, ct);
     }
 
     public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
-        await RemoveVectorsAsync(address.ToString(), wasDeleted, store, ct);
+        await RemoveVectorsAsync(address, wasDeleted, store, ct);
     }
 
     // -- Shared internal --
 
     private async Task EmbedAndIndexAsync(
-        string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+        MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
     {
         try
         {
@@ -291,8 +291,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             EnsureInitialized();
             if (_indexer is null) return;
 
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            await _indexer.IndexAsync(scope, subject, content, ct);
+            await _indexer.IndexAsync(address, store, content, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -300,7 +299,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to embed memory '{Name}'", qualifiedName);
+            _logger?.LogWarning(ex, "Failed to embed memory '{Name}'", address);
         }
     }
 
@@ -311,7 +310,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     /// real content array. Re-read and index the whole thing — shared by both append hooks and
     /// mirrored by the shared core embedding event handler.
     /// </summary>
-    private async Task ReembedFullMemoryAsync(string qualifiedName, IPluginStore store, CancellationToken ct)
+    private async Task ReembedFullMemoryAsync(MemoryAddress address, IPluginStore store, CancellationToken ct)
     {
         try
         {
@@ -327,10 +326,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             // ReadForAppendAsync checks ephemerality on the NAME instead, and still returns the
             // ParseQualifiedName-derived (scope, subject) pair, so the index write below lands on
             // exactly the same key the store path used.
-            var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(store, qualifiedName, ct);
+            var elements = await MemoryArtifactSource.ReadForAppendAsync(store, address, ct);
             if (elements.Length == 0) return;
 
-            await _indexer.IndexAsync(scope, subject, elements, ct);
+            await _indexer.IndexAsync(address, store, elements, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -338,11 +337,11 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
+            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", address);
         }
     }
 
-    private async Task RemoveVectorsAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+    private async Task RemoveVectorsAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
         if (!wasDeleted) return;
 
@@ -354,7 +353,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             EnsureInitialized();
             if (_indexer is null) return;
 
-            await _indexer.RemoveAsync(qualifiedName, store, ct);
+            await _indexer.RemoveAsync(address, store, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -362,7 +361,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to remove vectors for '{Name}'", qualifiedName);
+            _logger?.LogWarning(ex, "Failed to remove vectors for '{Name}'", address);
         }
     }
 
@@ -371,7 +370,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         EnsureInitialized();
         var allItems = store.ListScoped()
             .Where(item => !item.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
-            .DistinctBy(item => $"{item.Scope}\u001f{item.Entry.Name}", StringComparer.OrdinalIgnoreCase)
+            .DistinctBy(item => item.Entry.Address)
             .ToArray();
         int count = 0;
 
@@ -385,13 +384,13 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                 // memory's content array rather than one decoded blob, so reindex reproduces the
                 // same per-element layout a write produces.
                 var elements = await MemoryArtifactSource.ReadContentElementsAsync(
-                    store, item.Scope, item.Entry.Name, ct);
+                    store, item.Entry.Address, ct);
                 if (elements.Length == 0) continue;
 
                 // Bulk loop: retryOnUnavailable:false lets VectorStoreUnavailableException reach
                 // the catch ladder below instead of being retried for up to 42s per memory and
                 // then swallowed to false.
-                if (await _indexer!.IndexAsync(item.Scope, item.Entry.Name, elements, ct, retryOnUnavailable: false))
+                if (await _indexer!.IndexAsync(item.Entry.Address, store, elements, ct, retryOnUnavailable: false))
                     count++;
             }
             catch (VectorStoreUnavailableException ex)
