@@ -23,3 +23,13 @@ own future branch rather than force it into this one. Findings are recorded in t
 answer is that it is already finished — Parts A and B are done and merged-ready; Part C is a
 separate, not-yet-started piece of work with its own blockers to solve first, not a loose end on
 this branch.
+
+## Task 10 close-out record (2026-08-30)
+
+- Commit: `67ff73f` (`docs: close Task 10 addressing guidance`).
+- Committed only the Task 10 CHANGELOG, architecture and public guidance updates, MCP guide prompt,
+  and `EphemeralEntry` migration projection. Benchmark/test edits, untracked server files, and
+  untracked test files were intentionally left out; Task 11 was not implemented.
+- Verification: `dotnet test Scrinia.sln --no-restore` completed with 187 failures, 2,036 passed,
+  and 20 skipped out of 2,243 tests. The failures are in the broader in-progress address migration
+  and were not changed by this close-out commit.
