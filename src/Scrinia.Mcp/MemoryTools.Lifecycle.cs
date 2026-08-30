@@ -1328,10 +1328,9 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = new MemoryWrite(ephemeral ? name.ToString() : subject, scope, compacted,
-                Description: existingPreview,
-                Attributes: existingAttributes ?? new Dictionary<string, string[]>(),
-                Keywords: curatedKeywords);
+            write = new MemoryWrite(name, compacted.Select(ToUtf8).ToArray(),
+                WriteAttributesAsBytes(existingAttributes ?? new Dictionary<string, string[]>()),
+                curatedKeywords ?? [], existingPreview);
         }
         catch (InvalidMemoryWriteException ex)
         {

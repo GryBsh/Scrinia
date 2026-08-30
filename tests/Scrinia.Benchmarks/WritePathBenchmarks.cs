@@ -73,7 +73,7 @@ public class WritePathBenchmarks
     {
         for (int i = 0; i < Entries; i++)
         {
-            var entry = new ArtifactEntry($"entry-{i}", $"file:///entry-{i}.nmp2", 512, 1, DateTimeOffset.UtcNow);
+            var entry = new ArtifactEntry(MemoryAddress.Parse($"/entry-{i}"), $"artifacts/entry-{i}.nmp2", 512, 1, DateTimeOffset.UtcNow);
             _seqStore.Upsert(entry, "local");
         }
     }
@@ -92,7 +92,7 @@ public class WritePathBenchmarks
         // on every subsequent write.
         for (int i = 0; i < Entries; i++)
         {
-            var entry = new ArtifactEntry($"seed-{i}", $"file:///seed-{i}.nmp2", 512, 1, DateTimeOffset.UtcNow);
+            var entry = new ArtifactEntry(MemoryAddress.Parse($"/seed-{i}"), $"artifacts/seed-{i}.nmp2", 512, 1, DateTimeOffset.UtcNow);
             _marginalStore.Upsert(entry, "local");
         }
 
@@ -128,7 +128,7 @@ public class WritePathBenchmarks
     public void MarginalUpsert()
     {
         var entry = new ArtifactEntry(
-            $"seed-{_marginalNext}", $"file:///seed-{_marginalNext}.nmp2", 512, 1, DateTimeOffset.UtcNow);
+            MemoryAddress.Parse($"/seed-{_marginalNext}"), $"artifacts/seed-{_marginalNext}.nmp2", 512, 1, DateTimeOffset.UtcNow);
         _marginalStore.Upsert(entry, "local");
         _marginalNext++;
     }

@@ -24,7 +24,7 @@ namespace Scrinia.Tests.Naming;
 ///     per verb, by <c>EphemeralAliasRoundTripTests</c>.</description></item>
 ///   <item><term>MCP resource</term><description><c>ScriniaMcpResources.ReadMemory</c> —
 ///     canonicalize and proceed. Pinned here, and nowhere else: this surface reaches
-///     <c>IMemoryStore.ResolveArtifactAsync</c> directly, bypassing the tool methods.</description></item>
+///     the typed artifact-read path directly, bypassing the tool methods.</description></item>
 ///   <item><term>CLI</term><description><c>ScriniaCommands.RefuseEphemeral</c> —
 ///     canonicalize then REFUSE, because the process exits before an ephemeral memory could
 ///     be read back. Pinned by <c>CliEphemeralRefusalTests</c>; not duplicated here.</description></item>

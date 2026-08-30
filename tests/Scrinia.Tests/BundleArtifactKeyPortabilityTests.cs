@@ -66,6 +66,21 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
             .Should().Equal("qualified body");
     }
 
+    [Fact]
+    public async Task ImportReplacesForeignArtifactKeyWithDestinationLocalIdentity()
+    {
+        string targetRoot = Path.Combine(_root, "destination");
+        Directory.CreateDirectory(targetRoot);
+        using var target = new FileMemoryStore(targetRoot);
+
+        using (var zip = OpenZip(CreateBundle("artifacts/source-machine/note.nmp2")))
+            BundleFormatService.ImportTopicsFromZip(zip, target, filterTopics: null, overwrite: true);
+
+        ArtifactEntry imported = target.LoadIndex("local:portable").Should().ContainSingle().Subject;
+        imported.ArtifactKey.Should().Be("artifacts/portable/note.nmp2");
+        imported.ArtifactKey.Should().NotBe("artifacts/source-machine/note.nmp2");
+    }
+
     public static IEnumerable<object[]> PhysicalMetadataKeys() =>
     [
         ["uri"], ["URI"],

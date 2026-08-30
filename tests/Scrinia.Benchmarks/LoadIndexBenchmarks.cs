@@ -34,7 +34,7 @@ public class LoadIndexBenchmarks
 
         var entries = new List<ArtifactEntry>(EntryCount);
         for (int i = 0; i < EntryCount; i++)
-            entries.Add(new ArtifactEntry($"entry-{i}", $"file:///entry-{i}.nmp2", 512, 1,
+            entries.Add(new ArtifactEntry(MemoryAddress.Parse($"/entry-{i}"), $"artifacts/entry-{i}.nmp2", 512, 1,
                 DateTimeOffset.UtcNow));
 
         // SaveIndex writes every sidecar and leaves the scope's cache populated, so the

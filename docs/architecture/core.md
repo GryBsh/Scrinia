@@ -95,8 +95,8 @@ The primary index entry for a stored memory:
 
 ```csharp
 public sealed record ArtifactEntry(
-    string Name,
-    string Uri,                                      // file:// path to .nmp2 file
+    MemoryAddress Address,                           // canonical logical memory address
+    string ArtifactKey,                              // opaque store-relative artifact key
     long OriginalBytes,
     int ChunkCount,
     DateTimeOffset CreatedAt,

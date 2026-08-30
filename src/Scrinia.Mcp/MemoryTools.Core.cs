@@ -245,9 +245,9 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = new MemoryWrite(subject, scope, content, description,
-                WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen)
-                    ?? new Dictionary<string, string[]>(), keywords ?? []);
+            write = new MemoryWrite(name, content.Select(ToUtf8).ToArray(), WriteAttributesAsBytes(
+                    WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen)
+                        ?? new Dictionary<string, string[]>()), keywords ?? [], description);
         }
         catch (InvalidMemoryWriteException ex)
         {
@@ -346,6 +346,15 @@ public sealed partial class ScriniaMcpTools
             ? explicitAttributes
             : KnownAttributes.Merge(explicitAttributes, KnownAttributes.Normalize(carrier));
     }
+
+    private static Dictionary<string, IReadOnlyList<string>> WriteAttributesAsBytes(
+        Dictionary<string, string[]> attributes) =>
+        attributes.ToDictionary(pair => pair.Key,
+            pair => (IReadOnlyList<string>)pair.Value,
+            StringComparer.OrdinalIgnoreCase);
+
+    private static ReadOnlyMemory<byte> ToUtf8(string content) =>
+        System.Text.Encoding.UTF8.GetBytes(content);
 
     /// <summary>Update metadata on an existing memory without re-encoding its content.
     ///
@@ -1041,9 +1050,9 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = new MemoryWrite(subject, scope, [content], description,
-                WriteAttributes(attributes, tags, anchors)
-                    ?? new Dictionary<string, string[]>(), keywords ?? []);
+            write = new MemoryWrite(name, [ToUtf8(content)],
+                WriteAttributesAsBytes(WriteAttributes(attributes, tags, anchors)
+                    ?? new Dictionary<string, string[]>()), keywords ?? [], description);
         }
         catch (InvalidMemoryWriteException ex)
         {
