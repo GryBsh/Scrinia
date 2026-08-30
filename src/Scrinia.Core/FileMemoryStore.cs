@@ -2207,6 +2207,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public async Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default)
     {
+        if (!address.IsValid)
+            throw new ArgumentException("The memory address must be valid.", nameof(address));
+
         if (address.Kind == MemoryAddressKind.Ephemeral)
         {
             var entry = GetEphemeral(address.Value);
@@ -2215,7 +2218,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return entry.Artifact;
         }
 
-        var (scope, subject) = ParseQualifiedName(address.ToString());
+        var (scope, subject) = ResolveAddress(address);
         return await WithRecoveryReadBarrierAsync(scope, async () =>
         {
             string path = FindArtifactPath(subject, scope);

@@ -119,10 +119,17 @@ public sealed record ArtifactEntry
 
     private static void ValidateArtifactKey(string artifactKey)
     {
-        if (string.IsNullOrWhiteSpace(artifactKey) || artifactKey.Contains('\\') ||
-            artifactKey.Contains(':') || artifactKey.StartsWith('/') || artifactKey.StartsWith("//") ||
+        if (string.IsNullOrWhiteSpace(artifactKey) || Path.IsPathRooted(artifactKey) ||
+            artifactKey.StartsWith("//", StringComparison.Ordinal) ||
+            artifactKey.Contains('\0') || artifactKey.Any(char.IsControl) ||
+            artifactKey.Any(character => character is '\\' or ':' or '?' or '#' or '%' or '*' or
+                '<' or '>' or '|' or '"') ||
             System.Uri.TryCreate(artifactKey, UriKind.Absolute, out _))
             throw new ArgumentException("ArtifactKey must be a non-rooted, non-URI, store-relative key.", nameof(artifactKey));
+
+        string[] segments = artifactKey.Split('/');
+        if (segments.Any(segment => segment is "" or "." or ".."))
+            throw new ArgumentException("ArtifactKey must not contain empty or traversal segments.", nameof(artifactKey));
     }
 
     // Back-compat ingest: sidecars written before the Fields→Attributes rename stored the
