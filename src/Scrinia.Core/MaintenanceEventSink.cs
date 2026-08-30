@@ -56,13 +56,13 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
     /// value exists so the attribute has something to match in an <c>attributeFilter</c>.</summary>
     internal const string OrphanValue = "true";
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+    public async Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
     {
         try
         {
             var full = CoreSinkStore.Require(store, nameof(MaintenanceEventSink));
             string joined = string.Join("\n", content);
-            await AutoLinkAndDetectOrphans(qualifiedName, joined, full);
+            await AutoLinkAndDetectOrphans(address, joined, full);
         }
         catch (Exception ex)
         {
@@ -70,12 +70,12 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
     {
         try
         {
             var full = CoreSinkStore.Require(store, nameof(MaintenanceEventSink));
-            await AutoLinkAndDetectOrphans(qualifiedName, content, full);
+            await AutoLinkAndDetectOrphans(address, content, full);
         }
         catch (Exception ex)
         {
@@ -83,11 +83,12 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
     }
 
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+    public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask; // no-op for now
 
-    private static Task AutoLinkAndDetectOrphans(string qualifiedName, string content, IMemoryStore store)
+    private static Task AutoLinkAndDetectOrphans(MemoryAddress address, string content, IMemoryStore store)
     {
+        string qualifiedName = address.ToString();
         // 1. Extract memory references from content
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(content);
 
@@ -95,7 +96,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         foreach (var refName in memoryRefs)
         {
             // Skip self-references
-            if (refName.Equals(qualifiedName, StringComparison.OrdinalIgnoreCase))
+            if (refName.Equals(address.ToString(), StringComparison.OrdinalIgnoreCase))
                 continue;
 
             try

@@ -88,16 +88,44 @@ public sealed class ContractTypingTests
     public void Typed_request_addresses_propagate_into_search_and_list_filtering()
     {
         var matching = MemoryAddress.Parse("/notes/design");
+        var exactPrefix = MemoryAddress.Parse("/notes");
+        var descendant = MemoryAddress.Parse("/notes/design");
+        var prefixCollision = MemoryAddress.Parse("/notes2/design");
         var other = MemoryAddress.Parse("/archive/design");
         var store = new AddressCapturingStore(
-            new ArtifactEntry(matching, "artifacts/design.nmp2", 1, 1, DateTimeOffset.UnixEpoch),
+            new ArtifactEntry(exactPrefix, "artifacts/notes.nmp2", 1, 1, DateTimeOffset.UnixEpoch),
+            new ArtifactEntry(descendant, "artifacts/design.nmp2", 1, 1, DateTimeOffset.UnixEpoch),
+            new ArtifactEntry(prefixCollision, "artifacts/notes2.nmp2", 1, 1, DateTimeOffset.UnixEpoch),
             new ArtifactEntry(other, "artifacts/archive.nmp2", 1, 1, DateTimeOffset.UnixEpoch));
 
         ((IMemoryStore)store).SearchAll(new MemorySearchRequest("design") { Address = matching });
-        var listed = ((IMemoryStore)store).ListAsync(new MemoryListRequest { Prefix = MemoryAddress.Parse("/notes") });
+        var listed = ((IMemoryStore)store).ListAsync(new MemoryListRequest { Prefix = exactPrefix });
 
         store.SearchAddress.Should().Be(matching);
-        listed.Select(item => item.Entry.Address).Should().Equal(matching);
+        listed.Select(item => item.Entry.Address).Should().Equal(exactPrefix, descendant);
+    }
+
+    [Fact]
+    public async Task Composite_event_sink_dispatches_typed_callbacks()
+    {
+        var sink = new TypedSink();
+        var address = MemoryAddress.Parse("~scratch");
+
+        await ((IMemoryEventSink)new CompositeEventSink([sink]))
+            .OnStoredAsync(address, ["content"], new AddressCapturingStore(), CancellationToken.None);
+
+        sink.StoredAddress.Should().Be(address);
+    }
+
+    [Fact]
+    public void Ephemeral_prefix_matches_only_the_same_canonical_address()
+    {
+        var store = new AddressCapturingStore(
+            new ArtifactEntry(MemoryAddress.Parse("~scratch"), "ephemeral", 1, 1, DateTimeOffset.UnixEpoch));
+
+        var listed = ((IMemoryStore)store).ListAsync(new MemoryListRequest { Prefix = MemoryAddress.Parse("~scratch") });
+
+        listed.Should().ContainSingle().Which.Entry.Address.Should().Be(MemoryAddress.Parse("~scratch"));
     }
 
     private sealed class AddressCapturingStore(params ArtifactEntry[] entries) : FakeMemoryStore
@@ -111,5 +139,22 @@ public sealed class ContractTypingTests
 
         public override List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null) =>
             entries.Select(entry => new ScopedArtifact("local", entry)).ToList();
+    }
+
+    private sealed class TypedSink : IMemoryEventSink
+    {
+        public MemoryAddress? StoredAddress { get; private set; }
+
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
+        {
+            StoredAddress = address;
+            return Task.CompletedTask;
+        }
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
     }
 }

@@ -97,7 +97,9 @@ public sealed record ArtifactEntry
     [System.Text.Json.Serialization.JsonIgnore]
     internal string Name
     {
-        get => _name ?? Address.ToString().TrimStart('~');
+        get => _name ?? (Address.Kind == MemoryAddressKind.Persistent
+            ? Address.Value.TrimStart('/')
+            : Address.Value);
         init => _name = value;
     }
 

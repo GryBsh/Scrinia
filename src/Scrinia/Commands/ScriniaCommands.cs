@@ -48,7 +48,9 @@ public partial class ScriniaCommands
     private static bool RefuseEphemeral(string name, bool json, out string canonical)
     {
         canonical = MemoryNaming.CanonicalizeEphemeralAlias(name);
-        if (!MemoryNaming.IsEphemeralName(canonical)) return false;
+        if (MemoryAddress.TryParse(canonical, out var address, out _) && address.Kind == MemoryAddressKind.Ephemeral)
+            canonical = address.ToString();
+        else if (!MemoryNaming.IsEphemeralName(canonical)) return false;
 
         string message =
             $"'{canonical}' names an ephemeral memory. Ephemeral memories live only in the "

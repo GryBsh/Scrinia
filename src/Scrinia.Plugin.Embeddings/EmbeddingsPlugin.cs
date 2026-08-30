@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
-using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
 using Scrinia.Plugin.Abstractions;
 
@@ -263,19 +263,19 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     // -- IMemoryEventSink (MCP path) --
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+    public async Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(qualifiedName, content, store, ct);
+        await EmbedAndIndexAsync(address.ToString(), content, store, ct);
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
     {
-        await ReembedFullMemoryAsync(qualifiedName, store, ct);
+        await ReembedFullMemoryAsync(address.ToString(), store, ct);
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+    public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
-        await RemoveVectorsAsync(qualifiedName, wasDeleted, store, ct);
+        await RemoveVectorsAsync(address.ToString(), wasDeleted, store, ct);
     }
 
     // -- Shared internal --

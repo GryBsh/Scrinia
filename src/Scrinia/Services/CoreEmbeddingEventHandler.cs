@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Services;
 
@@ -26,12 +27,12 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         _indexer = new MemoryVectorIndexer(provider, store, logger, options);
     }
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore memoryStore, CancellationToken ct)
+    public async Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore memoryStore, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(qualifiedName, content, memoryStore, ct);
+        await EmbedAndIndexAsync(address.ToString(), content, memoryStore, ct);
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore memoryStore, CancellationToken ct)
+    public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore memoryStore, CancellationToken ct)
     {
         // An append mutates the memory. Indexing only the appended fragment would be wrong twice
         // over: the indexer replaces a memory's vectors atomically, so the rest of the memory
@@ -48,7 +49,7 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
             // ReadForAppendAsync checks ephemerality on the NAME instead, and still returns the
             // ParseQualifiedName-derived (scope, subject) pair, so the index write below lands on
             // exactly the same key the store path used.
-            var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(memoryStore, qualifiedName, ct);
+            var (scope, subject, elements) = await MemoryArtifactSource.ReadForAppendAsync(memoryStore, address.ToString(), ct);
             if (elements.Length == 0) return;
 
             await _indexer.IndexAsync(scope, subject, elements, ct);
@@ -59,18 +60,18 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
+            _logger.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", address);
         }
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore memoryStore, CancellationToken ct)
+    public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore memoryStore, CancellationToken ct)
     {
         if (!wasDeleted) return;
 
         // Uses the (qualifiedName, store) overload, which owns the ParseQualifiedName call
         // inside its own try — a malformed qualifiedName must not throw out of an event-sink
         // handler with no guard of its own.
-        await _indexer.RemoveAsync(qualifiedName, memoryStore, ct);
+        await _indexer.RemoveAsync(address.ToString(), memoryStore, ct);
     }
 
     private async Task EmbedAndIndexAsync(

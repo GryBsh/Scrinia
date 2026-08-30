@@ -2,9 +2,9 @@ using System.Text.Json;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
-using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Services;
@@ -200,7 +200,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
     // ── IMemoryEventSink ─────────────────────────────────────────────────
 
-    public async Task OnStoredAsync(string qualifiedName, string[] content,
+    public async Task OnStoredAsync(MemoryAddress address, string[] content,
         IPluginStore store, CancellationToken ct)
     {
         // Restored the early return in front of ParseQualifiedName: a plugin advertising only
@@ -208,7 +208,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         // malformed name) on every store/append when it was never going to call out anyway.
         if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
-        var (scope, name) = store.ParseQualifiedName(qualifiedName);
+        var (scope, name) = store.ParseQualifiedName(address.ToString());
 
         if (_hasIndex)
         {
@@ -250,13 +250,13 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         }
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content,
+    public async Task OnAppendedAsync(MemoryAddress address, string content,
         IPluginStore store, CancellationToken ct)
     {
         // See OnStoredAsync — same early-return-before-parse fix, same reason.
         if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
-        var (scope, name) = store.ParseQualifiedName(qualifiedName);
+        var (scope, name) = store.ParseQualifiedName(address.ToString());
 
         if (_hasIndex)
         {
@@ -292,12 +292,12 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         }, ct);
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted,
+    public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted,
         IPluginStore store, CancellationToken ct)
     {
         if (!wasDeleted || _degraded || !_hasRemove) return;
 
-        var (scope, name) = store.ParseQualifiedName(qualifiedName);
+        var (scope, name) = store.ParseQualifiedName(address.ToString());
         await CallToolWithRetryAsync("remove", new Dictionary<string, object?>
         {
             ["scope"] = scope,

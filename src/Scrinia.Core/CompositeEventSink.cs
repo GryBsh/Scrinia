@@ -1,3 +1,5 @@
+using Scrinia.Core.Models;
+
 namespace Scrinia.Core;
 
 /// <summary>
@@ -6,29 +8,29 @@ namespace Scrinia.Core;
 /// </summary>
 public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventSink
 {
-    public async Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+    public async Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
     {
         foreach (var sink in sinks)
         {
-            try { await sink.OnStoredAsync(qualifiedName, content, store, ct); }
+            try { await sink.OnStoredAsync(address, content, store, ct); }
             catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}"); }
         }
     }
 
-    public async Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+    public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
     {
         foreach (var sink in sinks)
         {
-            try { await sink.OnAppendedAsync(qualifiedName, content, store, ct); }
+            try { await sink.OnAppendedAsync(address, content, store, ct); }
             catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}"); }
         }
     }
 
-    public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+    public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
     {
         foreach (var sink in sinks)
         {
-            try { await sink.OnForgottenAsync(qualifiedName, wasDeleted, store, ct); }
+            try { await sink.OnForgottenAsync(address, wasDeleted, store, ct); }
             catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}"); }
         }
     }

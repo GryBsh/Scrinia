@@ -1,4 +1,5 @@
 using Scrinia.Core.Models;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Scrinia.Core;
 
@@ -10,11 +11,25 @@ namespace Scrinia.Core;
 public interface IMemoryEventSink
 {
     Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) =>
-        throw new NotSupportedException("Typed event callbacks must be implemented by the sink.");
+        MemoryEventSinkCompatibilityBridge.Invoke(this, nameof(OnStoredAsync), address, content, store, ct);
     Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
-        throw new NotSupportedException("Typed event callbacks must be implemented by the sink.");
+        MemoryEventSinkCompatibilityBridge.Invoke(this, nameof(OnAppendedAsync), address, content, store, ct);
     Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
-        throw new NotSupportedException("Typed event callbacks must be implemented by the sink.");
+        MemoryEventSinkCompatibilityBridge.Invoke(this, nameof(OnForgottenAsync), address, wasDeleted, store, ct);
+}
+
+internal static class MemoryEventSinkCompatibilityBridge
+{
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Legacy compatibility bridge is only used for pre-typed in-process test/plugin implementations.")]
+    internal static Task Invoke(IMemoryEventSink sink, string methodName, MemoryAddress address,
+        object payload, IPluginStore store, CancellationToken ct)
+    {
+        var payloadType = payload is bool ? typeof(bool) : payload.GetType();
+        var method = sink.GetType().GetMethod(methodName,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public,
+            [typeof(string), payloadType, typeof(IPluginStore), typeof(CancellationToken)]);
+        return method?.Invoke(sink, [address.ToString(), payload, store, ct]) as Task ?? Task.CompletedTask;
+    }
 }
 
 internal static class MemoryEventSinkCompatibilityExtensions

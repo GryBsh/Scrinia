@@ -216,9 +216,19 @@ public interface IMemoryStore : IPluginStore
     /// <summary>Lists using the typed request shape.</summary>
     List<ScopedArtifact> ListAsync(MemoryListRequest request) =>
         ListScoped(request.Scopes, request.ExcludeTopics)
-            .Where(item => request.Prefix is null ||
-                item.Entry.Address.ToString().StartsWith(request.Prefix.Value.ToString(), StringComparison.OrdinalIgnoreCase))
+            .Where(item => request.Prefix is null || IsAddressUnderPrefix(item.Entry.Address, request.Prefix.Value))
             .ToList();
+
+    private static bool IsAddressUnderPrefix(MemoryAddress address, MemoryAddress prefix)
+    {
+        if (address.Kind != prefix.Kind)
+            return false;
+        if (prefix.Kind == MemoryAddressKind.Ephemeral)
+            return address == prefix;
+
+        return address == prefix ||
+            address.Value.StartsWith(prefix.Value + "/", StringComparison.OrdinalIgnoreCase);
+    }
 
     // Listing & Search with topic exclusion
 

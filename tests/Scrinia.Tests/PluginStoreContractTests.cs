@@ -16,7 +16,7 @@ public class PluginStoreContractTests
         string[] declared = [.. typeof(IPluginStore).GetMembers().Select(m => m.Name).OrderBy(n => n)];
 
         declared.Should().BeEquivalentTo(
-            ["IsEphemeral", "ParseQualifiedName", "ReadArtifactAsync", "ResolveArtifactAsync"],
+            ["ParseAddress", "ReadArtifactAsync"],
             because: "the contract's value is its narrowness; adding a member here should be a " +
                      "deliberate act that updates this list, not a quiet widening");
     }

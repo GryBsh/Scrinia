@@ -1,5 +1,6 @@
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Core;
 
@@ -22,26 +23,26 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
 {
     private readonly EntityTypeClassifier _classifier = new(provider);
 
-    public Task OnStoredAsync(string qualifiedName, string[] content, IPluginStore store, CancellationToken ct)
+    public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
     {
         var full = CoreSinkStore.Require(store, nameof(EntityTypingEventHandler));
-        return PromoteAsync(qualifiedName, full, ct);
+        return PromoteAsync(address, full, ct);
     }
 
-    public Task OnAppendedAsync(string qualifiedName, string content, IPluginStore store, CancellationToken ct)
+    public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
     {
         var full = CoreSinkStore.Require(store, nameof(EntityTypingEventHandler));
-        return PromoteAsync(qualifiedName, full, ct);
+        return PromoteAsync(address, full, ct);
     }
 
-    public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IPluginStore store, CancellationToken ct)
+    public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
         => Task.CompletedTask;
 
-    private async Task PromoteAsync(string qualifiedName, IMemoryStore store, CancellationToken ct)
+    private async Task PromoteAsync(MemoryAddress address, IMemoryStore store, CancellationToken ct)
     {
         if (!provider.IsAvailable) return;
 
-        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+        var (scope, subject) = store.ParseQualifiedName(address.ToString());
 
         // Case-insensitive to match IMemoryStore's default TryUpdateEntry: SanitizeName does not
         // fold case, so an ordinal match here gated a case-mismatched name out of promotion
