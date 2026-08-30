@@ -1178,7 +1178,7 @@ public sealed partial class ScriniaMcpTools
         // resolved from the ephemeral map instead of the disk-only ReadArtifactAsync.
         bool ephemeral = name.Kind == MemoryAddressKind.Ephemeral;
         string ephemeralKey = ephemeral ? name.Value : name.ToString();
-        EphemeralEntry? ephemeralEntry = ephemeral ? store.GetEphemeral(ephemeralKey) : null;
+        EphemeralEntry? ephemeralEntry = ephemeral ? store.GetEphemeral(name) : null;
 
         string artifact;
         if (ephemeral)
@@ -1328,7 +1328,7 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = MemoryWrite.Create(name, compacted,
+            write = MemoryWrite.Create(name, scope, compacted,
                 WriteAttributesAsBytes(existingAttributes ?? new Dictionary<string, string[]>()),
                 curatedKeywords ?? [], description: existingPreview);
         }

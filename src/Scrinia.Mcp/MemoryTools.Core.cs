@@ -244,7 +244,7 @@ public sealed partial class ScriniaMcpTools
 
         try
         {
-            var write = MemoryWrite.Create(name, content, WriteAttributesAsBytes(
+            var write = MemoryWrite.Create(name, scope, content, WriteAttributesAsBytes(
                     WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen)
                         ?? new Dictionary<string, string[]>()), keywords ?? [], description: description);
 
@@ -400,7 +400,7 @@ public sealed partial class ScriniaMcpTools
             // here would be worse than where it started: the value a lost update drops is the `ref`
             // attribute, i.e. it manufactures the dangling one-sided ref this whole tool's precheck
             // exists to prevent.
-            persisted = store.TryUpdateEphemeral(key, existing =>
+            persisted = store.TryUpdateEphemeral(name, existing =>
             {
                 found = true;
 
@@ -441,7 +441,7 @@ public sealed partial class ScriniaMcpTools
             //
             // `found` stays HERE rather than moving into ApplyMetadataMutation: it means "the store
             // handed us an entry", a fact about TryUpdateEntry, not about the mutation.
-            persisted = store.TryUpdateEntry(subject, scope, entry =>
+            persisted = store.TryUpdateEntry(name, entry =>
             {
                 found = true;
                 return ApplyMetadataMutation(
@@ -956,7 +956,7 @@ public sealed partial class ScriniaMcpTools
         if (nameOrUri.Kind == MemoryAddressKind.Ephemeral)
         {
             string key = nameOrUri.Value;
-            if (!store.ForgetEphemeral(key))
+            if (!store.ForgetEphemeral(nameOrUri))
                 return ResponseBuilder.Error(
                     $"No ephemeral memory found with name '~{key}'.",
                     ErrorCodes.NotFound,
@@ -975,7 +975,7 @@ public sealed partial class ScriniaMcpTools
         bool deleted = store.DeleteArtifact(subject, scope);
 
         // Remove index entry
-        bool removed = store.Remove(subject, scope);
+        bool removed = store.Remove(address);
         if (!removed && !deleted)
             return ResponseBuilder.Error(
                 $"No artifact found with name '{nameOrUri}'.",
@@ -1041,7 +1041,7 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = MemoryWrite.Create(name, [content],
+            write = MemoryWrite.Create(name, scope, [content],
                 WriteAttributesAsBytes(WriteAttributes(attributes, tags, anchors)
                     ?? new Dictionary<string, string[]>()), keywords ?? [], isAppend: true,
                 description: description);
@@ -1144,11 +1144,11 @@ public sealed partial class ScriniaMcpTools
     private static bool Exists(IMemoryStore store, MemoryAddress address)
     {
         if (address.Kind == MemoryAddressKind.Ephemeral)
-            return store.GetEphemeral(address.Value) is not null;
+            return store.GetEphemeral(address) is not null;
 
         var (scope, subject) = store.ResolveAddress(address);
         bool found = false;
-        store.TryUpdateEntry(subject, scope, _ => { found = true; return null; });
+        store.TryUpdateEntry(address, _ => { found = true; return null; });
         return found;
     }
 

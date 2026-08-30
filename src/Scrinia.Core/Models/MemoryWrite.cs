@@ -127,6 +127,23 @@ public sealed record MemoryWrite
             keywords ?? [], description: description);
         return write.Readdress(effectiveAddress, scope, effectiveAddress.Kind == MemoryAddressKind.Ephemeral
             ? effectiveAddress.Value
+             : effectiveAddress.Value[(effectiveAddress.Value.LastIndexOf('/') + 1)..]);
+    }
+
+    /// <summary>Creates a validated write for a resolved address and physical scope from logical text.</summary>
+    internal static MemoryWrite Create(MemoryAddress address, string scope,
+        IReadOnlyList<string?>? content,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> attributes,
+        IReadOnlyList<string>? keywords,
+        bool isAppend = false, string? description = null)
+    {
+        var effectiveAddress = address.Kind == MemoryAddressKind.Ephemeral || scope == "local"
+            ? address
+            : MemoryAddress.Parse($"/{scope["local:".Length..]}/{address.Value.TrimStart('/')}");
+        var write = Create(effectiveAddress, content, attributes, keywords,
+            isAppend: isAppend, description: description);
+        return write.Readdress(effectiveAddress, scope, effectiveAddress.Kind == MemoryAddressKind.Ephemeral
+            ? address.ToString()
             : effectiveAddress.Value[(effectiveAddress.Value.LastIndexOf('/') + 1)..]);
     }
 

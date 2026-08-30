@@ -18,6 +18,21 @@ public sealed class ScriniaMcpToolsTests
 {
     private static ScriniaMcpTools Tools() => new();
 
+    [Fact]
+    public async Task Remember_PreservesResolvedTopicScope()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        MemoryAddress address = MemoryAddress.Parse("/topic/item");
+        TestHelpers.Store.ResolveAddress(address).Should().Be(("local:topic", "item"));
+        await Tools().MemoryRemember("/topic/item", ["body"]);
+
+        var topicEntries = MemoryStoreContext.Current!.LoadIndex("local:topic");
+        var localEntries = MemoryStoreContext.Current.LoadIndex("local");
+        topicEntries.Should().ContainSingle();
+        localEntries.Should().BeEmpty();
+    }
+
     // Single-chunk content: under 20 000 chars threshold (no \n\n needed)
     private static string MediumContent(int approxChars = 18_000)
     {
@@ -82,7 +97,7 @@ public sealed class ScriniaMcpToolsTests
     {
         var store = TestHelpers.Store;
         string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
-        await File.WriteAllTextAsync(store.ArtifactPath(name, "local"), artifact);
+        await File.WriteAllTextAsync(store.FindArtifactPath(name, "local"), artifact);
 
         var entry = new ArtifactEntry(name, "", "firstsecond".Length, 2, DateTimeOffset.UtcNow);
         string sidecarPath = Path.Combine(store.GetStoreDirForScope("local"), MemoryNaming.SanitizeSegment(name) + ".meta.json");
@@ -605,7 +620,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], MemoryAddress.Parse("/forget-me"));
-        string filePath = TestHelpers.Store.ArtifactPath("forget-me");
+        string filePath = TestHelpers.Store.FindArtifactPath("forget-me", "local");
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
         string result = (await Tools().Forget(MemoryAddress.Parse("/forget-me"))).ToYaml();
@@ -672,7 +687,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], MemoryAddress.Parse("/already-deleted"));
-        string filePath = TestHelpers.Store.ArtifactPath("already-deleted");
+        string filePath = TestHelpers.Store.FindArtifactPath("already-deleted", "local");
 
         // Manually delete the file first
         File.Delete(filePath);
