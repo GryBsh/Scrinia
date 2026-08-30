@@ -42,6 +42,15 @@ public readonly record struct MemoryAddress
         throw new MemoryAddressException(error);
     }
 
+    /// <summary>Converts a raw caller value at an adapter boundary into a validated address.</summary>
+    public static implicit operator MemoryAddress(string raw)
+    {
+        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(raw.Trim());
+        if (!canonical.StartsWith('/') && !canonical.StartsWith('~'))
+            canonical = "/" + canonical;
+        return Parse(canonical);
+    }
+
     /// <summary>Attempts to parse a raw logical address without producing a partial value.</summary>
     public static bool TryParse(string? raw, out MemoryAddress address, out MemoryAddressError error)
     {

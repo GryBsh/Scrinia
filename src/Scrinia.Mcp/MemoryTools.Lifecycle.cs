@@ -1159,18 +1159,25 @@ public sealed partial class ScriniaMcpTools
     /// except for an ephemeral (no versions/ directory) or a persistent artifact with no index
     /// entry yet — see <c>hadIndexedEntry</c> below.</summary>
     internal async Task<McpResponse> Compact(
-        [Description("Memory name to compact.")] string name,
+        [Description("Memory name to compact.")] MemoryAddress name,
         [Description("Keep only the N most recent chunks. 0 = merge all into one (default).")] int keepRecent = 0,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
-        var (scope, subject) = store.ParseQualifiedName(name);
+        var (scope, subject) = name.Kind == MemoryAddressKind.Ephemeral
+            ? (string.Empty, name.ToString())
+            : store.ParseQualifiedName(name.ToString());
+        if (name.Kind == MemoryAddressKind.Persistent && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
+            return ResponseBuilder.Error(
+                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} characters.",
+                ErrorCodes.InvalidParameter,
+                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
         // Ephemerals live in memory, not on disk. ParseQualifiedName still runs above (it does not
         // strip the '~', so subject stays harmless for this branch) — the read itself has to be
         // resolved from the ephemeral map instead of the disk-only ReadArtifactAsync.
-        bool ephemeral = store.IsEphemeral(name);
-        string ephemeralKey = ephemeral ? MemoryNaming.StripEphemeralPrefix(name) : name;
+        bool ephemeral = name.Kind == MemoryAddressKind.Ephemeral;
+        string ephemeralKey = ephemeral ? name.Value : name.ToString();
         EphemeralEntry? ephemeralEntry = ephemeral ? store.GetEphemeral(ephemeralKey) : null;
 
         string artifact;
@@ -1190,7 +1197,7 @@ public sealed partial class ScriniaMcpTools
         {
             try
             {
-                artifact = await store.ReadArtifactAsync(ParseUserAddress(name), cancellationToken);
+                artifact = await store.ReadArtifactAsync(name, cancellationToken);
             }
             catch (FileNotFoundException)
             {
@@ -1321,7 +1328,7 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = new MemoryWrite(ephemeral ? name : subject, scope, compacted,
+            write = new MemoryWrite(ephemeral ? name.ToString() : subject, scope, compacted,
                 Description: existingPreview,
                 Attributes: existingAttributes ?? new Dictionary<string, string[]>(),
                 Keywords: curatedKeywords);
@@ -1338,7 +1345,7 @@ public sealed partial class ScriniaMcpTools
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            ParseUserAddress(qualifiedName), compacted, store, cancellationToken));
+            stored.Address, compacted, store, cancellationToken));
         int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no

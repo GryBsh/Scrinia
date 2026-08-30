@@ -108,14 +108,6 @@ public sealed partial class ScriniaMcpTools
 
     private static string CanonicalAddress(MemoryAddress address) => address.ToString();
 
-    private static MemoryAddress ParseUserAddress(string input)
-    {
-        string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input.Trim());
-        if (!canonical.StartsWith('/') && !canonical.StartsWith('~'))
-            canonical = "/" + canonical;
-        return MemoryAddress.Parse(canonical);
-    }
-
     [McpServerTool(Name = "guide"), Description(
         "Required reading — call at session start. Returns the agent guide AND auto-restores " +
         "workspace context (available skills, recent sessions, patterns) so you have everything " +
@@ -362,7 +354,7 @@ public sealed partial class ScriniaMcpTools
     {
         if (TryClassifyArtifactInput(path, out string? inlineArtifact, out var recallError))
         {
-            return (await Recall(inlineArtifact!, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+            return (await Recall(default, inlineArtifact!, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
         }
         if (recallError is not null)
             return recallError.ToYaml();
@@ -377,7 +369,7 @@ public sealed partial class ScriniaMcpTools
 
         try
         {
-            return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+            return (await Recall(parsedPath, chunk: chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {

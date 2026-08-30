@@ -18,16 +18,32 @@ namespace Scrinia.Mcp;
 
 public sealed partial class ScriniaMcpTools
 {
+    internal Task<McpResponse> Recall(
+        string rawInput,
+        int? chunk = null,
+        string actionLabel = "shown",
+        CancellationToken cancellationToken = default)
+    {
+        string candidate = rawInput.Trim();
+        if (candidate.StartsWith("NMP/2 ", StringComparison.Ordinal))
+            return Recall(default, candidate, chunk, actionLabel, cancellationToken);
+
+        if (!TryParseLogicalAddress(candidate, out var address, out var error))
+            return Task.FromResult(error);
+        return Recall(address, chunk: chunk, actionLabel: actionLabel, cancellationToken: cancellationToken);
+    }
+
     /// <summary>Recall: unpack an NMP/2 artifact (or a memory resolved by name) back to its
     /// original text content. Backs the MCP <c>recall</c> tool and <c>scri show</c>.</summary>
     internal async Task<McpResponse> Recall(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
-                     "Use the exact name shown by list (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string artifactOrName,
+                     "Use the exact name shown by list (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] MemoryAddress address,
+        string? inlineArtifact = null,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
         string actionLabel = "shown",
         CancellationToken cancellationToken = default)
     {
-        string input = artifactOrName?.Trim() ?? string.Empty;
+        string input = inlineArtifact?.Trim() ?? address.ToString();
         if (input.StartsWith("NMP/2 ", StringComparison.Ordinal))
         {
             if (!Nmp2Strategy.Instance.CanDecode(input))
@@ -80,19 +96,19 @@ public sealed partial class ScriniaMcpTools
             var store = MemoryStoreContext.Current;
             if (store is null)
                 return ResponseBuilder.Error(
-                    $"Memory '{artifactOrName}' not found.",
+                    $"Memory '{address}' not found.",
                     ErrorCodes.NotFound,
                     "list() to see available memories",
                     "search({ query: '...' }) to find by keyword");
 
             try
             {
-                artifact = await store.ReadArtifactAsync(ParseUserAddress(input), cancellationToken);
+                artifact = await store.ReadArtifactAsync(address, cancellationToken);
             }
             catch (FileNotFoundException)
             {
                 return ResponseBuilder.Error(
-                    $"Memory '{artifactOrName}' not found.",
+                    $"Memory '{address}' not found.",
                     ErrorCodes.NotFound,
                     "list() to see available memories",
                     "search({ query: '...' }) to find by keyword");
@@ -137,7 +153,7 @@ public sealed partial class ScriniaMcpTools
                      "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
         [Description("Human-readable name for this artifact (e.g. \"session-notes\", \"my-codebase\"). " +
                      "Invalid filename characters are replaced with '_'. " +
-                     "Naming: '/path/to/memory' (e.g. '/api/auth-flow'), '/temp/subject' (ephemeral).")] string name,
+                      "Naming: '/path/to/memory' (e.g. '/api/auth-flow'), '/temp/subject' (ephemeral).")] MemoryAddress name,
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search. Merged with auto-extracted content terms; 'key:value' " +
@@ -159,9 +175,10 @@ public sealed partial class ScriniaMcpTools
         var store = CurrentStore;
 
         // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
-        if (name.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
+        string nameText = name.ToString();
+        if (nameText.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
-            string agentSubject = name["/agent/".Length..].Trim();
+            string agentSubject = nameText["/agent/".Length..].Trim();
 
             // Validated first, so /agent/ and /skill/ answer the same way for the same bad input:
             // a bad name is INVALID_PARAMETER on both, never whatever the next guard would have
@@ -234,6 +251,11 @@ public sealed partial class ScriniaMcpTools
         // The ephemeral branch is gone with it: the store routes a ~name to ephemeral storage
         // itself, so there is no second write path here to keep in step with the first.
         var (ephemeral, scope, subject) = Resolve(store, name);
+        if (!ephemeral && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
+            return ResponseBuilder.Error(
+                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} characters.",
+                ErrorCodes.InvalidParameter,
+                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
         MemoryWrite write;
         try
@@ -264,9 +286,10 @@ public sealed partial class ScriniaMcpTools
     /// — the store routes it to ephemeral storage itself. Mirrors
     /// <c>MemoryOrchestrator.Resolve</c>, deliberately: the two tool surfaces over the same store
     /// must resolve a name the same way.</summary>
-    private static (bool Ephemeral, string Scope, string Subject) Resolve(IMemoryStore store, string name)
+    private static (bool Ephemeral, string Scope, string Subject) Resolve(IMemoryStore store, MemoryAddress address)
     {
-        if (store.IsEphemeral(name))
+        string name = address.ToString();
+        if (address.Kind == MemoryAddressKind.Ephemeral)
             return (true, "", name);
         var (scope, subject) = store.ParseQualifiedName(name);
         return (false, scope, subject);
@@ -359,7 +382,7 @@ public sealed partial class ScriniaMcpTools
     /// itself in <see cref="ApplyMetadataMutation"/>.</para>
     /// </summary>
     internal Task<McpResponse> UpdateMeta(
-        [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] string name,
+        [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] MemoryAddress name,
         [Description("Keywords to add (merged with existing, not replaced).")] string[]? keywords = null,
         [Description("New description (replaces existing if provided).")] string? description = null,
         [Description("ISO 8601 date for review (replaces existing if provided).")] string? reviewAfter = null,
@@ -375,7 +398,7 @@ public sealed partial class ScriniaMcpTools
         bool found = false;
         bool persisted;
         string qualifiedName;
-        bool ephemeral = store.IsEphemeral(name);
+        bool ephemeral = name.Kind == MemoryAddressKind.Ephemeral;
 
         // The ephemeral branch sits AHEAD of ParseQualifiedName, where the refusal it replaces sat:
         // ParseQualifiedName does not strip `~`, so a ~name reaching it resolves to a persistent
@@ -384,7 +407,7 @@ public sealed partial class ScriniaMcpTools
         // RememberEphemeral.
         if (ephemeral)
         {
-            string key = MemoryNaming.StripEphemeralPrefix(name);
+            string key = name.Value;
             qualifiedName = $"~{key}";
 
             // TryUpdateEphemeral, not GetEphemeral → mutate → RememberEphemeral. That shape is the
@@ -419,7 +442,7 @@ public sealed partial class ScriniaMcpTools
         }
         else
         {
-            var (scope, subject) = store.ParseQualifiedName(name);
+            var (scope, subject) = store.ParseQualifiedName(name.ToString());
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
             // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
@@ -939,29 +962,29 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Removes a stored artifact and its index entry.</summary>
     internal async Task<McpResponse> Forget(
-        [Description("The memory path (e.g. \"session-notes\", \"/api/auth\", \"/temp/scratch\").")] string nameOrUri,
+        [Description("The memory path (e.g. \"session-notes\", \"/api/auth\", \"/temp/scratch\").")] MemoryAddress nameOrUri,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
 
         // Ephemeral memory (~name)
-        if (store.IsEphemeral(nameOrUri))
+        if (nameOrUri.Kind == MemoryAddressKind.Ephemeral)
         {
-            string key = MemoryNaming.StripEphemeralPrefix(nameOrUri);
+            string key = nameOrUri.Value;
             if (!store.ForgetEphemeral(key))
                 return ResponseBuilder.Error(
                     $"No ephemeral memory found with name '~{key}'.",
                     ErrorCodes.NotFound,
                     "list() to see ephemeral memories currently held in process");
 
-            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(MemoryAddress.Parse($"~{key}"), true, store, cancellationToken) ?? Task.CompletedTask); }
+            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(nameOrUri, true, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
             return ResponseBuilder.Success($"Forgot: ~{key}").WithAction("forgotten");
         }
 
-        var (scope, subject) = store.ParseQualifiedName(nameOrUri);
-        var address = MemoryAddress.Parse(store.FormatQualifiedName(scope, subject));
+        var address = nameOrUri;
+        var (scope, subject) = store.ParseQualifiedName(address.ToString());
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -991,7 +1014,7 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<McpResponse> Append(
         [Description("The text content to append.")] string content,
-        [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string name,
+        [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] MemoryAddress name,
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
         [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
@@ -1024,6 +1047,11 @@ public sealed partial class ScriniaMcpTools
         // itself rather than handing the decision back — which is why there is no create branch
         // here and no second call into Remember.
         var (ephemeral, scope, subject) = Resolve(store, name);
+        if (!ephemeral && subject.Length > MemoryWrite.MaxPersistentSubjectLength)
+            return ResponseBuilder.Error(
+                $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} characters.",
+                ErrorCodes.InvalidParameter,
+                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
         MemoryWrite write;
         try
@@ -1127,12 +1155,12 @@ public sealed partial class ScriniaMcpTools
     /// <para>A <c>LoadIndex</c> scan would have been a SECOND resolution rule to keep in step with
     /// <c>FileMemoryStore.TryUpdateEntry</c>'s sidecar lookup.</para>
     /// </summary>
-    private static bool Exists(IMemoryStore store, string name)
+    private static bool Exists(IMemoryStore store, MemoryAddress address)
     {
-        if (store.IsEphemeral(name))
-            return store.GetEphemeral(MemoryNaming.StripEphemeralPrefix(name)) is not null;
+        if (address.Kind == MemoryAddressKind.Ephemeral)
+            return store.GetEphemeral(address.Value) is not null;
 
-        var (scope, subject) = store.ParseQualifiedName(name);
+        var (scope, subject) = store.ParseQualifiedName(address.ToString());
         bool found = false;
         store.TryUpdateEntry(subject, scope, _ => { found = true; return null; });
         return found;
@@ -1150,8 +1178,8 @@ public sealed partial class ScriniaMcpTools
     /// is necessarily empty, so a <c>~name</c> can only ever resolve as missing.</para>
     /// </summary>
     internal async Task<McpResponse> Link(
-        [Description("Source memory name.")] string from,
-        [Description("Target memory name.")] string to,
+        [Description("Source memory name.")] MemoryAddress from,
+        [Description("Target memory name.")] MemoryAddress to,
         [Description("Reason for the connection.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
@@ -1171,7 +1199,7 @@ public sealed partial class ScriniaMcpTools
         // An ephemeral side is no longer refused at all: UpdateMeta handles a ~name, in both store
         // modes, so existence is the only thing left for link itself to check.
         var store = CurrentStore;
-        string? missing = !Exists(store, from) ? from : !Exists(store, to) ? to : null;
+        string? missing = !Exists(store, from) ? from.ToString() : !Exists(store, to) ? to.ToString() : null;
         if (missing is not null)
             return ResponseBuilder.Error(
                 $"Memory '{missing}' not found — nothing was written.",
@@ -1213,8 +1241,8 @@ public sealed partial class ScriniaMcpTools
     /// <see cref="AttributeExtractor.ExtractRefAttributes"/> spells it, and it is a
     /// <see cref="KnownAttributes.ReferenceKeys"/> member, so it union-merges with whatever
     /// references the entry already carries rather than replacing them.</summary>
-    private static Dictionary<string, string[]> ReferenceTo(string name) =>
-        new(StringComparer.OrdinalIgnoreCase) { ["ref"] = [name] };
+    private static Dictionary<string, string[]> ReferenceTo(MemoryAddress address) =>
+        new(StringComparer.OrdinalIgnoreCase) { ["ref"] = [address.ToString()] };
 
     private static Task<McpResponse> BuildDriftList(IMemoryStore store)
     {
