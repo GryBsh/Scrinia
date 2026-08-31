@@ -185,3 +185,28 @@ public sealed record ArtifactEntry
             ? this with { Attributes = Attributes ?? _legacyFields, LegacyFields = null }
             : this;
 }
+
+/// <summary>Pre-address sidecar shape used only while importing legacy storage.</summary>
+internal sealed class LegacyArtifactEntry
+{
+    public string? Name { get; set; }
+    public string? Uri { get; set; }
+    public long OriginalBytes { get; set; }
+    public int ChunkCount { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public string? ContentPreview { get; set; }
+    public string[]? Keywords { get; set; }
+    public Dictionary<string, int>? TermFrequencies { get; set; }
+    public DateTimeOffset? UpdatedAt { get; set; }
+    public ChunkEntry[]? ChunkEntries { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("codeRefs")]
+    public Dictionary<string, string>? FileHashes { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("attributes")]
+    public Dictionary<string, string[]>? Attributes { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("agentKeywords")]
+    public string[]? AgentKeywords { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("v")]
+    public int? SchemaVersion { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("fields")]
+    public Dictionary<string, string[]>? LegacyFields { get; set; }
+}

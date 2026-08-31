@@ -201,6 +201,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     [JsonSerializable(typeof(MemoryAddressError))]
     [JsonSerializable(typeof(MemorySearchRequest))]
     [JsonSerializable(typeof(MemoryListRequest))]
+    [JsonSerializable(typeof(LegacyArtifactEntry))]
     private partial class FileStoreJsonContext : JsonSerializerContext;
 
     /// <summary>
@@ -1081,7 +1082,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // permanently-stuck file (which then degrades to skip, as before). Deserialize
             // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
             string json = FileRetry.Run(() => File.ReadAllText(metaFile));
-            return JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
+            try
+            {
+                return JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
+            }
+            catch (Exception) when (json.Contains("\"name\"", StringComparison.OrdinalIgnoreCase) &&
+                                   json.Contains("\"uri\"", StringComparison.OrdinalIgnoreCase))
+            {
+                var legacy = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.LegacyArtifactEntry)
+                    ?? throw new JsonException("Legacy sidecar is empty.");
+                if (string.IsNullOrWhiteSpace(legacy.Name))
+                    throw new JsonException("Legacy sidecar is missing its name.");
+
+                return new ArtifactEntry(legacy.Name, legacy.Uri ?? "", legacy.OriginalBytes,
+                    legacy.ChunkCount, legacy.CreatedAt, legacy.ContentPreview, legacy.Keywords,
+                    legacy.TermFrequencies, legacy.UpdatedAt, legacy.ChunkEntries, legacy.FileHashes,
+                    legacy.Attributes, legacy.AgentKeywords, legacy.SchemaVersion)
+                {
+                    LegacyFields = legacy.LegacyFields
+                };
+            }
         }
         catch { /* skip corrupt sidecar */ return null; }
     }
@@ -1105,8 +1125,28 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try
         {
             string json = File.ReadAllText(indexPath);
-            var idx = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.IndexFile);
-            return idx?.Entries ?? [];
+            try
+            {
+                var idx = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.IndexFile);
+                return idx?.Entries ?? [];
+            }
+            catch (Exception)
+            {
+                using var document = JsonDocument.Parse(json);
+                if (!document.RootElement.TryGetProperty("entries", out var entries)) return [];
+                return entries.EnumerateArray()
+                    .Select(entry => JsonSerializer.Deserialize(entry.GetRawText(),
+                        FileStoreJsonContext.Default.LegacyArtifactEntry))
+                    .Where(entry => entry?.Name is not null)
+                    .Select(entry => new ArtifactEntry(entry!.Name!, entry.Uri ?? "", entry.OriginalBytes,
+                        entry.ChunkCount, entry.CreatedAt, entry.ContentPreview, entry.Keywords,
+                        entry.TermFrequencies, entry.UpdatedAt, entry.ChunkEntries, entry.FileHashes,
+                        entry.Attributes, entry.AgentKeywords, entry.SchemaVersion)
+                    {
+                        LegacyFields = entry.LegacyFields
+                    })
+                    .ToList();
+            }
         }
         catch
         {
@@ -1138,8 +1178,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 return (storeDir, entries);
             });
             foreach (var entry in primary)
-                if (yielded.Add((primaryDir, entry.Name.ToLowerInvariant())))
-                    yield return (entry, scope, primaryDir);
+            {
+                var canonical = CanonicalizeEntryForScope(entry, scope);
+                if (yielded.Add((primaryDir, canonical.Name.ToLowerInvariant())))
+                    yield return (canonical, scope, primaryDir);
+            }
         }
     }
 
@@ -1436,6 +1479,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         WithExclusiveLock(scope, () =>
         {
+            entry = CanonicalizeEntryForScope(entry, scope);
             string storeDir = GetStoreDirForScope(scope);
             Directory.CreateDirectory(storeDir);
 
@@ -2212,9 +2256,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
             return entry;
 
-        string subject = entry.Address.IsValid && entry.Address.Kind == MemoryAddressKind.Persistent
-            ? entry.Address.Value.Trim('/').Split('/')[^1]
-            : entry.Name;
+        string subject = entry.Name;
+        if (string.IsNullOrWhiteSpace(subject))
+            subject = entry.Address.IsValid && entry.Address.Kind == MemoryAddressKind.Persistent
+                ? entry.Address.Value.Trim('/').Split('/')[^1]
+                : entry.Name;
+        else if (subject.Contains('/'))
+            subject = subject.Split('/')[^1];
         string address = scope.Equals("local", StringComparison.Ordinal)
             ? $"/{subject}"
             : FormatQualifiedName(scope, subject);
@@ -2222,6 +2270,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             Address = MemoryAddress.Parse(address),
             ArtifactKey = BuildArtifactKey(subject, scope),
+            Name = subject,
         };
     }
 
