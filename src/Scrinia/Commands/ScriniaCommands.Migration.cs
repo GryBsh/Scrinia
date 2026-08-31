@@ -293,13 +293,17 @@ public partial class ScriniaCommands
     /// which is environment-dependent (model files may or may not be present on disk).</remarks>
     internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)
     {
-        string path = store.FindArtifactPath(item.Entry.Name, item.Scope);
+        string subject = item.Entry.Address.Value[(item.Entry.Address.Value.LastIndexOf('/') + 1)..];
+        MemoryAddress resolvedAddress = MemoryAddress.Parse(item.Scope.Equals("local", StringComparison.OrdinalIgnoreCase)
+            ? $"/{subject}"
+            : store.FormatQualifiedName(item.Scope, subject));
+        string path = store.FindArtifactPath(subject, item.Scope);
         if (!File.Exists(path)) return;
 
-        string artifact = await store.ReadArtifactAsync(item.Entry.Address, ct);
+        string artifact = await store.ReadArtifactAsync(resolvedAddress, ct);
         if (Nmp2ChunkedEncoder.GetChunkCount(artifact) <= 1) return;
 
-        store.ArchiveVersion(item.Entry.Name, item.Scope);
+        store.ArchiveVersion(resolvedAddress);
 
         byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
         string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
@@ -307,7 +311,7 @@ public partial class ScriniaCommands
         // Compaction rewrites content, not metadata. The Upsert below is what makes the entry's
         // existing attributes/keywords/description travel forward — this write carries only the
         // recompacted text.
-        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted, ct);
+        await store.WriteArtifactAsync(resolvedAddress, compacted, ct);
 
         var updated = item.Entry with
         {
@@ -316,7 +320,8 @@ public partial class ScriniaCommands
             UpdatedAt = DateTimeOffset.UtcNow,
             ChunkEntries = null,
         };
-        store.Upsert(updated, item.Scope);
+        if (!store.TryUpdateEntry(subject, item.Scope, _ => updated))
+            throw new InvalidOperationException($"Could not update compacted memory '{resolvedAddress}'.");
 
         // Merging chunks collapses the chunk layout (e.g. indices 0-7 -> just 0), so any
         // vectors keyed to the old per-chunk indices are now orphaned/stale. Re-embed through
@@ -330,8 +335,7 @@ public partial class ScriniaCommands
         {
             try
             {
-                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                await sink.OnStoredAsync(MemoryAddress.Parse(qualifiedName), [fullText], store, ct);
+                await sink.OnStoredAsync(resolvedAddress, [fullText], store, ct);
             }
             catch (Exception ex)
             {

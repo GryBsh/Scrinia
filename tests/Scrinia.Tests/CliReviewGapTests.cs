@@ -60,7 +60,10 @@ public sealed class CliReviewGapTests
         CliErrorOutput output = JsonSerializer.Deserialize(json, CliJsonContext.Default.CliErrorOutput)!;
         output.Error.Should().Contain("exceeds 182 sanitized characters");
         using var document = JsonDocument.Parse(json);
-        AssertOnlyProperties(document.RootElement, "error");
+        string[] expectedProperties = route == "compact"
+            ? ["error"]
+            : ["error", "category", "code"];
+        AssertOnlyProperties(document.RootElement, expectedProperties);
     }
 
     [Fact]
@@ -75,6 +78,8 @@ public sealed class CliReviewGapTests
             new ScriniaCommands().Store("/findings/store-json", contentFile, scope.WorkspaceDir, json: true));
 
         exit.Should().Be(0);
+        var stored = TestHelpers.Store.LoadIndex("local:findings").Single();
+        stored.Address.ToString().Should().Be("/findings/store-json");
         CliStoreOutput output = JsonSerializer.Deserialize(json, CliJsonContext.Default.CliStoreOutput)!;
         output.Name.Should().Be("/findings/store-json");
         output.OriginalBytes.Should().Be(System.Text.Encoding.UTF8.GetByteCount(content));
@@ -228,7 +233,7 @@ public sealed class CliReviewGapTests
     {
         var store = TestHelpers.Store;
         string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
-        await File.WriteAllTextAsync(store.ArtifactPath(name, "local"), artifact);
+        await File.WriteAllTextAsync(store.FindArtifactPath(name, "local"), artifact);
         var entry = new ArtifactEntry(name, "", "firstsecond".Length, 2, DateTimeOffset.UtcNow);
         string sidecarPath = Path.Combine(store.GetStoreDirForScope("local"), MemoryNaming.SanitizeSegment(name) + ".meta.json");
         await File.WriteAllTextAsync(sidecarPath, JsonSerializer.Serialize(entry));

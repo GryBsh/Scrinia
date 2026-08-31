@@ -188,17 +188,21 @@ public sealed class CliAddressValidationTests
 
     private static async Task<(int Exit, string Output)> CaptureTextAsync(Func<Task<int>> command)
     {
-        using var output = new StringWriter();
-        TextWriter previous = Console.Out;
-        Console.SetOut(output);
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        TextWriter previousOut = Console.Out;
+        TextWriter previousError = Console.Error;
+        Console.SetOut(stdout);
+        Console.SetError(stderr);
         try
         {
             int exit = await command();
-            return (exit, output.ToString());
+            return (exit, stdout.ToString() + stderr.ToString());
         }
         finally
         {
-            Console.SetOut(previous);
+            Console.SetOut(previousOut);
+            Console.SetError(previousError);
         }
     }
 }

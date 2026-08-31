@@ -120,7 +120,7 @@ public sealed record MemoryWrite
     {
         var effectiveAddress = address.Kind == MemoryAddressKind.Ephemeral || scope == "local"
             ? address
-            : MemoryAddress.Parse($"/{scope["local:".Length..]}/{address.Value.TrimStart('/')}");
+            : ResolveScopedAddress(address, scope);
         var write = Create(effectiveAddress, content,
             attributes?.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value)
                 ?? new Dictionary<string, IReadOnlyList<string>>(),
@@ -139,7 +139,7 @@ public sealed record MemoryWrite
     {
         var effectiveAddress = address.Kind == MemoryAddressKind.Ephemeral || scope == "local"
             ? address
-            : MemoryAddress.Parse($"/{scope["local:".Length..]}/{address.Value.TrimStart('/')}");
+            : ResolveScopedAddress(address, scope);
         var write = Create(effectiveAddress, content, attributes, keywords,
             isAppend: isAppend, description: description);
         return write.Readdress(effectiveAddress, scope, effectiveAddress.Kind == MemoryAddressKind.Ephemeral
@@ -167,6 +167,17 @@ public sealed record MemoryWrite
 
     internal MemoryWrite Readdress(MemoryAddress address, string scope, string subject) =>
         new(address, Content, Attributes, Keywords, Description, RawContent, scope, subject);
+
+    private static MemoryAddress ResolveScopedAddress(MemoryAddress address, string scope)
+    {
+        string topicPath = scope["local:".Length..];
+        string qualifiedPrefix = "/" + topicPath + "/";
+        if (address.Value.StartsWith(qualifiedPrefix, StringComparison.OrdinalIgnoreCase))
+            return address;
+
+        string subject = address.Value[(address.Value.LastIndexOf('/') + 1)..];
+        return MemoryAddress.Parse(qualifiedPrefix + subject);
+    }
 
     /// <summary>Creates a validated write and reports the first policy violation.</summary>
     public static MemoryWriteValidationResult TryCreate(

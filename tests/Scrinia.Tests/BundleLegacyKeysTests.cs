@@ -106,7 +106,7 @@ public sealed class BundleLegacyKeysTests
     }
 
     [Fact]
-    public void AModernEntry_IsLeftByteIdenticalExceptForNothing()
+    public void AModernEntry_GainsTypedAddressAndPortableArtifactKey()
     {
         var entry = new JsonObject
         {
@@ -116,11 +116,13 @@ public sealed class BundleLegacyKeysTests
             ["codeRefs"] = new JsonObject { ["src/x.cs"] = "deadbeef" },
         };
         var index = IndexWith(entry);
-        string before = index.ToJsonString();
-
         BundleLegacyKeys.NormalizeIndex(index);
 
-        index.ToJsonString().Should().Be(before, "a modern index must pass through untouched");
+        var normalized = index["entries"]![0]!;
+        normalized["address"]!.GetValue<string>().Should().Be("/a");
+        normalized["artifactKey"]!.GetValue<string>().Should().Be("artifacts/bundle/0.nmp2");
+        normalized["name"]!.GetValue<string>().Should().Be("a");
+        normalized["contentPreview"]!.GetValue<string>().Should().Be("text");
     }
 
     [Fact]

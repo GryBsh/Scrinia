@@ -279,7 +279,9 @@ public sealed partial class ScriniaMcpTools
     /// different casing reports the memory's own name.</summary>
     private static string QualifiedName(
         IMemoryStore store, ArtifactEntry entry, bool ephemeral, string scope) =>
-        ephemeral ? $"~{entry.Name}" : store.FormatQualifiedName(scope, entry.Name);
+        ephemeral ? $"~{entry.Name}" : scope.Equals("local", StringComparison.OrdinalIgnoreCase)
+            ? entry.Name
+            : entry.Address.ToString();
 
     /// <summary>The response shape a whole-memory write answers with, shared by <c>remember</c> and
     /// by the create-via-append case so the two cannot drift. An ephemeral write reports no file
