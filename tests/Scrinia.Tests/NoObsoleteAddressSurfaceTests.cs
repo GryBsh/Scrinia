@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Diagnostics;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
@@ -77,17 +78,18 @@ public sealed class NoObsoleteAddressSurfaceTests
         string root = FindRepositoryRoot();
         var violations = new List<string>();
 
-        foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-                     .Where(IsReviewableTextFile))
+        foreach (string file in EnumerateReviewableTextFiles(root))
         {
             string relativePath = Path.GetRelativePath(root, file).Replace('\\', '/');
-            MatchCollection matches = ForbiddenSurface.Matches(File.ReadAllText(file));
-            if (matches.Count == 0)
+            Match? firstMatch = File.ReadLines(file)
+                .SelectMany(line => ForbiddenSurface.Matches(line).Cast<Match>())
+                .FirstOrDefault();
+            if (firstMatch is null)
                 continue;
 
             if (!AcceptedHistoricalText.TryGetValue(relativePath, out string? classification))
             {
-                violations.Add($"{relativePath}: {matches[0].Value}");
+                violations.Add($"{relativePath}: {firstMatch.Value}");
                 continue;
             }
 
@@ -95,6 +97,13 @@ public sealed class NoObsoleteAddressSurfaceTests
         }
 
         violations.Should().BeEmpty("only explicitly classified historical, rejection, or fixture text may retain removed surface vocabulary");
+    }
+
+    [Fact]
+    public void Ignored_large_dataset_files_are_not_scan_candidates()
+    {
+        EnumerateReviewableTextFiles(FindRepositoryRoot())
+            .Should().NotContain(file => file.Replace('\\', '/').Contains("/datasets/", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -183,13 +192,40 @@ public sealed class NoObsoleteAddressSurfaceTests
         nullability.Create(resourceParameter).ReadState.Should().Be(NullabilityState.Nullable);
     }
 
+    private static IEnumerable<string> EnumerateReviewableTextFiles(string root)
+    {
+        using var process = System.Diagnostics.Process.Start(new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = root,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            ArgumentList = { "ls-files", "-z" }
+        }) ?? throw new InvalidOperationException("Could not start git to enumerate tracked files.");
+
+        string output = process.StandardOutput.ReadToEnd();
+        string error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"git ls-files failed: {error}");
+
+        return output.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Where(IsReviewableTextFile)
+            .Select(relativePath => Path.Combine(root, relativePath));
+    }
+
     private static bool IsReviewableTextFile(string path)
     {
-        string normalized = path.Replace('\\', '/');
+        string normalized = "/" + path.Replace('\\', '/').TrimStart('/');
         if (normalized.Contains("/.git/", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("/bin/", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("/obj/", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("/.scrinia/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/datasets/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/artifacts/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/BenchmarkDotNet.Artifacts/", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("/src/Scrinia.Server/", StringComparison.OrdinalIgnoreCase))
             return false;
 
