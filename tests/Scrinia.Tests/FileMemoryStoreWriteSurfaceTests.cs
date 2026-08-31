@@ -160,6 +160,20 @@ public class FileMemoryStoreWriteSurfaceTests
         (await DecodeAsync(tmp.Store, "persisted")).Should().Be("body");
     }
 
+    [Fact]
+    public async Task StoreAsync_UsesTheQualifiedAddressScopeForTypedReadback()
+    {
+        using var tmp = new TempWorkspace();
+        var address = MemoryAddress.Parse("/writesurface/item");
+
+        await tmp.Store.StoreAsync(MemoryWrite.Create(address, "local", ["body"]));
+
+        string artifact = await tmp.Store.ReadArtifactAsync(address);
+        Nmp2ChunkedEncoder.DecodeChunk(artifact, 1).Should().Be("body");
+        tmp.Store.LoadIndex("local:writesurface").Should().ContainSingle(e =>
+            e.Address == address && e.ArtifactKey == "artifacts/writesurface/item.nmp2");
+    }
+
     // ── What only the store can answer ───────────────────────────────────────
 
     /// <summary>

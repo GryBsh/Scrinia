@@ -906,6 +906,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // on disk would never get rewritten from "fields" to "attributes".
         var entries = LoadEntriesFromSidecarsRaw(storeDir);
 
+        // Sidecars are durable records, but their logical address and artifact key are derived
+        // from the scope directory they were read from. Reconstruct that pair at the boundary so
+        // a recovered journal (or an older sidecar carrying a bare address) cannot create a second
+        // logical entry for the same leaf or leave reads and fact materialization on different keys.
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = CanonicalizeEntryForScope(entries[i], scope);
+
         // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
         // recognized-key keywords) into the attributes model (Fields/Keywords) so every
         // reader sees Fields without a prior `scri migrate`. Primary-scope sidecars whose
@@ -1358,6 +1365,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
+        // SaveIndex accepts entries assembled by callers, including records whose logical address
+        // still contains the topic prefix. Canonicalize the physical leaf before both the orphan
+        // allow-list and publication; otherwise the sweep can delete the real sidecar while the
+        // subsequent write recreates a nested topic/subject path.
+        for (int i = 0; i < entries.Count; i++)
+            entries[i] = CanonicalizeEntryForScope(entries[i], scope);
+
         // Delete orphaned sidecars: any *.meta.json whose entry is no longer present.
         //
         // Correctness of this sweep depends on something the lock cannot supply: the entry list
@@ -1650,6 +1664,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // AttributeMigration.MigratesTo forward-fill of its own.
             string? metaPath = ResolveSidecarPath(storeDir, SanitizeName(subject));
             var current = metaPath is null ? null : LoadSidecar(metaPath);
+            if (current is not null)
+                current = CanonicalizeEntryForScope(current, scope);
             if (current is null) return false;
 
             var updated = mutate(current);
@@ -1731,7 +1747,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         // Ephemerality is the store's question, not the pipeline's — it decides where the memory
         // lands, and it suppresses the auto-derived review condition (D-05).
-        bool ephemeral = IsEphemeral(write.Name);
+        bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
 
         // The one call. `write.Keywords` is the caller's RAW list by MemoryWrite's contract (D-01);
         // nothing this method computes is ever fed back in as input.
@@ -1754,8 +1770,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 updatedAt: existingEph is not null ? DateTimeOffset.UtcNow : null);
         }
 
-        string scope = write.Scope;
-        string subject = write.Address.Value.Trim('/').Split('/')[^1];
+        // The typed address is the canonical identity. `MemoryWrite.Scope` is retained as the
+        // resolved pair for legacy callers, but a public write can still carry the default
+        // "local" scope alongside a qualified address. Deriving both values here prevents the
+        // body/sidecar from landing in the root scope while ReadArtifactAsync correctly resolves
+        // the address to its topic scope.
+        var (scope, subject) = ResolveAddress(write.Address);
 
         // Case-insensitive, and the resolved entry's own casing travels forward. SanitizeName does
         // not fold case, so an ordinal match here reports "new memory" for a re-store under a
@@ -1840,9 +1860,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ArgumentNullException.ThrowIfNull(write);
         write.ValidateOrThrow(_writeValidationOptions, isAppend: true);
 
-        bool ephemeral = IsEphemeral(write.Name);
-        string scope = write.Scope;
-        string subject = write.Address.Value.Trim('/').Split('/')[^1];
+        bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
+        var (scope, subject) = ResolveAddress(write.Address);
         ArtifactEntry? existingEntry = null;
         EphemeralEntry? existingEph = null;
         string? existingArtifact = null;
@@ -1986,6 +2005,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // rewrite — the exact bug this task exists to close.
             SchemaVersion: prior?.SchemaVersion)
         {
+            // Keep the physical leaf separate from the qualified logical address. Without this
+            // projection, the Name getter derives "topic/subject" from Address and sidecar writes
+            // append that path beneath an already topic-scoped folder.
+            Name = subject,
             // COPIED, never aliased.
             //
             // An earlier version of this comment justified the copy by claiming WriteSidecarCore's
@@ -2182,6 +2205,24 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 ? scope["local:".Length..] + "/"
                 : throw new ArgumentException($"Unknown scope: {scope}", nameof(scope));
         return $"artifacts/{topic}{subject}.nmp2";
+    }
+
+    private ArtifactEntry CanonicalizeEntryForScope(ArtifactEntry entry, string scope)
+    {
+        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            return entry;
+
+        string subject = entry.Address.IsValid && entry.Address.Kind == MemoryAddressKind.Persistent
+            ? entry.Address.Value.Trim('/').Split('/')[^1]
+            : entry.Name;
+        string address = scope.Equals("local", StringComparison.Ordinal)
+            ? $"/{subject}"
+            : FormatQualifiedName(scope, subject);
+        return entry with
+        {
+            Address = MemoryAddress.Parse(address),
+            ArtifactKey = BuildArtifactKey(subject, scope),
+        };
     }
 
     private string MapArtifactKey(string artifactKey)
@@ -2761,8 +2802,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     // deserializes to default(DateTimeOffset) — 0001-01-01T00:00:00+00:00 — and that
                     // specific value is the only one rewritten to "now" here. Any OTHER unparseable
                     // createdAt is refused earlier, in ImportTopicsFromZip's deserialize.
+                string canonicalAddress = topicScope == "local"
+                    ? $"/{entry.Name}"
+                    : FormatQualifiedName(topicScope, entry.Name);
                 candidates.Add(entry with
                 {
+                    Address = MemoryAddress.Parse(canonicalAddress),
                     ArtifactKey = BuildArtifactKey(entry.Name, topicScope),
                     CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                 });
