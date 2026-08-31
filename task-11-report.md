@@ -35,7 +35,7 @@ asserting the cold-store address, artifact key, and content-preview round trip.
 - Reconcile durable-format and MetaMerge parity representatives: **27 passed, 0 failed, 0 skipped**.
 - Standalone MetaMerge sidecar representatives: **85 passed, 0 failed, 0 skipped**.
 - Source-generated address serialization representatives: **7 passed, 0 failed, 0 skipped**.
-- Solution build: **15 projects, 0 errors, 0 warnings**.
+- Solution build: **15 projects, 0 errors, 2,584 warnings** (existing analyzer warnings).
 
 ## Post-commit verification (2026-08-31)
 
