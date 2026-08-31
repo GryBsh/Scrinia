@@ -183,21 +183,17 @@ public sealed class AgenticIngestHarness
         using (doc)
         {
             var root = doc.RootElement;
+            (string ToolResult, bool IsError) outcome;
             try
             {
-                switch (call.ToolName)
+                outcome = call.ToolName switch
                 {
-                    case "remember":
-                        return await DispatchRememberAsync(tools, root, ct);
-                    case "append":
-                        return await DispatchAppendAsync(tools, root, ct);
-                    case "recall":
-                        return await DispatchRecallAsync(tools, root, ct);
-                    case "search":
-                        return await DispatchSearchAsync(tools, root, ct);
-                    default:
-                        return ($"error: unknown tool '{call.ToolName}'", true);
-                }
+                    "remember" => await DispatchRememberAsync(tools, root, ct),
+                    "append" => await DispatchAppendAsync(tools, root, ct),
+                    "recall" => await DispatchRecallAsync(tools, root, ct),
+                    "search" => await DispatchSearchAsync(tools, root, ct),
+                    _ => ($"error: unknown tool '{call.ToolName}'", true),
+                };
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -207,7 +203,17 @@ public sealed class AgenticIngestHarness
                 // Cancellation is deliberately not swallowed — a cancelled run must stop.
                 return ($"error: {call.ToolName} failed: {ex.Message}", true);
             }
+
+            return (outcome.ToolResult,
+                outcome.IsError || IsStructuredMcpErrorResponse(outcome.ToolResult));
         }
+    }
+
+    private static bool IsStructuredMcpErrorResponse(string response)
+    {
+        int firstLineEnd = response.IndexOf('\n');
+        string firstLine = (firstLineEnd >= 0 ? response[..firstLineEnd] : response).TrimEnd('\r');
+        return firstLine.Equals("status: error", StringComparison.Ordinal);
     }
 
     private static async Task<(string, bool)> DispatchRememberAsync(

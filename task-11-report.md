@@ -187,3 +187,20 @@ and hybrid scoring were not changed.
   **37 passed, 1 failed, 0 skipped**; the same agentic invalid-path counter is the only failure.
 - Solution build (`dotnet build Scrinia.sln --no-restore -v:q`): **15 projects, 0 errors, 2,310
   warnings** (existing analyzer/preview-SDK warnings).
+
+## Agentic structured tool-error resolution (2026-08-31)
+
+The remaining retrieval failure was an adapter contract mismatch: address validation returned a
+structured MCP YAML error, but the dispatcher marked the response as successful because no exception
+was thrown. `ExecuteCallAsync` now centrally recognizes `status: error` responses as tool errors,
+without changing successful responses or the exception boundary. A parameterized harness regression
+covers `UNSUPPORTED_INPUT_FORM` and `MALFORMED_ADDRESS` responses.
+
+Verification after the fix:
+
+- Exact 11-test retrieval filter: **11 passed, 0 failed, 0 skipped**.
+- Full retrieval test project: **272 passed, 0 failed, 0 skipped**.
+- Focused agentic acceptance lanes (`AgenticIngestHarnessTests`, `AgenticScriniaRetrieverTests`,
+  `AgenticIngestEndToEndTests`): **35 passed, 0 failed, 0 skipped**.
+- Solution build (`dotnet build Scrinia.sln --no-restore -v:q`): **15 projects, 0 errors, 2,310
+  warnings** (existing analyzer/preview-SDK warnings).

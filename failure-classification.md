@@ -3,14 +3,14 @@
 ## Scope
 
 - Worktree: `C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\.claude\worktrees\unified-memory-addressing-task-1`
-- HEAD: `ac293ad`
+- HEAD: `38f1c05`
 - Green baseline: `90827cd`
 - The worktree already had an untracked `src/Scrinia.Server/`; it was not inspected or changed.
 
 The recorded full retrieval run contains 11 failures. Re-running exactly those 11 tests at HEAD
-before the fix produced 9 failures and 2 passes; after the boundary fix it produces 10 passes and
-1 unrelated agentic tool-loop failure. The two agentic hybrid tests remain timing/order-sensitive,
-while the eight identity failures are resolved deterministically.
+before the fix produced 9 failures and 2 passes; after the boundary fix all 11 pass. The two
+agentic hybrid tests remain timing/order-sensitive across broader runs, while the eight identity
+failures are resolved deterministically.
 
 ## Grouped failures
 
@@ -63,12 +63,38 @@ provenance mapping. The two hybrid symptoms are not stable at HEAD and are not e
 `ArtifactKey`: agentic hits map through `_provenance` and buffered doc IDs, not `ArtifactEntry.Uri`.
 Treat them as agent/test isolation or episode-order flakes until a serialized run proves otherwise.
 
-The invalid-path failure is a separate agent tool-loop contract issue: the test expects a malformed
-`/findings/trip:lisbon` remember call to be caught and counted, but the run records zero tool errors.
-It is exposed by the typed address boundary, whose parsing/rejection was introduced by `9c14922` and
-completed through `a6cfb61`/`8538bc3`; it is not a retrieval-ranking failure. Recommended fix: keep
-the adapter's tool execution exception boundary around typed MCP/store calls and increment the
-episode error counter for rejected paths.
+The invalid-path failure is reproducible at `38f1c05`, with the assertion stack trace ending at
+`AgenticScriniaRetrieverTests.cs:293`: `ToolCallErrors` is `0` instead of `>= 1`. `RetrieveAsync`
+does not throw and the final hit list is empty, so this is not a retrieval or environment failure.
+
+The test's exception premise is stale. The call reaches `ScriniaMcpTools.MemoryRemember`, which
+rejects `/findings/trip:lisbon` at the MCP boundary: `TryParseLogicalAddress` calls `LooksLikeUri`,
+sees the colon, and returns a structured `UnsupportedInputForm` error (`MemoryTools.cs:49-56,
+73-75`) before the store or `PathParser.Parse` can run. `DispatchRememberAsync` returns that YAML
+response as `(result, false)` (`AgenticIngestHarness.cs:224-225`), because the harness only marks
+JSON parse failures and thrown tool exceptions as errors. `RunEpisodeAsync` therefore leaves
+`malformedCount` at zero, and `RunSessionEpisodeAsync` propagates zero at
+`AgenticScriniaRetriever.cs:416-430` into `Stats.ToolCallErrors`.
+
+This boundary behavior was introduced by logical-address enforcement in `3a822e8` (typed address
+work completed by `2582ae1`/`8538bc3`); the identity-only change in `38f1c05` is unrelated. The green
+baseline's old facade allowed the call to reach the lower store path and throw, so the old rationale
+no longer describes HEAD. Classification: **agentic harness contract mismatch exposed by an
+intentional production input-boundary change**, not a production retrieval regression and not an
+environment issue. The desired invariant (an errored tool call is counted and the run continues)
+remains reasonable, but the error signal changed from an exception to a structured MCP error.
+
+Recommended minimal fix: have the harness adapter classify a structured MCP error response from
+`MemoryRemember` and the other dispatchers as `IsError: true` before returning it (ideally centrally
+in `ExecuteCallAsync`). This preserves the test and metric semantics while retaining the new address
+boundary. If the metric is intentionally narrowed to exceptions, update this test's comment/assertion
+instead; that would make `ToolCallErrors` inconsistent with its documented malformed/errored-call
+contract.
+
+Resolution: `ExecuteCallAsync` now classifies a dispatcher result whose first structured YAML line is
+`status: error` as an error, while preserving dispatcher error flags and exception handling. A theory
+regression covers both `UNSUPPORTED_INPUT_FORM` and `MALFORMED_ADDRESS`; the original invalid-path
+retriever test now counts the boundary response without aborting the episode.
 
 ## Contract ruling
 
@@ -81,8 +107,8 @@ regression caused by conflating those identities.
 
 ## Verification
 
-The exact 11-test filter before the fix at `ac293ad`: **9 failed, 2 passed**. After the fix:
-**10 passed, 1 failed**, with only the classified agentic invalid-path counter remaining. The full
-retrieval test project after the fix: **269 passed, 1 failed, 0 skipped**; the sole failure is the
-same agentic tool-loop contract issue. Added whole-document and chunked boundary regressions prove
-sanitized/portable storage keys do not escape as public IDs.
+The exact 11-test filter before the fix at `38f1c05`: **9 failed, 2 passed**. After the fix:
+**11 passed, 0 failed, 0 skipped**. The full retrieval test project after the fix: **272 passed,
+0 failed, 0 skipped**. Added whole-document and chunked boundary regressions prove sanitized/
+portable storage keys do not escape as public IDs; the new harness theory covers both categorized
+structured address-error responses.

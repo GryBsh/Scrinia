@@ -104,6 +104,35 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         finally { MemoryStoreContext.Current = null; }
     }
 
+    [Theory]
+    [InlineData("file:///tmp/not-a-memory", "UNSUPPORTED_INPUT_FORM")]
+    [InlineData("/", "MALFORMED_ADDRESS")]
+    public async Task Episode_StructuredAddressErrorResponse_CountsAsToolError(
+        string path, string expectedErrorCode)
+    {
+        Directory.CreateDirectory(_dir);
+        MemoryStoreContext.Current = new FileMemoryStore(_dir);
+        try
+        {
+            string structuredResponse = await new ScriniaMcpTools().MemoryRemember(path, ["content"]);
+            structuredResponse.Should().Contain($"errorCode: {expectedErrorCode}");
+
+            var bad = new ToolCallRequest("c1", "remember",
+                $"{{\"path\":\"{path}\",\"content\":[\"content\"]}}");
+            var client = new ScriptedToolClient(
+                new ToolTurnResult(null, [bad], "tool_calls"),
+                new ToolTurnResult("done", [], "stop"));
+            var harness = new AgenticIngestHarness(client, maxTurns: 8);
+            var docs = new List<HaystackDoc> { new("d1", "x", null, "s1") };
+
+            var result = await harness.RunEpisodeAsync(docs, CancellationToken.None);
+
+            result.Succeeded.Should().BeTrue("structured MCP errors are returned to the model");
+            result.ToolCallErrors.Should().Be(1);
+        }
+        finally { MemoryStoreContext.Current = null; }
+    }
+
     [Fact]
     public async Task Replay_ReproducesStoreState_WithoutClient()
     {
