@@ -1,5 +1,17 @@
 # Task 11 Root-Cause Investigation Report
 
+## Post-commit verification (2026-08-31)
+
+- The 13 requested files are already committed in existing HEAD `c9b291b` (`Unify memory addressing across migration paths`); no pending tracked migration/report files were present to stage.
+- `dotnet build Scrinia.sln --no-restore`: **PASS**, 15 projects, 0 errors, 2,584 warnings.
+- Focused Task 11 acceptance filter: **271 passed, 0 failed, 0 skipped**.
+- Core suite: **2,055 passed, 176 failed, 20 skipped**.
+- Full solution: **2,471 passed, 187 failed, 20 skipped** across 4 projects.
+- Bundle: **119 passed**; serialization/contract: **33 passed**; consolidation: **3 passed**; CLI: **32 passed**; MCP address: **32 passed**; embeddings plugin: **32 passed**; merge: **127 passed**. Each reported 0 failures and 0 skips.
+- Trimmed solution build: **FAIL**, 12 IL2026 errors, all in unchanged `src/Scrinia.Plugin.Embeddings.Cli/EmbeddingsTools.cs`.
+- Native AOT publish (`dotnet publish src/Scrinia/Scrinia.csproj -p:PublishAot=true -r win-x64 --no-restore`): **PASS**.
+- Only pre-existing untracked `src/Scrinia.Server/` entries remain outside HEAD; `.claude/agent-memory` was not staged.
+
 ## Scope and evidence
 
 - Worktree: `C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\.claude\worktrees\unified-memory-addressing-task-1`
