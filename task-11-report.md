@@ -120,3 +120,33 @@ acceptance: first reconcile the uncommitted contract changes with HEAD, then tri
 scope/canonicalization, sidecar/schema, reference/entity, restore, and response-contract groups.
 Do not dismiss the 177/188 counts as legacy, and do not modify the untracked server surface as part
 of this task.
+
+## Failure group 4 resolution (2026-08-31)
+
+The requested group was reproduced at HEAD `0df5d63` against the green baseline `90827cd`.
+The initial focused run had **98 passed and 2 failed**; the failures were stale test assumptions at
+the typed-address boundary, not independent production regressions:
+
+- `ReferenceTests.Link_WithShortNames_StoresTheNameVerbatimOnBothSides` still supplied bare
+  persistent names (`bare-a`/`bare-b`) to `MemoryAddress.Parse`. Bare names are no longer valid
+  public addresses; persistent addresses are canonical `/name` paths. The invalid case was removed
+  while the path and ephemeral cases continue to assert verbatim reference values.
+- `CoreEmbeddingEventHandlerEphemeralAppendTests` used legacy `ParseQualifiedName("~note")` to
+  choose the vector scope. Typed `ResolveAddress(MemoryAddress.Parse("~note"))` is the shared
+  address authority and returns `("ephemeral", "note")`; both store and append callbacks use that
+  pair. The test now derives its expected identity through the typed resolver and asserts that no
+  second scope receives vectors.
+
+These changes preserve `/temp/x == ~x`, typed event contracts, and the prohibition on raw/URI public
+APIs. No production or server files were changed for this group because the shared production
+address propagation was already correct at HEAD; the remaining failures were incomplete test
+migration.
+
+### Group 4 verification
+
+- Focused Core group (`ReferenceTests`, `MaintenanceEventSinkTests`,
+  `EntityTypingEventHandlerTests`, `EphemeralLifecycleTests`, and
+  `CoreEmbeddingEventHandlerEphemeralAppendTests`): **99 passed, 0 failed, 0 skipped**.
+- Plugin embeddings lane: **32 passed, 0 failed, 0 skipped**.
+- Solution build (`dotnet build Scrinia.sln --no-restore`): **15 projects, 0 errors**
+  (**342 warnings**, existing analyzer/preview-SDK warnings).

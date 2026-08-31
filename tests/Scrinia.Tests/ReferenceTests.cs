@@ -555,7 +555,6 @@ public sealed class ReferenceTests : IDisposable
     [Theory]
     [InlineData("/findings/short-a", "/patterns/short-b")]
     [InlineData("~short-eph-a", "~short-eph-b")]
-    [InlineData("bare-a", "bare-b")]
     public async Task Link_WithShortNames_StoresTheNameVerbatimOnBothSides(string from, string to)
     {
         await _tools.Remember(["a body"], MemoryAddress.Parse(from));

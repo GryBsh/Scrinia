@@ -11,20 +11,16 @@ namespace Scrinia.Tests;
 /// Regression coverage for residual 1 of the 2026-08-16 embeddings-search-consolidation review:
 /// appending to an ephemeral memory (<c>~note</c>) silently left its vectors stale.
 ///
-/// <para><see cref="FileMemoryStore.ParseQualifiedName"/> has no <c>~</c> branch — a bare
-/// ephemeral name falls through to <c>("local", SanitizeName(name))</c>, so the parsed SCOPE is
-/// never <c>"ephemeral"</c>. Before the fix, <c>OnAppendedAsync</c> read via
+/// <para>The typed address resolver maps an ephemeral name to the dedicated <c>ephemeral</c> scope.
+/// Before the append callback used the same typed read path, it read via
 /// <c>store.ReadArtifactAsync(subject, scope, ct)</c> unconditionally, which throws
 /// <see cref="FileNotFoundException"/> for an ephemeral memory (it has no on-disk artifact at that
 /// (scope, subject) location) — caught and downgraded to a warning, so the append becomes a
 /// silent no-op and the memory's later elements never get vectors.</para>
 ///
-/// <para>The tempting fix — key on <c>store.IsEphemeral(qualifiedName)</c> BEFORE the parse and
-/// index under scope <c>"ephemeral"</c> — is wrong too: the STORE path (<c>OnStoredAsync</c> /
-/// <c>EmbedAndIndexAsync</c>) always indexes under whatever <c>ParseQualifiedName</c> returns
-/// (<c>"local"</c>), so indexing the append under <c>"ephemeral"</c> would orphan the store path's
-/// vectors under a second, unreachable scope rather than updating them. Both assertions below
-/// exist for that reason: the first catches the current bug, the second catches that wrong fix.</para>
+/// <para>Both assertions below pin that the append and store callbacks use the same typed
+/// <c>(scope, subject)</c> pair, and that no legacy/raw name conversion creates a second vector
+/// scope.</para>
 /// </summary>
 public sealed class CoreEmbeddingEventHandlerEphemeralAppendTests : IDisposable
 {
@@ -49,7 +45,7 @@ public sealed class CoreEmbeddingEventHandlerEphemeralAppendTests : IDisposable
     {
         // The (scope, subject) the STORE path indexes an ephemeral "~note" under — the ground
         // truth the append path must match, not a value this test hard-codes.
-        var (storeScope, storeSubject) = _store.ParseQualifiedName("~note");
+        var (storeScope, storeSubject) = _store.ResolveAddress(MemoryAddress.Parse("~note"));
 
         // Seed through the real ephemeral store path (StoreAsync), so this lands exactly where a
         // real `remember(name: "~note", ...)` call would.
@@ -88,17 +84,14 @@ public sealed class CoreEmbeddingEventHandlerEphemeralAppendTests : IDisposable
                     "(scope, subject) the store path indexed under, so element 2 gets vectors too " +
                     "instead of the append silently no-oping");
 
-        // Assertion 2: no OTHER scope gained vectors for this memory. This is what catches the
-        // tempting-but-wrong fix — keying the append's index write on
-        // store.IsEphemeral(qualifiedName) before the parse, so it indexes under scope
-        // "ephemeral" instead of the store path's "local" — which would orphan the store path's
-        // vectors under a key no reindex loop, search path, or the store path itself ever reads.
-        if (!storeScope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
-        {
-            vectorStore.GetVectors("ephemeral").Should().BeEmpty(
-                because: "the append must index under the same scope the store path used " +
-                    "(\"local\"), not a second, unreachable \"ephemeral\" scope");
-        }
+        // Assertion 2: no OTHER scope gained vectors for this memory. This catches any callback
+        // that reconstructs a legacy/raw name instead of using the typed address resolution.
+        vectorStore.GetVectors(storeScope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase)
+                ? "local"
+                : "ephemeral")
+            .Should().BeEmpty(
+                because: "the append must index under the same typed scope the store path used, " +
+                    "not a second unreachable scope");
     }
 
     private sealed class FakeProvider : IEmbeddingProvider
