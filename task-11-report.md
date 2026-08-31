@@ -188,6 +188,37 @@ and hybrid scoring were not changed.
 - Solution build (`dotnet build Scrinia.sln --no-restore -v:q`): **15 projects, 0 errors, 2,310
   warnings** (existing analyzer/preview-SDK warnings).
 
+## HEAD 66268ba verification (2026-08-31)
+
+Verification was run in the requested worktree at exact HEAD `66268ba3cab068b825450ff58a6dca3de3b12057`.
+No source or test files were modified. The only pre-existing untracked files remain
+`src/Scrinia.Server/wwwroot/index.html` and `src/Scrinia.Server/wwwroot/vite.svg`.
+
+- Core test project: **2,251 total; 2,224 passed, 19 failed, 8 skipped**.
+- Full solution test suite: **2,678 total; 2,651 passed, 19 failed, 8 skipped**. The other
+  projects were green: Retrieval **268/268**, Merge **127/127**, and Embeddings plugin **32/32**.
+- Focused addressing acceptance aggregate (the address, artifact-key, bundle, CLI/MCP, typed
+  contract, serialization, ephemeral, workspace, write-surface, and routing filters):
+  **268 total; 265 passed, 3 failed, 0 skipped**.
+- Solution build (`dotnet build Scrinia.sln --no-restore -v:q`): **15 projects, 0 errors, 0 warnings**.
+
+### Remaining failures grouped by root cause
+
+| Count | Root cause | Failure names | Migration regression? |
+|---:|---|---|---|
+| 10 | Restore/transactional scope and cache behavior | `TransactionalRestoreTests.Import_DoesNotDeleteAMemoryThatLandedAfterItsSnapshot`; `TransactionalRestoreTests.Import_WithAnUnwritableJournalDestination_RetainsTheJournalAndBlocksOnlyItsScope`; `TransactionalRestoreTests.Import_SweepsStagingLitterLeftByAPriorCrash`; `TransactionalRestoreTests.Import_ThatFailsPartWayThroughTheCommitLoop_LeavesEarlierEntriesConsistent`; `TransactionalRestoreTests.Import_ThatSucceeds_LeavesEveryEntryConsistentAndNoStagingLeftovers`; `TransactionalRestoreTests.Import_RejectsAnOverlongSanitizedNameBeforeStagingOrMutatingLiveEntries`; `JournaledRestoreRecoveryTests.CompletedJournalCleanupFailure_AllowsTheCurrentReadAndWriteToContinueWithoutReenteringTheBarrier`; `JournaledRestoreRecoveryTests.ReaderAlreadyInsideTheRecoveryBarrier_FinishesBeforeARecoveryWriterCanBegin`; `JournaledRestoreRecoveryTests.ImportTopicEntries_OnSuccess_RemovesJournalAndWritesExactFinalArtifacts`; `JournaledRestoreRecoveryTests.ImportTopicEntries_WhenTheFirstLiveBodyWriteFailsAfterPreparedJournalCreation_LeavesEveryLivePairUntouched` | **Yes** — address-to-scope/journal boundary behavior. |
+| 4 | Index/cache update path | `IndexCacheWritePathTests.TryUpdateEntry_UpdatesTheCache_AndKeepsTheRestOfTheScope`; `IndexCacheWritePathTests.TryUpdateEntry_LeavesTheCacheNormalized_EvenWhenTheWarmSlotWasNot`; `IndexCacheWritePathTests.TryUpdateEntry_AgainstAnUncachedScope_StillFindsTheEntry`; `IndexCacheWritePathTests.TryUpdateEntry_ReadsTheEntryFromDisk_NotFromACacheAnotherWriterHasStaled` | **Yes** — canonical scope/cache propagation. |
+| 3 | Legacy reserved-path/address routing expectations | `FileMemoryStoreTests.ImportTopicEntries_creates_topic`; `StorePurityInvariantTests.SkillWriteAndRecallResolveToThePathRouterDirectory`; `Mcp.SkillPathRoutingTests.Forget_OnTheBareSkillPath_AsksForANameRatherThanDeletingAnything` | **Yes** — strict typed-address migration versus legacy skill/path handling. |
+| 1 | Agent path validation expectation | `FileEntityNameTests.Remember_AgentPathTraversal_ReturnsErrorAndWritesNoFileOutsideAgentDir` | **Yes** — address/path boundary. |
+| 1 | Forbidden-surface sweep sees report vocabulary | `NoObsoleteAddressSurfaceTests.Forbidden_address_surface_is_absent_outside_classified_historical_text` (finds `failure-classification.md: ArtifactEntry.Uri`) | **No** — report classification/hygiene, not runtime migration behavior. |
+
+The focused aggregate's three failures are the forbidden-surface report hit above plus the two
+legacy reserved-path expectations (`StorePurityInvariantTests.SkillWriteAndRecallResolveToThePathRouterDirectory`
+and `Mcp.SkillPathRoutingTests.Forget_OnTheBareSkillPath_AsksForANameRatherThanDeletingAnything`).
+Prioritized remaining causes are: (1) restore/journal/cache scope correctness, (2) legacy
+reserved-path compatibility or deliberate test migration, (3) agent-path validation contract,
+and (4) remove/classify the stale `ArtifactEntry.Uri` wording in the report sweep input.
+
 ## Agentic structured tool-error resolution (2026-08-31)
 
 The remaining retrieval failure was an adapter contract mismatch: address validation returned a
@@ -203,4 +234,25 @@ Verification after the fix:
 - Focused agentic acceptance lanes (`AgenticIngestHarnessTests`, `AgenticScriniaRetrieverTests`,
   `AgenticIngestEndToEndTests`): **35 passed, 0 failed, 0 skipped**.
 - Solution build (`dotnet build Scrinia.sln --no-restore -v:q`): **15 projects, 0 errors, 2,310
-  warnings** (existing analyzer/preview-SDK warnings).
+   warnings** (existing analyzer/preview-SDK warnings).
+
+## Restore/transactional scope-cache resolution (2026-08-31)
+
+The ten restore failures shared one production cause: the import candidate rewrote `Address` and
+`ArtifactKey` for the target scope but left the compatibility `Name` projection unset. The record
+then derived `Name` from the qualified address (for example, `notes/daily-log`), so journal
+filenames, sidecars, cache slots, and subsequent reads disagreed about the physical subject.
+
+Import now canonicalizes the subject projection together with the address and artifact key before
+journal creation. The journal, staging sweep, live destinations, and invalidation therefore all
+use the same scope directory and subject identity; failures retain the prepared journal and leave
+live body/sidecar pairs untouched until recovery can replay them.
+
+Focused verification: **10 passed, 0 failed, 0 skipped** for the six `TransactionalRestoreTests`
+and four named `JournaledRestoreRecoveryTests` cases. A new regression also pins the complete
+`MemoryAddress` → scope directory → subject → `ArtifactKey` chain.
+
+The four `IndexCacheWritePathTests` failures remain classified as the pre-existing stale
+`ArtifactEntry.Uri` contract group: production now exposes `ArtifactKey`, and those assertions
+were deliberately not changed as part of this restore fix. No server files or unrelated stale
+contract groups were touched.

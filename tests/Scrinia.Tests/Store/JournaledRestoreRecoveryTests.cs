@@ -37,13 +37,33 @@ public class JournaledRestoreRecoveryTests
         File.ReadAllBytes(Path.Combine(storeDirectory, "daily-log.meta.json")).Should().Equal(
             JsonSerializer.SerializeToUtf8Bytes(incoming with
             {
-                ArtifactKey = $"artifacts/{Scope}/{incoming.Name}.nmp2"
+                Address = MemoryAddress.Parse("/notes/daily-log"),
+                ArtifactKey = $"artifacts/notes/{incoming.Name}.nmp2"
             }, new JsonSerializerOptions
             {
                 WriteIndented = true,
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                 DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
             }));
+    }
+
+    [Fact]
+    public void ImportTopicEntries_CanonicalizesTheRestoredEntryToItsTargetScope()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var incoming = new ArtifactEntry("daily-log", "file://exported", 4, 1, DateTimeOffset.UtcNow);
+
+        store.ImportTopicEntries(Scope, [incoming], new Dictionary<string, byte[]>
+        {
+            [incoming.Name] = [1, 2, 3, 4]
+        }, overwrite: true);
+
+        var restored = store.LoadIndex(Scope).Should().ContainSingle().Subject;
+        restored.Name.Should().Be("daily-log");
+        restored.Address.Should().Be(MemoryAddress.Parse("/notes/daily-log"));
+        restored.ArtifactKey.Should().Be("artifacts/notes/daily-log.nmp2");
+        File.Exists(Path.Combine(store.GetStoreDirForScope(Scope), "daily-log.nmp2")).Should().BeTrue();
     }
 
     [Fact]

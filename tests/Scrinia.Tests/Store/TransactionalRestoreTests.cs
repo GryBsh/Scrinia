@@ -219,7 +219,7 @@ public sealed class TransactionalRestoreTests
         const string existingName = "keeper";
         const string existingContent = "original body";
         await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(existingName.StartsWith("/") || existingName.StartsWith("~") ? existingName : "/" + existingName), Scope, [existingContent]));
-        string bodyBefore = await store.ReadArtifactAsync(MemoryAddress.Parse($"/{existingName}"));
+        string bodyBefore = await store.ReadArtifactAsync(MemoryAddress.Parse($"/notes/{existingName}"));
         string storeDir = Path.Combine(scope.TempDir, "notes");
         string rejectedName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
 
@@ -230,7 +230,7 @@ public sealed class TransactionalRestoreTests
             overwrite: true);
 
         import.Should().Throw<InvalidMemoryWriteException>();
-        (await store.ReadArtifactAsync(MemoryAddress.Parse($"/{existingName}"))).Should().Be(bodyBefore,
+        (await store.ReadArtifactAsync(MemoryAddress.Parse($"/notes/{existingName}"))).Should().Be(bodyBefore,
             because: "a rejected prepared restore must not mutate an existing live artifact");
         Directory.EnumerateFiles(storeDir, "*.staging").Should().BeEmpty(
             because: "the name is refused before a restore body can be staged");

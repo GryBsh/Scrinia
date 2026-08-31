@@ -2868,6 +2868,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 {
                     Address = MemoryAddress.Parse(canonicalAddress),
                     ArtifactKey = BuildArtifactKey(entry.Name, topicScope),
+                    Name = SanitizeName(entry.Name),
                     CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                 });
             }
