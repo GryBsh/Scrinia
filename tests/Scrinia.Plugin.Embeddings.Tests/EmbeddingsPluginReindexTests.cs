@@ -56,7 +56,7 @@ public sealed class EmbeddingsPluginReindexTests : IDisposable
             : MemoryAddress.Parse($"/{name}");
         var entry = new ArtifactEntry(address, $"artifacts/{name}.nmp2", content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, scope);
-        string path = _store.ArtifactPath(name, scope);
+        string path = _store.FindArtifactPath(name, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, Nmp2ChunkedEncoder.Encode(content));
     }

@@ -141,7 +141,7 @@ public sealed class WriterCutoverTests
         // EphemeralEntry is in-memory-only and never forward-filled at read time — assert
         // directly against the store, not through a ListEphemeral projection (that projection
         // still drops Attributes and is fixed in Task 4).
-        var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-store");
+        var entry = MemoryStoreContext.Current!.GetEphemeral(MemoryAddress.Parse("~writer-cutover-eph-store"));
         entry.Should().NotBeNull();
 
         entry!.Attributes.Should().NotBeNull();
@@ -166,7 +166,7 @@ public sealed class WriterCutoverTests
             tags: ["auth", "tokens"],
             anchors: ["how does login work", "what triggers a token refresh"]);
 
-        var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-append");
+        var entry = MemoryStoreContext.Current!.GetEphemeral(MemoryAddress.Parse("~writer-cutover-eph-append"));
         entry.Should().NotBeNull();
 
         entry!.Attributes.Should().NotBeNull();

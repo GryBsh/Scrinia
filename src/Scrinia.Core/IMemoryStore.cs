@@ -89,7 +89,7 @@ public interface IMemoryStore : IPluginStore
     /// </summary>
     IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local");
     void Upsert(ArtifactEntry entry, string scope = "local");
-    bool Remove(string name, string scope = "local");
+    bool Remove(MemoryAddress address);
 
     /// <summary>
     /// Atomically load the entry for <paramref name="subject"/> in <paramref name="scope"/>, apply
@@ -118,8 +118,9 @@ public interface IMemoryStore : IPluginStore
     /// resolver: an exact-name probe falling back to a case-insensitive sidecar scan). No
     /// case-sensitive gate remains on any of these paths.</para>
     /// </summary>
-    bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    bool TryUpdateEntry(MemoryAddress address, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
+        var (scope, subject) = ResolveAddress(address);
         var current = LoadIndex(scope).FirstOrDefault(
             e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
         if (current is null) return false;
@@ -294,9 +295,9 @@ public interface IMemoryStore : IPluginStore
             StringComparer.OrdinalIgnoreCase);
 
     // Ephemeral
-    void RememberEphemeral(string key, EphemeralEntry entry);
-    bool ForgetEphemeral(string key);
-    EphemeralEntry? GetEphemeral(string key);
+    void RememberEphemeral(MemoryAddress address, EphemeralEntry entry);
+    bool ForgetEphemeral(MemoryAddress address);
+    EphemeralEntry? GetEphemeral(MemoryAddress address);
 
     /// <summary>
     /// Atomically load the ephemeral memory under <paramref name="key"/>, apply
@@ -332,25 +333,25 @@ public interface IMemoryStore : IPluginStore
     /// in-memory/test stores with no concurrent writers, matching how
     /// <see cref="TryUpdateEntry"/>'s default is scoped.</para>
     /// </summary>
-    bool TryUpdateEphemeral(string key, Func<EphemeralEntry, EphemeralEntry?> mutate)
+    bool TryUpdateEphemeral(MemoryAddress address, Func<EphemeralEntry, EphemeralEntry?> mutate)
     {
         ArgumentNullException.ThrowIfNull(mutate);
-        var current = GetEphemeral(key);
+        var current = GetEphemeral(address);
         if (current is null) return false;
         var updated = mutate(current);
         if (updated is null) return false;
-        RememberEphemeral(key, updated);
+        RememberEphemeral(address, updated);
         return true;
     }
 
     // Archive
-    void ArchiveVersion(string subject, string scope = "local");
+    void ArchiveVersion(MemoryAddress address);
 
     // Naming / addressing
 
     // Artifact file I/O — ReadArtifactAsync moved to IPluginStore (inherited).
     /// <summary>Writes the artifact text for <paramref name="subject"/>.</summary>
-    Task WriteArtifactAsync(string subject, string scope, string artifactText,
+    Task WriteArtifactAsync(MemoryAddress address, string artifactText,
         CancellationToken ct = default);
     bool DeleteArtifact(string subject, string scope);
 
@@ -364,7 +365,6 @@ public interface IMemoryStore : IPluginStore
     // ── Filesystem layout ────────────────────────────────────────────────────
     // Merged in from ILocalMemoryStore when the remote store was dropped; see the type summary.
 
-    string ArtifactPath(string name, string scope = "local");
     string FindArtifactPath(string subject, string normalizedScope);
     string GetStoreDirForScope(string scope);
 

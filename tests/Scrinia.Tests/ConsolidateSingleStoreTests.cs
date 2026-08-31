@@ -17,7 +17,7 @@ public sealed class ConsolidateSingleStoreTests
         const string subject = "day-one";
 
         string artifact = Nmp2ChunkedEncoder.EncodeChunks(["alpha chunk", "beta chunk"]);
-        await store.WriteArtifactAsync(subject, scopeName, artifact);
+        await store.WriteArtifactAsync(MemoryAddress.Parse("/sessions/day-one"), artifact);
         store.Upsert(
             new ArtifactEntry(
                 Name: subject,

@@ -376,12 +376,12 @@ public sealed partial class SidecarVersioningTests
         var store = TestHelpers.Store;
         await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["first"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "seed", 2);
-        byte[] before = File.ReadAllBytes(store.ArtifactPath("seed", "local:notes"));
+        byte[] before = File.ReadAllBytes(store.FindArtifactPath("seed", "local:notes"));
 
         try { await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["overwrite"])); }
         catch (ScopeReadOnlyException) { }
 
-        File.ReadAllBytes(store.ArtifactPath("seed", "local:notes")).Should().Equal(before);
+        File.ReadAllBytes(store.FindArtifactPath("seed", "local:notes")).Should().Equal(before);
     }
 
     [Fact]

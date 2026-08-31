@@ -80,7 +80,7 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
         // because the write paths rebuild filesystem paths out of that name (sidecars, artifacts,
         // version archives) and a name is only as good as the file it names. Handing the event's
         // casing back instead would resolve one entry and write against another's path.
-        store.TryUpdateEntry(entry.Name, scope, current =>
+        store.TryUpdateEntry(entry.Address, current =>
         {
             if (current.Attributes is null ||
                 !current.Attributes.TryGetValue(KnownAttributes.MentionKey, out var curMentions))

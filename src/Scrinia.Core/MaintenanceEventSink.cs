@@ -127,7 +127,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
                 if (referencedAddress.Kind == MemoryAddressKind.Ephemeral)
                 {
-                    store.TryUpdateEphemeral(targetSubject, current =>
+                    store.TryUpdateEphemeral(referencedAddress, current =>
                     {
                         var updated = AddReference(current.ToArtifactEntry());
                         return updated is null ? null : current.WithMetadataFrom(updated);
@@ -135,7 +135,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                 }
                 else
                 {
-                    store.TryUpdateEntry(targetSubject, targetScope, AddReference);
+                    store.TryUpdateEntry(referencedAddress, AddReference);
                 }
             }
             catch
@@ -177,7 +177,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // because a remote PATCH refused Keywords changes; see the type summary.
             bool writeAttempted = false;
             bool markerDroppedByTheKeyCap = false;
-            bool writePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
+            bool writePersisted = store.TryUpdateEntry(address, sourceEntry =>
             {
                 bool markedByAttribute = sourceEntry.Attributes is not null
                     && sourceEntry.Attributes.ContainsKey(OrphanKey);

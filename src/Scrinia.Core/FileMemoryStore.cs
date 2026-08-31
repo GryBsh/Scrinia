@@ -404,7 +404,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public static string StripEphemeralPrefix(string name) =>
         MemoryNaming.StripEphemeralPrefix(name);
 
-    public void RememberEphemeral(string key, EphemeralEntry entry)
+    internal void RememberEphemeral(string key, EphemeralEntry entry)
     {
         _ephemeralStore[key] = entry;
 
@@ -418,14 +418,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         InvalidateEntityFacts();
     }
 
-    public bool ForgetEphemeral(string key)
+    internal bool ForgetEphemeral(string key)
     {
         if (!_ephemeralStore.TryRemove(key, out _)) return false;
         InvalidateEntityFacts();
         return true;
     }
 
-    public EphemeralEntry? GetEphemeral(string key) =>
+    internal EphemeralEntry? GetEphemeral(string key) =>
         _ephemeralStore.TryGetValue(key, out var entry) ? entry : null;
 
     /// <inheritdoc/>
@@ -547,7 +547,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public string WorkspaceRoot => _workspaceRoot;
 
-    public string ArtifactPath(string name, string scope = "local") =>
+    internal string ArtifactPath(string name, string scope = "local") =>
         MapArtifactKey(BuildArtifactKey(SanitizeName(name), scope));
 
     internal string MetaPath(string name, string scope = "local") =>
@@ -1517,7 +1517,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         });
     }
 
-    public bool Remove(string name, string scope = "local")
+    internal bool Remove(string name, string scope = "local")
     {
         return WithExclusiveLock(scope, () =>
         {
@@ -1611,7 +1611,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// <c>_indexCache</c> — which nothing invalidates across processes — would silently roll back
     /// another writer's edits to every field the mutation does not itself touch.</para>
     /// </summary>
-    public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    internal bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
         return WithExclusiveLock(scope, () =>
         {
@@ -2077,7 +2077,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Artifact file I/O ────────────────────────────────────────────────────
 
-    public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
+    internal async Task WriteArtifactAsync(string subject, string scope, string artifactText,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -2526,7 +2526,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Archive ──────────────────────────────────────────────────────────────
 
-    public void ArchiveVersion(string subject, string scope = "local")
+    internal void ArchiveVersion(string subject, string scope = "local")
     {
         WithExclusiveLock(scope, () => ArchiveVersionUnsafe(subject, scope));
     }
@@ -3033,5 +3033,56 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         foreach (var lk in _indexLocks.Values)
             lk.Dispose();
         _indexLocks.Clear();
+    }
+
+    public bool Remove(MemoryAddress address)
+    {
+        var (scope, subject) = ResolveAddress(address);
+        return scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase)
+            ? ForgetEphemeral(address)
+            : Remove(subject, scope);
+    }
+
+    public bool TryUpdateEntry(MemoryAddress address, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    {
+        var (scope, subject) = ResolveAddress(address);
+        return TryUpdateEntry(subject, scope, mutate);
+    }
+
+    public void RememberEphemeral(MemoryAddress address, EphemeralEntry entry)
+    {
+        EnsureEphemeralAddress(address);
+        RememberEphemeral(address.Value, entry);
+    }
+
+    public bool ForgetEphemeral(MemoryAddress address)
+    {
+        EnsureEphemeralAddress(address);
+        return ForgetEphemeral(address.Value);
+    }
+
+    public EphemeralEntry? GetEphemeral(MemoryAddress address)
+    {
+        EnsureEphemeralAddress(address);
+        return GetEphemeral(address.Value);
+    }
+
+    public Task WriteArtifactAsync(MemoryAddress address, string artifactText,
+        CancellationToken ct = default)
+    {
+        var (scope, subject) = ResolveAddress(address);
+        return WriteArtifactAsync(subject, scope, artifactText, ct);
+    }
+
+    public void ArchiveVersion(MemoryAddress address)
+    {
+        var (scope, subject) = ResolveAddress(address);
+        ArchiveVersion(subject, scope);
+    }
+
+    private static void EnsureEphemeralAddress(MemoryAddress address)
+    {
+        if (address.Kind != MemoryAddressKind.Ephemeral)
+            throw new ArgumentException("The address must be ephemeral.", nameof(address));
     }
 }

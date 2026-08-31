@@ -46,16 +46,16 @@ public class FakeMemoryStore : IMemoryStore
         Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.Content.Count, DateTimeOffset.UtcNow));
     public virtual IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
     public virtual void Upsert(ArtifactEntry entry, string scope = "local") { }
-    public virtual bool Remove(string name, string scope = "local") => false;
+    public virtual bool Remove(MemoryAddress address) => false;
     public virtual List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null) => [];
     public virtual IReadOnlyList<SearchResult> SearchAll(SearchQuery query) => [];
-    public virtual void RememberEphemeral(string key, EphemeralEntry entry) { }
-    public virtual bool ForgetEphemeral(string key) => false;
-    public virtual EphemeralEntry? GetEphemeral(string key) => null;
-    public virtual void ArchiveVersion(string subject, string scope = "local") { }
+    public virtual void RememberEphemeral(MemoryAddress address, EphemeralEntry entry) { }
+    public virtual bool ForgetEphemeral(MemoryAddress address) => false;
+    public virtual EphemeralEntry? GetEphemeral(MemoryAddress address) => null;
+    public virtual void ArchiveVersion(MemoryAddress address) { }
     public virtual Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
         Task.FromException<string>(new NotSupportedException("Fake store does not support artifact reads."));
-    public virtual Task WriteArtifactAsync(string subject, string scope, string artifactText,
+    public virtual Task WriteArtifactAsync(MemoryAddress address, string artifactText,
         CancellationToken ct = default) => Task.CompletedTask;
     public virtual bool DeleteArtifact(string subject, string scope) => false;
     public virtual string[] DiscoverTopics() => [];
@@ -65,7 +65,7 @@ public class FakeMemoryStore : IMemoryStore
     // ── Filesystem layout: no workspace, so no answer. See the type summary. ──
 
     public virtual string WorkspaceRoot => throw NoWorkspace(nameof(WorkspaceRoot));
-    public virtual string ArtifactPath(string name, string scope = "local") => throw NoWorkspace(nameof(ArtifactPath));
+    internal virtual string ArtifactPath(string name, string scope = "local") => throw NoWorkspace(nameof(ArtifactPath));
     public virtual string FindArtifactPath(string subject, string normalizedScope) => throw NoWorkspace(nameof(FindArtifactPath));
     public virtual string GetStoreDirForScope(string scope) => throw NoWorkspace(nameof(GetStoreDirForScope));
     public virtual List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) => throw NoWorkspace(nameof(ListTopicArtifacts));

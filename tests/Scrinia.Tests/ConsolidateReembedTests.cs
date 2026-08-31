@@ -71,7 +71,7 @@ public sealed class ConsolidateReembedTests : IDisposable
             Name: name, Uri: "", OriginalBytes: fullText.Length, ChunkCount: chunkTexts.Length,
             CreatedAt: DateTimeOffset.UtcNow.AddDays(-10), UpdatedAt: DateTimeOffset.UtcNow.AddDays(-10));
         store.Upsert(entry, scope);
-        string path = store.ArtifactPath(name, scope);
+        string path = store.FindArtifactPath(name, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, Nmp2ChunkedEncoder.EncodeChunks(chunkTexts));
         Nmp2ChunkedEncoder.GetChunkCount(File.ReadAllText(path)).Should().Be(4);
