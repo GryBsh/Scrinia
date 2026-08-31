@@ -10,6 +10,7 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Tests for <see cref="MaintenanceEventSink"/> — auto-linking and orphan detection.
 /// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class MaintenanceEventSinkTests : IDisposable
 {
     private readonly TestHelpers.StoreScope _scope;

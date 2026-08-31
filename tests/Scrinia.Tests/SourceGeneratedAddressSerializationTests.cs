@@ -12,6 +12,7 @@ using Xunit;
 
 namespace Scrinia.Tests;
 
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class SourceGeneratedAddressSerializationTests
 {
     [Fact]

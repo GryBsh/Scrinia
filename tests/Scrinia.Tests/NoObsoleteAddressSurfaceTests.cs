@@ -4,11 +4,99 @@ using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
+using System.Text.RegularExpressions;
 
 namespace Scrinia.Tests;
 
 public sealed class NoObsoleteAddressSurfaceTests
 {
+    private static readonly Regex ForbiddenSurface = new(
+        "ArtifactEntry\\.Uri|ArtifactUri|ResolveArtifactAsync|file://|MemoryWrite\\(",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // This is intentionally path-exact. Historical plans/release notes, rejection examples,
+    // compatibility fixtures, and stale fixture prose may retain the removed vocabulary; living
+    // production and reference surfaces may not. New exceptions must be classified here by file,
+    // rather than weakening the expression or ignoring a whole directory.
+    private static readonly IReadOnlyDictionary<string, string> AcceptedHistoricalText =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["CHANGELOG.md"] = "released history",
+            ["task-11-report.md"] = "historical acceptance report",
+            [".superpowers/sdd/2026-08-29-unified-memory-addressing-task-1/task-10-debug-report.md"] = "historical task report",
+            [".superpowers/sdd/2026-08-29-unified-memory-addressing-whole-branch-review/FINAL-REVIEW.md"] = "historical whole-branch review",
+            ["docs/superpowers/plans/2026-08-29-unified-memory-addressing.md"] = "historical plan",
+            ["docs/superpowers/specs/2026-08-29-unified-memory-addressing-design.md"] = "historical specification",
+            ["docs/cli-reference.md"] = "explicit unsupported-input guidance",
+            ["docs/getting-started.md"] = "explicit unsupported-input guidance",
+            ["docs/plugin-authoring.md"] = "explicit plugin rejection guidance",
+            ["docs/security.md"] = "explicit unsupported-input guidance",
+            ["src/Scrinia.Mcp/prompts/guide.md"] = "explicit unsupported-input guidance",
+            ["src/Scrinia.Core/Models/MemoryWrite.cs"] = "typed constructor implementation",
+            ["tests/Scrinia.Tests/NoObsoleteAddressSurfaceTests.cs"] = "this gate's pattern and allowlist",
+            ["tests/Scrinia.Tests/CliAddressValidationTests.cs"] = "negative address rejection tests",
+            ["tests/Scrinia.Tests/McpAddressSurfaceTests.cs"] = "negative address rejection tests",
+            ["tests/Scrinia.Tests/MemoryAddressTests.cs"] = "negative address rejection tests",
+            ["tests/Scrinia.Tests/SourceGeneratedAddressSerializationTests.cs"] = "negative serialization tests",
+            ["tests/Scrinia.Tests/BundleArtifactKeyPortabilityTests.cs"] = "negative artifact portability tests",
+            ["tests/Scrinia.Tests/ContractTypingTests.cs"] = "negative contract tests",
+            ["tests/Scrinia.Tests/ArtifactKeyBoundaryTests.cs"] = "negative artifact-key tests",
+            ["tests/Scrinia.Tests/MemoryWriteValidationTests.cs"] = "negative write validation tests",
+            ["tests/Scrinia.Plugin.Embeddings.Tests/EmbeddingsPluginReindexTests.cs"] = "stale fixture prose",
+            ["tests/Scrinia.Tests/Embeddings/EmbeddingReindexerNamespacedScopeTests.cs"] = "stale fixture prose",
+            ["benchmarks/Scrinia.Retrieval.Benchmarks/Core/AgenticScriniaRetriever.cs"] = "stale benchmark prose",
+            ["tests/Scrinia.Tests/AttributeExtractorTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/BundleExitCodeTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/BundleRoundTripTotalityTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/CliDisplayCutoverTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/CliLifecycleFactFlushTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/CliRecoveryBlockedRouteTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/DriftRenameTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/DualModeParseTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/EntityFactDerivationTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/EntityFactMaterializerTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/EntityFactStorePersistenceTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/FileLockTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/FileMemoryStoreTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/Formats/SidecarVersioningTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/LazyStoreCreationTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/ListLineEndingTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/LoadIndexCacheHitTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/McpDisplayCutoverTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/RecoveryBlockedFailureClassCoverageTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/ScriniaMcpToolsTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/SearchCandidatesHintTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/Store/JournaledRestoreRecoveryTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/Store/TransactionalRestoreTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/StoreLayoutMigrationTests.cs"] = "legacy compatibility fixtures"
+        };
+
+    [Fact]
+    public void Forbidden_address_surface_is_absent_outside_classified_historical_text()
+    {
+        string root = FindRepositoryRoot();
+        var violations = new List<string>();
+
+        foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                     .Where(IsReviewableTextFile))
+        {
+            string relativePath = Path.GetRelativePath(root, file).Replace('\\', '/');
+            MatchCollection matches = ForbiddenSurface.Matches(File.ReadAllText(file));
+            if (matches.Count == 0)
+                continue;
+
+            if (!AcceptedHistoricalText.TryGetValue(relativePath, out string? classification))
+            {
+                violations.Add($"{relativePath}: {matches[0].Value}");
+                continue;
+            }
+
+            _ = classification;
+        }
+
+        violations.Should().BeEmpty("only explicitly classified historical, rejection, or fixture text may retain removed surface vocabulary");
+    }
+
     [Fact]
     public void Public_memory_contracts_do_not_expose_uri_or_resolver_members()
     {
@@ -94,4 +182,28 @@ public sealed class NoObsoleteAddressSurfaceTests
             .GetParameters().Single(parameter => parameter.Name == "name");
         nullability.Create(resourceParameter).ReadState.Should().Be(NullabilityState.Nullable);
     }
+
+    private static bool IsReviewableTextFile(string path)
+    {
+        string normalized = path.Replace('\\', '/');
+        if (normalized.Contains("/.git/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/bin/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/obj/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/.scrinia/", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("/src/Scrinia.Server/", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        string extension = Path.GetExtension(path);
+        return extension is ".cs" or ".md" or ".csproj" or ".props" or ".targets" or ".json";
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (DirectoryInfo? directory = new(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+            if (File.Exists(Path.Combine(directory.FullName, "Scrinia.sln")))
+                return directory.FullName;
+
+        throw new DirectoryNotFoundException("Could not locate the repository root from the test output directory.");
+    }
+
 }

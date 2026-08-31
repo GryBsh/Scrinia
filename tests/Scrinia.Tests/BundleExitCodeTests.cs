@@ -18,6 +18,7 @@ namespace Scrinia.Tests;
 /// warning path does not — an empty or fully-filtered import is also treated as a failure now
 /// (see <see cref="Import_OnEmptyBundle_ExitsNonZero"/> below and <see cref="McpResponse.IsWarning"/>).
 /// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public class BundleExitCodeTests
 {
     private static async Task<(int Exit, JsonDocument Output)> CaptureJsonAsync(Func<Task<int>> command)

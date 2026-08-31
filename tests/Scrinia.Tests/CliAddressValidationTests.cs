@@ -3,6 +3,7 @@ using System.Reflection;
 using Scrinia.Commands;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
+using Spectre.Console;
 
 namespace Scrinia.Tests;
 
@@ -192,8 +193,13 @@ public sealed class CliAddressValidationTests
         using var stderr = new StringWriter();
         TextWriter previousOut = Console.Out;
         TextWriter previousError = Console.Error;
+        IAnsiConsole previousAnsiConsole = AnsiConsole.Console;
         Console.SetOut(stdout);
         Console.SetError(stderr);
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(stdout)
+        });
         try
         {
             int exit = await command();
@@ -201,6 +207,7 @@ public sealed class CliAddressValidationTests
         }
         finally
         {
+            AnsiConsole.Console = previousAnsiConsole;
             Console.SetOut(previousOut);
             Console.SetError(previousError);
         }

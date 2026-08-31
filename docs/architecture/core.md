@@ -592,9 +592,11 @@ Dispatch via `SearchContributorContext`:
 ### IMemoryEventSink
 
 Plugin hook for reacting to store/append/forget events. Takes `IPluginStore`, not the full
-`IMemoryStore` — the four-member surface (`ParseQualifiedName`, `IsEphemeral`,
-`ReadArtifactAsync`) is what the sink path actually uses; a sink needing
-more can cast to `IMemoryStore`:
+`IMemoryStore`. The typed plugin-store contract has two members: `ResolveAddress(MemoryAddress)`
+returns the logical address's `(Scope, Subject)` storage coordinates, and
+`ReadArtifactAsync(MemoryAddress)` reads the artifact addressed by that typed logical value. A
+sink needing broader store operations can explicitly cast to `IMemoryStore`; Core's own handlers
+use `CoreSinkStore.Require` for that case:
 
 ```csharp
 public interface IMemoryEventSink
@@ -604,6 +606,11 @@ public interface IMemoryEventSink
     Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct);
 }
 ```
+
+`IPluginStore` does not expose URI, physical-path, or name-only resolver methods. `MemoryAddress`
+is the validated logical address passed through callbacks, while `ArtifactEntry.ArtifactKey` is an
+opaque, store-relative persistence key. Plugins pass the address back to `ReadArtifactAsync`; they
+must not interpret or concatenate an artifact key as a filesystem path.
 
 Dispatch via `MemoryEventSinkContext`:
 - `.Current` (AsyncLocal): per async flow

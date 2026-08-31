@@ -5,7 +5,7 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Pins the narrowed sink contract. IPluginStore exists so a sink is handed what it needs
-/// (four members) rather than all 30 of IMemoryStore's. Nothing enforces that but this file:
+/// (two members) rather than all 30 of IMemoryStore's. Nothing enforces that but this file:
 /// widening IPluginStore is a one-line edit that no other test would notice.
 /// </summary>
 public class PluginStoreContractTests
@@ -16,7 +16,7 @@ public class PluginStoreContractTests
         string[] declared = [.. typeof(IPluginStore).GetMembers().Select(m => m.Name).OrderBy(n => n)];
 
         declared.Should().BeEquivalentTo(
-            ["ParseAddress", "ReadArtifactAsync"],
+            ["ReadArtifactAsync", "ResolveAddress"],
             because: "the contract's value is its narrowness; adding a member here should be a " +
                      "deliberate act that updates this list, not a quiet widening");
     }
@@ -35,7 +35,7 @@ public class PluginStoreContractTests
         string[] names = [.. typeof(IMemoryStore).GetMembers().Select(m => m.Name)];
 
         names.Should().Contain("FormatQualifiedName").And.Contain("SanitizeName",
-            because: "only two of the four `// Naming` members move; Core's own handlers use " +
+            because: "only the plugin-path members move; Core's own handlers use " +
                      "these two through the full store");
     }
 }
