@@ -167,3 +167,23 @@ the approved typed-address and categorized-error schema changes.
 
 Verification: group 5 filter **228 passed, 0 failed, 0 skipped**; MCP/CLI lanes **88 passed, 0 failed,
 0 skipped**; solution build **15 projects, 0 errors** (existing warnings only).
+
+## Retrieval regression resolution (2026-08-31)
+
+The confirmed retrieval regression was at the benchmark adapter boundary. `ScriniaRetriever`
+derived `RetrievalHit.Id` from the compatibility `Uri`; after the portable-address migration that
+view aliases `ArtifactKey`, so correct ranked results exposed values such as
+`artifacts/d2.nmp2` instead of the logical ingested document ID. Ranking, entity PPR, MMR, recency,
+and hybrid scoring were not changed.
+
+- Added an adapter-side logical-ID map keyed by sanitized entry name, populated for whole documents
+  and chunks at ingest. Both `EntryResult` and `ChunkEntryResult` resolve through it before public
+  `RetrievalHit` construction; missing mappings fail fast.
+- Added whole-document and chunked regressions using IDs that require sanitization. They assert the
+  original logical ID and reject sanitized names, portable `artifacts/` keys, and chunk suffixes.
+- Exact 11-test retrieval filter: **10 passed, 1 failed, 0 skipped**. The sole remaining failure is
+  the pre-classified agentic invalid-path tool-error counter, not retrieval identity.
+- Full retrieval test project: **269 passed, 1 failed, 0 skipped**. Focused retrieval lanes:
+  **37 passed, 1 failed, 0 skipped**; the same agentic invalid-path counter is the only failure.
+- Solution build (`dotnet build Scrinia.sln --no-restore -v:q`): **15 projects, 0 errors, 2,310
+  warnings** (existing analyzer/preview-SDK warnings).

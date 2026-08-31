@@ -66,6 +66,36 @@ public class ScriniaRetrieverTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Public_hit_id_never_exposes_sanitized_or_portable_storage_key()
+    {
+        const string original = "conversation/user:5/message/12";
+        await _retriever.IngestAsync(new HaystackDoc(original, "favorite color is teal", null));
+
+        var hits = await _retriever.RetrieveAsync("favorite color", topK: 1);
+
+        hits.Should().ContainSingle();
+        hits[0].Id.Should().Be(original);
+        hits[0].Id.Should().NotStartWith("artifacts/");
+        hits[0].Id.Should().NotBe("conversation_user_5_message_12");
+    }
+
+    [Fact]
+    public async Task Chunked_public_hit_id_never_exposes_sanitized_or_portable_storage_key()
+    {
+        const string original = "conversation/user:5/message/12";
+        await using var chunked = new ScriniaRetriever(
+            _tempDir + "-chunked", chunked: true, chunkWindowSize: 12, chunkOverlap: 0);
+        await chunked.IngestAsync(new HaystackDoc(original, "favorite color is teal", null));
+
+        var hits = await chunked.RetrieveAsync("favorite color", topK: 1);
+
+        hits.Should().ContainSingle();
+        hits[0].Id.Should().Be(original);
+        hits[0].Id.Should().NotContain("::chunk_");
+        hits[0].Id.Should().NotStartWith("artifacts/");
+    }
+
+    [Fact]
     public async Task Attribute_value_is_retrievable_even_when_absent_from_content()
     {
         // Content never contains "zorptree"; only the agent attribute value carries it.

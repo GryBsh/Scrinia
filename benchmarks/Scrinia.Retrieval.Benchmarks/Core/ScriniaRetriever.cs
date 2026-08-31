@@ -62,6 +62,10 @@ public sealed class ScriniaRetriever : IRetriever
     // Empty when _buildSentenceIndex is false, so the reranker-off path pays nothing.
     private readonly ConcurrentDictionary<string, IReadOnlyList<float[]>> _sentenceCacheByContent = new();
     private readonly bool _buildSentenceIndex;
+    // The benchmark's logical document IDs are distinct from the sanitized entry names
+    // and portable ArtifactKeys used by FileMemoryStore. Keep that identity at the
+    // adapter boundary so storage addressing never becomes public retrieval identity.
+    private readonly ConcurrentDictionary<string, string> _logicalDocIdsByEntryName = new(StringComparer.Ordinal);
     // Entity-graph recall probe (off by default — adds zero cost when disabled). When on, the
     // query path builds a bipartite memory↔entity graph per query from the candidates' own
     // attributes/keywords and scores Personalized PageRank via the SAME production
@@ -248,6 +252,7 @@ public sealed class ScriniaRetriever : IRetriever
         lock (_ingestLock)
         {
             _store.Upsert(entry);
+            _logicalDocIdsByEntryName[sanitized] = id;
         }
 
         if (_embeddingProvider is not null)
@@ -358,12 +363,12 @@ public sealed class ScriniaRetriever : IRetriever
             switch (r)
             {
                 case EntryResult er:
-                    id = ExtractDocId(er.Item.Entry.Uri);
+                    id = ResolveLogicalDocId(er.Item.Entry.Name);
                     text = er.Item.Entry.ContentPreview ?? string.Empty;
                     score = er.Score;
                     break;
                 case ChunkEntryResult cr:
-                    id = ExtractDocId(cr.ParentItem.Entry.Uri);
+                    id = ResolveLogicalDocId(cr.ParentItem.Entry.Name);
                     text = cr.ParentItem.Entry.ContentPreview ?? string.Empty;
                     score = cr.Score;
                     break;
@@ -399,6 +404,7 @@ public sealed class ScriniaRetriever : IRetriever
 
         _resetCount++;
         _store = CreateStore();
+        _logicalDocIdsByEntryName.Clear();
         _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
         return Task.CompletedTask;
@@ -470,9 +476,15 @@ public sealed class ScriniaRetriever : IRetriever
         return new string(buf);
     }
 
-    /// <summary>Reads the benchmark doc ID from the entry's <c>bench://</c> URI.</summary>
-    private static string ExtractDocId(string uri) =>
-        uri.StartsWith("bench://", StringComparison.Ordinal) ? uri["bench://".Length..] : uri;
+    /// <summary>Maps a store entry name back to the logical ID supplied at ingest.</summary>
+    private string ResolveLogicalDocId(string entryName)
+    {
+        if (_logicalDocIdsByEntryName.TryGetValue(entryName, out string? logicalDocId))
+            return logicalDocId;
+
+        throw new InvalidOperationException(
+            $"Retrieval result '{entryName}' has no logical benchmark identity mapping.");
+    }
 
     /// <summary>
     /// Reverses <see cref="IngestAsync"/>'s chunked ID convention. Uses <c>LastIndexOf</c>
