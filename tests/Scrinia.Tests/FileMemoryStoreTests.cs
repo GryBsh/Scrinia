@@ -185,7 +185,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         var entries = new List<ArtifactEntry>
         {
-            new("imported", "", 50, 1, DateTimeOffset.UtcNow)
+            new(MemoryAddress.Parse("/imported"), "artifacts/imported.nmp2", 50, 1, DateTimeOffset.UtcNow)
         };
         var contents = new Dictionary<string, string>
         {
@@ -199,6 +199,8 @@ public sealed class FileMemoryStoreTests : IDisposable
         var loaded = _store.LoadIndex("local:test");
         loaded.Should().HaveCount(1);
         loaded[0].Name.Should().Be("imported");
+        loaded[0].Address.Should().Be(MemoryAddress.Parse("/test/imported"));
+        loaded[0].ArtifactKey.Should().Be("artifacts/test/imported.nmp2");
     }
 
     [Fact]

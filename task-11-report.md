@@ -210,14 +210,14 @@ No source or test files were modified. The only pre-existing untracked files rem
 | 4 | Index/cache update path | `IndexCacheWritePathTests.TryUpdateEntry_UpdatesTheCache_AndKeepsTheRestOfTheScope`; `IndexCacheWritePathTests.TryUpdateEntry_LeavesTheCacheNormalized_EvenWhenTheWarmSlotWasNot`; `IndexCacheWritePathTests.TryUpdateEntry_AgainstAnUncachedScope_StillFindsTheEntry`; `IndexCacheWritePathTests.TryUpdateEntry_ReadsTheEntryFromDisk_NotFromACacheAnotherWriterHasStaled` | **Yes** — canonical scope/cache propagation. |
 | 3 | Legacy reserved-path/address routing expectations | `FileMemoryStoreTests.ImportTopicEntries_creates_topic`; `StorePurityInvariantTests.SkillWriteAndRecallResolveToThePathRouterDirectory`; `Mcp.SkillPathRoutingTests.Forget_OnTheBareSkillPath_AsksForANameRatherThanDeletingAnything` | **Yes** — strict typed-address migration versus legacy skill/path handling. |
 | 1 | Agent path validation expectation | `FileEntityNameTests.Remember_AgentPathTraversal_ReturnsErrorAndWritesNoFileOutsideAgentDir` | **Yes** — address/path boundary. |
-| 1 | Forbidden-surface sweep sees report vocabulary | `NoObsoleteAddressSurfaceTests.Forbidden_address_surface_is_absent_outside_classified_historical_text` (finds `failure-classification.md: ArtifactEntry.Uri`) | **No** — report classification/hygiene, not runtime migration behavior. |
+| 1 | Forbidden-surface sweep sees report vocabulary | `NoObsoleteAddressSurfaceTests.Forbidden_address_surface_is_absent_outside_classified_historical_text` (found stale URI-shaped compatibility wording in `failure-classification.md`) | **No** — report classification/hygiene, not runtime migration behavior. |
 
 The focused aggregate's three failures are the forbidden-surface report hit above plus the two
 legacy reserved-path expectations (`StorePurityInvariantTests.SkillWriteAndRecallResolveToThePathRouterDirectory`
 and `Mcp.SkillPathRoutingTests.Forget_OnTheBareSkillPath_AsksForANameRatherThanDeletingAnything`).
 Prioritized remaining causes are: (1) restore/journal/cache scope correctness, (2) legacy
 reserved-path compatibility or deliberate test migration, (3) agent-path validation contract,
-and (4) remove/classify the stale `ArtifactEntry.Uri` wording in the report sweep input.
+and (4) remove/rephrase the stale URI-shaped compatibility wording in the report sweep input.
 
 ## Agentic structured tool-error resolution (2026-08-31)
 
@@ -252,7 +252,19 @@ Focused verification: **10 passed, 0 failed, 0 skipped** for the six `Transactio
 and four named `JournaledRestoreRecoveryTests` cases. A new regression also pins the complete
 `MemoryAddress` → scope directory → subject → `ArtifactKey` chain.
 
-The four `IndexCacheWritePathTests` failures remain classified as the pre-existing stale
-`ArtifactEntry.Uri` contract group: production now exposes `ArtifactKey`, and those assertions
-were deliberately not changed as part of this restore fix. No server files or unrelated stale
-contract groups were touched.
+The four `IndexCacheWritePathTests` failures were classified as a stale compatibility-view
+expectation group. Their assertions now use the approved portable `ArtifactKey` semantics while
+retaining the cache behavior checks. No server files or unrelated contract groups were touched.
+
+## Task 11 remaining-failure closure (2026-08-31)
+
+At HEAD `47f1322`, the remaining classified failures are closed. The targeted regression set is
+**33 passed, 0 failed, 0 skipped**. The focused addressing aggregate is **718 passed, 0 failed,
+0 skipped**. The Core suite is **2,252 total: 2,244 passed, 0 failed, 8 skipped**. The full
+solution suite is **2,683 total: 2,675 passed, 0 failed, 8 skipped**. The solution build is
+**15 projects, 0 errors, 0 warnings**.
+
+The agent traversal regression now enters through the MCP string boundary, returns structured
+`MALFORMED_ADDRESS`, and performs no file write. Reserved skill/topic coverage now asserts the
+typed `MemoryAddress`/`PathRouter` contract; URI rejection, portable artifact keys, and the
+untracked server tree remain unchanged.

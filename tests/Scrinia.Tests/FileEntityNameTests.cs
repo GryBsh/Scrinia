@@ -32,11 +32,12 @@ public sealed class FileEntityNameTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = (await new ScriniaMcpTools().Remember(["malicious content"], MemoryAddress.Parse("/agent/../../evil"))).ToYaml();
+        string result = await new ScriniaMcpTools().MemoryRemember("/agent/../../evil", ["malicious content"]);
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("error",
             because: "a traversal agent name must be rejected before any file is touched");
+        parsed.ErrorCode.Should().Be(ErrorCodes.MalformedAddress);
 
         File.Exists(Path.Combine(scope.WorkspaceDir, "evil.md")).Should().BeFalse(
             because: "the traversal must not escape the .scrinia/agent directory");

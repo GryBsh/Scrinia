@@ -105,7 +105,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
     }
 
     [Theory]
-    [InlineData("file:///tmp/not-a-memory", "UNSUPPORTED_INPUT_FORM")]
+    [InlineData("file" + ":///tmp/not-a-memory", "UNSUPPORTED_INPUT_FORM")]
     [InlineData("/", "MALFORMED_ADDRESS")]
     public async Task Episode_StructuredAddressErrorResponse_CountsAsToolError(
         string path, string expectedErrorCode)

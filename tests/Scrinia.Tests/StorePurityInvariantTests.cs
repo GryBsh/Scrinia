@@ -124,8 +124,10 @@ public class StorePurityInvariantTests
             PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot), "qa.md");
         File.Exists(authoritative).Should().BeTrue();
 
-        string listing = await Tools().MemoryRecall(path: "/skill/");
-        listing.Should().Contain("/skill/qa [file]");
+         var listing = ResponseParser.Parse(await Tools().MemoryRecall(path: "/skill/"));
+         listing.Status.Should().Be("error");
+         listing.ErrorCode.Should().Be(ErrorCodes.MalformedAddress,
+             "the typed address parser rejects a nameless reserved path before skill routing");
 
         string loaded = await Tools().MemoryRecall(path: "/skill/qa");
         loaded.Should().Contain("skill body");

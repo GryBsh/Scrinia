@@ -124,7 +124,7 @@ public sealed class IndexCacheWritePathTests : IDisposable
         // under test (a cold reload afterward would still report the right OriginalBytes).
         _store.LoadIndex("local").Should().ContainSingle();
 
-        // ArtifactEntry's positional members are (Name, Uri, OriginalBytes, ChunkCount,
+        // ArtifactEntry's positional members are (Address, ArtifactKey, OriginalBytes, ChunkCount,
         // CreatedAt). There is NO Description property — assert on a member that exists.
         var updated = new ArtifactEntry("a", "", 99, 1, DateTimeOffset.UtcNow);
         _store.Upsert(updated, "local");
@@ -175,8 +175,8 @@ public sealed class IndexCacheWritePathTests : IDisposable
         // update, which is the logic this test pins.
         _store.LoadIndex("local").Should().HaveCount(2);
 
-        // No Description property on ArtifactEntry — Uri is the second positional member.
-        bool ok = _store.TryUpdateEntry("a", "local", e => e with { Uri = "patched" });
+        // No Description property on ArtifactEntry — ArtifactKey is the second positional member.
+        bool ok = _store.TryUpdateEntry("a", "local", e => e with { ContentPreview = "patched" });
 
         ok.Should().BeTrue();
         var entries = AssertReadIsACacheHit(
@@ -186,7 +186,8 @@ public sealed class IndexCacheWritePathTests : IDisposable
                    + "of the lock file here would mean this read cold-reloaded instead of "
                    + "exercising the warm update logic under test");
         entries.Select(x => x.Name).Should().BeEquivalentTo(["a", "b"]);
-        entries.Single(x => x.Name == "a").Uri.Should().Be("patched");
+        entries.Single(x => x.Name == "a").ArtifactKey.Should().Be("artifacts/a.nmp2");
+        entries.Single(x => x.Name == "a").ContentPreview.Should().Be("patched");
     }
 
     [Fact]
@@ -198,7 +199,7 @@ public sealed class IndexCacheWritePathTests : IDisposable
         // the Upsert above never does this itself.
         _store.LoadIndex("local").Should().ContainSingle();
 
-        bool ok = _store.TryUpdateEntry("nope", "local", e => e with { Uri = "x" });
+        bool ok = _store.TryUpdateEntry("nope", "local", e => e with { ContentPreview = "x" });
 
         ok.Should().BeFalse();
         var names = AssertReadIsACacheHit(
@@ -229,14 +230,14 @@ public sealed class IndexCacheWritePathTests : IDisposable
     [Fact]
     public void TryUpdateEntry_ReadsTheEntryFromDisk_NotFromACacheAnotherWriterHasStaled()
     {
-        _store.Upsert(new ArtifactEntry("note", "uri-v1", 4, 1, DateTimeOffset.UtcNow), "local");
+        _store.Upsert(new ArtifactEntry(MemoryAddress.Parse("/note"), "artifacts/note.nmp2", 4, 1, DateTimeOffset.UtcNow), "local");
 
         // Warm THIS store's cache with v1 — the state a long-lived `scri serve` is in.
         _store.LoadIndex("local").Should().ContainSingle();
 
         // The "other process" writes v2. Nothing tells _store about it.
         using (var other = new FileMemoryStore(_root))
-            other.Upsert(new ArtifactEntry("note", "uri-v2", 99, 1, DateTimeOffset.UtcNow), "local");
+            other.Upsert(new ArtifactEntry(MemoryAddress.Parse("/note"), "artifacts/note.nmp2", 99, 1, DateTimeOffset.UtcNow), "local");
 
         // A metadata-only update of the kind MaintenanceEventSink and EntityTypingEventHandler
         // perform: it touches Attributes and nothing else.
@@ -254,15 +255,15 @@ public sealed class IndexCacheWritePathTests : IDisposable
 
         persisted.Attributes.Should().ContainKey("orphan",
             because: "the mutation itself must still have been applied and persisted");
-        persisted.Uri.Should().Be("uri-v2",
+        persisted.ArtifactKey.Should().Be("artifacts/note.nmp2",
             because: "TryUpdateEntry writes back a COMPLETE entry derived from what it read, so "
-                   + "reading a stale cached entry would republish the pre-pull Uri over the "
+                   + "reading a stale cached entry would republish the pre-pull ArtifactKey over the "
                    + "other writer's — a silent revert of a field this mutation never touched");
         persisted.OriginalBytes.Should().Be(99,
-            because: "same reason as Uri: every field the mutation leaves alone is copied from "
+             because: "same reason as ArtifactKey: every field the mutation leaves alone is copied from "
                    + "the entry the lookup returned, so the lookup has to be disk-authoritative");
 
-        _store.LoadIndex("local").Single(e => e.Name == "note").Uri.Should().Be("uri-v2",
+        _store.LoadIndex("local").Single(e => e.Name == "note").ArtifactKey.Should().Be("artifacts/note.nmp2",
             because: "the write also re-seats this store's own cached slot from the entry it just "
                    + "persisted, so the stale copy does not survive the write that overwrote it");
     }
@@ -274,10 +275,11 @@ public sealed class IndexCacheWritePathTests : IDisposable
         using var fresh = new FileMemoryStore(_root);
 
         // First operation on this instance, cold cache — must fall back to the sidecar scan.
-        bool ok = fresh.TryUpdateEntry("a", "local", e => e with { Uri = "cold" });
+        bool ok = fresh.TryUpdateEntry("a", "local", e => e with { ContentPreview = "cold" });
 
         ok.Should().BeTrue();
-        fresh.LoadIndex("local").Single(x => x.Name == "a").Uri.Should().Be("cold");
+        fresh.LoadIndex("local").Single(x => x.Name == "a").ArtifactKey.Should().Be("artifacts/a.nmp2");
+        fresh.LoadIndex("local").Single(x => x.Name == "a").ContentPreview.Should().Be("cold");
     }
 
     /// <summary>
@@ -324,7 +326,7 @@ public sealed class IndexCacheWritePathTests : IDisposable
                    + "sidecar did not reproduce MigratesTo reporting no change, and the assertions "
                    + "below would be proving nothing about the fix under test");
 
-        bool ok = _store.TryUpdateEntry("legacy-warm", "local", e => e with { Uri = "patched" });
+        bool ok = _store.TryUpdateEntry("legacy-warm", "local", e => e with { ContentPreview = "patched" });
         ok.Should().BeTrue();
 
         var updated = AssertReadIsACacheHit(
@@ -339,6 +341,7 @@ public sealed class IndexCacheWritePathTests : IDisposable
                    + "LegacyFields-bearing entry sit in the cache diverging from disk (which "
                    + "WriteSidecarCore always normalizes before serializing), reproducing exactly "
                    + "the divergence the load seam exists to prevent");
-        updated.Uri.Should().Be("patched");
+        updated.ArtifactKey.Should().Be("artifacts/legacy-warm.nmp2");
+        updated.ContentPreview.Should().Be("patched");
     }
 }

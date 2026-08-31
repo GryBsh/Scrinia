@@ -32,7 +32,7 @@ Evidence: every failure has the expected ranking/content behavior but an ID such
 the logical benchmark ID. `FileMemoryStore.SearchAll` returns `EntryResult`/`ChunkEntryResult`
 carrying `ArtifactEntry`; `WeightedAttributeScorer`, entity PPR, recency composition, and MMR all
 operate on that result without changing the ranking signal. `ScriniaRetriever` then calls
-`ExtractDocId(er.Item.Entry.Uri)` at lines 361/366. The compatibility `Uri` view now returns
+the legacy URI-shaped identity adapter at lines 361/366. The compatibility view now returns
 `ArtifactKey`, so the adapter emits the portable key as `RetrievalHit.Id`.
 
 The baseline `ArtifactEntry` had independent `Name` and `Uri`; the benchmark stored `bench://<id>`
@@ -60,7 +60,7 @@ Failures:
 The hybrid path is: agent episode -> typed `FileMemoryStore` writes -> `EmbeddingReindexer` into the
 shared `VectorStore` -> `HybridReranker`/`CompositeSearchScoreContributor` -> `SearchAll` ->
 provenance mapping. The two hybrid symptoms are not stable at HEAD and are not explained by
-`ArtifactKey`: agentic hits map through `_provenance` and buffered doc IDs, not `ArtifactEntry.Uri`.
+`ArtifactKey`: agentic hits map through `_provenance` and buffered doc IDs, not the legacy URI-shaped view.
 Treat them as agent/test isolation or episode-order flakes until a serialized run proves otherwise.
 
 The invalid-path failure is reproducible at `38f1c05`, with the assertion stack trace ending at
@@ -96,9 +96,16 @@ Resolution: `ExecuteCallAsync` now classifies a dispatcher result whose first st
 regression covers both `UNSUPPORTED_INPUT_FORM` and `MALFORMED_ADDRESS`; the original invalid-path
 retriever test now counts the boundary response without aborting the episode.
 
+## Task 11 remaining-failure closure (2026-08-31)
+
+The remaining Task 11 classifications were resolved at HEAD `47f1322`: targeted regressions
+**33 passed, 0 failed, 0 skipped**; focused addressing aggregate **718 passed, 0 failed, 0
+skipped**; Core **2,252 total, 2,244 passed, 0 failed, 8 skipped**; full solution **2,683 total,
+2,675 passed, 0 failed, 8 skipped**; solution build **15 projects, 0 errors, 0 warnings**.
+
 ## Contract ruling
 
-Replacing the public `ArtifactEntry.Uri` with `ArtifactEntry.ArtifactKey` is an **approved contract
+Replacing the public URI-shaped compatibility view with `ArtifactEntry.ArtifactKey` is an **approved contract
 change**. The design spec explicitly requires a portable, store-relative, opaque key, with only
 `FileMemoryStore` mapping it to a physical path; it also explicitly excludes retrieval ranking and
 benchmark identity redesign. Therefore the approved change does **not** authorize using

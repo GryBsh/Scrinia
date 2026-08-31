@@ -113,7 +113,8 @@ public class SkillPathRoutingTests
         var response = ResponseParser.Parse(await Tools().MemoryForget(path: "/skill/"));
 
         response.Status.Should().Be("error");
-        response.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+        response.ErrorCode.Should().Be(ErrorCodes.MalformedAddress,
+            "the typed address parser rejects a nameless reserved path before skill routing");
         ResponseParser.Parse(await Tools().MemoryRecall(path: "/skill/keep-me"))
             .Status.Should().NotBe("error", "a nameless forget must not delete the namespace");
     }
