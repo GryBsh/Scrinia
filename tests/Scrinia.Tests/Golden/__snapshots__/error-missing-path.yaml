@@ -1,6 +1,5 @@
 status: error
-error: "recall requires 'path'."
-errorCode: INVALID_PARAMETER
+error: Memory address must not be empty.
+errorCode: MALFORMED_ADDRESS
 actionNeeded:
-  - "recall({ path: '...' })"
-  - list() to discover available paths
+  - "Provide a logical address such as '/api/auth' or '~scratch'."

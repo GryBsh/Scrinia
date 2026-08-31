@@ -54,8 +54,8 @@ public sealed class ScriniaMcpToolsTests
 
         McpResponse response = route switch
         {
-            "remember" => await tools.Remember(["body"], MemoryAddress.Parse(longName)),
-            "append-create" => await tools.Append("body", MemoryAddress.Parse(longName)),
+            "remember" => await tools.Remember(["body"], MemoryAddress.Parse("/" + longName)),
+            "append-create" => await tools.Append("body", MemoryAddress.Parse("/" + longName)),
             "compact" => await CompactLegacyLongTargetAsync(tools, longName),
             _ => throw new InvalidOperationException(route),
         };
@@ -90,7 +90,7 @@ public sealed class ScriniaMcpToolsTests
     private static async Task<McpResponse> CompactLegacyLongTargetAsync(ScriniaMcpTools tools, string name)
     {
         await SeedLegacyLongTargetAsync(name);
-        return await tools.Compact(MemoryAddress.Parse(name));
+        return await tools.Compact(MemoryAddress.Parse("/" + name));
     }
 
     private static async Task SeedLegacyLongTargetAsync(string name)
@@ -134,7 +134,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Fact1;
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml();
+        string result = await Tools().MemoryRecall(artifact);
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("success");
@@ -151,7 +151,7 @@ public sealed class ScriniaMcpToolsTests
         Nmp2Strategy.IsMultiChunk(artifact).Should().BeFalse(
             because: "Encode() always produces single-chunk artifacts");
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml();
+        string result = await Tools().MemoryRecall(artifact);
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         // Content may be truncated by the 8KB YAML response cap — verify it starts correctly
@@ -168,7 +168,7 @@ public sealed class ScriniaMcpToolsTests
         Nmp2Strategy.IsMultiChunk(artifact).Should().BeTrue(
             because: "two-element EncodeChunks produces multi-chunk artifact");
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml();
+        string result = await Tools().MemoryRecall(artifact);
         var parsed = ResponseParser.Parse(result);
         // Multi-chunk Show prepends "(N chunks)\n\n" header
         string expected = string.Concat(parts);
@@ -181,14 +181,14 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public async Task Show_FileUri_IsRejectedAsUnsupportedInputForm()
     {
-        var response = await Tools().Recall(MemoryAddress.Parse("/file:///tmp/memory.nmp2"));
+        var response = ResponseParser.Parse(await Tools().MemoryRecall("file:///tmp/memory.nmp2"));
         response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
     }
 
     [Fact]
     public async Task Show_InvalidInlineNmp2_IsRejectedAsUnsupportedInputForm()
     {
-        var response = await Tools().Recall(MemoryAddress.Parse("/NMP/2 invalid"));
+        var response = ResponseParser.Parse(await Tools().MemoryRecall("NMP/2 invalid"));
         response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
     }
 
@@ -198,7 +198,7 @@ public sealed class ScriniaMcpToolsTests
         string original = "Emoji: 🎉🚀🌍\nCJK: 日本語 中文 한국어\nRTL: مرحبا بالعالم\nMath: ∑∫√π\n";
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml();
+        string result = await Tools().MemoryRecall(artifact);
 
         // YAML block scalars may add a trailing newline; trim to compare
         ResponseParser.Parse(result).Content!.TrimEnd().Should().Be(original.TrimEnd(),
@@ -211,7 +211,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.LoadHumanEvalText()[..2_000];
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml();
+        string result = await Tools().MemoryRecall(artifact);
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("success");
@@ -231,7 +231,7 @@ public sealed class ScriniaMcpToolsTests
         // A TAMIS/2 artifact header — not an NMP/2 artifact
         string fakeArtifact = "TAMIS/2 42B CRC32:DEADBEEF K:3\nsome body\nTAMIS/END";
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(fakeArtifact))).ToYaml();
+        string result = await Tools().MemoryRecall(fakeArtifact);
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "non-NMP/2 artifacts must return an error status");
@@ -243,7 +243,7 @@ public sealed class ScriniaMcpToolsTests
         // MNDE/1 artifacts are no longer supported by Show
         string fakeArtifact = "MNDE/1 42B CRC32:DEADBEEF V:1\nsome body\nMNDE/END";
 
-        string result = (await Tools().Recall(MemoryAddress.Parse(fakeArtifact))).ToYaml();
+        string result = await Tools().MemoryRecall(fakeArtifact);
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "MNDE/1 artifacts are not supported by the trimmed Show tool");
@@ -252,7 +252,7 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public async Task Show_UriShapedInput_ReturnsUnsupportedInputForm()
     {
-        var response = await Tools().Recall(MemoryAddress.Parse("/https://memory.example/item"));
+        var response = ResponseParser.Parse(await Tools().MemoryRecall("https://memory.example/item"));
         response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
     }
 
@@ -573,7 +573,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         for (int i = 0; i < 5; i++)
-            await Tools().Remember([$"content {i}"], MemoryAddress.Parse($"page-test-{i}"));
+            await Tools().Remember([$"content {i}"], MemoryAddress.Parse($"/page-test-{i}"));
 
         string result = (await Tools().List(mode: "full", offset: 2, limit: 2)).ToYaml();
 
@@ -648,10 +648,9 @@ public sealed class ScriniaMcpToolsTests
         string artifactPath = Path.Combine(scope.TempDir, "uri-test.nmp2");
         string uri = $"file://{artifactPath}";
 
-        string result = (await Tools().Forget(MemoryAddress.Parse(uri))).ToYaml();
-
-        ResponseParser.Parse(result).Content.Should().Contain("Forgot",
-            because: "Forget by URI must succeed for indexed memories");
+        var response = ResponseParser.Parse(await Tools().MemoryForget(uri));
+        response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm,
+            because: "URI inputs are no longer accepted by the typed-address contract");
     }
 
     private sealed class CapturingSink : Scrinia.Core.IMemoryEventSink
@@ -861,10 +860,9 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         string artifact = Nmp2ChunkedEncoder.Encode("hello");
-        string result = await MemoryStoreContext.Current!.ReadArtifactAsync(MemoryAddress.Parse("/resolve-test"));
+        string result = await Tools().MemoryRecall(artifact);
 
-        result.Should().Be(artifact,
-            because: "inline NMP/2 artifacts must be returned unchanged");
+        ResponseParser.Parse(result).Content.Should().Be("hello");
     }
 
     [Fact]
@@ -879,7 +877,7 @@ public sealed class ScriniaMcpToolsTests
         artifact.Should().StartWith("NMP/2 ",
             because: "resolved artifact must be a valid NMP/2 artifact");
 
-        string decoded = (await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml();
+        string decoded = await Tools().MemoryRecall(artifact);
         ResponseParser.Parse(decoded).Content.Should().Be(original);
     }
 
@@ -2045,7 +2043,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(
             ["The subsystem orchestrates lifecycle hooks during plugin startup."], MemoryAddress.Parse(// no "Mary" in content
-            "typed-kw-test"),
+            "/typed-kw-test"),
             keywords: ["person:Mary"]);
 
         var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "typed-kw-test");
@@ -2460,7 +2458,7 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("error");
         parsed.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
         parsed.ActionNeeded.Should().NotBeEmpty();
-        parsed.ActionNeeded[0].Should().Contain("remember({ path: '...', content: ['chunk 1', 'chunk 2'] })",
+        parsed.ActionNeeded[0].Should().Contain("remember({ path: '/findings/example', content: [...] })",
             because: "the recovery hint should be a concrete tool call template");
         parsed.ActionNeeded[0].Should().NotContain("memory_remember");
     }

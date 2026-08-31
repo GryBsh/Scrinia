@@ -1323,6 +1323,14 @@ public sealed partial class ScriniaMcpTools
             hadIndexedEntry = existingEntry is not null;
         }
 
+        if (!ephemeral)
+        {
+            string qualifiedAddress = scope == "local"
+                ? "/" + subject
+                : "/" + scope["local:".Length..] + "/" + subject;
+            name = MemoryAddress.Parse(qualifiedAddress);
+        }
+
         // Compaction is a whole-memory rewrite, so it is a StoreAsync over the compacted chunks —
         // the spec's "compact needs no third derivation entry point". The store archives the
         // previous version, writes the artifact and upserts the entry, all of which this method

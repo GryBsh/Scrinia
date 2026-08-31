@@ -41,6 +41,8 @@ public sealed class InvalidMemoryWriteException : ArgumentException
         : base(error.Message, error.Field)
     {
         Error = error;
+        MaxPersistentSubjectLength = error.Limit is { } limit ? (int)limit : 0;
+        SanitizedSubjectLength = error.Actual is { } actual ? (int)actual : 0;
     }
 
     /// <summary>Initializes a filesystem-safe write refusal.</summary>
@@ -236,6 +238,17 @@ public sealed record MemoryWrite
     {
         if (!address.IsValid)
             return Error("invalid_address", "Address is invalid.", "address");
+        if (address.Kind == MemoryAddressKind.Persistent)
+        {
+            int sanitizedSubjectLength = MemoryNaming.SanitizeSegment(
+                address.Value[(address.Value.LastIndexOf('/') + 1)..]).Length;
+            if (sanitizedSubjectLength > MaxPersistentSubjectLength)
+                return new MemoryError(
+                    MemoryErrorCategory.InvalidWriteContent,
+                    "persistent_subject_too_long",
+                    $"Persistent memory subject exceeds {MaxPersistentSubjectLength} sanitized characters.",
+                    "address", MaxPersistentSubjectLength, sanitizedSubjectLength);
+        }
         int addressBytes = System.Text.Encoding.UTF8.GetByteCount(address.ToString());
         if (addressBytes > options.MaxAddressBytes)
             return Error("address_too_large", "Address exceeds its UTF-8 byte limit.", "address", options.MaxAddressBytes, addressBytes);

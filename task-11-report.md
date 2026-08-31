@@ -150,3 +150,20 @@ migration.
 - Plugin embeddings lane: **32 passed, 0 failed, 0 skipped**.
 - Solution build (`dotnet build Scrinia.sln --no-restore`): **15 projects, 0 errors**
   (**342 warnings**, existing analyzer/preview-SDK warnings).
+
+## Failure group 5 resolution (2026-08-31)
+
+The MCP/CLI response and writer group was reproduced at HEAD `1133f87` against baseline `90827cd`.
+The 37 classified cases were **2 production regressions** plus **35 stale expectations** caused by
+the approved typed-address and categorized-error schema changes.
+
+- `MemoryWrite` now rejects an overlong sanitized persistent subject at construction, before disk
+  access, while retaining structured limit/actual values for callers.
+- `compact()` now rebuilds its typed write address from the existing entry's canonical casing,
+  preventing a case-sensitive sibling write.
+- Tests now use the MCP string facade for inline artifacts and malformed/URI inputs, assert the
+  categorized malformed-address golden response, and expect canonical typed identities in writer
+  and event projections. No URI/raw API or server file was added.
+
+Verification: group 5 filter **228 passed, 0 failed, 0 skipped**; MCP/CLI lanes **88 passed, 0 failed,
+0 skipped**; solution build **15 projects, 0 errors** (existing warnings only).

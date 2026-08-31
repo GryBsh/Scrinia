@@ -43,7 +43,8 @@ public class FileMemoryStoreWriteSurfaceTests
 
     private static async Task<string> DecodeAsync(FileMemoryStore store, string subject, string scope = "local")
     {
-        string artifact = await store.ReadArtifactAsync(MemoryAddress.Parse("/writesurface/item"));
+        string address = subject.StartsWith('/') || subject.StartsWith('~') ? subject : "/" + subject;
+        string artifact = await store.ReadArtifactAsync(MemoryAddress.Parse(address));
         int count = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         return string.Concat(Enumerable.Range(1, count).Select(i => Nmp2ChunkedEncoder.DecodeChunk(artifact, i)));
     }
@@ -79,7 +80,7 @@ public class FileMemoryStoreWriteSurfaceTests
     [Fact]
     public void PersistentMemoryWrite_UsesTheSanitizedLeafLength()
     {
-        string raw = new string('x', 181) + "?";
+        string raw = new string('x', 181) + "_";
 
         Action construct = () => _ = MemoryWrite.Create(MemoryAddress.Parse(raw.StartsWith("/") || raw.StartsWith("~") ? raw : "/" + raw), "local", ["body"]);
 

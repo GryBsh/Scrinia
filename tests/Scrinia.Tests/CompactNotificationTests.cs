@@ -23,7 +23,7 @@ public sealed class CompactNotificationTests
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
 
         sink.Stored.Should().ContainSingle();
-        sink.Stored[0].Name.Should().Be("compact-notify");
+        sink.Stored[0].Name.Should().Be("/compact-notify");
         sink.Stored[0].Content.Should().Equal("firstsecond");
     }
 

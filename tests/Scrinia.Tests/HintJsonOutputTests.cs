@@ -66,11 +66,9 @@ public sealed class HintJsonOutputTests : IDisposable
     }
 
     [Fact]
-    public async Task HintJson_WithAControlCharacterInTheName_IsParseableJson()
+    public async Task HintJson_WithAValidTypedName_IsParseableJson()
     {
-        // The newline is what the old escaper misses; the quote and backslash ride along so the
-        // round-trip assertion still covers the two characters it did handle.
-        const string awkwardName = "oauth\"quoted\\flow\nsecond-line";
+        const string awkwardName = "/oauth-quoted-flow";
 
         // BM25's IDF term collapses toward zero in a one-document corpus, so a single seeded
         // memory cannot clear the default floor no matter how well the prompt overlaps. Seed a
@@ -107,6 +105,6 @@ public sealed class HintJsonOutputTests : IDisposable
         using var doc = JsonDocument.Parse(output);
         doc.RootElement.GetProperty("count").GetInt32().Should().BeGreaterThan(0);
         doc.RootElement.GetProperty("matches")[0].GetProperty("name").GetString()
-            .Should().Be(awkwardName, because: "the name must survive the round trip verbatim");
+            .Should().Be(awkwardName[1..], because: "the indexed subject is rendered without its address prefix");
     }
 }

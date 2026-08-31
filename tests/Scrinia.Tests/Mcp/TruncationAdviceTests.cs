@@ -62,7 +62,7 @@ public class TruncationAdviceTests
         string original = new string('a', ResponseBuilder.MaxResponseChars + 1000);
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        var recalled = ResponseParser.Parse((await Tools().Recall(MemoryAddress.Parse(artifact))).ToYaml());
+        var recalled = ResponseParser.Parse(await Tools().MemoryRecall(artifact));
 
         recalled.FollowUp.Should().Contain(f => f.Contains("recall({ path, chunk", StringComparison.Ordinal));
         recalled.FollowUp.Should().NotContain(f => f.Contains(DefaultAdviceFragment, StringComparison.Ordinal));
@@ -79,7 +79,7 @@ public class TruncationAdviceTests
             "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november. ", 8));
 
         for (int i = 0; i < 18; i++)
-            await Tools().Remember([$"{marker} entry {i}. {filler}"], MemoryAddress.Parse($"search-trunc-{i}"));
+            await Tools().Remember([$"{marker} entry {i}. {filler}"], MemoryAddress.Parse($"/search-trunc-{i}"));
 
         var searched = ResponseParser.Parse((await Tools().Search(marker, limit: 20)).ToYaml());
 
@@ -96,7 +96,7 @@ public class TruncationAdviceTests
         for (int i = 0; i < 90; i++)
             await Tools().Remember(
                 [$"list truncation fixture entry number {i}. alpha bravo charlie delta echo foxtrot golf hotel."],
-                MemoryAddress.Parse($"list-trunc-{i:D3}"));
+                MemoryAddress.Parse($"/list-trunc-{i:D3}"));
 
         var listed = ResponseParser.Parse((await Tools().List(mode: "full", limit: 100)).ToYaml());
 
