@@ -135,7 +135,7 @@ public sealed class MetaMergeSymmetricParityTests
     // recorded by its own test at the bottom of this file rather than smuggled into every case here.
 
     private static string Sidecar(string body) =>
-        "{\"name\":\"auth-flow\",\"uri\":\"\",\"description\":\"d\","
+        "{\"name\":\"auth-flow\",\"address\":\"/auth-flow\",\"artifactKey\":\"artifacts/auth-flow.nmp2\",\"description\":\"d\"," 
         + "\"originalBytes\":10,\"chunkCount\":1," + body + "}";
 
     public static TheoryData<string, string, string> Cases() => new()

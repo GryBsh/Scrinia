@@ -143,7 +143,7 @@ public sealed class SourceGeneratedAddressSerializationTests
             }
 
             using var coldStore = new FileMemoryStore(root);
-            ArtifactEntry reloaded = coldStore.LoadIndex("local").Should().ContainSingle().Subject;
+            ArtifactEntry reloaded = coldStore.LoadIndex("local:context").Should().ContainSingle().Subject;
             reloaded.Address.Should().Be(written.Address);
             reloaded.ArtifactKey.Should().Be(written.ArtifactKey);
             reloaded.ContentPreview.Should().Be(written.ContentPreview);

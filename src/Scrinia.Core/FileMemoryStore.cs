@@ -1099,7 +1099,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     legacy.TermFrequencies, legacy.UpdatedAt, legacy.ChunkEntries, legacy.FileHashes,
                     legacy.Attributes, legacy.AgentKeywords, legacy.SchemaVersion)
                 {
-                    LegacyFields = legacy.LegacyFields
+                    LegacyFields = legacy.LegacyFields,
+                    Unknown = legacy.Unknown
                 };
             }
         }
@@ -1143,7 +1144,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                         entry.TermFrequencies, entry.UpdatedAt, entry.ChunkEntries, entry.FileHashes,
                         entry.Attributes, entry.AgentKeywords, entry.SchemaVersion)
                     {
-                        LegacyFields = entry.LegacyFields
+                        LegacyFields = entry.LegacyFields,
+                        Unknown = entry.Unknown
                     })
                     .ToList();
             }
@@ -2836,6 +2838,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // the cache). LoadIndexUnsafe returns the cache's own backing list, so mutating it
             // here would corrupt every other reader's live view.
             var existingEntries = LoadIndexUnsafe(topicScope).ToList();
+
+            // The scope itself may already contain a forward-versioned sidecar. Refuse before
+            // building the restore plan; waiting until after the incoming candidates are merged
+            // makes this guard depend on the candidate set and can allow a scope-only newer entry
+            // to be overwritten without the promised read-only protection.
+            if (existingEntries.Find(ArtifactSidecarPolicy.IsReadOnly) is { } existingBlocking)
+                throw new ScopeReadOnlyException(topicScope, existingBlocking.Name,
+                    existingBlocking.SchemaVersion ?? 1, DurableFormats.ArtifactSidecar.Current);
 
             var candidates = new List<ArtifactEntry>();
             foreach (ArtifactEntry entry in entries)

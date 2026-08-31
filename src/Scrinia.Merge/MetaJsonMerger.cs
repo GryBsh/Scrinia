@@ -21,6 +21,11 @@ public static class MetaJsonMerger
         if (ours is null || theirs is null)
             return MergeResult.Conflict;
 
+        NormalizeLegacyArtifactKey(ours);
+        NormalizeLegacyArtifactKey(theirs);
+        if (ancestor is not null)
+            NormalizeLegacyArtifactKey(ancestor);
+
         // DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
         // Scrinia.Core.Merge.SidecarAdmission.IsSimilarEnough, which reconcile()'s auto-resolver
         // calls; this project is a standalone AOT executable with zero project references by hard
@@ -49,7 +54,7 @@ public static class MetaJsonMerger
 
         // Per-field 3-way merge of scalar metadata: only-one-side-changed → take it; both changed → conflict.
         if (!TryMergeField(GetString(ancestor, "name"), GetString(ours, "name"), GetString(theirs, "name"), out var name)) return MergeResult.Conflict;
-        if (!TryMergeField(GetString(ancestor, "uri"), GetString(ours, "uri"), GetString(theirs, "uri"), out var uri)) return MergeResult.Conflict;
+        if (!TryMergeField(GetString(ancestor, "artifactKey"), GetString(ours, "artifactKey"), GetString(theirs, "artifactKey"), out var artifactKey)) return MergeResult.Conflict;
         if (!TryMergeField(GetString(ancestor, "description"), GetString(ours, "description"), GetString(theirs, "description"), out var description)) return MergeResult.Conflict;
         if (!TryMergeField(GetLong(ancestor, "originalBytes"), GetLong(ours, "originalBytes"), GetLong(theirs, "originalBytes"), out var originalBytesN)) return MergeResult.Conflict;
         if (!TryMergeField(GetInt(ancestor, "chunkCount"), GetInt(ours, "chunkCount"), GetInt(theirs, "chunkCount"), out var chunkCountN)) return MergeResult.Conflict;
@@ -106,7 +111,8 @@ public static class MetaJsonMerger
         // NOT among them: both are merged below, because preserving either verbatim silently
         // dropped theirs' contribution on every merge.
         SetString(ours, "name", name);
-        SetString(ours, "uri", uri);
+        SetString(ours, "artifactKey", artifactKey);
+        ours.Remove("uri");
         SetString(ours, "description", description);
         ours["originalBytes"] = originalBytes;
         ours["chunkCount"] = chunkCount;
@@ -214,7 +220,7 @@ public static class MetaJsonMerger
     /// </summary>
     private static readonly HashSet<string> ModelledKeys = new(StringComparer.Ordinal)
     {
-        "name", "uri", "originalBytes", "chunkCount", "createdAt", "updatedAt",
+        "name", "uri", "artifactKey", "originalBytes", "chunkCount", "createdAt", "updatedAt",
         "contentPreview", "description", "keywords", "agentKeywords",
         "termFrequencies", "chunkEntries", "codeRefs", "attributes", "fields", "v"
     };
@@ -268,6 +274,24 @@ public static class MetaJsonMerger
     {
         try { return JsonNode.Parse(File.ReadAllText(path), NodeOptions) as JsonObject; }
         catch (JsonException) { return null; }
+    }
+
+    private static void NormalizeLegacyArtifactKey(JsonObject sidecar)
+    {
+        string? name = GetString(sidecar, "name");
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        if (!sidecar.ContainsKey("artifactKey"))
+        {
+            string relativeName = name.TrimStart('/', '~').Replace('\\', '/');
+            sidecar["artifactKey"] = $"artifacts/{relativeName}.nmp2";
+        }
+
+        if (!sidecar.ContainsKey("address"))
+            sidecar["address"] = name.StartsWith('/') || name.StartsWith('~') ? name : $"/{name}";
+
+        sidecar.Remove("uri");
     }
 
     private static string? GetString(JsonObject? o, string key) =>

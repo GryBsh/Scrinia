@@ -54,6 +54,8 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     /// populated; a round trip that failed to overwrite one would be a different bug.</summary>
     private static readonly HashSet<string> RecomputedByImport = new(StringComparer.Ordinal)
     {
+        // ImportTopicEntries rebinds the logical address to the destination topic scope.
+        nameof(ArtifactEntry.Address),
         // ImportTopicEntries regenerates the key for THIS machine's store root. The exporting
         // machine's key is not authoritative here, so preserving it would be the bug.
         nameof(ArtifactEntry.ArtifactKey),

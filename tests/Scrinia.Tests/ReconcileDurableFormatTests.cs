@@ -21,7 +21,7 @@ public sealed class ReconcileDurableFormatTests
     }
 
     private static string Sidecar(int version, string? extension = null) => $$"""
-        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        {"name":"auth-flow","address":"/auth-flow","artifactKey":"artifacts/auth-flow.nmp2","originalBytes":10,"chunkCount":1,
         "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
         "keywords":["auth"],"v":{{version}}{{extension ?? ""}}}
         """;

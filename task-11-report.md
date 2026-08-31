@@ -1,5 +1,42 @@
 # Task 11 Root-Cause Investigation Report
 
+## Failure group 3 follow-up (2026-08-31)
+
+The sidecar/schema, ArtifactKey, display-identity, and MetaMerge representatives were re-run at
+HEAD `8538bc3`. Production fixes were limited to the Core/MCP/Merge surfaces; `src/Scrinia.Server/`
+remains untouched.
+
+- Legacy sidecar deserialization used a reduced DTO that discarded extension data. Unknown members
+  now transfer into `ArtifactEntry.Unknown` during the legacy URI migration path.
+- Reconcile/import validation could either parse legacy URI-shaped resolved content as an internal
+  error or miss a newer sidecar already resident in a warm scope. Resolved sidecars now normalize
+  `name`/`uri` into `address`/`artifactKey`, and import preflights the cold scope snapshot before
+  constructing candidates.
+- Both merge implementations previously merged the physical `uri` field. They now normalize
+  legacy URI input, merge the portable `artifactKey`, and never emit `uri`.
+- Direct serialization and bundle assertions that required `uri` or preservation of the source
+  workspace address were stale against the approved portable ArtifactKey contract. The affected
+  sidecar serialization fixture and scoped import setup were updated; bundle import correctly
+  rebinds the logical address to the destination scope.
+
+Verification for this group: Core representatives **64 passed, 0 failed**; Merge representatives
+**85 passed, 0 failed**; durable-format representatives **6 passed, 0 failed**. The remaining
+`BundleRoundTripTotalityTests.EveryArtifactEntryMember_SurvivesABundleRoundTrip` failure is a stale
+assertion that expects the source `/probe` address after import instead of the destination-scoped
+`/totality-source/probe`; no production change is warranted.
+
+## Final Group 3 verification (2026-08-31)
+
+The remaining serialization failure was a stale scope assertion: `/context/note` resolves to the
+`local:context` index, not the root `local` index. The test now loads that scoped index while still
+asserting the cold-store address, artifact key, and content-preview round trip.
+
+- Sidecar, bundle, and display-identity representatives: **58 passed, 0 failed, 0 skipped**.
+- Reconcile durable-format and MetaMerge parity representatives: **27 passed, 0 failed, 0 skipped**.
+- Standalone MetaMerge sidecar representatives: **85 passed, 0 failed, 0 skipped**.
+- Source-generated address serialization representatives: **7 passed, 0 failed, 0 skipped**.
+- Solution build: **15 projects, 0 errors, 0 warnings**.
+
 ## Post-commit verification (2026-08-31)
 
 - The 13 requested files are already committed in existing HEAD `c9b291b` (`Unify memory addressing across migration paths`); no pending tracked migration/report files were present to stage.

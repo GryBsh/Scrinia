@@ -28,7 +28,7 @@ public sealed partial class SidecarVersioningTests
     public void UnknownKey_SurvivesReadThenWrite()
     {
         const string json = """
-        {"name":"seed","uri":"file:///seed.nmp2","originalBytes":5,"chunkCount":1,
+        {"address":"/seed","artifactKey":"artifacts/seed.nmp2","originalBytes":5,"chunkCount":1,
          "createdAt":"2026-01-01T00:00:00+00:00","futureThing":{"a":1}}
         """;
 
@@ -45,7 +45,7 @@ public sealed partial class SidecarVersioningTests
         // member for since the description -> contentPreview rename. Today the merge driver
         // preserves it and the store deletes it on the next read-write. This is that bug.
         const string json = """
-        {"name":"seed","uri":"file:///seed.nmp2","originalBytes":5,"chunkCount":1,
+        {"address":"/seed","artifactKey":"artifacts/seed.nmp2","originalBytes":5,"chunkCount":1,
          "createdAt":"2026-01-01T00:00:00+00:00","description":"preserved by the merge driver"}
         """;
 
@@ -58,7 +58,7 @@ public sealed partial class SidecarVersioningTests
     public void SchemaVersion_RoundTrips()
     {
         const string json = """
-        {"name":"seed","uri":"file:///seed.nmp2","originalBytes":5,"chunkCount":1,
+        {"address":"/seed","artifactKey":"artifacts/seed.nmp2","originalBytes":5,"chunkCount":1,
          "createdAt":"2026-01-01T00:00:00+00:00","v":2}
         """;
 
@@ -86,7 +86,7 @@ public sealed partial class SidecarVersioningTests
             JsonSerializer.Serialize(entry, SidecarTestCtx.Default.ArtifactEntry));
 
         reparsed.EnumerateObject().Select(p => p.Name)
-            .Should().BeEquivalentTo("name", "uri", "originalBytes", "chunkCount", "createdAt");
+            .Should().BeEquivalentTo("address", "artifactKey", "originalBytes", "chunkCount", "createdAt");
     }
 
     /// <summary>
@@ -630,7 +630,7 @@ public sealed partial class SidecarVersioningTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("resident".StartsWith("/") || "resident".StartsWith("~") ? "resident" : "/" + "resident"), "local:notes", ["resident body"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/notes/resident"), "local:notes", ["resident body"]));
         SetSidecarVersionOnDisk(scope, "local:notes", "resident", 2);
 
         // The bundle does not mention "resident" at all.

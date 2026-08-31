@@ -209,4 +209,6 @@ internal sealed class LegacyArtifactEntry
     public int? SchemaVersion { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("fields")]
     public Dictionary<string, string[]>? LegacyFields { get; set; }
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Unknown { get; set; }
 }

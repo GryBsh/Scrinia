@@ -319,11 +319,21 @@ public sealed partial class ScriniaMcpTools
     private static void WriteResolved(string absolutePath, string content)
     {
         if (absolutePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            content = NormalizeResolvedArtifactSidecar(content);
+
+        if (absolutePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
             EnsureResolvedArtifactSidecarIsWritable(absolutePath, content);
 
         FileMemoryStore.AtomicWriteAllText(absolutePath, content);
         if (MemoryStoreContext.Current is FileMemoryStore store)
             store.InvalidateCaches();
+    }
+
+    private static string NormalizeResolvedArtifactSidecar(string content)
+    {
+        JsonNode? node = JsonNode.Parse(content);
+        NormalizeLegacyArtifactKey(node);
+        return node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? content;
     }
 
     private static void EnsureResolvedArtifactSidecarIsWritable(string absolutePath, string content)
@@ -738,6 +748,9 @@ public sealed partial class ScriniaMcpTools
             if (!TryExtractMetaSides(conflictedContent, out var oursNode, out var theirsNode))
                 return false;
 
+            NormalizeLegacyArtifactKey(oursNode);
+            NormalizeLegacyArtifactKey(theirsNode);
+
             // Admission gate, matching the git merge driver's. Two sidecars can collide on a
             // filename while describing different memories; merging those is worse than a
             // conflict, because a conflict asks a human. Placed before any merge work so a
@@ -962,7 +975,7 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     private static readonly HashSet<string> ModelledSidecarKeys = new(StringComparer.Ordinal)
     {
-        "name", "uri", "originalBytes", "chunkCount", "createdAt", "updatedAt",
+        "name", "uri", "artifactKey", "originalBytes", "chunkCount", "createdAt", "updatedAt",
         "contentPreview", "description", "keywords", "agentKeywords",
         "termFrequencies", "chunkEntries", "codeRefs", "attributes", "fields", "v"
     };
@@ -977,14 +990,30 @@ public sealed partial class ScriniaMcpTools
                 ? parsed
                 : null;
 
+    private static void NormalizeLegacyArtifactKey(JsonNode? node)
+    {
+        if (node is not JsonObject sidecar || sidecar.ContainsKey("artifactKey"))
+            return;
+
+        if (sidecar.TryGetPropertyValue("name", out var nameNode) &&
+            nameNode is JsonValue nameValue && nameValue.TryGetValue<string>(out string? name) &&
+            !string.IsNullOrWhiteSpace(name))
+        {
+            string relativeName = name.TrimStart('/', '~').Replace('\\', '/');
+            sidecar["artifactKey"] = $"artifacts/{relativeName}.nmp2";
+            sidecar["address"] = name.StartsWith('/') || name.StartsWith('~') ? name : $"/{name}";
+            sidecar.Remove("uri");
+        }
+    }
+
     private static bool TryMergeCarriedFields(JsonNode? oursNode, JsonNode? theirsNode) =>
-        // Typed per field, and in the driver's own order: string for name/uri/description, long for
+        // Typed per field, and in the driver's own order: string for name/artifactKey/description, long for
         // originalBytes, int for chunkCount. Reading them all as untyped JSON scalars instead would
         // NOT be the same rule — a hand-edited sidecar carrying "20" (a string) where the other side
         // carries 20 (a number) reads as UNREADABLE to the driver's GetLong, which then takes the
         // other side, but would read as "present and different" to an untyped comparison and refuse.
         TryMergeCarried<string>(oursNode, theirsNode, "name")
-        && TryMergeCarried<string>(oursNode, theirsNode, "uri")
+        && TryMergeCarried<string>(oursNode, theirsNode, "artifactKey")
         && TryMergeCarried<string>(oursNode, theirsNode, "description")
         && TryMergeCarried<long>(oursNode, theirsNode, "originalBytes")
         && TryMergeCarried<int>(oursNode, theirsNode, "chunkCount");
