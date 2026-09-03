@@ -1,7 +1,6 @@
 using System.Reflection;
 using System.Text;
 using FluentAssertions;
-using Scrinia.Commands;
 using Scrinia.Core.Migration;
 using Scrinia.TestDoubles;
 
@@ -103,27 +102,11 @@ public sealed class LegacyMergeRecognitionTests
         LegacyMergeRecognition.IsExactLegacyMergeConfig(LegacyMergeConfig).Should().BeTrue();
     }
 
-    [Fact]
-    public void RealManagedOutput_IsRecognized_SelfVerifyAgainstSerializer()
-    {
-        // Self-verifying guard: the canonical legacy merge.config must equal the real managed
-        // serialization (SerializeMergeConfig) plus one LF — whatever line-ending convention the
-        // serializer emits. This pins the Core recognition contract to the actual producer, so a
-        // future change to the serializer cannot silently desync the contract. The real
-        // SerializeMergeConfig emits indented camelCase JSON with CRLF internal newlines; the
-        // spec (§8.3) then adds one trailing LF, so the canonical bytes are CRLF-internal + LF-final.
-        string produced = ScriniaCommands.SerializeMergeConfig(0.7, "conflict");
-        byte[] realOutput = Encoding.UTF8.GetBytes(produced + "\n");
-
-        realOutput.Should().NotBeEmpty();
-        LegacyMergeRecognition.IsExactLegacyMergeConfig(realOutput).Should().BeTrue();
-
-        // The recognizer must also reject a byte-exact match that is NOT what the serializer
-        // produced (e.g. LF-normalized), so this test cannot pass by accepting any newline style.
-        byte[] lfNormalized = Encoding.UTF8.GetBytes(
-            produced.Replace("\r\n", "\n"));
-        LegacyMergeRecognition.IsExactLegacyMergeConfig(lfNormalized).Should().BeFalse();
-    }
+    // NOTE (Task 4): the former self-verify against ScriniaCommands.SerializeMergeConfig was
+    // removed when that setup-time producer was retired. The canonical legacy bytes are pinned
+    // here as literal source (see the field above), so the Core recognition contract no longer
+    // depends on a live serializer — Phase 2 owns its own producer. Coverage of the exact bytes
+    // and of near-match rejection is retained below.
 
     [Fact]
     public void NonLegacyMergeConfig_AreRejected()

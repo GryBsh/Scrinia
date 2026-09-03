@@ -20,7 +20,6 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliConfigOutput))]
 [JsonSerializable(typeof(CliReindexOutput))]
 [JsonSerializable(typeof(CliErrorOutput))]
-[JsonSerializable(typeof(MergeConfig))]
 [JsonSerializable(typeof(CliMcpOutput))]
 [JsonSerializable(typeof(CliConsolidateOutput))]
 [JsonSerializable(typeof(CliMigrateOutput))]
@@ -35,10 +34,6 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(MemoryListRequest))]
 [JsonSerializable(typeof(ArtifactEntry))]
 internal partial class CliJsonContext : JsonSerializerContext;
-
-internal sealed record MergeConfig(
-    double JaccardThreshold,
-    string ConflictDir);
 
 internal sealed record CliMemoryEntry(
     string Name,

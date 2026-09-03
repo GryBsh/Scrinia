@@ -39,19 +39,20 @@ public sealed partial class SidecarVersioningTests
     }
 
     [Fact]
-    public void Description_TheLiveMergeDriverInstance_SurvivesReadThenWrite()
+    public void UnknownDescriptionKey_SurvivesReadThenWrite()
     {
-        // MetaJsonMerger three-way-merges a "description" key that ArtifactEntry has had no
-        // member for since the description -> contentPreview rename. Today the merge driver
-        // preserves it and the store deletes it on the next read-write. This is that bug.
+        // ArtifactEntry has no "description" member since the description -> contentPreview rename,
+        // so this key is unknown data. Unknown top-level keys round-trip through accepted rewrites
+        // (§4.5): the sidecar preserves them on both serialize and deserialize. This pins that
+        // unknown-key survival behavior.
         const string json = """
         {"address":"/seed","artifactKey":"artifacts/seed.nmp2","originalBytes":5,"chunkCount":1,
-         "createdAt":"2026-01-01T00:00:00+00:00","description":"preserved by the merge driver"}
+         "createdAt":"2026-01-01T00:00:00+00:00","description":"survives as an unknown key"}
         """;
 
         var entry = JsonSerializer.Deserialize(json, SidecarTestCtx.Default.ArtifactEntry)!;
         JsonSerializer.Serialize(entry, SidecarTestCtx.Default.ArtifactEntry)
-            .Should().Contain("preserved by the merge driver");
+            .Should().Contain("survives as an unknown key");
     }
 
     [Fact]
@@ -69,7 +70,7 @@ public sealed partial class SidecarVersioningTests
     public void V1Entry_EmitsNoVersionKey()
     {
         // The whole no-churn property. If this fails, adopting versioning rewrites every
-        // sidecar in every user's store through the merge driver for zero information.
+        // sidecar in every user's store for zero information.
         var entry = new ArtifactEntry("seed", "file:///seed.nmp2", 5, 1, DateTimeOffset.UtcNow);
 
         entry.SchemaVersion.Should().BeNull();

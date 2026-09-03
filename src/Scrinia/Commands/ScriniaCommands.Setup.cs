@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -21,14 +20,12 @@ public partial class ScriniaCommands
 {
     /// <summary>Download embedding models for built-in providers and installed plugins.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="multiUser">Configure git merge drivers for multi-user collaboration.</param>
     /// <param name="noOllama">Skip Ollama auto-detection even if it is running. Use to force local-only setup.</param>
     /// <param name="hooks">Install SessionStart/UserPromptSubmit hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
     /// <param name="uninstallHooks">Remove scrinia-managed hooks from agent CLIs and exit.</param>
     /// <param name="project">With --hooks / --uninstall-hooks, target workspace-local config (.claude/...) instead of user-global (~/.claude/...).</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
-        bool multiUser = false,
         bool noOllama = false,
         bool hooks = false,
         bool uninstallHooks = false,
@@ -47,11 +44,6 @@ public partial class ScriniaCommands
         if (hooks)
         {
             return await InstallHooksFlowAsync(project);
-        }
-
-        if (multiUser)
-        {
-            ConfigureMultiUser();
         }
 
         string exeDir = AppContext.BaseDirectory;
@@ -146,6 +138,11 @@ public partial class ScriniaCommands
             WorkspaceSetup.Root,
             "Scrinia:Embeddings:Provider",
             "model2vec");
+
+        // Merge drivers are retired (see the merge-retirement plan). Print the manual cleanup and
+        // legacy driver-unset guidance without ever launching Git — the agent runs these commands.
+        AnsiConsole.WriteLine();
+        AnsiConsole.WriteLine(PrintMergeRemovedHint(WorkspaceSetup.Root));
 
         return 0;
     }
@@ -323,89 +320,32 @@ public partial class ScriniaCommands
         }
     }
 
-    private static void ConfigureMultiUser()
-    {
-        string root = WorkspaceSetup.Root;
-        string scriniaDir = Path.Combine(root, ".scrinia");
-
-        // 1. Configure git merge drivers
-        string driver = ResolveMergeDriverPath();
-        RunGit(root, "config", "merge.scrinia-meta.driver",
-            $"\"{driver}\" meta %O %A %B %P");
-        RunGit(root, "config", "merge.scrinia-nmp2.driver",
-            $"\"{driver}\" nmp2 %O %A %B %P");
-        AnsiConsole.MarkupLine("[green]  Git merge drivers configured.[/]");
-
-        // 2. Create/update .scrinia/.gitattributes
-        string gitattributesPath = Path.Combine(scriniaDir, ".gitattributes");
-        Directory.CreateDirectory(scriniaDir);
-        File.WriteAllText(gitattributesPath,
-            "*.meta.json merge=scrinia-meta\n*.nmp2 merge=scrinia-nmp2\n");
-        AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(gitattributesPath)}");
-
-        // 3. Create .scrinia/merge.config
-        string mergeConfigPath = Path.Combine(scriniaDir, "merge.config");
-        string mergeConfigJson = SerializeMergeConfig(0.7, "conflict");
-        File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
-        AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
-
-        // 4. Print instructions
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine(
-            $"[bold]Multi-user merge driver configured.[/] Git will invoke [blue]{Markup.Escape(driver)}[/].");
-    }
-
     /// <summary>
-    /// Produces the exact merge.config JSON that `scri setup --multi-user` writes. Extracted so a
-    /// test can drive the real writer: the contract is declared twice — here and as
-    /// Scrinia.Merge.MergeConfig — in two assemblies with two independent camelCase policies, and
-    /// a divergence between them is a shipped bug that no reader-side test can see.
+    /// Print-only guidance that replaces the retired <c>scri setup --multi-user</c> behavior.
+    /// Scrinia never launches Git, so a user who previously configured merge drivers must unset the
+    /// legacy driver keys and resolve conflicts by hand. This returns the exact §7.2 conflict
+    /// guidance and §8.3 driver-unset argv with the workspace root substituted for the
+    /// <c>&lt;workspace-root&gt;</c> placeholder — it executes nothing and resolves no driver path.
     /// </summary>
-    internal static string SerializeMergeConfig(double jaccardThreshold, string conflictDir) =>
-        JsonSerializer.Serialize(
-            new MergeConfig(JaccardThreshold: jaccardThreshold, ConflictDir: conflictDir),
-            CliJsonContext.Default.MergeConfig);
-
-    /// <summary>
-    /// Path git should invoke for the merge driver. scri-merge is published beside scri, so
-    /// prefer the sibling of the running executable; fall back to the bare name for installs
-    /// that expose it on PATH only.
-    /// </summary>
-    private static string ResolveMergeDriverPath()
+    /// <param name="workspaceRoot">The absolute workspace root to place inside the unset commands.</param>
+    /// <returns>The multi-line, human guidance text; safe to print with <c>AnsiConsole.WriteLine</c>.</returns>
+    internal static string PrintMergeRemovedHint(string workspaceRoot)
     {
-        string exeName = OperatingSystem.IsWindows() ? "scri-merge.exe" : "scri-merge";
-        string? installDir = Path.GetDirectoryName(Environment.ProcessPath ?? "");
-        if (!string.IsNullOrEmpty(installDir))
-        {
-            string sibling = Path.Combine(installDir, exeName);
-            if (File.Exists(sibling))
-                return sibling.Replace('\\', '/');   // git runs driver commands through sh
-        }
-        return "scri-merge";
-    }
+        string quotedRoot = "\"" + workspaceRoot.Replace("\"", "\"\"") + "\"";
+        string[] lines =
+        [
+            "Merge drivers retired: Scrinia no longer installs merge drivers and never launches Git.",
+            "If a legacy managed file from a prior setup still exists, unset the driver keys by running",
+            "these commands in your agent or shell:",
+            "",
+            $"git -C {quotedRoot} config --local --unset-all merge.scrinia-meta.driver",
+            $"git -C {quotedRoot} config --local --unset-all merge.scrinia-nmp2.driver",
+            "",
+            "# Resolve the listed files manually, then stage and commit them with Git.",
+            "# When no shared mutation is running, call shared_refresh for this base.",
+        ];
 
-    private static void RunGit(string workingDir, params string[] args)
-    {
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        foreach (string arg in args)
-            psi.ArgumentList.Add(arg);
-
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start git process.");
-        process.WaitForExit(10_000);
-        if (process.ExitCode != 0)
-        {
-            string error = process.StandardError.ReadToEnd();
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', args)} failed (exit {process.ExitCode}): {error}");
-        }
+        return string.Join("\n", lines);
     }
 
     /// <summary>
