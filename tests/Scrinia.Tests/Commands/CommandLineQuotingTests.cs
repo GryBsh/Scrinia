@@ -28,6 +28,10 @@ public sealed class CommandLineQuotingTests
     [Fact]
     public void Windows_RoundTripsThroughCommandLineToArgvW()
     {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "CommandLineToArgvW (shell32.dll) is Windows-only; the round-trip is verified on Windows.");
+
         string[] inputs =
         [
             "C:\\repos\\team-memory",   // no quoting needed → returned verbatim
@@ -83,6 +87,10 @@ public sealed class CommandLineQuotingTests
     [Fact]
     public void Windows_PlaceholderIsAValidSingleArgvElement()
     {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "CommandLineToArgvW (shell32.dll) is Windows-only; the placeholder argv shape is verified on Windows.");
+
         // The §8.3 fallback placeholder must itself be a single, parseable argv element: a copied
         // "git -C <workspace-root> ..." command still has exactly the right shape.
         string placeholder = PlatformQuoting.Windows("C:\\repo\\%x");
