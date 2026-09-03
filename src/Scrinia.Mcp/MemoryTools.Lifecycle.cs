@@ -353,7 +353,7 @@ public sealed partial class ScriniaMcpTools
                             catch { return false; }
                         });
                     if (hasConflicts)
-                        warnings.Add(".scrinia/ has unresolved merge conflicts. Run reconcile before continuing.");
+                        warnings.Add(".scrinia/ has unresolved merge conflicts. Resolve them before continuing.");
                 }
             }
             catch { /* best-effort check */ }

@@ -105,10 +105,6 @@ Use it before non-trivial work; skip it when the request is self-contained.
 
 `restore()` — reloads your agent profile, patterns, today's session log, skills, and unresolved conflicts. Rarely called directly; `guide()` folds it in at session start.
 
-### reconcile — resolve merge conflicts
-
-`reconcile({ conflictId?, choice?, mergedContent? })` — no arguments scans `.scrinia/` for git merge conflicts; a `conflictId` plus a `choice` (`ours` / `theirs` / `merged`) resolves one.
-
 ### facts — query the entity graph
 
 `facts({ op, entity?, entities?, key?, scopes?, excludeTopics?, limit? })` — aggregate and relational questions `search` can't express. Three ops: `entities` lists the known entity vocabulary, `profile` returns one entity's counts, date span, and co-occurrences, and `intersect` returns memories mentioning *all* of the given entities.

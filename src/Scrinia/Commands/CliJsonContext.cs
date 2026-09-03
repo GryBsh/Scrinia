@@ -91,7 +91,7 @@ internal sealed record CliErrorOutput(
 
 /// <summary>
 /// Shared output shape for the MCP-passthrough commands (append, compact, link,
-/// restore, reconcile, guide). The raw YAML response from the MCP handler is
+/// restore, guide). The raw YAML response from the MCP handler is
 /// preserved verbatim under <see cref="Yaml"/> so callers can re-parse if needed.
 /// <see cref="Status"/> mirrors the YAML's status field for quick branching.
 /// </summary>
