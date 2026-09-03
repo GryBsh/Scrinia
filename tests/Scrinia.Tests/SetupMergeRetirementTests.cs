@@ -30,11 +30,13 @@ public sealed class SetupMergeRetirementTests
         string root = @"C:\repos\team-memory";
         string hint = ScriniaCommands.PrintMergeRemovedHint(root);
 
-        // §8.3 legacy driver-unset argv, with the workspace root substituted for the placeholder.
+        // §8.3 legacy driver-unset argv, with the workspace root substituted for the placeholder
+        // and rendered in the platform's standard reversible quoting.
+        string renderedRoot = PlatformQuoting.Current(root);
         hint.Should().Contain(
-            $"git -C \"{root}\" config --local --unset-all merge.scrinia-meta.driver");
+            $"git -C {renderedRoot} config --local --unset-all merge.scrinia-meta.driver");
         hint.Should().Contain(
-            $"git -C \"{root}\" config --local --unset-all merge.scrinia-nmp2.driver");
+            $"git -C {renderedRoot} config --local --unset-all merge.scrinia-nmp2.driver");
 
         // §7.2 manual conflict cleanup guidance, in its exact comment form.
         hint.Should().Contain(

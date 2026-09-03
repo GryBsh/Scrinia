@@ -326,20 +326,22 @@ public partial class ScriniaCommands
     /// legacy driver keys and resolve conflicts by hand. This returns the exact §7.2 conflict
     /// guidance and §8.3 driver-unset argv with the workspace root substituted for the
     /// <c>&lt;workspace-root&gt;</c> placeholder — it executes nothing and resolves no driver path.
+    /// The root is rendered with the platform's standard reversible quoting (§8.3) so a copied
+    /// command re-parses to exactly this root without interpolating its characters.
     /// </summary>
     /// <param name="workspaceRoot">The absolute workspace root to place inside the unset commands.</param>
     /// <returns>The multi-line, human guidance text; safe to print with <c>AnsiConsole.WriteLine</c>.</returns>
     internal static string PrintMergeRemovedHint(string workspaceRoot)
     {
-        string quotedRoot = "\"" + workspaceRoot.Replace("\"", "\"\"") + "\"";
+        string root = PlatformQuoting.Current(workspaceRoot);
         string[] lines =
         [
             "Merge drivers retired: Scrinia no longer installs merge drivers and never launches Git.",
             "If a legacy managed file from a prior setup still exists, unset the driver keys by running",
             "these commands in your agent or shell:",
             "",
-            $"git -C {quotedRoot} config --local --unset-all merge.scrinia-meta.driver",
-            $"git -C {quotedRoot} config --local --unset-all merge.scrinia-nmp2.driver",
+            $"git -C {root} config --local --unset-all merge.scrinia-meta.driver",
+            $"git -C {root} config --local --unset-all merge.scrinia-nmp2.driver",
             "",
             "# Resolve the listed files manually, then stage and commit them with Git.",
             "# When no shared mutation is running, call shared_refresh for this base.",
