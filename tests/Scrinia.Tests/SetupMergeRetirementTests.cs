@@ -54,6 +54,29 @@ public sealed class SetupMergeRetirementTests
             .Should().NotContain("scri-merge");
     }
 
+    [Fact]
+    public void PrintMergeRemovedHint_RendersUnsafeRootAsThePlaceholder()
+    {
+        // A root containing a cmd.exe metacharacter cannot be emitted as a reliably runnable shell
+        // token, so the hint must emit the exact §8.3 <workspace-root> placeholder for agent
+        // substitution — not a text that cmd.exe would interpolate.
+        string unsafeRoot = @"C:\repo\%USERPROFILE%\data";
+        string hint = ScriniaCommands.PrintMergeRemovedHint(unsafeRoot);
+
+        // Runnable-safe roots still render verbatim / quoted, so the placeholder only wins on a
+        // genuinely unsafe root.
+        string safeRoot = @"C:\my repo\team";
+        ScriniaCommands.PrintMergeRemovedHint(safeRoot)
+            .Should().Contain($"git -C {PlatformQuoting.Current(safeRoot)} config");
+
+        hint.Should().Contain(
+            $"git -C <workspace-root> config --local --unset-all merge.scrinia-meta.driver");
+        hint.Should().Contain(
+            $"git -C <workspace-root> config --local --unset-all merge.scrinia-nmp2.driver");
+        // The unsafe root's metacharacter must not leak into the emitted guidance.
+        hint.Should().NotContain(unsafeRoot);
+    }
+
     // ---- retired setup behavior is gone from the setup command ----
 
     [Fact]

@@ -5,11 +5,14 @@ using Scrinia.Commands;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Task 4 (round 1) — reversible, platform-specific argv rendering for the retired setup's
-/// print-only hint. Human output must render each argument with the platform's standard quoting
-/// (§8.3) so a copied command re-parses to exactly the original argument and can never
-/// interpolate <c>$</c>, backticks, backslashes, spaces, or quotes. Nothing here launches a
-/// process — the renderers only format strings.
+/// Task 4 — reversible, platform-specific argv rendering for the retired setup's print-only hint.
+/// Human output must render each argument with the platform's standard quoting (§8.3) so a copied
+/// command re-parses to exactly the original argument and can never interpolate <c>$</c>, backticks,
+/// backslashes, spaces, or quotes. Nothing here launches a process — the renderers only format
+/// strings. Windows output is additionally cmd.exe-safe: a root containing a metacharacter that
+/// cmd.exe would still interpret inside a copied command (for example <c>%</c>, <c>^</c>, operators,
+/// or quotes) falls back to the exact <c>&lt;workspace-root&gt;</c> argv placeholder rather than
+/// emitting unsafe runnable text.
 /// </summary>
 public sealed class CommandLineQuotingTests
 {
@@ -57,6 +60,46 @@ public sealed class CommandLineQuotingTests
             {
                 if (argv != IntPtr.Zero) LocalFree(argv);
             }
+        }
+    }
+
+    // ---- Windows: cmd.exe metacharacters fall back to the §8.3 placeholder ----
+
+    [Theory]
+    [InlineData("C:\\repo\\%USERPROFILE%", "<workspace-root>")] // % → variable expansion
+    [InlineData("C:\\repo\\!var!", "<workspace-root>")]          // ! → delayed expansion
+    [InlineData("C:\\repo\\a&b", "<workspace-root>")]            // & → command separator
+    [InlineData("C:\\repo\\a|b", "<workspace-root>")]            // | → pipe
+    [InlineData("C:\\repo\\a<b", "<workspace-root>")]            // < → redirection
+    [InlineData("C:\\repo\\a>b", "<workspace-root>")]            // > → redirection
+    [InlineData("C:\\repo\\a^b", "<workspace-root>")]            // ^ → escape (alters next char)
+    [InlineData("C:\\repo\\a\tb", "<workspace-root>")]           // tab → separator inside quotes
+    [InlineData("C:\\repo\\\"quote\"", "<workspace-root>")]      // " → quote toggle
+    public void Windows_FallsBackToPlaceholderWhenShellInterpretsRoot(string input, string expected)
+    {
+        PlatformQuoting.Windows(input).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Windows_PlaceholderIsAValidSingleArgvElement()
+    {
+        // The §8.3 fallback placeholder must itself be a single, parseable argv element: a copied
+        // "git -C <workspace-root> ..." command still has exactly the right shape.
+        string placeholder = PlatformQuoting.Windows("C:\\repo\\%x");
+        placeholder.Should().Be("<workspace-root>");
+
+        int argc;
+        IntPtr argv = CommandLineToArgvW(placeholder, out argc);
+        argv.Should().NotBeNull();
+        try
+        {
+            argc.Should().Be(1);
+            string parsed = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv));
+            parsed.Should().Be("<workspace-root>");
+        }
+        finally
+        {
+            if (argv != IntPtr.Zero) LocalFree(argv);
         }
     }
 

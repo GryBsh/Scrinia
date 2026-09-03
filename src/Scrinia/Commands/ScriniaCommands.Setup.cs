@@ -327,7 +327,9 @@ public partial class ScriniaCommands
     /// guidance and §8.3 driver-unset argv with the workspace root substituted for the
     /// <c>&lt;workspace-root&gt;</c> placeholder — it executes nothing and resolves no driver path.
     /// The root is rendered with the platform's standard reversible quoting (§8.3) so a copied
-    /// command re-parses to exactly this root without interpolating its characters.
+    /// command re-parses to exactly this root; Windows paths containing characters that cmd.exe
+    /// would still interpret (for example <c>%</c>, <c>^</c>, operators, or quotes) fall back to the
+    /// exact <c>&lt;workspace-root&gt;</c> argv placeholder instead of emitting unsafe runnable text.
     /// </summary>
     /// <param name="workspaceRoot">The absolute workspace root to place inside the unset commands.</param>
     /// <returns>The multi-line, human guidance text; safe to print with <c>AnsiConsole.WriteLine</c>.</returns>
