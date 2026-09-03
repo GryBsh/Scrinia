@@ -16,9 +16,8 @@ Memories persist in a `.scrinia/` directory alongside your project (like `.git/`
 One way: `scri` is both a command-line tool and an MCP server over stdio. Your AI coding tool
 launches it; it reads and writes `.scrinia/` on disk.
 
-Sharing memories with other people is a git question, not a deployment one — `.scrinia/` is
-committed like any other directory, and a merge driver resolves what conflicts. See
-[Multi-User Setup](multi-user-setup.md).
+Sharing memories with other people uses ordinary source-control workflows. Commit `.scrinia/`
+like any other directory and resolve file conflicts manually.
 
 ## Installation
 
@@ -128,7 +127,7 @@ Model2Vec model when it is missing. If you configure an HTTP embedding provider 
 provider, that provider may use its own model and model-download process. If the built-in model
 is not available, Scrinia still starts and search falls back to BM25.
 
-Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 
 ## Memory Naming
 
@@ -153,7 +152,7 @@ When connected via MCP, Scrinia exposes one tool per operation, each with its ow
 
 | Group | Tools | Purpose |
 |------|---------|---------|
-| Lifecycle | `guide`, `restore`, `reconcile` | Session playbook + context restore, and merge-conflict resolution |
+| Lifecycle | `guide`, `restore` | Session playbook + context restore |
 | Memory | `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link` | Store, read, find, and maintain memories |
 | Facts | `facts` | Aggregate/relational entity queries (`entities`, `profile`, `intersect`) |
 
@@ -183,7 +182,6 @@ The following ship with scrinia and load via `recall({ path: '/skill/{name}' })`
 | `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
 | `onboarder` | Build a codebase mental model for new agents and developers |
 | `evolutionary` | Proactive knowledge and skill improvement, stale memory scanning |
-| `merge-safety` | Multi-user merge conflict prevention and resolution guidance |
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
 | `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
@@ -192,5 +190,4 @@ Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [.
 ## What's Next
 
 - **[CLI Reference](cli-reference.md)** -- Full command reference, configuration, embedding providers, MCP client setup
-- **[Multi-User Setup](multi-user-setup.md)** -- Sharing a workspace through git, and the merge driver
 - **[Architecture Overview](architecture/overview.md)** -- System design, project structure, dependency graph

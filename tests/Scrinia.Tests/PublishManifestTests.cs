@@ -648,7 +648,7 @@ public sealed class PublishManifestTests
         yaml.Should().Contain("scri-plugin-embeddings");
         yaml.Should().Contain("tar -tzf");
         yaml.Should().Contain("Expand-Archive");
-        yaml.Should().Contain("scri-merge");
+        yaml.Should().NotContain("scri-merge");
     }
 
     [Fact]

@@ -12,11 +12,8 @@ MANIFEST="$SCRIPT_DIR/publish.projects.tsv"
 # below not exist, which used to be a silent skip.
 VULKAN_BACKEND_VERSION="0.25.0"
 
-# Projects marked rids=host in the manifest are published only for this machine's own RID.
-# Scrinia.Merge is NativeAOT, and cross-OS native compilation is unsupported: a foreign-RID
-# publish exits 1 and writes nothing, which under `set -e` would abort this whole script.
-# OS and architecture are resolved separately and joined: a Linux or Windows arm64 host must
-# not be mistaken for its x64 sibling, the same way the Darwin branch already distinguishes them.
+# OS and architecture are resolved separately and joined: a Linux or Windows arm64 host must not
+# be mistaken for its x64 sibling.
 case "$(uname -s)" in
     Linux*)               HOST_OS="linux" ;;
     Darwin*)              HOST_OS="osx" ;;
@@ -71,9 +68,6 @@ else
 fi
 
 # The manifest is the one source of truth for what ships. publish.ps1 reads the same file.
-# The two lists used to be maintained by hand and had already diverged: scri-merge — the
-# .nmp2 merge driver — shipped only from PowerShell, so a Linux or macOS build produced a
-# tree whose configured merge driver pointed at a binary that did not exist.
 if [ ! -f "$MANIFEST" ]; then
     echo "Error: manifest not found at $MANIFEST" >&2
     exit 1

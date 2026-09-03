@@ -1,6 +1,6 @@
 # Scrinia CLI Reference
 
-`scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing one tool per operation — `guide`, the per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`), and `facts` — for AI coding tools.
+`scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing one tool per operation — `guide`, the per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`), and `facts` — for AI coding tools.
 
 ## Surface overview
 
@@ -9,7 +9,7 @@ The top-level surface is organized by purpose:
 | Group | Commands |
 |---|---|
 | Infrastructure | `serve`, `setup`, `config`, `reindex` |
-| Lifecycle | `guide`, `restore`, `reconcile`, `consolidate`, `hint`, `migrate` |
+| Lifecycle | `guide`, `restore`, `consolidate`, `hint`, `migrate` |
 | Memory operations | `list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
 
@@ -42,7 +42,7 @@ scri serve [--workspace-root <path>] [--no-auto-setup]
 
 Reads and writes directly to `.scrinia/` on disk. On first launch, `serve` checks for the built-in embedding model (`m2v-MiniLM-L6-v2`) and downloads it if missing (~50MB, one-time). Download progress goes to stderr to keep the JSON-RPC stdout clean. If the download fails, the server still starts — semantic search degrades to BM25-only until you run `scri setup` manually.
 
-The repository currently ships one server surface: `scri serve`, a local stdio MCP server. The former `--remote` mode, HTTP server, `--api-key`, and `--store` options are no longer present in the solution or source tree. Sharing memories between people is a git question now: `.scrinia/` is committed like any other directory and the merge driver resolves what conflicts — see [Multi-User Setup](multi-user-setup.md).
+The repository currently ships one server surface: `scri serve`, a local stdio MCP server. The former `--remote` mode, HTTP server, `--api-key`, and `--store` options are no longer present in the solution or source tree. Sharing memories between people uses ordinary source-control workflows; resolve any file conflicts manually.
 
 ### scri list
 
@@ -277,29 +277,6 @@ the MCP `restore` call makes.
 scri restore [--workspace-root <path>] [--json]
 ```
 
-### scri reconcile
-
-Scan `.scrinia/` for unresolved git merge conflicts, or resolve a specific
-conflict by its workspace-relative path. Run with no arguments to get the
-conflict list, then resolve each path independently — the resolve step re-reads
-the file fresh, so it doesn't depend on any state from the scan.
-
-```bash
-scri reconcile [--conflict-id <relative-path>] [--choice ours|theirs|merged] \
-               [--merged-content <content-or-->] [--workspace-root <path>] [--json]
-```
-
-```bash
-# Scan
-scri reconcile
-
-# Resolve a conflict by taking the incoming side
-scri reconcile --conflict-id memories/local/auth-flow.nmp2 --choice theirs
-
-# Resolve by providing merged content from a file
-cat resolved.md | scri reconcile --conflict-id memories/local/api-design.nmp2 --choice merged --merged-content -
-```
-
 ### scri bundle export
 
 Export one or more topics to a portable `.scrinia-bundle` file (ZIP format).
@@ -358,14 +335,12 @@ want to enrich memories do so client-side and pass `attributes` (including
 
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] \
-    [--multi-user] \
     [--hooks] [--uninstall-hooks] [--project]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
-| `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
 | `--hooks` | `false` | Install SessionStart + UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
@@ -377,9 +352,8 @@ Voyage / Azure / Google embedding configurations are preserved.
 
 Most users don't need to run `setup` directly — `scri serve` auto-downloads the
 embedding model on first launch (use `--no-auto-setup` to opt out). Run `setup`
-explicitly when wiring Ollama embeddings, configuring multi-user collaboration
-(`--multi-user`), installing agent hooks (`--hooks`), or when you want to
-control when the network call happens.
+explicitly when wiring Ollama embeddings, installing agent hooks (`--hooks`), or
+when you want to control when the network call happens.
 
 #### Hook installer (`--hooks`)
 

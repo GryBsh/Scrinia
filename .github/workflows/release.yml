@@ -20,8 +20,6 @@ jobs:
       - run: dotnet build --no-restore -c Release
       - name: Test (Scrinia.Tests)
         run: dotnet test tests/Scrinia.Tests/ --no-build -c Release
-      - name: Test (Scrinia.Merge.Tests)
-        run: dotnet test tests/Scrinia.Merge.Tests/ --no-build -c Release
       - name: Test (Scrinia.Plugin.Embeddings.Tests)
         run: dotnet test tests/Scrinia.Plugin.Embeddings.Tests/ --no-build -c Release
       - name: Test (Scrinia.Retrieval.Benchmarks.Tests)
@@ -49,8 +47,7 @@ jobs:
           dotnet-version: '10.0.x'
           include-prerelease: true
 
-      # The checked-in scripts and manifest are the release contract. The runner is native for
-      # each supported RID, so the host-only NativeAOT merge driver is built safely as well.
+      # The checked-in scripts and manifest are the release contract.
       - name: Publish release trees (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -68,14 +65,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path publish/scri${{ matrix.extension }},publish/scri-merge${{ matrix.extension }} -DestinationPath scri-${{ matrix.rid }}.zip
-          Compress-Archive -Path publish-embeddings/scri${{ matrix.extension }},publish-embeddings/scri-merge${{ matrix.extension }},publish-embeddings/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
+          Compress-Archive -Path publish/scri${{ matrix.extension }} -DestinationPath scri-${{ matrix.rid }}.zip
+          Compress-Archive -Path publish-embeddings/scri${{ matrix.extension }},publish-embeddings/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
           $plain = Join-Path $env:RUNNER_TEMP 'scri-release-plain'
           $withEmbeddings = Join-Path $env:RUNNER_TEMP 'scri-release-embeddings'
           Expand-Archive -Path scri-${{ matrix.rid }}.zip -DestinationPath $plain -Force
           Expand-Archive -Path scri-${{ matrix.rid }}-embeddings.zip -DestinationPath $withEmbeddings -Force
            if (-not (Test-Path (Join-Path $plain 'scri${{ matrix.extension }}'))) { throw 'CLI is missing from the plain archive' }
-           if (-not (Test-Path (Join-Path $plain 'scri-merge${{ matrix.extension }}'))) { throw 'Merge driver is missing from the plain archive' }
            if (-not (Test-Path (Join-Path $withEmbeddings 'plugins/scri-plugin-embeddings/scri-plugin-embeddings${{ matrix.extension }}'))) { throw 'Nested embeddings executable is missing from the archive' }
            $nativeNames = if ('${{ matrix.rid }}' -like 'win-*') { @('mtmd.dll','llama.dll','ggml.dll','ggml-vulkan.dll','ggml-base.dll') } else { @('libmtmd.so','libllama.so','libggml.so','libggml-vulkan.so','libggml-base.so') }
            foreach ($nativeName in $nativeNames) {
@@ -91,12 +87,11 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.extension }} scri-merge${{ matrix.extension }}
-          tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish-embeddings scri${{ matrix.extension }} scri-merge${{ matrix.extension }} plugins
+          tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.extension }}
+          tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish-embeddings scri${{ matrix.extension }} plugins
           plain_contents="$(tar -tzf scri-${{ matrix.rid }}.tar.gz)"
           embeddings_contents="$(tar -tzf scri-${{ matrix.rid }}-embeddings.tar.gz)"
           [[ "$plain_contents" == *"scri${{ matrix.extension }}"* ]]
-           [[ "$plain_contents" == *"scri-merge${{ matrix.extension }}"* ]]
            [[ "$embeddings_contents" == *"plugins/scri-plugin-embeddings/scri-plugin-embeddings${{ matrix.extension }}"* ]]
            if [[ "${{ matrix.rid }}" == "linux-x64" ]]; then
              native_names=("libmtmd.so" "libllama.so" "libggml.so" "libggml-vulkan.so" "libggml-base.so")

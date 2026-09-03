@@ -20,15 +20,9 @@ $SinglePlatform = [bool]$Platform
 # below not exist, which used to be a silent skip.
 $VulkanBackendVersion = '0.25.0'
 
-# Projects marked rids=host in the manifest are published only for this machine's own RID.
-# Scrinia.Merge is NativeAOT, and cross-OS native compilation is unsupported: a foreign-RID
-# publish exits 1 and writes nothing.
-#
 # RuntimeInformation rather than $IsWindows/$IsLinux/$IsMacOS: those automatic variables do not
-# exist in Windows PowerShell 5.1, where they evaluate to $null — which would skip scri-merge for
-# EVERY rid and reproduce the missing merge driver this branch fixes. OS and architecture are
-# resolved separately and joined so a linux-arm64 or win-arm64 host is not mistaken for its x64
-# sibling — the same distinction the old macOS-only branch made, now made for every OS.
+# exist in Windows PowerShell 5.1. OS and architecture are resolved separately and joined so a
+# linux-arm64 or win-arm64 host is not mistaken for its x64 sibling.
 $HostOs =
     if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { 'win' }
     elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) { 'linux' }
