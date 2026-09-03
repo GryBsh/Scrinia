@@ -2,7 +2,7 @@
 
 ## Review target
 
-Task 5 of `docs/superpowers/plans/2026-09-01-merge-retirement.md`, based on `5b3073bb6a1ee34b2b08f5e75044f6b6f7bc1772`.
+Task 5 round 1 fix based on `ec743cc` (original BASE `5b3073bb6a1ee34b2b08f5e75044f6b6f7bc1772`).
 
 ## Owned files
 
@@ -23,6 +23,7 @@ Task 5 of `docs/superpowers/plans/2026-09-01-merge-retirement.md`, based on `5b3
 - [x] No `scri-merge` remains in active packaging or release workflow surfaces.
 - [x] No active `reconcile`, `--multi-user`, or `merge-safety` documentation remains in the owned living docs.
 - [x] Troubleshooting guidance is manual-only and does not execute Git.
+- [x] Troubleshooting guidance excludes Phase 3 shared-refresh, serialization, staging, and commit terms.
 - [x] Phase 4 multi-user documentation remains byte-identical.
 - [x] Historical planning/review files and released changelog remain byte-identical.
 - [x] No Phase 5 packaging relocation was introduced.
@@ -32,4 +33,7 @@ Task 5 of `docs/superpowers/plans/2026-09-01-merge-retirement.md`, based on `5b3
 
 `dotnet test ... --filter "FullyQualifiedName~PackagingAndDocsMergeRetirementTests|FullyQualifiedName~PublishManifestTests|FullyQualifiedName~SetupMergeRetirementTests|FullyQualifiedName~MergeRetirementAbsenceTests" --no-restore`
 
-**37 passed, 0 failed, 3 skipped.**
+**5 passed, 0 failed, 0 skipped** for the focused Task 5 regression lane.
+
+The broader Task 5 retirement/publish lane remains **37 passed, 0 failed, 3 skipped**; the skips are
+existing platform-dependent publish-reader tests.

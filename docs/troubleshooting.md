@@ -220,7 +220,7 @@ The equivalent for `agent/versions/` is the same with the directory swapped. Pru
 history is safe — only the currently-active file is read at load time; archived copies exist solely
 for human recovery.
 
-## Manual Git conflict cleanup after merge retirement
+## Manual retired merge-driver cleanup and conflict resolution
 
 Scrinia no longer installs merge drivers, and it never launches Git. Conflicts on `.scrinia` files
 in a project-Git workspace are resolved by you (or your agent) by hand. The commands below are
@@ -234,13 +234,4 @@ git -C "<workspace-root>" config --local --unset-all merge.scrinia-meta.driver
 git -C "<workspace-root>" config --local --unset-all merge.scrinia-nmp2.driver
 ```
 
-Then resolve the conflicted files manually and stage them by individually quoted path:
-
-```text
-# Resolve the listed files manually, then stage and commit them with Git.
-# When no shared mutation is running, call shared_refresh for this base.
-```
-
-Never stage a whole `.scrinia` directory pathspec — quote each conflicted file path individually.
-When using shared bases, serialize any Git or filesystem edits so none run while a shared mutation
-is in progress, then refresh that base before the next mutation.
+Then resolve the conflicted files manually.

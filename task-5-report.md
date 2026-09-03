@@ -38,3 +38,14 @@ The test suite also verifies SHA-256 byte identity for `docs/multi-user-setup.md
 
 - The repository uses a preview .NET 10 SDK and emits existing analyzer/preview warnings.
 - Full solution verification and the independent Phase 1 exit gate remain Task 6 scope.
+
+## Round 1 finding fix
+
+At `ec743cc`, the Phase 1 troubleshooting section still contained Phase 3 guidance for
+`shared_refresh`, shared-mutation serialization, and shared staging/commit handling. The section is
+now narrowed to retired driver-key cleanup and manual conflict resolution only. The regression test
+asserts the exact Phase 1 commands and rejects those Phase 3 terms.
+
+- Focused Task 5 test: **5 passed, 0 failed, 0 skipped**.
+- Phase 4 `docs/multi-user-setup.md` and Phase 5 relocation ownership remain untouched.
+- No separate ledger file exists in this worktree; this report is the Task 5 ledger append.

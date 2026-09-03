@@ -61,15 +61,22 @@ public sealed class PackagingAndDocsMergeRetirementTests
     public void Troubleshooting_ProvidesManualGuidanceOnly()
     {
         string troubleshooting = Read("docs", "troubleshooting.md");
-        const string heading = "## Manual Git conflict cleanup after merge retirement";
+        const string heading = "## Manual retired merge-driver cleanup and conflict resolution";
+        string section = troubleshooting[troubleshooting.IndexOf(heading, StringComparison.Ordinal)..];
 
-        troubleshooting.Should().Contain(heading);
-        troubleshooting.Should().Contain("git -C \"<workspace-root>\" config --local --unset-all merge.scrinia-meta.driver");
-        troubleshooting.Should().Contain("git -C \"<workspace-root>\" config --local --unset-all merge.scrinia-nmp2.driver");
-        troubleshooting.Should().Contain("Scrinia does not execute them.");
-        troubleshooting.Should().NotContain("scri-merge");
-        troubleshooting.Should().NotContain("reconcile");
-        troubleshooting.Should().NotContain("--multi-user");
+        section.Should().Contain(heading);
+        section.Should().Contain("git -C \"<workspace-root>\" config --local --unset-all merge.scrinia-meta.driver");
+        section.Should().Contain("git -C \"<workspace-root>\" config --local --unset-all merge.scrinia-nmp2.driver");
+        section.Should().Contain("Scrinia does not execute them.");
+        section.Should().Contain("resolve the conflicted files manually");
+        section.Should().NotContain("scri-merge");
+        section.Should().NotContain("reconcile");
+        section.Should().NotContain("--multi-user");
+        section.Should().NotContain("shared");
+        section.Should().NotContain("serialize");
+        section.Should().NotContain("staging");
+        section.Should().NotContain("stage");
+        section.Should().NotContain("commit");
     }
 
     [Fact]
