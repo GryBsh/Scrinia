@@ -13,14 +13,23 @@ namespace Scrinia.Tests;
 /// namespace import that pointed at them is removed — while the Phase 2 migration-only recognition
 /// contract (<c>LegacyMergeRecognition</c> + its test) is left exactly in place.
 ///
-/// <para>The two retained files below are the ONLY merge-named sources still permitted to exist;
-/// every path/reference assertion here excludes them by design.</para>
+/// <para>Every filesystem path is built with <see cref="RepoPaths.Combine"/>, which joins the
+/// segments with the platform-native separator. A backslash literal (e.g. <c>"src\\Scrinia.Merge"</c>)
+/// would instead be a single literal directory name on Unix, so a deleted-directory assertion would
+/// pass trivially without ever inspecting the real path. Coverage stays strictly scoped to Task 2:
+/// it asserts the Task 2-owned deleted directories, the solution build list, the test project
+/// reference, and the retained recognition contract. It does not later claim ownership of the CLI
+/// <c>reconcile</c> command, docs, or the release workflow — those are asserted by their own
+/// plan-owned tasks.</para>
 /// </summary>
 public sealed class MergeRetirementAbsenceTests
 {
-    private const string ScriniaMergeDir = "src\\Scrinia.Merge";
-    private const string ScriniaMergeTestsDir = "tests\\Scrinia.Merge.Tests";
-    private const string CoreMergeDir = "src\\Scrinia.Core\\Merge";
+    private static readonly string[] DeletedMergeDirectories =
+    {
+        RepoPaths.Combine("src", "Scrinia.Merge"),
+        RepoPaths.Combine("tests", "Scrinia.Merge.Tests"),
+        RepoPaths.Combine("src", "Scrinia.Core", "Merge"),
+    };
 
     private static readonly string[] RetainedMigrationFiles =
     {
@@ -28,16 +37,15 @@ public sealed class MergeRetirementAbsenceTests
         RepoPaths.Combine("tests", "Scrinia.Tests", "LegacyMergeRecognitionTests.cs"),
     };
 
-    /// <summary>Every active merge surface Task 2 must have deleted.</summary>
+    /// <summary>Every active merge directory Task 2 must have deleted.</summary>
     [Fact]
     public void MergeDirectories_AreDeleted()
     {
-        Directory.Exists(RepoPaths.Combine(ScriniaMergeDir)).Should().BeFalse(
-            $"{ScriniaMergeDir} must be deleted — only the Migration/ recognition contract survives.");
-        Directory.Exists(RepoPaths.Combine(ScriniaMergeTestsDir)).Should().BeFalse(
-            $"{ScriniaMergeTestsDir} must be deleted — only the Migration/ recognition test survives.");
-        Directory.Exists(RepoPaths.Combine(CoreMergeDir)).Should().BeFalse(
-            $"{CoreMergeDir} must be deleted — no active merge implementation remains.");
+        foreach (string dir in DeletedMergeDirectories)
+        {
+            Directory.Exists(dir).Should().BeFalse($"{dir} must be deleted — only the Migration/ "
+                + "recognition contract survives Task 2.");
+        }
     }
 
     /// <summary>Neither merge project may be listed in the authoritative solution build list.</summary>
@@ -46,8 +54,8 @@ public sealed class MergeRetirementAbsenceTests
     {
         string sln = File.ReadAllText(RepoPaths.Combine("Scrinia.sln"));
 
-        sln.Should().NotContain("src\\Scrinia.Merge\\Scrinia.Merge.csproj");
-        sln.Should().NotContain("tests\\Scrinia.Merge.Tests\\Scrinia.Merge.Tests.csproj");
+        sln.Should().NotContain("Scrinia.Merge.csproj");
+        sln.Should().NotContain("Scrinia.Merge.Tests.csproj");
     }
 
     /// <summary>The test project must no longer reference the deleted driver assembly.</summary>
