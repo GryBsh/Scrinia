@@ -1,5 +1,5 @@
+using System.Diagnostics;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using FluentAssertions;
 using ModelContextProtocol.Server;
 using Scrinia.Commands;
@@ -23,13 +23,16 @@ namespace Scrinia.Tests;
 /// reflection, golden, and retention rules are regression guards for the already-removed surface.
 /// Every filesystem path is built with <see cref="RepoPaths.Combine"/> so deleted-directory and
 /// golden-case assertions inspect the real path, not a platform-literal ghost.</para>
+///
+/// <para>The CLI assertion goes two ways: the reflection filter proves reconcile is not a
+/// registered entrypoint, and <c>Reconcile_IsRejectedByTheRealCliParser</c> drives the actual
+/// <c>scri</c> process to prove the parser itself rejects reconcile as unknown. The two cannot
+/// be collapsed into one because ConsoleAppFramework's source generator forbids registering
+/// command types across project boundaries (CAF014), so the parser cannot be constructed from the
+/// test project — the subprocess is the only way to exercise the real dispatch path.</para>
 /// </summary>
 public sealed class ReconcileRemovalTests
 {
-    private static readonly string[] GoldenSnapshots = Directory
-        .GetFiles(RepoPaths.Combine("tests", "Scrinia.Tests", "Golden", "__snapshots__"), "*.yaml")
-        .ToArray();
-
     /// <summary>The CLI exposes no <c>reconcile</c> command. Mirrors the
     /// <c>CliSurfaceConformanceTests.Entrypoints</c> filter: public instance methods on the two
     /// registered command classes that return an exit code.</summary>
@@ -43,6 +46,69 @@ public sealed class ReconcileRemovalTests
 
         commandNames.Should().NotContain("reconcile",
             "scri reconcile must not be a CLI command after Task 3 removed the reconcile surface");
+    }
+
+    /// <summary>
+    /// Runs the built <c>scri</c> CLI as a real process against a throwaway workspace, returning
+    /// its combined exit code and stdout/stderr. The CLI assembly is located off the
+    /// <c>ScriniaCommands</c> type so the test runs whatever binary the project actually produced
+    /// rather than a path baked at build time.
+    /// </summary>
+    private static async Task<(int Exit, string Output)> RunScriAsync(string workspaceRoot, params string[] args)
+    {
+        string scriDll = typeof(ScriniaCommands).Assembly.Location;
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add(scriDll);
+        foreach (string arg in args)
+            startInfo.ArgumentList.Add(arg);
+
+        // Fully qualified: the Scrinia.Tests namespace declares its own `Process` test double,
+        // which would otherwise shadow System.Diagnostics.Process at the call site.
+        using var process = System.Diagnostics.Process.Start(startInfo)!;
+        string output = await process.StandardOutput.ReadToEndAsync();
+        string error = await process.StandardError.ReadToEndAsync();
+        bool exited = process.WaitForExit(30000);
+        if (!exited || !process.HasExited)
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException($"scri did not exit within 30s for args [{string.Join(" ", args)}]");
+        }
+
+        return (process.ExitCode, output + error);
+    }
+
+    /// <summary>The real scri parser rejects <c>reconcile</c> as an unknown command: it prints the
+    /// usage listing of registered commands and runs no handler. The reflection guard above cannot
+    /// reach this because ConsoleAppFramework's source generator forbids registering command types
+    /// across project boundaries (CAF014), so this drives the actual <c>app.RunAsync</c> dispatch.
+    /// Confirms reconcile is unknown at the parser, not just the symbol level.</summary>
+    [Fact]
+    public async Task Reconcile_IsRejectedByTheRealCliParser()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "scrinia-rt3-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var (exit, output) = await RunScriAsync(workspace, "reconcile", "--workspace-root", workspace);
+
+            output.Should().Contain("Usage:",
+                "an unknown command makes the CLI print its usage listing, proving reconcile is " +
+                "rejected by the parser rather than dispatched to a handler");
+            exit.Should().Be(0, "ConsoleAppFramework reports an unknown command by printing usage " +
+                                "and returning 0, not by throwing");
+            output.Should().NotContain("reconcile",
+                "reconcile must not appear as a registered command in the real CLI usage listing");
+        }
+        finally
+        {
+            try { Directory.Delete(workspace, recursive: true); } catch { }
+        }
     }
 
     /// <summary>The MCP facade exposes no <c>reconcile</c> tool and no <c>Reconcile</c>/<c>MemoryReconcile</c>
@@ -71,11 +137,24 @@ public sealed class ReconcileRemovalTests
             "no active Reconcile/MemoryReconcile method may survive Task 3");
     }
 
-    /// <summary>No golden response case references reconcile. Task 2 deleted reconcile-scan.yaml;
-    /// a re-added or orphaned snapshot would surface here.</summary>
+    private static readonly string[] GoldenSnapshots = Directory
+        .GetFiles(RepoPaths.Combine("tests", "Scrinia.Tests", "Golden", "__snapshots__"), "*.yaml")
+        .ToArray();
+
+    /// <summary>Task 2 deleted <c>reconcile-scan.yaml</c>. The retired filename must stay absent
+    /// — an explicit name check, not just a content scan — because a snapshot re-added under a
+    /// different name (e.g. <c>reconcile-conflict.yaml</c>) would slip past a body-only scan. The
+    /// content scan below still catches any stale reconcile text in surviving snapshots.</summary>
     [Fact]
     public void Reconcile_HasNoGoldenCase()
     {
+        var reNamed = GoldenSnapshots
+            .Where(snapshot => Path.GetFileName(snapshot).Contains("reconcile", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        reNamed.Should().BeEmpty(
+            "no golden snapshot may be named like reconcile-scan.yaml after Task 3 removed it: {0}",
+            reNamed.Select(Path.GetFileName));
+
         var referencing = GoldenSnapshots
             .Where(snapshot => File.ReadAllText(snapshot).Contains("reconcile", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -96,11 +175,11 @@ public sealed class ReconcileRemovalTests
             "the embedded guide must not describe reconcile as a tool after Task 3 removed it");
     }
 
-    /// <summary>When restore detects an unresolved conflict it must not instruct the agent to run a
-    /// tool that no longer exists. Drives the warning-string cleanup in
-    /// <c>BuildRestoreContextAsync</c>.</summary>
+    /// <summary>Restore still detects an unresolved conflict (single-user restore behavior
+    /// preserved) but must not instruct the agent to run a tool that no longer exists. Drives the
+    /// warning-string cleanup in <c>BuildRestoreContextAsync</c>.</summary>
     [Fact]
-    public async Task Restore_ConflictWarning_DoesNotNameReconcile()
+    public async Task Restore_ConflictWarning_DetectsButDoesNotNameReconcile()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -110,10 +189,16 @@ public sealed class ReconcileRemovalTests
 
         var response = ResponseParser.Parse(await new ScriniaMcpTools().Guide());
 
-        response.ActionNeeded
+        var conflictWarnings = response.ActionNeeded
             .Where(warning => warning.Contains("unresolved merge conflict", StringComparison.OrdinalIgnoreCase))
-            .Should().NotContain(warning => warning.Contains("reconcile", StringComparison.OrdinalIgnoreCase),
-                "the restore conflict warning must not point at the removed reconcile tool");
+            .ToList();
+
+        conflictWarnings.Should().HaveCountGreaterThanOrEqualTo(1,
+            "restore must still surface the unresolved-conflict warning — single-user restore " +
+            "behavior is preserved, only the dangling tool reference is retired");
+
+        conflictWarnings.Should().NotContain(warning => warning.Contains("reconcile", StringComparison.OrdinalIgnoreCase),
+            "the restore conflict warning must not point at the removed reconcile tool");
     }
 
     /// <summary>The Phase 2 recognition contract survives Task 3 untouched — only reconcile surfaces

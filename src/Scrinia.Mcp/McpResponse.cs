@@ -21,9 +21,6 @@ public static class ErrorCodes
     /// <summary>Memory, skill, conflict, or bundle file does not exist.</summary>
     public const string NotFound = "NOT_FOUND";
 
-    /// <summary>Merge-conflict resolution failed (bad choice value, missing content, etc.).</summary>
-    public const string Conflict = "CONFLICT";
-
     /// <summary>A durable write was refused or could not complete safely.</summary>
     public const string DurableWriteFailed = "DURABLE_WRITE_FAILED";
 
