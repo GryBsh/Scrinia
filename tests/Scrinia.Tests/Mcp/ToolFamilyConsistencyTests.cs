@@ -58,25 +58,4 @@ public class ToolFamilyConsistencyTests
         response.Status.Should().NotBe("error");
     }
 
-    [Fact]
-    public async Task Reconcile_RejectsAChoiceWithNoConflictId()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        var response = await Tools().Reconcile(conflictId: null, choice: "ours",
-            content: null, CancellationToken.None);
-
-        response.Status.Should().Be("error",
-            "silently performing a read-only scan while reporting action: reconciled "
-            + "tells the caller their choice was applied");
-    }
-
-    [Fact]
-    public async Task Reconcile_StillScansWhenNeitherArgumentIsGiven()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        var response = await Tools().Reconcile(conflictId: null, choice: null,
-            content: null, CancellationToken.None);
-
-        response.Status.Should().NotBe("error");
-    }
 }

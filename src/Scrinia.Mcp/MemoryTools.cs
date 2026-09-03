@@ -628,21 +628,6 @@ public sealed partial class ScriniaMcpTools
         return (await Restore(cancellationToken)).ToYaml();
     }
 
-    [McpServerTool(Name = "reconcile"), Description(
-        "Scan .scrinia/ for git merge conflicts, or resolve a specific one. " +
-        "Without args: scan and report — read-only, never writes to disk. " +
-        "With conflictId + choice: resolve manually ('ours', 'theirs', or 'merged'). " +
-        "With conflictId only (no choice) on an auto-resolvable .meta.json conflict: apply the automatic merge. " +
-        "Example: reconcile({ conflictId: 'memories/local/auth-flow.nmp2', choice: 'ours' }).")]
-    public async Task<string> MemoryReconcile(
-        [Description("Workspace-relative path under .scrinia/ to the conflicted file. Omit to scan.")] string? conflictId = null,
-        [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,
-        [Description("Content for 'merged' resolution.")] string? mergedContent = null,
-        CancellationToken cancellationToken = default)
-    {
-        return (await Reconcile(conflictId, choice, mergedContent, cancellationToken)).ToYaml();
-    }
-
     // ── Skill-path routing ────────────────────────────────────────────────────
     //
     // Skills are conceptually memory at a reserved path — we route /skill/{name}

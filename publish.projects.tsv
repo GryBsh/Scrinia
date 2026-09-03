@@ -1,4 +1,3 @@
 id	project	condition	profile	output	rids
 scri	src/Scrinia/Scrinia.csproj	always	trimmed	rid	all
-scri-merge	src/Scrinia.Merge/Scrinia.Merge.csproj	always	plain	rid	host
 scri-plugin-embeddings	src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj	with-embeddings	plain	plugin	all

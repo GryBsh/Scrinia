@@ -124,7 +124,7 @@ public class ResponseGoldenTests
     [
         "remember", "recall", "search", "search-filtered",
         "list-summary", "list-full", "append", "forget",
-        "compact", "link", "reconcile-scan", "facts-entities",
+        "compact", "link", "facts-entities",
         "error-missing-path", "error-empty-content",
         "update-warning", "recall-truncated", "compact-multichunk", "link-missing-side",
     ];
@@ -155,7 +155,6 @@ public class ResponseGoldenTests
             "forget"          => await tools.MemoryForget("/patterns/retry"),
             "compact"         => await tools.MemoryCompact("/findings/auth-flow"),
             "link"            => await tools.MemoryLink("/findings/auth-flow", "/patterns/retry"),
-            "reconcile-scan"  => await tools.MemoryReconcile(),
             "facts-entities"  => await tools.Facts("entities"),
             "error-missing-path" => await tools.MemoryRecall(""),
             "error-empty-content" => await tools.MemoryRemember("/findings/x", []),

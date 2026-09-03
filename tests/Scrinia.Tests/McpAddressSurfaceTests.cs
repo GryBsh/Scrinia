@@ -95,7 +95,7 @@ public sealed class McpAddressSurfaceTests
             .Should().BeEquivalentTo(
                 "Guide", "MemoryRemember", "MemoryRecall", "MemorySearch", "MemoryList",
                 "MemoryAppend", "MemoryForget", "MemoryCompact", "MemoryLink", "MemoryRestore",
-                "MemoryReconcile", "Facts");
+                "Facts");
 
         typeof(ScriniaMcpResources).GetMethod(nameof(ScriniaMcpResources.ReadMemory))
             .Should().NotBeNull();

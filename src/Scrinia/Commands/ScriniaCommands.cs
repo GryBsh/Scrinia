@@ -256,40 +256,6 @@ public partial class ScriniaCommands
         return EmitMcpResult(response, json, "restore");
     }
 
-    /// <summary>Scan for merge conflicts in .scrinia/ or resolve a specific conflict.</summary>
-    /// <param name="conflictId">Workspace-relative path under .scrinia/ to the conflicted file (e.g. "memories/local/auth-flow.nmp2"). Omit to scan.</param>
-    /// <param name="choice">Resolution when resolving: 'ours', 'theirs', or 'merged'.</param>
-    /// <param name="mergedContent">Content for 'merged' resolution. Use '-' for stdin.</param>
-    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Reconcile(
-        string? conflictId = null,
-        string? choice = null,
-        string? mergedContent = null,
-        string? workspaceRoot = null,
-        bool json = false,
-        CancellationToken cancellationToken = default)
-    {
-        WorkspaceSetup.Configure(workspaceRoot);
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
-
-        // Allow piping the merged content for 'merged' resolution.
-        if (mergedContent == "-")
-        {
-            if (!Console.IsInputRedirected)
-            {
-                if (json) { WriteJsonError("--merged-content '-' requires stdin to be redirected."); return 1; }
-                AnsiConsole.MarkupLine("[red]Error:[/] --merged-content '-' requires stdin to be redirected.");
-                return 1;
-            }
-            mergedContent = await Console.In.ReadToEndAsync(cancellationToken);
-        }
-
-        var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Reconcile(conflictId, choice, mergedContent, cancellationToken);
-        return EmitMcpResult(response, json, "reconcile");
-    }
-
     private static List<string> ResolveFiles(string filesArg)
     {
         var result = new List<string>();

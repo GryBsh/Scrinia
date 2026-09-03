@@ -668,7 +668,6 @@ public sealed class PublishManifestTests
         }
 
         scripts.Should().Contain("rids=host");
-        manifest.Should().Contain("scri-merge\tsrc/Scrinia.Merge/Scrinia.Merge.csproj\talways\tplain\trid\thost");
         scripts.Should().Contain("Set-VulkanNatives");
         scripts.Should().Contain("overwrite_vulkan_natives");
     }

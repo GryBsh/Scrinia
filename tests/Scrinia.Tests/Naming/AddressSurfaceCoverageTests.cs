@@ -220,7 +220,6 @@ public class AddressSurfaceCoverageTests
         new("MemoryCompact", ["path"], ["keepRecent", "cancellationToken"]),
         new("MemoryLink", ["path", "destination"], ["reason", "cancellationToken"]),
         new("MemoryRestore", [], ["cancellationToken"]),
-        new("MemoryReconcile", [], ["conflictId", "choice", "mergedContent", "cancellationToken"]),
         new("Facts", [], ["op", "entity", "entities", "key", "scopes", "excludeTopics", "limit", "cancellationToken"]),
     ];
 

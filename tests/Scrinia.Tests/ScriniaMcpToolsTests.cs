@@ -2379,7 +2379,7 @@ public sealed class ScriniaMcpToolsTests
             because: "reading an agent config must not create a memories/agent/ scope directory");
     }
 
-    // ── withBuiltin parameter (skill recall) — disambiguated from reconcile ──
+    // ── withBuiltin parameter (skill recall) ──
 
     [Fact]
     public async Task MemoryRecall_Skill_WithBuiltin_ReturnsBothBuiltInAndOverride()
@@ -2414,7 +2414,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["plain content"], MemoryAddress.Parse("/plain-memory"));
 
         // Setting withBuiltin: true on a non-/skill/ path must not change behavior —
-        // the parameter is skill-recall-only and is unrelated to reconcile.
+        // the parameter is skill-recall-only.
         string result = await Tools().MemoryRecall(
             path: "plain-memory",
             withBuiltin: true);
@@ -2423,20 +2423,6 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("success");
         parsed.Content.Should().Be("plain content",
             because: "withBuiltin must be silently ignored for non-skill paths");
-    }
-
-    [Fact]
-    public async Task MemoryReconcile_IsIndependentOfWithBuiltinFlag()
-    {
-        using var scope = new TestHelpers.StoreScope();
-
-        // reconcile scans for git merge conflicts; in a fresh store it reports zero.
-        // It is unrelated to the withBuiltin skill-merge flag on recall.
-        string result = await Tools().MemoryReconcile();
-
-        var parsed = ResponseParser.Parse(result);
-        parsed.Status.Should().Be("success",
-            because: "reconcile on a clean store must succeed");
     }
 
     // ── Structured error responses: errorCode + actionNeeded recovery hints ──
