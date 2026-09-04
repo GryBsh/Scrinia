@@ -23,6 +23,22 @@ public sealed class SharedFreshnessTests
         result.ErrorCode.Should().Be("SHARED_BASE_STALE");
     }
 
+    [Fact]
+    public void Detects_changed_canonical_target_as_unsafe_path()
+    {
+        using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
+        using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        string target = Path.Combine(fixture.Root, ".scrinia", "target.txt");
+        string linked = Path.Combine(fixture.Root, ".scrinia", "linked.txt");
+        File.WriteAllText(target, "inside");
+        File.CreateSymbolicLink(linked, target);
+
+        SharedMutationPreflight result = runtime.RevalidateBeforeMutation("/note", null);
+
+        result.IsSafe.Should().BeFalse();
+        result.ErrorCode.Should().Be("SHARED_BASE_UNSAFE_PATH");
+    }
+
     [Theory]
     [InlineData("config.json")]
     [InlineData(".gitignore")]

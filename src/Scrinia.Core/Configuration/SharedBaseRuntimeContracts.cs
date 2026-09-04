@@ -235,9 +235,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         if (!Directory.Exists(inventoryRoot))
             throw new DirectoryNotFoundException(inventoryRoot);
 
-        var files = Directory.EnumerateFiles(inventoryRoot, "*", SearchOption.AllDirectories)
-            .Where(path => IsAuthoritative(Path.GetRelativePath(inventoryRoot, path)))
-            .Select(path => (Path: Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/'), FullPath: path))
+        var files = EnumerateAuthoritativeFiles(inventoryRoot, registeredRoot)
             .OrderBy(item => System.Text.Encoding.UTF8.GetBytes(item.Path), ByteArrayComparer.Instance)
             .ToArray();
 
@@ -257,6 +255,33 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             hash.AppendData(content);
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    private static IEnumerable<(string Path, string FullPath)> EnumerateAuthoritativeFiles(string inventoryRoot, string registeredRoot)
+    {
+        var pendingDirectories = new Stack<string>();
+        pendingDirectories.Push(inventoryRoot);
+
+        while (pendingDirectories.Count > 0)
+        {
+            string directory = pendingDirectories.Pop();
+            foreach (string path in Directory.EnumerateFileSystemEntries(directory))
+            {
+                FileAttributes attributes = File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new ArgumentException("A shared-base descendant cannot be a symbolic link, junction, or reparse point.", nameof(registeredRoot));
+
+                if ((attributes & FileAttributes.Directory) != 0)
+                {
+                    pendingDirectories.Push(path);
+                    continue;
+                }
+
+                string relativePath = Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/');
+                if (IsAuthoritative(relativePath))
+                    yield return (relativePath, path);
+            }
+        }
     }
 
     public static bool IsAuthoritative(string relativePath)
