@@ -12,12 +12,20 @@ public sealed class HomeConfigParserValidationTests : IDisposable
         ["{"],
         ["{\"schemaVersion\":1,\"schemaVersion\":1,\"sharedBases\":{}}"],
         ["{\"schemaVersion\":1,\"sharedBases\":{},\"sharedBases\":{}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{\"root\":\"C:\\\\team\"},\"team\":{\"root\":\"C:\\\\other\"}}}"],
         ["{\"sharedBases\":{}}"],
         ["{\"schemaVersion\":1}"],
+        ["{\"schemaVersion\":1,\"unexpected\":true,\"sharedBases\":{}}"],
         ["{\"schemaVersion\":2,\"sharedBases\":{}}"],
         ["{\"schemaVersion\":\"1\",\"sharedBases\":{}}"],
         ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{}}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"Team\":{\"root\":\"C:\\\\team\"}}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"team_name\":{\"root\":\"C:\\\\team\"}}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{\"root\":\"C:\\\\team\",\"unexpected\":true}}}"],
         ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{\"root\":\"relative\"}}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{\"root\":\"C:\\\\repo\\\\.scrinia\"}}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{\"root\":\"C:\\\\repo\\\\.scrinia\\\\\"}}}"],
+        ["{\"schemaVersion\":1,\"sharedBases\":{\"team\":{\"root\":\"C:\\\\repo\\\\.scrinia\\\\\\\\\"}}}"],
     ];
 
     [Theory]
@@ -39,6 +47,31 @@ public sealed class HomeConfigParserValidationTests : IDisposable
 
         config.SchemaVersion.Should().Be(1);
         config.SharedBases.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Save_InvalidBaseNameOrScriniaRoot_FailsClosed()
+    {
+        var store = new HomeConfigStore();
+        Action invalidName = () => store.Save(_directory, new HomeConfig
+        {
+            SchemaVersion = 1,
+            SharedBases = new SharedBasesMap
+            {
+                ["Team"] = new SharedBaseEntry { Root = @"C:\repo" },
+            },
+        });
+        Action trailingScrinia = () => store.Save(_directory, new HomeConfig
+        {
+            SchemaVersion = 1,
+            SharedBases = new SharedBasesMap
+            {
+                ["team"] = new SharedBaseEntry { Root = @"C:\repo\.scrinia\" },
+            },
+        });
+
+        invalidName.Should().Throw<ScriniaConfigurationException>();
+        trailingScrinia.Should().Throw<ScriniaConfigurationException>();
     }
 
     public void Dispose()

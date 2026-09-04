@@ -113,9 +113,10 @@ public sealed class HomeConfigStore : IHomeConfigStore
             if (root.GetProperty("sharedBases").ValueKind != JsonValueKind.Object)
                 throw Invalid("The home config sharedBases must be an object.");
 
+            var baseNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (JsonProperty baseProperty in root.GetProperty("sharedBases").EnumerateObject())
             {
-                if (!IsCanonicalName(baseProperty.Name) || baseProperty.Value.ValueKind != JsonValueKind.Object)
+                if (!baseNames.Add(baseProperty.Name) || !IsCanonicalName(baseProperty.Name) || baseProperty.Value.ValueKind != JsonValueKind.Object)
                     throw Invalid("The home config contains an invalid shared base.");
                 var fields = new HashSet<string>(StringComparer.Ordinal);
                 foreach (JsonProperty field in baseProperty.Value.EnumerateObject())
@@ -126,7 +127,7 @@ public sealed class HomeConfigStore : IHomeConfigStore
                 if (!fields.Contains("root") || baseProperty.Value.GetProperty("root").ValueKind != JsonValueKind.String)
                     throw Invalid("A shared base requires a root.");
                 string? rootPath = baseProperty.Value.GetProperty("root").GetString();
-                if (string.IsNullOrEmpty(rootPath) || !Path.IsPathFullyQualified(rootPath) || rootPath.EndsWith(".scrinia", StringComparison.OrdinalIgnoreCase))
+                if (!IsValidBaseRoot(rootPath))
                     throw Invalid("A shared base root must be an absolute path outside .scrinia.");
             }
         }
@@ -144,8 +145,7 @@ public sealed class HomeConfigStore : IHomeConfigStore
         {
             string name = pair.Key;
             SharedBaseEntry entry = pair.Value;
-            if (!IsCanonicalName(name) || entry is null || string.IsNullOrEmpty(entry.Root) ||
-                !Path.IsPathFullyQualified(entry.Root) || entry.Root.EndsWith(".scrinia", StringComparison.OrdinalIgnoreCase))
+            if (!IsCanonicalName(name) || entry is null || !IsValidBaseRoot(entry.Root))
                 throw Invalid("The home config contains an invalid shared base.");
         }
     }
@@ -154,6 +154,15 @@ public sealed class HomeConfigStore : IHomeConfigStore
         name.Length is >= 1 and <= 32 && IsLowercaseAscii(name[0]) && name[1..].All(character => IsLowercaseAscii(character) || char.IsAsciiDigit(character) || character == '-');
 
     private static bool IsLowercaseAscii(char character) => character is >= 'a' and <= 'z';
+
+    private static bool IsValidBaseRoot(string? root)
+    {
+        if (string.IsNullOrEmpty(root) || !Path.IsPathFullyQualified(root))
+            return false;
+
+        string withoutTrailingSeparators = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return !string.Equals(Path.GetFileName(withoutTrailingSeparators), ".scrinia", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static ScriniaConfigurationException Invalid(string message, Exception? innerException = null) =>
         innerException is null ? new ScriniaConfigurationException(message) : new ScriniaConfigurationException(message, innerException);
