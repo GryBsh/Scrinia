@@ -20,6 +20,7 @@ public enum ConfigurationErrorCode
     MigrationManualCleanupRequired,
     ConfigLockTimeout,
     IoFailure,
+    ConfigRecoveryRequired,
 }
 public enum ConfigurationExitClass { Success = 0, InvalidConfiguration = 2, PolicyFailure = 3, WriteFailure = 4 }
 public sealed record ConfigurationResult(

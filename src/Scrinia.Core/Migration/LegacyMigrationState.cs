@@ -296,6 +296,68 @@ public sealed class LegacyMigrationService
         }
     }
 
+    public LegacyMigrationResult Set(string workspaceRoot, TrackingPolicy targetPolicy)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
+        if (targetPolicy is not (TrackingPolicy.Local or TrackingPolicy.ProjectGit))
+            return new(ConfigurationErrorCode.TrackingPolicyInvalid, ConfigurationExitClass.PolicyFailure);
+
+        string directory = Path.Combine(workspaceRoot, ".scrinia");
+        string configPath = Path.Combine(directory, "config.json");
+        string ignorePath = Path.Combine(directory, ".gitignore");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using FileLock fileLock = AcquireConfigurationLock(workspaceRoot);
+            Recover(workspaceRoot);
+            LegacyFilesystemObservation observation = InspectLocked(workspaceRoot);
+            if (observation.ErrorCode is not ConfigurationErrorCode.None and not ConfigurationErrorCode.TrackingPolicyRequired)
+                return new(observation.ErrorCode, observation.ExitClass, false);
+
+            LegacyMigrationResult gate = LegacyMigrationStateMachine.ApplyCommand(observation.State, targetPolicy, isMigration: false);
+            if (!gate.Succeeded || !gate.Changed)
+                return gate;
+
+            var originals = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase)
+            {
+                [configPath] = ReadBytes(configPath), [ignorePath] = ReadBytes(ignorePath),
+            };
+            try
+            {
+                Dictionary<string, string> values = WorkspaceConfig.LoadValuesUncached(workspaceRoot);
+                values[WorkspaceConfig.TrackingKey] = targetPolicy == TrackingPolicy.Local ? "local" : "project-git";
+                WriteJournal(configPath, originals);
+                DurableFile.AtomicWriteAllText(configPath, System.Text.Json.JsonSerializer.Serialize(values, ConfigJsonContext.Default.DictionaryStringString));
+                DurableFile.AtomicWriteAllText(ignorePath, ManagedIgnoreBlock.Apply(ReadText(ignorePath), targetPolicy));
+                DurableFile.AtomicWriteAllText(Path.Combine(directory, RecoveryJournalName), "complete\n");
+                File.Delete(Path.Combine(directory, RecoveryJournalName));
+                WorkspaceConfig.RefreshCache(workspaceRoot, values);
+                return gate;
+            }
+            catch (Exception exception) when (exception is DurableWriteException or UnauthorizedAccessException or IOException)
+            {
+                TryRestore(originals);
+                return gate with
+                {
+                    ErrorCode = exception is DurableWriteException ? ConfigurationErrorCode.ConfigWriteFailed : ConfigurationErrorCode.IoFailure,
+                    ExitClass = ConfigurationExitClass.WriteFailure, Changed = false,
+                };
+            }
+        }
+        catch (FileLockTimeoutException)
+        {
+            return new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure);
+        }
+        catch (ScriniaConfigurationException)
+        {
+            return new(ConfigurationErrorCode.WorkspaceConfigMalformed, ConfigurationExitClass.InvalidConfiguration);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
+        {
+            return new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure);
+        }
+    }
+
     private static LegacyMigrationState ClassifyFilesystem(LegacyMigrationInput input, ManagedIgnoreValidation validation)
     {
         if (input.Unsafe == true || (input.GitIgnore is not null && HasMalformedMarker(input.GitIgnore)))

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Configuration;
 
 namespace Scrinia.Tests;
@@ -52,6 +53,29 @@ public sealed class SharedBaseTransactionTests : IDisposable
 
         result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigWriteFailed);
         Directory.Exists(directory).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Add_ReportsRecoveryRequiredWhenCompensationFails()
+    {
+        string root = CreateGitRoot("compensation-repo");
+        string ignorePath = Path.Combine(root, ".scrinia", ".gitignore");
+        Directory.CreateDirectory(Path.GetDirectoryName(ignorePath)!);
+        File.WriteAllText(ignorePath, "# user line\n");
+        int writes = 0;
+        DurableFile.FailureInjector = (_, _) => ++writes > 1 ? new IOException("rollback unavailable") : null;
+        try
+        {
+            SharedBaseResult result = new SharedBaseOperations(
+                new SharedBaseRegistry(_home, _workspace, new FailingHomeConfigStore()), _home, _workspace).Add("team", root);
+
+            result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigRecoveryRequired);
+            result.ExitClass.Should().Be(ConfigurationExitClass.WriteFailure);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
     }
 
     private string CreateGitRoot(string name)

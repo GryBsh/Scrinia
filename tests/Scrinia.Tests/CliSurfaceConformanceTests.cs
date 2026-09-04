@@ -31,7 +31,7 @@ public sealed class CliSurfaceConformanceTests
     /// its absence must mean "off". An entry here would be a switch a user cannot turn on.</summary>
     private static readonly HashSet<string> DefaultTrueBoolExemptions = new(StringComparer.Ordinal);
 
-    // { typeof(ScriniaCommands), typeof(BundleCommands) } is hardcoded here rather than derived
+    // The registered command type inventory is explicit so every rule covers every CLI surface.
     // at runtime — ConsoleAppFramework's app object exposes no public list of what was registered
     // onto it, and Program.cs is a top-level statements file with no entry point to invoke short
     // of running the CLI. Entrypoints_CoverEveryTypeProgramCsRegisters() below closes the gap this
@@ -39,7 +39,7 @@ public sealed class CliSurfaceConformanceTests
     // that set equals this one, so a third registered command class goes red there instead of
     // silently passing every rule in this file uncovered.
     private static IEnumerable<(Type Owner, MethodInfo Method)> Entrypoints() =>
-        new[] { typeof(ScriniaCommands), typeof(BundleCommands) }
+        new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(TrackingCliCommands) }
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                 .Where(m => m.ReturnType == typeof(int) || m.ReturnType == typeof(Task<int>))
                 .Select(m => (t, m)));
@@ -169,7 +169,7 @@ public sealed class CliSurfaceConformanceTests
         var registered = RegisteredCommandTypeNames();
         registered.Should().NotBeEmpty(because: "the regex must actually find Program.cs's app.Add<T>() calls");
 
-        var covered = new[] { typeof(ScriniaCommands), typeof(BundleCommands) }
+        var covered = new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(TrackingCliCommands) }
             .Select(t => t.Name)
             .ToHashSet(StringComparer.Ordinal);
 
@@ -179,7 +179,7 @@ public sealed class CliSurfaceConformanceTests
         // cannot see one ADDED alongside them.
         registered.Should().BeEquivalentTo(covered,
             because: "every command class Program.cs registers with app.Add<T>() must also be in " +
-                     "the { typeof(ScriniaCommands), typeof(BundleCommands) } list Entrypoints() " +
+                     "the registered command type list Entrypoints() " +
                      "reflects over — otherwise a newly registered command class is covered by none " +
                      "of the rules in this file");
     }
@@ -188,15 +188,14 @@ public sealed class CliSurfaceConformanceTests
     public void Entrypoints_AreFound()
     {
         // Guards the other three tests against passing vacuously if the reflection filter breaks.
-        // Exact, not a loose floor: 19 entrypoints on ScriniaCommands plus 3 on BundleCommands.
+        // Exact, not a loose floor: 22 existing entrypoints plus 8 Task 7 entrypoints.
         // A loose ">15" threshold caught a total filter break but not a partial one — e.g.
         // dropping BundleCommands entirely still leaves 20 > 15, so a real command class (and
         // any --workspace/bool-default regression on it) could fall out of every rule below
         // without this test noticing. Adding or removing a command must restate this number
         // deliberately — that restatement is the point of the guard.
-        Entrypoints().Should().HaveCount(22,
-            because: "the CLI has exactly 23 command entrypoints (20 on ScriniaCommands, 3 on " +
-                     "BundleCommands); a filter that stops seeing some of them — even not all — " +
+        Entrypoints().Should().HaveCount(30,
+            because: "the CLI has exactly 30 command entrypoints across all registered command types; a filter that stops seeing some of them — even not all — " +
                      "would make the rules below pass without checking what it silently dropped");
     }
 
@@ -259,7 +258,7 @@ public sealed class CliSurfaceConformanceTests
         // CancellationToken" — ScriniaCommands.List does not take one, so that filter would
         // silently drop a real command and cover 22 of 23.
         using var scope = new AssertionScope();
-        foreach (var type in new[] { typeof(ScriniaCommands), typeof(BundleCommands) })
+        foreach (var type in new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(TrackingCliCommands) })
         {
             foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             {

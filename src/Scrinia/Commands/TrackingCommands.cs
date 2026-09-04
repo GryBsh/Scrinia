@@ -1,5 +1,6 @@
 using Scrinia.Core.Configuration;
 using Scrinia.Core.Migration;
+using ConsoleAppFramework;
 using System.Text.Json;
 
 namespace Scrinia.Commands;
@@ -42,7 +43,7 @@ public sealed class TrackingCliCommands
         return Render(new CliTrackingOutput("tracking status", state, observation.ErrorCode.ToString().ToUpperInvariant()), json, (int)observation.ExitClass);
     }
 
-    public int Set(string policy, bool json = false) => Apply(policy, false, json);
+    public int Set([Argument] string policy, bool json = false) => Apply(policy, false, json);
     public int MigrateLegacy(string to, bool json = false) => Apply(to, true, json);
 
     private static int Apply(string value, bool migrate, bool json)
@@ -53,7 +54,7 @@ public sealed class TrackingCliCommands
         var service = new LegacyMigrationService();
         LegacyMigrationResult result = migrate
             ? service.Migrate(WorkspaceSetup.Root, policy)
-            : LegacyMigrationStateMachine.ApplyCommand(service.Inspect(WorkspaceSetup.Root).State, policy, isMigration: false);
+            : service.Set(WorkspaceSetup.Root, policy);
         return Render(new CliTrackingOutput(migrate ? "tracking migrate-legacy" : "tracking set", policy.ToString().ToLowerInvariant(), result.ErrorCode.ToString().ToUpperInvariant()), json, (int)result.ExitClass);
     }
 

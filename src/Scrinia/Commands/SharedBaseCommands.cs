@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ConsoleAppFramework;
 using Scrinia.Core.Configuration;
 
 namespace Scrinia.Commands;
@@ -6,8 +7,8 @@ namespace Scrinia.Commands;
 /// <summary>CLI adapter for the user-visible shared-base registry commands.</summary>
 public sealed class SharedBaseCommands
 {
-    public int Add(string name, string root, bool json = false) => Render("shared base add", Operations().Add(name, root), json);
-    public int Remove(string name, bool json = false) => Render("shared base remove", Operations().Remove(name), json);
+    public int Add([Argument] string name, [Argument] string root, bool json = false) => Render("shared base add", Operations().Add(name, root), json);
+    public int Remove([Argument] string name, bool json = false) => Render("shared base remove", Operations().Remove(name), json);
 
     public int List(bool all = false, bool json = false)
     {

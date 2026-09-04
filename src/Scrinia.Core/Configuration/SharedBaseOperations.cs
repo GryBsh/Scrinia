@@ -35,6 +35,7 @@ public sealed class SharedBaseOperations
         bool directoryExisted = Directory.Exists(scriniaDirectory);
         byte[]? originalIgnore = File.Exists(ignorePath) ? File.ReadAllBytes(ignorePath) : null;
         bool changed = false;
+        Exception? rollbackFailure;
 
         try
         {
@@ -58,35 +59,41 @@ public sealed class SharedBaseOperations
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ScriniaConfigurationException)
             {
-                RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted);
-                return Failure(ConfigurationErrorCode.ConfigWriteFailed, "The shared base registry could not be committed.", ConfigurationExitClass.WriteFailure, exception);
+                bool restored = RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted, out rollbackFailure);
+                return restored
+                    ? Failure(ConfigurationErrorCode.ConfigWriteFailed, "The shared base registry could not be committed.", ConfigurationExitClass.WriteFailure, exception)
+                    : RecoveryRequired(exception, rollbackFailure);
             }
             if (result.Succeeded)
                 return result;
 
-            RestoreIgnore(ignorePath, originalIgnore);
-            RemoveNewDirectory(scriniaDirectory, directoryExisted);
+            if (!RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted, out rollbackFailure))
+                return RecoveryRequired(result.Exception ?? new ScriniaConfigurationException("The shared base registry rejected the operation."), rollbackFailure);
             return result;
         }
         catch (ScriniaConfigurationException exception) when (exception.InnerException is DurableWriteException)
         {
-            RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted);
-            return Failure(ConfigurationErrorCode.ConfigWriteFailed, exception.Message, ConfigurationExitClass.WriteFailure, exception);
+            return RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted, out rollbackFailure)
+                ? Failure(ConfigurationErrorCode.ConfigWriteFailed, exception.Message, ConfigurationExitClass.WriteFailure, exception)
+                : RecoveryRequired(exception, rollbackFailure);
         }
         catch (DurableWriteException exception)
         {
-            RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted);
-            return Failure(ConfigurationErrorCode.ConfigWriteFailed, exception.Message, ConfigurationExitClass.WriteFailure, exception);
+            return RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted, out rollbackFailure)
+                ? Failure(ConfigurationErrorCode.ConfigWriteFailed, exception.Message, ConfigurationExitClass.WriteFailure, exception)
+                : RecoveryRequired(exception, rollbackFailure);
         }
         catch (ScriniaConfigurationException exception)
         {
-            RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted);
-            return Failure(ConfigurationErrorCode.SharedTrackingPolicyDrift, exception.Message, ConfigurationExitClass.PolicyFailure, exception);
+            return RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted, out rollbackFailure)
+                ? Failure(ConfigurationErrorCode.SharedTrackingPolicyDrift, exception.Message, ConfigurationExitClass.PolicyFailure, exception)
+                : RecoveryRequired(exception, rollbackFailure);
         }
         catch (IOException exception)
         {
-            RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted);
-            return Failure(ConfigurationErrorCode.IoFailure, exception.Message, ConfigurationExitClass.WriteFailure, exception);
+            return RestoreAfterFailure(ignorePath, originalIgnore, scriniaDirectory, directoryExisted, out rollbackFailure)
+                ? Failure(ConfigurationErrorCode.IoFailure, exception.Message, ConfigurationExitClass.WriteFailure, exception)
+                : RecoveryRequired(exception, rollbackFailure);
         }
     }
 
@@ -116,9 +123,20 @@ public sealed class SharedBaseOperations
         }
     }
 
-    private static void RestoreAfterFailure(string ignorePath, byte[]? original, string directory, bool existed)
+    private static bool RestoreAfterFailure(string ignorePath, byte[]? original, string directory, bool existed, out Exception? rollbackFailure)
     {
-        try { RestoreIgnore(ignorePath, original); RemoveNewDirectory(directory, existed); } catch { }
+        try
+        {
+            RestoreIgnore(ignorePath, original);
+            RemoveNewDirectory(directory, existed);
+            rollbackFailure = null;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            rollbackFailure = exception;
+            return false;
+        }
     }
 
     private static void RestoreIgnore(string path, byte[]? original)
@@ -136,4 +154,9 @@ public sealed class SharedBaseOperations
     private static SharedBaseResult Failure(ConfigurationErrorCode code, string message, ConfigurationExitClass exit,
         Exception? exception = null) => new(code, exit, Exception: exception ?? new ScriniaConfigurationException(message));
     private static SharedBaseResult Failure(ConfigurationErrorCode code, string message) => Failure(code, message, ConfigurationExitClass.PolicyFailure);
+    private static SharedBaseResult RecoveryRequired(Exception cause, Exception? rollbackFailure = null) => Failure(
+        ConfigurationErrorCode.ConfigRecoveryRequired,
+        "The shared base transaction could not restore its previous filesystem state; recovery is required.",
+        ConfigurationExitClass.WriteFailure,
+        rollbackFailure is null ? cause : new AggregateException(cause, rollbackFailure));
 }
