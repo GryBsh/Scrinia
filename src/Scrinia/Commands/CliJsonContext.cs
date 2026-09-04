@@ -82,7 +82,8 @@ internal sealed record CliErrorOutput(
     string? Code = null,
     string? Field = null,
     long? Limit = null,
-    long? Actual = null);
+    long? Actual = null,
+    int? ExitClass = null);
 
 /// <summary>
 /// Shared output shape for the MCP-passthrough commands (append, compact, link,
