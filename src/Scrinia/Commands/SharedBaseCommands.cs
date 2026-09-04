@@ -30,7 +30,7 @@ public sealed class SharedBaseCommands
         return new SharedBaseOperations(new SharedBaseRegistry(home, WorkspaceSetup.Root), home, WorkspaceSetup.Root);
     }
 
-    private static int Render(string command, SharedBaseResult result, bool json)
+    internal static int Render(string command, SharedBaseResult result, bool json)
     {
         ConfigurationJsonResult output = result.Succeeded
             ? ConfigurationJsonResult.Success(command, result.Base is not null, @base: result.Base?.Name,
