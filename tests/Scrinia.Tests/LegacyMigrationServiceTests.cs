@@ -124,6 +124,41 @@ public sealed class LegacyMigrationServiceTests
     }
 
     [Fact]
+    public void RecoveryJournalRejectsCaseVariantTargetNamesBeforeMutation()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string config = Path.Combine(directory, "config.json");
+        File.WriteAllText(config, "original", new UTF8Encoding(false));
+        string Encode(string path) => Convert.ToBase64String(Encoding.UTF8.GetBytes(path));
+        string[] targets = ["CONFIG.JSON", ".gitignore", ".gitattributes", "merge.config"];
+        File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"),
+            "prepared\n" + string.Join('\n', targets.Select(name => $"{Encode(Path.Combine(directory, name))}|-")) + "\n",
+            new UTF8Encoding(false));
+
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+
+        result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
+        File.ReadAllText(config).Should().Be("original");
+    }
+
+    [Fact]
+    public void CorruptRecoveryJournalMapsConsistentlyAcrossInspectAndMigrate()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"), "prepared\nnot-base64|-\n", new UTF8Encoding(false));
+        var service = new LegacyMigrationService();
+
+        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir);
+        LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
+
+        migration.ErrorCode.Should().Be((ConfigurationErrorCode)inspection.ErrorCode);
+        migration.ExitClass.Should().Be(inspection.ExitClass);
+        inspection.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
+    }
+
+    [Fact]
     public void MigrateMapsMalformedWorkspaceConfigWithoutLeakingAnException()
     {
         using var scope = new TestHelpers.StoreScope();

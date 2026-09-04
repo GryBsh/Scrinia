@@ -192,6 +192,11 @@ public sealed class LegacyMigrationService
             return new(LegacyMigrationState.LegacyUnsafe, ConfigurationErrorCode.ManagedFileUnsafe,
                 ConfigurationExitClass.PolicyFailure, null, ManagedIgnoreValidation.Drift);
         }
+        catch (FormatException)
+        {
+            return new(LegacyMigrationState.LegacyUnsafe, ConfigurationErrorCode.WorkspaceConfigMalformed,
+                ConfigurationExitClass.InvalidConfiguration, null, ManagedIgnoreValidation.Drift);
+        }
         catch (IOException)
         {
             return new(LegacyMigrationState.LegacyUnsafe, ConfigurationErrorCode.IoFailure,
@@ -233,7 +238,7 @@ public sealed class LegacyMigrationService
         using (fileLock)
         {
         try { Recover(workspaceRoot); }
-        catch (Exception exception) { return MapFailure(exception); }
+        catch (Exception exception) { return MapInspectionFailure(exception); }
         LegacyFilesystemObservation observation;
         try { observation = InspectLocked(workspaceRoot); }
         catch (Exception exception) { return MapInspectionFailure(exception); }
@@ -337,9 +342,9 @@ public sealed class LegacyMigrationService
         if (lines[0] == "complete") { File.Delete(path); return; }
         if (lines[0] != "prepared") throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
         string directory = Path.GetFullPath(Path.Combine(workspaceRoot, ".scrinia"));
-        var allowedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        var allowedNames = new HashSet<string>(StringComparer.Ordinal)
             { "config.json", ".gitignore", ".gitattributes", "merge.config" };
-        var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var destinations = new HashSet<string>(StringComparer.Ordinal);
         var records = new List<(string Destination, byte[]? Bytes)>();
         foreach (string line in lines.Skip(1))
         {
@@ -348,7 +353,7 @@ public sealed class LegacyMigrationService
             string destination = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[0]));
             string fullDestination = Path.GetFullPath(destination);
             if (!PathContainment.IsWithin(directory, fullDestination) ||
-                !string.Equals(Path.GetDirectoryName(fullDestination), directory, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetDirectoryName(fullDestination), directory, StringComparison.Ordinal) ||
                 !allowedNames.Contains(Path.GetFileName(fullDestination)) || !destinations.Add(fullDestination))
                 throw new ScriniaConfigurationException("The tracking recovery journal contains an unsafe path.");
             byte[]? bytes = parts[1] == "-" ? null : Convert.FromBase64String(parts[1]);
@@ -374,7 +379,8 @@ public sealed class LegacyMigrationService
     private static LegacyMigrationResult MapInspectionFailure(Exception exception) => exception switch
     {
         FileLockTimeoutException => new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure),
-        ScriniaConfigurationException { InnerException: JsonException } or ScriniaConfigurationException =>
+        DurableWriteException => new(ConfigurationErrorCode.ConfigWriteFailed, ConfigurationExitClass.WriteFailure),
+        ScriniaConfigurationException =>
             new(ConfigurationErrorCode.WorkspaceConfigMalformed, ConfigurationExitClass.InvalidConfiguration),
         DecoderFallbackException => new(ConfigurationErrorCode.ManagedFileUnsafe, ConfigurationExitClass.PolicyFailure),
         UnauthorizedAccessException or IOException => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
