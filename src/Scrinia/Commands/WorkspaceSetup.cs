@@ -652,8 +652,13 @@ internal static class WorkspaceSetup
     /// (SCRINIA__EMBEDDINGS__PROVIDER), which is what a .NET configuration host would read
     /// natively and is accepted here so the two spellings never disagree.
     /// </summary>
-    internal static string? GetConfigValue(string key)
+    internal static string? GetConfigValue(string key) => GetConfigValue(key, null);
+
+    internal static string? GetConfigValue(string key, string? defaultValue)
     {
+        if (key == "Scrinia:Shared:Enabled")
+            return WorkspaceConfig.GetValue(Root, key) ?? defaultValue;
+
         // 1. Environment variable, single-underscore form (highest priority)
         string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
         string? value = Environment.GetEnvironmentVariable(envKey);
@@ -667,6 +672,6 @@ internal static class WorkspaceSetup
         if (value is not null) return value;
 
         // 3. Config file (workspace-scoped)
-        return WorkspaceConfig.GetValue(Root, key);
+        return WorkspaceConfig.GetValue(Root, key) ?? defaultValue;
     }
 }
