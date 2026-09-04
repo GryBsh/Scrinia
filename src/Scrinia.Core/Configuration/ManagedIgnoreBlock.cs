@@ -56,13 +56,18 @@ public static class ManagedIgnoreBlock
         if (string.IsNullOrEmpty(normalized))
             return block;
 
+        bool hasLocalBlock = HasExactlyOneBlock(normalized, Local);
+        bool hasProjectBlock = TryGetProjectRegion(normalized, out _, out _);
+        if (hasLocalBlock && hasProjectBlock)
+            throw new ScriniaConfigurationException("The ignore file contains both local and project-git managed policies.");
+
         if (HasAnyProjectMarker(normalized) && !TryGetProjectRegion(normalized, out _, out _))
             throw new ScriniaConfigurationException("The managed ignore block is duplicated, malformed, or collides with custom content.");
 
         if (normalized == Local || normalized == ProjectGit)
             return block;
 
-        if (HasExactlyOneBlock(normalized, Local) || TryGetProjectRegion(normalized, out _, out _))
+        if (hasLocalBlock || hasProjectBlock)
         {
             if (!TryReplaceBlock(normalized, block, out string replaced))
                 throw new ScriniaConfigurationException("The managed ignore block is duplicated, malformed, or collides with custom content.");

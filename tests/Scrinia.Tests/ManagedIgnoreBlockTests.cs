@@ -69,4 +69,16 @@ public sealed class ManagedIgnoreBlockTests
         Action apply = () => ManagedIgnoreBlock.Apply("user\n" + content, TrackingPolicy.ProjectGit);
         apply.Should().Throw<ScriniaConfigurationException>();
     }
+
+    [Theory]
+    [InlineData(TrackingPolicy.Local)]
+    [InlineData(TrackingPolicy.ProjectGit)]
+    public void ApplyingEitherPolicyRejectsMixedValidPolicyBlocks(TrackingPolicy requestedPolicy)
+    {
+        string existing = "before\n" + ManagedIgnoreBlock.Local + "middle\n" + ManagedIgnoreBlock.ProjectGit + "after\n";
+
+        Action apply = () => ManagedIgnoreBlock.Apply(existing, requestedPolicy);
+
+        apply.Should().Throw<ScriniaConfigurationException>();
+    }
 }
