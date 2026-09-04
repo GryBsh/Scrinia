@@ -64,6 +64,7 @@ public sealed record SharedWarning(string Base, string Code, string Diagnostic);
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     UseStringEnumConverter = true,
     UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow)]
+[JsonSerializable(typeof(SharedEnvelope))]
 [JsonSerializable(typeof(SharedBaseSummary))]
 [JsonSerializable(typeof(SearchHit))]
 [JsonSerializable(typeof(FileDriftRef))]

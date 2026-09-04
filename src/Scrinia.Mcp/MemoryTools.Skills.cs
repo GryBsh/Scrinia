@@ -33,6 +33,7 @@ namespace Scrinia.Mcp;
 [JsonSerializable(typeof(MemoryAddressError))]
 [JsonSerializable(typeof(MemorySearchRequest))]
 [JsonSerializable(typeof(MemoryListRequest))]
+[JsonSerializable(typeof(SharedEnvelope))]
 [JsonSerializable(typeof(SharedBaseSummary))]
 [JsonSerializable(typeof(SearchHit))]
 [JsonSerializable(typeof(FileDriftRef))]

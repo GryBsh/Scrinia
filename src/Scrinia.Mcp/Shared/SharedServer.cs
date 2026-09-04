@@ -113,6 +113,7 @@ public static class SharedValidationStageOrder
 public enum MutationCertainty { Applied, None, Unknown }
 
 /// <summary>Transport-neutral shared envelope with the contract's conditional fields.</summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public sealed record SharedEnvelope
 {
     public string Status { get; init; } = "success";
@@ -153,67 +154,119 @@ internal static class SharedEnvelopeYaml
     public static string Serialize(SharedEnvelope envelope)
     {
         var output = new StringBuilder();
-        output.AppendLine($"status: {envelope.Status}");
-        if (envelope.Base is not null) output.AppendLine($"base: {Escape(envelope.Base)}");
-        if (envelope.Result is not null) WriteObject(output, "result", envelope.Result, 0);
-        if (envelope.Results is not null) WriteObjects(output, "results", envelope.Results);
+        WriteLine(output, 0, "status", Scalar(envelope.Status));
+        if (envelope.Base is not null) WriteLine(output, 0, "base", Scalar(envelope.Base));
+        if (envelope.Result is not null) WritePayload(output, "result", envelope.Result, 0);
+        if (envelope.Results is not null)
+        {
+            WriteLine(output, 0, "results", null);
+            foreach (object result in envelope.Results) WritePayload(output, "-", result, 1);
+        }
         if (envelope.Warnings.Length == 0) output.AppendLine("warnings: []");
-        else { output.AppendLine("warnings:"); foreach (var warning in envelope.Warnings) WriteObject(output, "-", warning, 1); }
-        if (envelope.Error is not null) output.AppendLine($"error: {Escape(envelope.Error)}");
-        if (envelope.ErrorCode is not null) output.AppendLine($"errorCode: {envelope.ErrorCode}");
-        output.AppendLine(envelope.Instruction is null ? "instruction: null" : $"instruction: {Escape(envelope.Instruction)}");
-        output.AppendLine("followUp: []");
-        output.AppendLine($"mutation: {envelope.Mutation.ToString().ToLowerInvariant()}");
-        if (envelope.Truncated is not null) output.AppendLine($"truncated: {envelope.Truncated.Value.ToString().ToLowerInvariant()}");
+        else { output.AppendLine("warnings:"); foreach (var warning in envelope.Warnings) WritePayload(output, "-", warning, 1); }
+        if (envelope.Error is not null) WriteLine(output, 0, "error", Scalar(envelope.Error));
+        if (envelope.ErrorCode is not null) WriteLine(output, 0, "errorCode", Scalar(envelope.ErrorCode));
+        WriteLine(output, 0, "instruction", envelope.Instruction is null ? "null" : Scalar(envelope.Instruction));
+        if (envelope.FollowUp.Length == 0) output.AppendLine("followUp: []");
+        else { output.AppendLine("followUp:"); foreach (string path in envelope.FollowUp) output.AppendLine("  - " + Scalar(path)); }
+        WriteLine(output, 0, "mutation", Scalar(envelope.Mutation.ToString().ToLowerInvariant()));
+        if (envelope.Page is not null)
+        {
+            output.AppendLine("page:");
+            WriteLine(output, 1, "offset", envelope.Page.Offset.ToString(CultureInfo.InvariantCulture));
+            WriteLine(output, 1, "limit", envelope.Page.Limit.ToString(CultureInfo.InvariantCulture));
+            WriteLine(output, 1, "returned", envelope.Page.Returned.ToString(CultureInfo.InvariantCulture));
+            WriteLine(output, 1, "total", envelope.Page.Total.ToString(CultureInfo.InvariantCulture));
+            WriteLine(output, 1, "hasMore", envelope.Page.HasMore ? "true" : "false");
+        }
+        if (envelope.Truncated is not null) WriteLine(output, 0, "truncated", envelope.Truncated.Value ? "true" : "false");
         return output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd();
     }
 
-    private static void WriteObjects(StringBuilder output, string name, IReadOnlyList<object> values)
+    private static void WritePayload(StringBuilder output, string name, object value, int indent)
     {
-        output.AppendLine(name + ":");
-        foreach (object value in values) WriteObject(output, "-", value, 1);
-    }
-
-    private static void WriteObject(StringBuilder output, string name, object value, int indent)
-    {
-        string prefix = new(' ', indent * 2);
-        if (name == "-") output.Append(prefix + "- "); else output.Append(prefix + name + ":\n" + prefix + "  ");
+        WriteLine(output, indent, name, null);
+        int childIndent = indent + 1;
         switch (value)
         {
             case SharedWarning warning:
-                output.AppendLine($"base: {Escape(warning.Base)}\n{prefix}  code: {warning.Code}\n{prefix}  diagnostic: {Escape(warning.Diagnostic)}"); break;
+                WriteLine(output, childIndent, "base", Scalar(warning.Base));
+                WriteLine(output, childIndent, "code", Scalar(warning.Code));
+                WriteLine(output, childIndent, "diagnostic", Scalar(warning.Diagnostic));
+                break;
             case SharedBaseSummary summary:
-                output.AppendLine($"base: {Escape(summary.Base)}\n{prefix}  availability: {summary.Availability.ToString().ToLowerInvariant()}\n{prefix}  generation: {Nullable(summary.Generation)}"); break;
-            case RecallResult recall:
-                output.AppendLine($"base: {recall.Base}\n{prefix}  path: {recall.Path}\n{prefix}  chunks:");
-                foreach (string chunk in recall.Chunks) output.AppendLine($"{prefix}    - {Escape(chunk)}");
-                output.AppendLine($"{prefix}  attributes: {{}}\n{prefix}  keywords:");
-                foreach (string keyword in recall.Keywords) output.AppendLine($"{prefix}    - {Escape(keyword)}");
-                output.AppendLine($"{prefix}  created: {Nullable(recall.Created)}\n{prefix}  updated: {Nullable(recall.Updated)}"); break;
-            case MutationResult mutation:
-                output.AppendLine($"base: {mutation.Base}");
-                if (mutation.Path is not null) output.AppendLine($"{prefix}  path: {mutation.Path}");
-                if (mutation.Destination is not null) output.AppendLine($"{prefix}  destination: {mutation.Destination}");
-                output.AppendLine($"{prefix}  mutation: {mutation.Mutation.ToString().ToLowerInvariant()}\n{prefix}  generation: {mutation.Generation}");
-                if (mutation.Manifest.Length == 0) output.AppendLine($"{prefix}  manifest: []");
-                else
+                WriteLine(output, childIndent, "base", Scalar(summary.Base));
+                if (summary.Root is not null) WriteLine(output, childIndent, "root", Scalar(summary.Root));
+                WriteLine(output, childIndent, "availability", Scalar(summary.Availability.ToString().ToLowerInvariant()));
+                WriteLine(output, childIndent, "generation", Nullable(summary.Generation));
+                break;
+            case SearchHit hit:
+                WriteLine(output, childIndent, "base", Scalar(hit.Base)); WriteLine(output, childIndent, "path", Scalar(hit.Path));
+                WriteLine(output, childIndent, "kind", Scalar(hit.Kind.ToString().ToLowerInvariant())); WriteLine(output, childIndent, "chunk", hit.Chunk?.ToString(CultureInfo.InvariantCulture) ?? "null");
+                WriteLine(output, childIndent, "score", hit.Score.ToString("R", CultureInfo.InvariantCulture)); WriteLine(output, childIndent, "preview", Scalar(hit.Preview));
+                WriteDictionary(output, childIndent, "attributes", hit.Attributes); break;
+            case ListItem item:
+                WriteLine(output, childIndent, "base", Scalar(item.Base)); WriteLine(output, childIndent, "path", Scalar(item.Path)); WriteLine(output, childIndent, "kind", "persistent");
+                WriteLine(output, childIndent, "created", Nullable(item.Created)); WriteLine(output, childIndent, "updated", Nullable(item.Updated)); WriteLine(output, childIndent, "description", Nullable(item.Description));
+                WriteDictionary(output, childIndent, "attributes", item.Attributes); WriteStrings(output, childIndent, "keywords", item.Keywords);
+                if (item.Drift is not null) WriteLine(output, childIndent, "drift", Scalar(item.Drift.Value.ToString().ToLowerInvariant()));
+                if (item.Files is not null)
                 {
-                    output.AppendLine($"{prefix}  manifest:");
-                    foreach (string path in mutation.Manifest) output.AppendLine($"{prefix}    - {Escape(path)}");
+                    if (item.Files.Length == 0) output.AppendLine(Indent(childIndent) + "files: []");
+                    else { output.AppendLine(Indent(childIndent) + "files:"); foreach (FileDriftRef file in item.Files) WritePayload(output, "-", file, childIndent + 1); }
                 }
                 break;
+            case FileDriftRef file:
+                WriteLine(output, childIndent, "file", Scalar(file.File)); WriteLine(output, childIndent, "expectedSha256", Nullable(file.ExpectedSha256)); WriteLine(output, childIndent, "actualSha256", Nullable(file.ActualSha256)); break;
+            case RecallResult recall:
+                WriteLine(output, childIndent, "base", Scalar(recall.Base)); WriteLine(output, childIndent, "path", Scalar(recall.Path)); WriteStrings(output, childIndent, "chunks", recall.Chunks);
+                WriteDictionary(output, childIndent, "attributes", recall.Attributes); WriteStrings(output, childIndent, "keywords", recall.Keywords);
+                WriteLine(output, childIndent, "created", Nullable(recall.Created)); WriteLine(output, childIndent, "updated", Nullable(recall.Updated)); break;
+            case EntityCount count:
+                WriteLine(output, childIndent, "entity", Scalar(count.Entity)); WriteLine(output, childIndent, "count", count.Count.ToString(CultureInfo.InvariantCulture)); break;
+            case FactsEntitiesResult entities:
+                WriteFactsHeader(output, childIndent, entities.Base, entities.Op); WritePayloads(output, childIndent, "rows", entities.Rows); WriteLine(output, childIndent, "truncated", entities.Truncated ? "true" : "false"); break;
+            case FactsProfileResult profile:
+                WriteFactsHeader(output, childIndent, profile.Base, profile.Op); WriteLine(output, childIndent, "entity", Scalar(profile.Entity)); WriteLine(output, childIndent, "count", profile.Count.ToString(CultureInfo.InvariantCulture));
+                WriteLine(output, childIndent, "firstSeen", Nullable(profile.FirstSeen)); WriteLine(output, childIndent, "lastSeen", Nullable(profile.LastSeen)); WritePayloads(output, childIndent, "coOccurrences", profile.CoOccurrences); WriteLine(output, childIndent, "coOccurrencesTruncated", profile.CoOccurrencesTruncated ? "true" : "false"); WriteStrings(output, childIndent, "timeline", profile.Timeline); WriteLine(output, childIndent, "timelineTruncated", profile.TimelineTruncated ? "true" : "false"); break;
+            case FactsIntersectResult intersect:
+                WriteFactsHeader(output, childIndent, intersect.Base, intersect.Op); WriteStrings(output, childIndent, "paths", intersect.Paths); WriteLine(output, childIndent, "truncated", intersect.Truncated ? "true" : "false"); break;
+            case MutationResult mutation:
+                WriteLine(output, childIndent, "base", Scalar(mutation.Base)); if (mutation.Path is not null) WriteLine(output, childIndent, "path", Scalar(mutation.Path)); if (mutation.Destination is not null) WriteLine(output, childIndent, "destination", Scalar(mutation.Destination));
+                WriteLine(output, childIndent, "mutation", Scalar(mutation.Mutation.ToString().ToLowerInvariant())); WriteLine(output, childIndent, "generation", Scalar(mutation.Generation)); WriteStrings(output, childIndent, "manifest", mutation.Manifest); break;
             case RefreshResult refresh:
-                output.AppendLine($"base: {refresh.Base}\n{prefix}  previousGeneration: {Nullable(refresh.PreviousGeneration)}\n{prefix}  newGeneration: {refresh.NewGeneration}\n{prefix}  availability: available\n{prefix}  warnings: []"); break;
-            case ListItem item:
-                output.AppendLine($"base: {item.Base}\n{prefix}  path: {item.Path}\n{prefix}  kind: persistent\n{prefix}  created: {Nullable(item.Created)}\n{prefix}  updated: {Nullable(item.Updated)}\n{prefix}  attributes: {{}}\n{prefix}  keywords: []\n{prefix}  drift: {item.Drift?.ToString().ToLowerInvariant() ?? "null"}");
-                if (item.Files is not null)
-                    foreach (FileDriftRef file in item.Files)
-                        output.AppendLine($"{prefix}  files:\n{prefix}    - file: {file.File}\n{prefix}      expectedSha256: {Nullable(file.ExpectedSha256)}\n{prefix}      actualSha256: {Nullable(file.ActualSha256)}");
-                break;
-            default: output.AppendLine(Escape(value.ToString() ?? string.Empty)); break;
+                WriteLine(output, childIndent, "base", Scalar(refresh.Base)); WriteLine(output, childIndent, "previousGeneration", Nullable(refresh.PreviousGeneration)); WriteLine(output, childIndent, "newGeneration", Scalar(refresh.NewGeneration)); WriteLine(output, childIndent, "availability", "available"); WritePayloads(output, childIndent, "warnings", refresh.Warnings); break;
+            default: throw new InvalidOperationException($"Unsupported shared payload DTO: {value.GetType().Name}.");
         }
     }
 
-    private static string Nullable(string? value) => value is null ? "null" : Escape(value);
-    private static string Escape(string value) => value.Contains(": ", StringComparison.Ordinal) || value.Contains('#') || value.Contains('"') ? $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"" : value;
+    private static void WritePayloads(StringBuilder output, int indent, string name, IEnumerable<object> values)
+    {
+        object[] items = values.ToArray();
+        if (items.Length == 0) { output.AppendLine(Indent(indent) + name + ": []"); return; }
+        output.AppendLine(Indent(indent) + name + ":"); foreach (object value in items) WritePayload(output, "-", value, indent + 1);
+    }
+
+    private static void WriteDictionary(StringBuilder output, int indent, string name, IReadOnlyDictionary<string, string[]> values)
+    { if (values.Count == 0) { output.AppendLine(Indent(indent) + name + ": {}"); return; } output.AppendLine(Indent(indent) + name + ":"); foreach (var pair in values.OrderBy(pair => pair.Key, StringComparer.Ordinal)) { output.AppendLine(Indent(indent + 1) + Scalar(pair.Key) + ":"); foreach (string value in pair.Value) output.AppendLine(Indent(indent + 2) + "- " + Scalar(value)); } }
+    private static void WriteStrings(StringBuilder output, int indent, string name, IEnumerable<string> values)
+    { string[] items = values.ToArray(); if (items.Length == 0) { output.AppendLine(Indent(indent) + name + ": []"); return; } output.AppendLine(Indent(indent) + name + ":"); foreach (string value in items) output.AppendLine(Indent(indent + 1) + "- " + Scalar(value)); }
+    private static void WriteFactsHeader(StringBuilder output, int indent, string baseName, FactsOperation operation) { WriteLine(output, indent, "base", Scalar(baseName)); WriteLine(output, indent, "op", Scalar(operation.ToString().ToLowerInvariant())); }
+    private static void WriteLine(StringBuilder output, int indent, string name, string? value) => output.AppendLine(Indent(indent) + (name == "-" ? "-" : name + ":" + (value is null ? "" : " " + value)));
+    private static string Indent(int level) => new(' ', level * 2);
+    private static string Nullable(string? value) => value is null ? "null" : Scalar(value);
+    private static string Scalar(string value)
+    {
+        if (value.Length > 0 && value.Trim() == value &&
+            !value.Any(char.IsControl) &&
+            !value.Contains('"') && !value.Contains('\'') && !value.Contains('\\') &&
+            !value.Contains(':') && !value.Contains('#') && !value.Contains('{') && !value.Contains('}') && !value.Contains('[') && !value.Contains(']') &&
+            !value.StartsWith('#') && !value.Contains(" #", StringComparison.Ordinal) &&
+            value is not ("-" or "---" or "...") && !value.StartsWith("- ", StringComparison.Ordinal) &&
+            !value.StartsWith('{') && !value.StartsWith('[') && !value.EndsWith('}') && !value.EndsWith(']') &&
+            !IsYamlImplicit(value)) return value;
+        return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal).Replace("\t", "\\t", StringComparison.Ordinal) + "\"";
+    }
+
+    private static bool IsYamlImplicit(string value) => value.Equals("null", StringComparison.OrdinalIgnoreCase) || value.Equals("true", StringComparison.OrdinalIgnoreCase) || value.Equals("false", StringComparison.OrdinalIgnoreCase) || double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
 }
