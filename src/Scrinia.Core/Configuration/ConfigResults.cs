@@ -12,6 +12,14 @@ public enum ConfigurationErrorCode
     SharedBaseUnsafePath,
     SharedBaseNotGitRoot,
     SharedTrackingPolicyDrift,
+    UserConfigMalformed,
+    UserConfigSchemaUnsupported,
+    LegacyMigrationRequired,
+    ManagedFileUnsafe,
+    TrackingPolicyRequired,
+    MigrationManualCleanupRequired,
+    ConfigLockTimeout,
+    IoFailure,
 }
 public enum ConfigurationExitClass { Success = 0, InvalidConfiguration = 2, PolicyFailure = 3, WriteFailure = 4 }
 public sealed record ConfigurationResult(
