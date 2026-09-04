@@ -103,6 +103,42 @@ public sealed class SharedFreshnessTests
         runtime.RevalidateBeforeMutation("/note", null).IsSafe.Should().BeFalse();
     }
 
+    [Fact]
+    public void Returns_unknown_when_postwrite_inventory_contains_new_invalid_entry()
+    {
+        using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
+        using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = "/note" };
+
+        SharedMutationCommit commit = runtime.CommitMutation(plan, () =>
+        {
+            Directory.CreateDirectory(Path.Combine(fixture.Root, ".scrinia", "memories"));
+            File.WriteAllBytes(Path.Combine(fixture.Root, ".scrinia", "memories", "new.meta.json"), [0xFF]);
+        });
+
+        commit.Mutation.Should().Be(SharedMutationCertainty.Unknown);
+        runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Stale);
+        runtime.RevalidateBeforeMutation("/note", null).ErrorCode.Should().Be("SHARED_BASE_STALE");
+    }
+
+    [Fact]
+    public void Commit_preserves_the_exact_authoritative_manifest()
+    {
+        using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
+        using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        var manifest = new[] { "memories/a.nmp2", "memories/a.meta.json" };
+        var plan = new SharedMutationPlan
+        {
+            Identity = runtime.Snapshot.Identity,
+            CanonicalPath = "/note",
+            AuthoritativeFiles = manifest,
+        };
+
+        SharedMutationCommit commit = runtime.CommitMutation(plan, static () => { });
+
+        commit.Manifest.Should().Equal(manifest);
+    }
+
     private sealed class RuntimeFixture : IDisposable
     {
         public required string Root { get; init; }

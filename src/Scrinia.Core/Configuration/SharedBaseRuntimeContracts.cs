@@ -155,10 +155,20 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         SharedBaseSnapshot snapshot = Snapshot;
         if (snapshot.Availability is not SharedBaseAvailability.Available)
             return Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_STALE");
+        if (!IsRegisteredRootStillCanonical())
+            return Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_UNSAFE_PATH");
         if (!AreTargetsContained(canonicalPath, canonicalDestination))
             return Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_UNSAFE_PATH");
 
-        string currentFingerprint = Fingerprint(_identity.RegisteredRoot);
+        string currentFingerprint;
+        try
+        {
+            currentFingerprint = Fingerprint(_identity.RegisteredRoot);
+        }
+        catch (ArgumentException)
+        {
+            return Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_UNSAFE_PATH");
+        }
         return string.Equals(currentFingerprint, snapshot.Fingerprint, StringComparison.Ordinal)
             ? new() { Identity = _identity, Snapshot = snapshot, CanonicalPath = canonicalPath, CanonicalDestination = canonicalDestination, IsSafe = true }
             : Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_STALE");
@@ -180,6 +190,12 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(durableMutation);
+        using SharedBaseMutationLease lease = AcquireMutationLease();
+        return CommitMutationUnderLease(plan, durableMutation);
+    }
+
+    private SharedMutationCommit CommitMutationUnderLease(SharedMutationPlan plan, Action durableMutation)
+    {
         SharedMutationPreflight preflight = RevalidateBeforeMutation(plan.CanonicalPath, plan.CanonicalDestination);
         if (!preflight.IsSafe)
             return new() { Identity = _identity, Mutation = SharedMutationCertainty.None, Generation = Snapshot.Generation, Manifest = [] };
@@ -194,7 +210,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             return new() { Identity = _identity, Mutation = SharedMutationCertainty.Unknown, Generation = Snapshot.Generation, Manifest = plan.AuthoritativeFiles };
         }
 
-        SharedRefreshValidation validation = RefreshSnapshot();
+        SharedRefreshValidation validation = RefreshSnapshot(rejectNewWarnings: true);
         return new()
         {
             Identity = _identity,
@@ -206,6 +222,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
 
     public SharedRefreshCommit Refresh()
     {
+        using SharedBaseRefreshLease lease = AcquireRefreshLease();
         string? previousGeneration = Snapshot.Generation;
         RefreshSnapshot();
         return new() { Identity = _identity, PreviousGeneration = previousGeneration, Snapshot = Snapshot };
@@ -228,6 +245,8 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         Span<byte> length = stackalloc byte[8];
         foreach ((string relativePath, string fullPath) in files)
         {
+            if (!PathContainment.IsWithin(registeredRoot, fullPath))
+                throw new ArgumentException("An authoritative file resolves outside the registered root.", nameof(registeredRoot));
             byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(relativePath);
             BinaryPrimitives.WriteInt64BigEndian(length, pathBytes.Length);
             hash.AppendData(length);
@@ -246,10 +265,13 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         return normalizedPath is not "config.json" and not ".gitignore" && !SharedClassifier.IsExcludedFromFingerprint(normalizedPath);
     }
 
-    internal SharedRefreshValidation RefreshSnapshot()
+    internal SharedRefreshValidation RefreshSnapshot(bool rejectNewWarnings = false)
     {
+        SharedBaseSnapshot previousSnapshot = Snapshot;
         try
         {
+            if (!IsRegisteredRootStillCanonical())
+                throw new ArgumentException("The registered root no longer resolves to the opened root.");
             DurableScanResult scan = DurableInventory.Scan(_identity.RegisteredRoot);
             string fingerprint = Fingerprint(_identity.RegisteredRoot);
             string inventoryRoot = Path.Combine(_identity.RegisteredRoot, ".scrinia");
@@ -268,6 +290,12 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
                 AuthoritativeFiles = files,
                 Entries = scan.HasConflict ? [] : scan.Entries,
             };
+            if (rejectNewWarnings && snapshot.Warnings.Except(previousSnapshot.Warnings, StringComparer.Ordinal).Any())
+            {
+                snapshot = snapshot with { Availability = SharedBaseAvailability.Stale };
+                Publish(snapshot);
+                return new SharedRefreshValidation(false, snapshot);
+            }
             Publish(snapshot);
             return new SharedRefreshValidation(!scan.HasConflict, snapshot);
         }
@@ -281,6 +309,20 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
 
     private bool AreTargetsContained(string? canonicalPath, string? canonicalDestination) =>
         AreTargetContained(canonicalPath) && AreTargetContained(canonicalDestination);
+
+    private bool IsRegisteredRootStillCanonical()
+    {
+        try
+        {
+            string canonicalRoot = PathContainment.ResolveCanonical(_identity.RegisteredRoot);
+            return string.Equals(canonicalRoot, _identity.RegisteredRoot,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
 
     private bool AreTargetContained(string? target)
     {
