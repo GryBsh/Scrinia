@@ -4,7 +4,7 @@ using Scrinia.Core;
 
 namespace Scrinia.Mcp.SharedContracts;
 
-public sealed record SharedBaseSelection(string Base, SharedBaseEntry Entry);
+public sealed record SharedBaseSelection(string Base, SharedBaseEntry? Entry);
 
 public sealed class SharedAddressException(string code, string message) : ArgumentException(message)
 {
@@ -44,16 +44,22 @@ public sealed class SharedServer
         foreach (string baseName in _workspaceConfig.GetEnabledBases())
         {
             SharedBaseEntry? entry = _registry.Lookup(baseName);
-            if (entry is not null)
-                selected.Add(new SharedBaseSelection(baseName, entry));
+            selected.Add(new SharedBaseSelection(baseName, entry));
         }
         return selected;
     }
+
+    public IReadOnlyList<SharedBaseSummary> GetEnabledBaseSummaries() =>
+        SelectEnabledBases()
+            .Select(selection => CreateSummary(selection.Base, selection.Entry))
+            .ToArray();
 
     public SharedBaseRuntime OpenSelectedBase(string baseName)
     {
         SharedBaseSelection selection = SelectBase(baseName)
             ?? throw new SharedAddressException("UNKNOWN_SHARED_BASE", "The selected shared base is unavailable.");
+        if (selection.Entry is null)
+            throw new SharedAddressException("UNKNOWN_SHARED_BASE", "The selected shared base is unavailable.");
         return _runtimeFactory.Open(selection.Entry);
     }
 
@@ -79,5 +85,13 @@ public sealed class SharedServer
     {
         MemoryAddress address = ParsePersistentAddress(rawPath);
         return PathParser.Parse(address.Value, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private SharedBaseSummary CreateSummary(string baseName, SharedBaseEntry? entry)
+    {
+        if (entry is null)
+            return new SharedBaseSummary(baseName, null, SharedAvailability.Unavailable, null);
+
+        return new SharedBaseSummary(baseName, entry.Root, SharedAvailability.Unavailable, null);
     }
 }

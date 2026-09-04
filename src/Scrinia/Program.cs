@@ -18,6 +18,7 @@ app.Add<ScriniaCommands>();
 app.Add<BundleCommands>("bundle");
 app.Add<SharedBaseCommands>("shared base");
 app.Add<SharedEnableCommands>("shared");
+app.Add<SharedServeCommands>("shared");
 app.Add<TrackingCliCommands>("tracking");
 await app.RunAsync(args);
 

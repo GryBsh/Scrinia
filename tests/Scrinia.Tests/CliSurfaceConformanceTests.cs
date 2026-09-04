@@ -39,7 +39,7 @@ public sealed class CliSurfaceConformanceTests
     // that set equals this one, so a third registered command class goes red there instead of
     // silently passing every rule in this file uncovered.
     private static IEnumerable<(Type Owner, MethodInfo Method)> Entrypoints() =>
-        new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(TrackingCliCommands) }
+        new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(SharedServeCommands), typeof(TrackingCliCommands) }
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                 .Where(m => m.ReturnType == typeof(int) || m.ReturnType == typeof(Task<int>))
                 .Select(m => (t, m)));
@@ -169,7 +169,7 @@ public sealed class CliSurfaceConformanceTests
         var registered = RegisteredCommandTypeNames();
         registered.Should().NotBeEmpty(because: "the regex must actually find Program.cs's app.Add<T>() calls");
 
-        var covered = new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(TrackingCliCommands) }
+        var covered = new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(SharedServeCommands), typeof(TrackingCliCommands) }
             .Select(t => t.Name)
             .ToHashSet(StringComparer.Ordinal);
 
@@ -194,8 +194,8 @@ public sealed class CliSurfaceConformanceTests
         // any --workspace/bool-default regression on it) could fall out of every rule below
         // without this test noticing. Adding or removing a command must restate this number
         // deliberately — that restatement is the point of the guard.
-        Entrypoints().Should().HaveCount(30,
-            because: "the CLI has exactly 30 command entrypoints across all registered command types; a filter that stops seeing some of them — even not all — " +
+        Entrypoints().Should().HaveCount(31,
+            because: "the CLI has exactly 31 command entrypoints across all registered command types; a filter that stops seeing some of them — even not all — " +
                      "would make the rules below pass without checking what it silently dropped");
     }
 
