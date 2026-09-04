@@ -73,7 +73,7 @@ result:
   mutation: applied
   generation: "{new string('0', 64)}"
   manifest:
-    - .scrinia/a.nmp2
+    - ".scrinia/a.nmp2"
 warnings: []
 instruction: git guidance
 followUp: []
@@ -218,6 +218,41 @@ mutation: none
         ParseWithoutDuplicateKeys(yaml);
     }
 
+    [Theory]
+    [InlineData("%payload")]
+    [InlineData("~")]
+    [InlineData(".inf")]
+    [InlineData("-.inf")]
+    [InlineData("+.inf")]
+    [InlineData(".nan")]
+    [InlineData("*alias")]
+    [InlineData("&anchor")]
+    [InlineData("!tag")]
+    [InlineData("|block")]
+    [InlineData(">folded")]
+    [InlineData("@directive")]
+    [InlineData("`code")]
+    [InlineData("true")]
+    [InlineData("null")]
+    [InlineData("[brackets]")]
+    [InlineData("{mapping}")]
+    [InlineData("key: value")]
+    [InlineData("hash # value")]
+    [InlineData("line\nnext")]
+    [InlineData("control\u0001")]
+    [InlineData("quote \"")]
+    [InlineData("slash \\")]
+    public void Dynamically_sourced_scalars_round_trip_as_exact_strings(string original)
+    {
+        var hit = new SearchHit("team", "/x", SharedHitKind.Entry, null, 1, original, new Dictionary<string, string[]>());
+
+        object? parsed = ParseYamlRoot(SharedEnvelope.Success("team", hit).ToYaml())["result"] is Dictionary<object, object> result
+            ? result["preview"]
+            : null;
+
+        parsed.Should().BeOfType<string>().Which.Should().Be(original);
+    }
+
     [Fact]
     public void Shared_envelope_context_rejects_unknown_json_properties()
     {
@@ -232,4 +267,7 @@ mutation: none
         var serializer = new DeserializerBuilder().Build();
         serializer.Deserialize<object>(yaml).Should().NotBeNull();
     }
+
+    private static Dictionary<object, object> ParseYamlRoot(string yaml) =>
+        new DeserializerBuilder().Build().Deserialize<Dictionary<object, object>>(yaml);
 }

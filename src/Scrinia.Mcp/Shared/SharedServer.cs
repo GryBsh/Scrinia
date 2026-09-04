@@ -257,15 +257,7 @@ internal static class SharedEnvelopeYaml
     private static string Nullable(string? value) => value is null ? "null" : Scalar(value);
     private static string Scalar(string value)
     {
-        if (value.Length > 0 && value.Trim() == value &&
-            !value.Any(char.IsControl) &&
-            !value.Contains('"') && !value.Contains('\'') && !value.Contains('\\') &&
-            !value.Contains(':') && !value.Contains('#') && !value.Contains('{') && !value.Contains('}') && !value.Contains('[') && !value.Contains(']') &&
-            !value.StartsWith('#') && !value.Contains(" #", StringComparison.Ordinal) &&
-            !"*&!|>@`".Contains(value[0]) &&
-            value is not ("-" or "---" or "...") && !value.StartsWith("- ", StringComparison.Ordinal) &&
-            !value.StartsWith('{') && !value.StartsWith('[') && !value.EndsWith('}') && !value.EndsWith(']') &&
-            !IsYamlImplicit(value)) return value;
+        if (IsSafePlainScalar(value)) return value;
         StringBuilder escaped = new(value.Length + 2);
         escaped.Append('"');
         foreach (char character in value)
@@ -284,6 +276,13 @@ internal static class SharedEnvelopeYaml
             }
         }
         return escaped.Append('"').ToString();
+    }
+
+    private static bool IsSafePlainScalar(string value)
+    {
+        if (value.Length == 0 || value.Trim() != value || IsYamlImplicit(value)) return false;
+        if (!char.IsLetter(value[0]) && value[0] != '/') return false;
+        return value.All(character => char.IsLetterOrDigit(character) || character is ' ' or '.' or '/' or '_' or '-');
     }
 
     private static bool IsYamlImplicit(string value) => value.Equals("null", StringComparison.OrdinalIgnoreCase) || value.Equals("true", StringComparison.OrdinalIgnoreCase) || value.Equals("false", StringComparison.OrdinalIgnoreCase) || double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
