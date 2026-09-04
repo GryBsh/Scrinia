@@ -15,6 +15,16 @@ internal static class TrackingCommands
         ["git", "-C", workspaceRoot, "check-ignore", "-v", "--no-index", ".scrinia/config.json", ".scrinia/facts.json"],
     ];
 
+    internal static IReadOnlyList<IReadOnlyList<string>> RegistrationArgv(string root, IReadOnlyList<string> manifest)
+    {
+        var commands = new List<IReadOnlyList<string>>
+        {
+            new[] { "git", "-C", root, "add", "-A", "--" }.Concat(manifest).ToArray(),
+        };
+        commands.AddRange(InspectionArgv(root));
+        return commands;
+    }
+
     internal static bool TryParseTarget(string? value, out TrackingPolicy policy) => value switch
     {
         "local" => Set(TrackingPolicy.Local, out policy),
@@ -40,7 +50,11 @@ public sealed class TrackingCliCommands
         WorkspaceSetup.Configure(null);
         LegacyFilesystemObservation observation = new LegacyMigrationService().Inspect(WorkspaceSetup.Root);
         string state = observation.State == LegacyMigrationState.Fresh ? "fresh-default-local" : observation.State.ToString().ToLowerInvariant();
-        return Render(new CliTrackingOutput("tracking status", state, observation.ErrorCode.ToString().ToUpperInvariant()), json, (int)observation.ExitClass);
+        ConfigurationJsonResult output = observation.ErrorCode == ConfigurationErrorCode.None
+            ? ConfigurationJsonResult.Success("tracking status", false, tracking: state, state: state,
+                gitCommands: TrackingCommands.InspectionArgv(WorkspaceSetup.Root))
+            : ConfigurationJsonResult.Failure("tracking status", observation.ErrorCode);
+        return Render(output, json, (int)observation.ExitClass);
     }
 
     public int Set([Argument] string policy, bool json = false) => Apply(policy, false, json);
@@ -50,20 +64,25 @@ public sealed class TrackingCliCommands
     {
         WorkspaceSetup.Configure(null);
         if (!TrackingCommands.TryParseTarget(value, out TrackingPolicy policy))
-            return Render(new CliTrackingOutput(migrate ? "tracking migrate-legacy" : "tracking set", "", "CLI_INVALID_ARGUMENT"), json, 2);
+            return Render(ConfigurationJsonResult.Failure(migrate ? "tracking migrate-legacy" : "tracking set", ConfigurationErrorCode.CliInvalidArgument), json, 2);
         var service = new LegacyMigrationService();
         LegacyMigrationResult result = migrate
             ? service.Migrate(WorkspaceSetup.Root, policy)
             : service.Set(WorkspaceSetup.Root, policy);
-        return Render(new CliTrackingOutput(migrate ? "tracking migrate-legacy" : "tracking set", policy.ToString().ToLowerInvariant(), result.ErrorCode.ToString().ToUpperInvariant()), json, (int)result.ExitClass);
+        string command = migrate ? "tracking migrate-legacy" : "tracking set";
+        ConfigurationJsonResult output = result.ErrorCode == ConfigurationErrorCode.None
+            ? ConfigurationJsonResult.Success(command, result.Changed, tracking: policy.ToString().ToLowerInvariant(),
+                state: policy.ToString().ToLowerInvariant(), warnings: result.Warnings,
+                gitCommands: TrackingCommands.InspectionArgv(WorkspaceSetup.Root))
+            : ConfigurationJsonResult.Failure(command, result.ErrorCode, result.Exception?.Message);
+        return Render(output, json, (int)result.ExitClass);
     }
 
-    private static int Render(CliTrackingOutput output, bool json, int exit)
+    private static int Render(ConfigurationJsonResult output, bool json, int exit)
     {
-        if (json) Console.WriteLine(JsonSerializer.Serialize(output, CliJsonContext.Default.CliTrackingOutput));
-        else Console.WriteLine($"{output.Tracking}\tUNVERIFIED");
+        if (json) Console.WriteLine(JsonSerializer.Serialize(output, CliJsonContext.Default.ConfigurationJsonResult));
+        else if (output.ErrorCode is null) Console.WriteLine($"{output.Tracking}\tUNVERIFIED");
+        else Console.Error.WriteLine($"{output.ErrorCode}: {output.Error}");
         return exit;
     }
 }
-
-internal sealed record CliTrackingOutput(string Command, string Tracking, string ErrorCode);

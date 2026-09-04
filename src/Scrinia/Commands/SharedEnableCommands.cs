@@ -19,10 +19,12 @@ public sealed class SharedEnableCommands
 
     private static int Render(string command, SharedBaseResult result, bool json)
     {
-        string? error = result.Succeeded ? null : result.ErrorCode.ToString().ToUpperInvariant();
-        if (json) Console.WriteLine(JsonSerializer.Serialize(new CliSharedBaseOutput(command, result.Base, error), CliJsonContext.Default.CliSharedBaseOutput));
+        ConfigurationJsonResult output = result.Succeeded
+            ? ConfigurationJsonResult.Success(command, result.Base is not null, @base: result.Base?.Name)
+            : ConfigurationJsonResult.Failure(command, result.ErrorCode, result.Exception?.Message);
+        if (json) Console.WriteLine(JsonSerializer.Serialize(output, CliJsonContext.Default.ConfigurationJsonResult));
         else if (result.Succeeded) Console.WriteLine(command);
-        else Console.Error.WriteLine($"{error}: {result.Exception?.Message}");
+        else Console.Error.WriteLine($"{output.ErrorCode}: {result.Exception?.Message}");
         return (int)result.ExitClass;
     }
 }

@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Scrinia.Core.Models;
+using Scrinia.Core.Configuration;
 
 namespace Scrinia.Commands;
 
@@ -25,9 +26,8 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliMigrateOutput))]
 [JsonSerializable(typeof(CliStoreMigrateOutput))]
 [JsonSerializable(typeof(CliHintOutput))]
-[JsonSerializable(typeof(CliSharedBaseOutput))]
-[JsonSerializable(typeof(CliSharedBaseListOutput))]
-[JsonSerializable(typeof(CliTrackingOutput))]
+[JsonSerializable(typeof(ConfigurationJsonResult))]
+[JsonSerializable(typeof(SharedBaseJsonItem))]
 [JsonSerializable(typeof(MemoryAddress))]
 [JsonSerializable(typeof(MemoryAddressKind))]
 [JsonSerializable(typeof(MemoryWrite))]

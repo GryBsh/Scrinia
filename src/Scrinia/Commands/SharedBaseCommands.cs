@@ -13,7 +13,12 @@ public sealed class SharedBaseCommands
     public int List(bool all = false, bool json = false)
     {
         IReadOnlyList<SharedBaseEntry> bases = Operations().List(all);
-        if (json) Console.WriteLine(JsonSerializer.Serialize(new CliSharedBaseListOutput(bases), CliJsonContext.Default.CliSharedBaseListOutput));
+        if (json)
+        {
+            var output = ConfigurationJsonResult.Success("shared base list", false,
+                bases: bases.Select(baseEntry => new SharedBaseJsonItem(baseEntry.Name, baseEntry.Root, "valid")).ToArray());
+            Console.WriteLine(JsonSerializer.Serialize(output, CliJsonContext.Default.ConfigurationJsonResult));
+        }
         else foreach (SharedBaseEntry entry in bases) Console.WriteLine($"{entry.Name}\t{entry.Root}\tproject-git");
         return 0;
     }
@@ -27,13 +32,16 @@ public sealed class SharedBaseCommands
 
     private static int Render(string command, SharedBaseResult result, bool json)
     {
-        string? error = result.Succeeded ? null : result.ErrorCode.ToString().ToUpperInvariant();
-        if (json) Console.WriteLine(JsonSerializer.Serialize(new CliSharedBaseOutput(command, result.Base, error), CliJsonContext.Default.CliSharedBaseOutput));
+        ConfigurationJsonResult output = result.Succeeded
+            ? ConfigurationJsonResult.Success(command, result.Base is not null, @base: result.Base?.Name,
+                manifest: command == "shared base add" ? [".scrinia/.gitignore"] : null,
+                gitCommands: command == "shared base add" && result.Base is not null
+                    ? TrackingCommands.RegistrationArgv(result.Base.Root, [".scrinia/.gitignore"])
+                    : TrackingCommands.InspectionArgv(result.Base?.Root ?? WorkspaceSetup.Root))
+            : ConfigurationJsonResult.Failure(command, result.ErrorCode, result.Exception?.Message);
+        if (json) Console.WriteLine(JsonSerializer.Serialize(output, CliJsonContext.Default.ConfigurationJsonResult));
         else if (result.Succeeded) Console.WriteLine(result.Base is null ? command : $"{command}: {result.Base.Name}");
-        else Console.Error.WriteLine($"{error}: {result.Exception?.Message}");
+        else Console.Error.WriteLine($"{output.ErrorCode}: {result.Exception?.Message}");
         return (int)result.ExitClass;
     }
 }
-
-internal sealed record CliSharedBaseOutput(string Command, SharedBaseEntry? Base, string? ErrorCode);
-internal sealed record CliSharedBaseListOutput(IReadOnlyList<SharedBaseEntry> Bases);
