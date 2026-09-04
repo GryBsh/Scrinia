@@ -138,21 +138,23 @@ public sealed class SharedFreshnessTests
     }
 
     [Fact]
-    public void Commit_preserves_the_exact_authoritative_manifest()
+    public void Commit_normalizes_the_authoritative_manifest_to_root_relative_sorted_files()
     {
         using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
         using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
-        var manifest = new[] { "memories/a.nmp2", "memories/a.meta.json" };
+        var changed = new[] { "memories/a.nmp2", "memories/a.meta.json" };
         var plan = new SharedMutationPlan
         {
             Identity = runtime.Snapshot.Identity,
             CanonicalPath = "/note",
-            AuthoritativeFiles = manifest,
+            AuthoritativeFiles = changed,
         };
 
         SharedMutationCommit commit = runtime.CommitMutation(plan, static () => { });
 
-        commit.Manifest.Should().Equal(manifest);
+        commit.Manifest.Should().Equal(
+            ".scrinia/memories/a.meta.json",
+            ".scrinia/memories/a.nmp2");
     }
 
     private sealed class RuntimeFixture : IDisposable

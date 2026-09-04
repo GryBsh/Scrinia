@@ -90,6 +90,15 @@ public sealed class SharedServer
         return PathParser.Parse(address.Value, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Builds the operation-based Git staging guidance for a successful shared mutation (§7.2): exactly
+    /// one add command carrying every manifest path as an individually shell-quoted argument, followed
+    /// by the fixed commit and push. Returns <c>null</c> for an empty manifest so a no-op emits no
+    /// staging command. Scrinia never claims the guidance ran or that the base is tracked.
+    /// </summary>
+    public static string? GuidanceForMutation(string registeredRoot, IReadOnlyList<string> manifest) =>
+        SharedGitGuidance.Render(registeredRoot, manifest);
+
     private SharedBaseSummary CreateSummary(string baseName, SharedBaseEntry? entry)
     {
         if (entry is null)

@@ -1,0 +1,8 @@
+# Task 8 Brief — Authoritative Mutation Manifests and Git Guidance
+
+- BASE: `3d2e81db49423667a78fc487f3beb18f4ae1b647`
+- Scope: the deterministic authoritative mutation manifest factory (`SharedManifest.Create`) in Core, the operation-based Git staging guidance (`SharedGitGuidance` + `SharedServer.GuidanceForMutation`) in the MCP surface, and the runtime wiring that normalizes every mutation commit's manifest through that factory.
+- Manifest rule (§7.2): each entry is made repository-root-relative (`.`scrinia/`-prefixed), `/`-separated, sorted by UTF-8 ordinal bytes, and deduplicated; only exact authoritative files survive — directories, wildcards, and every path the §4.1 durable classifier marks as derived are dropped, and a no-op manifest is empty so no staging command is emitted.
+- Git guidance rule (§7.2 / §8.3): guidance is printed only when a mutation is applied and its manifest is nonempty; it is exactly one `git -C "<root>" add -A -- '<path>' ...` command with every manifest path as an individually shell-quoted argument, followed by the fixed commit and push; Scrinia never substitutes a directory pathspec, never adds a derived path, and never claims Git state.
+- Per-operation contract is deferred: remember/append (body+sidecar), forget (deleted authoritative files), link (both endpoints), compact (rewritten body+sidecar, versions archive only if the classifier later marks it authoritative), and skill/agent (body+sidecar) each feed their exact changed files into `SharedManifest.Create`; Task 8 owns the shared normalization, not the handlers.
+- Explicit non-scope: no later shared tool handler, no CLI `base add` manifest, no Git/index execution or inspection.

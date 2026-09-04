@@ -207,7 +207,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         catch
         {
             Publish(Snapshot with { Availability = SharedBaseAvailability.Stale });
-            return new() { Identity = _identity, Mutation = SharedMutationCertainty.Unknown, Generation = Snapshot.Generation, Manifest = plan.AuthoritativeFiles };
+            return new() { Identity = _identity, Mutation = SharedMutationCertainty.Unknown, Generation = Snapshot.Generation, Manifest = SharedManifest.Create(plan.AuthoritativeFiles) };
         }
 
         SharedRefreshValidation validation = RefreshSnapshot(rejectNewWarnings: true);
@@ -216,7 +216,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             Identity = _identity,
             Mutation = validation.Succeeded ? SharedMutationCertainty.Applied : SharedMutationCertainty.Unknown,
             Generation = validation.Snapshot.Generation,
-            Manifest = plan.AuthoritativeFiles
+            Manifest = SharedManifest.Create(plan.AuthoritativeFiles)
         };
     }
 
