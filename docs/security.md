@@ -85,6 +85,10 @@ diagnostics, and errors do not enumerate disabled registry entries or roots; the
 `scri shared base list --all` command is the sole complete registry listing surface, including
 disabled entries. The default list does not disclose disabled names or roots.
 
+The declared configuration/tracking error inventory includes `CONFIG_RECOVERY_REQUIRED` (exit
+class 4): a compensation or recovery attempt failed, so the caller must preserve and replay the
+recovery evidence before treating the configuration transaction as complete.
+
 ### Secrets in stored content
 
 Scrinia does not scan memory bodies for tokens, credentials, or PII, and **agents store what they
