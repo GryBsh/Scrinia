@@ -1,6 +1,8 @@
 using System.Text;
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Configuration;
+using Scrinia.Mcp;
 
 namespace Scrinia.Tests.Shared;
 
@@ -90,6 +92,51 @@ public sealed class SharedDurableMatrixTests
         entries["/agent/agent"].Availability.Should().Be(SharedDurableAvailability.ReadWrite);
         entries.Values.Where(entry => entry.Availability == SharedDurableAvailability.Unavailable)
             .Select(entry => entry.Path).Should().NotContain("/skill/skill");
+    }
+
+    [Fact]
+    public async Task Skill_rewrite_reads_and_replaces_an_absent_version_sidecar()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        string skillName = EmbeddedPrompts.LoadAllSkills().Keys.OrderBy(k => k, StringComparer.Ordinal).First();
+
+        (await tools.MemoryRemember($"/skill/{skillName}", ["original instructions"]))
+            .Should().NotContain("status: error");
+        string filePath = Path.Combine(
+            PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot), skillName + ".md");
+        string sidecarPath = Path.ChangeExtension(filePath, ".meta.json");
+        File.WriteAllText(sidecarPath, "{}");
+
+        (await tools.MemoryRecall($"/skill/{skillName}"))
+            .Should().Contain("original instructions");
+        (await tools.MemoryRemember($"/skill/{skillName}", ["rewritten instructions"]))
+            .Should().NotContain("status: error");
+
+        File.ReadAllText(filePath).Should().Contain("rewritten instructions");
+        File.ReadAllText(sidecarPath).Should().Contain("\"updatedAt\"");
+    }
+
+    [Fact]
+    public async Task Agent_rewrite_reads_and_replaces_an_absent_version_sidecar()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+
+        (await tools.MemoryRemember("/agent/task6-agent", ["original configuration"]))
+            .Should().NotContain("status: error");
+        string filePath = Path.Combine(
+            PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot), "task6-agent.md");
+        string sidecarPath = Path.ChangeExtension(filePath, ".meta.json");
+        File.WriteAllText(sidecarPath, "{}");
+
+        (await tools.MemoryRemember("/agent/task6-agent", ["rewritten configuration"]))
+            .Should().NotContain("status: error");
+
+        File.ReadAllText(filePath).Should().Be("rewritten configuration");
+        File.ReadAllText(sidecarPath).Should().Contain("\"updatedAt\"");
     }
 
     private sealed class DurableFixture : IDisposable
