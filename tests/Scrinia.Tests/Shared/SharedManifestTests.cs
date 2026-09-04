@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using Scrinia.Core.Configuration;
 
@@ -96,6 +97,25 @@ public sealed class SharedManifestTests
         string[] manifest = SharedManifest.Create(new[] { "", "   ", null! });
 
         manifest.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Manifest_sorts_non_ascii_paths_by_utf8_code_byte_order_not_code_unit_order()
+    {
+        // U+10000 (𐀀) is a surrogate pair in UTF-16 ([D800, DC00]) but four UTF-8 bytes (F0 90 80 80).
+        // U+FDFF (﷿) is a single BMP code unit in UTF-16 ([FDFF]) but three UTF-8 bytes (EF BF BF).
+        // StringComparer.Ordinal orders by UTF-16 code unit: D800 < FDFF, so 𐀀 precedes ﷿.
+        // UTF-8 byte order orders by the first byte: EF < F0, so ﷿ precedes 𐀀.
+        string utf16First = "\U00010000.nmp2";
+        string utf8First = "\uFDFF.nmp2";
+
+        // Prove the two orderings genuinely diverge before asserting the manifest follows UTF-8 bytes.
+        StringComparer.Ordinal.Compare(utf16First, utf8First).Should().BeNegative(); // D800 < FDFF under UTF-16
+        Encoding.UTF8.GetBytes(utf8First)[0].Should().BeLessThan(Encoding.UTF8.GetBytes(utf16First)[0]); // EF < F0 under UTF-8
+
+        string[] manifest = SharedManifest.Create(new[] { utf16First, utf8First });
+
+        manifest.Should().Equal(".scrinia/" + utf8First, ".scrinia/" + utf16First);
     }
 
     [Fact]
