@@ -35,6 +35,12 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         name.Length is >= 1 and <= 32 && name[0] is >= 'a' and <= 'z' &&
         name[1..].All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
 
+    public static string NormalizeRoot(string root)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(root);
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+    }
+
     public SharedBaseResult Add(string name, string root)
     {
         if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
@@ -141,7 +147,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         canonicalRoot = "";
         errorCode = ConfigurationErrorCode.SharedBaseUnsafePath;
         if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root) || !Directory.Exists(root)) return false;
-        canonicalRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        canonicalRoot = NormalizeRoot(root);
         if (string.Equals(Path.GetFileName(canonicalRoot), ".scrinia", StringComparison.OrdinalIgnoreCase) ||
             PathContainment.IsWithin(_workspaceRoot, canonicalRoot))
         {

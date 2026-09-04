@@ -22,6 +22,16 @@ public sealed class SharedBaseRegistryTests : IDisposable
         SharedBaseRegistry.IsCanonicalName(name).Should().Be(expected);
     }
 
+    [Theory]
+    [InlineData("/")]
+    [InlineData("C:\\")]
+    public void NormalizeRoot_PreservesVolumeRoots(string root)
+    {
+        if (root.StartsWith("C:", StringComparison.Ordinal) && !OperatingSystem.IsWindows()) return;
+
+        SharedBaseRegistry.NormalizeRoot(root).Should().Be(Path.GetPathRoot(Path.GetFullPath(root)));
+    }
+
     [Fact]
     public void Add_RequiresTheRootItselfToContainGitEvidence()
     {
@@ -33,6 +43,18 @@ public sealed class SharedBaseRegistryTests : IDisposable
 
         result.ErrorCode.Should().Be(ConfigurationErrorCode.SharedBaseNotGitRoot);
         registry.Lookup("team").Should().BeNull();
+    }
+
+    [Fact]
+    public void Add_RejectsAncestorGitMarkerWhenTheSuppliedRootHasNoMarker()
+    {
+        string parent = Path.Combine(_home, "parent");
+        string root = Path.Combine(parent, "child");
+        Directory.CreateDirectory(Path.Combine(parent, ".git"));
+        Directory.CreateDirectory(root);
+        var registry = new SharedBaseRegistry(_home, _workspace);
+
+        registry.Add("child", root).ErrorCode.Should().Be(ConfigurationErrorCode.SharedBaseNotGitRoot);
     }
 
     [Fact]
@@ -85,6 +107,23 @@ public sealed class SharedBaseRegistryTests : IDisposable
         registry.Add("team", root).Succeeded.Should().BeTrue();
         registry.Add("team", root).Succeeded.Should().BeTrue();
         registry.List(includeDisabled: true).Should().ContainSingle();
+    }
+
+    [Fact]
+    public void EnableAndDisable_PreserveOrderAndRemoveTheLastScalar()
+    {
+        string first = CreateGitRoot("first-repo");
+        string second = CreateGitRoot("second-repo");
+        var registry = new SharedBaseRegistry(_home, _workspace);
+        registry.Add("first", first).Succeeded.Should().BeTrue();
+        registry.Add("second", second).Succeeded.Should().BeTrue();
+
+        registry.Enable("second").Succeeded.Should().BeTrue();
+        registry.Enable("first").Succeeded.Should().BeTrue();
+        WorkspaceConfig.Load(_workspace).GetEnabledBases().Should().Equal("second", "first");
+        registry.Disable("second").Succeeded.Should().BeTrue();
+        registry.Disable("first").Succeeded.Should().BeTrue();
+        WorkspaceConfig.Load(_workspace).GetValue(WorkspaceConfig.EnabledKey).Should().BeNull();
     }
 
     [Fact]
