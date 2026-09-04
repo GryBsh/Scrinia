@@ -19,7 +19,7 @@ internal static class TrackingCommands
     {
         var commands = new List<IReadOnlyList<string>>
         {
-            new[] { "git", "-C", root, "add", "-A", "--" }.Concat(manifest).ToArray(),
+            new[] { "git", "-C", root, "add", "--" }.Concat(manifest).ToArray(),
         };
         commands.AddRange(InspectionArgv(root));
         return commands;

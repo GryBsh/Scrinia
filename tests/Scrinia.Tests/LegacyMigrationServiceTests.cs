@@ -159,6 +159,7 @@ public sealed class LegacyMigrationServiceTests
     }
 
     [Theory]
+    [InlineData("complete")]
     [InlineData("complete\nnot-base64|-")]
     [InlineData("complete\nprepared")]
     public void CompletedJournalWithTrailingContentIsRejectedByInspectAndMigrate(string journalContent)

@@ -416,7 +416,7 @@ public sealed class LegacyMigrationService
         {
             throw new ScriniaConfigurationException("The tracking recovery journal is malformed.", exception);
         }
-        if (content is "complete" or "complete\n") { File.Delete(path); return; }
+        if (content is "complete\n") { File.Delete(path); return; }
         string[] lines = content.Split('\n');
         if (lines.Length > 0 && lines[^1].Length == 0)
             lines = lines[..^1];

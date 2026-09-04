@@ -1,11 +1,24 @@
 using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core.Configuration;
+using Scrinia.Commands;
 
 namespace Scrinia.Tests;
 
 public sealed class SharedConfigJsonOutputTests
 {
+    [Fact]
+    public void RegistrationGuidanceStagesOnlyTheDeclaredManifest()
+    {
+        IReadOnlyList<IReadOnlyList<string>> commands = TrackingCommands.RegistrationArgv(
+            "C:\\repo", [".scrinia/.gitignore"]);
+
+        commands[0].Should().BeEquivalentTo(
+            ["git", "-C", "C:\\repo", "add", "--", ".scrinia/.gitignore"],
+            options => options.WithStrictOrdering());
+        commands.SelectMany(command => command).Should().NotContain("-A");
+    }
+
     [Fact]
     public void SuccessEnvelopeEmitsStableFieldsAndStaticArgv()
     {

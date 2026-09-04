@@ -30,6 +30,9 @@ public sealed class SharedBaseOperations
             return validationResult;
         string canonicalRoot = validationResult.Base!.Root;
 
+        using FileLock _ = FileLock.AcquireExclusive(ConfigurationLock.GetPath(
+            Path.Combine(canonicalRoot, ".scrinia", ".gitignore")));
+
         string scriniaDirectory = Path.Combine(canonicalRoot, ".scrinia");
         string ignorePath = Path.Combine(scriniaDirectory, ".gitignore");
         bool directoryExisted = Directory.Exists(scriniaDirectory);

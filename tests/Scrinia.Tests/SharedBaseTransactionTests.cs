@@ -78,6 +78,22 @@ public sealed class SharedBaseTransactionTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Add_SerializesDifferentNamesSharingOneRoot()
+    {
+        string root = CreateGitRoot("concurrent-repo");
+        SharedBaseResult[] results = await Task.WhenAll(
+            Task.Run(() => new SharedBaseOperations(new SharedBaseRegistry(_home, _workspace), _home, _workspace).Add("alpha", root)),
+            Task.Run(() => new SharedBaseOperations(new SharedBaseRegistry(_home, _workspace), _home, _workspace).Add("beta", root)));
+
+        results.Count(result => result.Succeeded).Should().Be(1);
+        results.Count(result => result.ErrorCode == ConfigurationErrorCode.SharedBaseRootCollision).Should().Be(1);
+        new SharedBaseRegistry(_home, _workspace).List(includeDisabled: true)
+            .Select(entry => entry.Name).Should().ContainSingle();
+        File.ReadAllText(Path.Combine(root, ".scrinia", ".gitignore"))
+            .Should().Be(ManagedIgnoreBlock.ProjectGit);
+    }
+
     private string CreateGitRoot(string name)
     {
         string root = Path.Combine(_home, name);
