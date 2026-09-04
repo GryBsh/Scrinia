@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using System.Text;
 using Scrinia.Core;
 
 namespace Scrinia.Core.Configuration;
@@ -114,6 +117,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
     {
         _identity = identity;
         _snapshot = new SharedBaseSnapshot { Identity = identity };
+        RefreshSnapshot();
     }
 
     public string BaseName => _identity.BaseName;
@@ -138,8 +142,19 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         return new SharedBaseRefreshLease(() => _generationGate.ExitWriteLock());
     }
 
-    public SharedMutationPreflight RevalidateBeforeMutation(string? canonicalPath, string? canonicalDestination) =>
-        new() { Identity = _identity, Snapshot = Snapshot, CanonicalPath = canonicalPath, CanonicalDestination = canonicalDestination, IsSafe = true };
+    public SharedMutationPreflight RevalidateBeforeMutation(string? canonicalPath, string? canonicalDestination)
+    {
+        SharedBaseSnapshot snapshot = Snapshot;
+        if (snapshot.Availability is not SharedBaseAvailability.Available)
+            return Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_STALE");
+        if (!AreTargetsContained(canonicalPath, canonicalDestination))
+            return Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_UNSAFE_PATH");
+
+        string currentFingerprint = Fingerprint(_identity.RegisteredRoot);
+        return string.Equals(currentFingerprint, snapshot.Fingerprint, StringComparison.Ordinal)
+            ? new() { Identity = _identity, Snapshot = snapshot, CanonicalPath = canonicalPath, CanonicalDestination = canonicalDestination, IsSafe = true }
+            : Unsafe(snapshot, canonicalPath, canonicalDestination, "SHARED_BASE_STALE");
+    }
 
     public SharedMutationCommit CommitMutation(SharedMutationPlan plan)
     {
@@ -153,8 +168,112 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         };
     }
 
-    public SharedRefreshCommit Refresh() =>
-        new() { Identity = _identity, PreviousGeneration = Snapshot.Generation, Snapshot = Snapshot };
+    public SharedMutationCommit CommitMutation(SharedMutationPlan plan, Action durableMutation)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(durableMutation);
+        SharedMutationPreflight preflight = RevalidateBeforeMutation(plan.CanonicalPath, plan.CanonicalDestination);
+        if (!preflight.IsSafe)
+            return new() { Identity = _identity, Mutation = SharedMutationCertainty.None, Generation = Snapshot.Generation, Manifest = [] };
+
+        try
+        {
+            durableMutation();
+        }
+        catch
+        {
+            Publish(Snapshot with { Availability = SharedBaseAvailability.Stale });
+            return new() { Identity = _identity, Mutation = SharedMutationCertainty.Unknown, Generation = Snapshot.Generation, Manifest = plan.AuthoritativeFiles };
+        }
+
+        RefreshSnapshot();
+        return new() { Identity = _identity, Mutation = SharedMutationCertainty.Applied, Generation = Snapshot.Generation, Manifest = plan.AuthoritativeFiles };
+    }
+
+    public SharedRefreshCommit Refresh()
+    {
+        string? previousGeneration = Snapshot.Generation;
+        RefreshSnapshot();
+        return new() { Identity = _identity, PreviousGeneration = previousGeneration, Snapshot = Snapshot };
+    }
+
+    public static string Fingerprint(string registeredRoot)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(registeredRoot);
+        string inventoryRoot = Path.Combine(registeredRoot, ".scrinia");
+        if (!Directory.Exists(inventoryRoot))
+            throw new DirectoryNotFoundException(inventoryRoot);
+
+        var files = Directory.EnumerateFiles(inventoryRoot, "*", SearchOption.AllDirectories)
+            .Where(path => !SharedClassifier.IsExcludedFromFingerprint(Path.GetRelativePath(inventoryRoot, path)))
+            .Select(path => (Path: Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/'), FullPath: path))
+            .OrderBy(item => System.Text.Encoding.UTF8.GetBytes(item.Path), ByteArrayComparer.Instance)
+            .ToArray();
+
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[8];
+        foreach ((string relativePath, string fullPath) in files)
+        {
+            byte[] pathBytes = System.Text.Encoding.UTF8.GetBytes(relativePath);
+            BinaryPrimitives.WriteInt64BigEndian(length, pathBytes.Length);
+            hash.AppendData(length);
+            hash.AppendData(pathBytes);
+            byte[] content = File.ReadAllBytes(fullPath);
+            BinaryPrimitives.WriteInt64BigEndian(length, content.Length);
+            hash.AppendData(length);
+            hash.AppendData(content);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    private void RefreshSnapshot()
+    {
+        try
+        {
+            string fingerprint = Fingerprint(_identity.RegisteredRoot);
+            string[] files = Directory.EnumerateFiles(Path.Combine(_identity.RegisteredRoot, ".scrinia"), "*", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(Path.Combine(_identity.RegisteredRoot, ".scrinia"), path).Replace('\\', '/'))
+                .Where(path => !SharedClassifier.IsExcludedFromFingerprint(path))
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray();
+            Publish(new SharedBaseSnapshot { Identity = _identity, Generation = fingerprint, Fingerprint = fingerprint, Availability = SharedBaseAvailability.Available, AuthoritativeFiles = files });
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Publish(new SharedBaseSnapshot { Identity = _identity, Availability = SharedBaseAvailability.Unavailable, Warnings = [exception.GetType().Name] });
+        }
+    }
+
+    private bool AreTargetsContained(string? canonicalPath, string? canonicalDestination) =>
+        AreTargetContained(canonicalPath) && AreTargetContained(canonicalDestination);
+
+    private bool AreTargetContained(string? target)
+    {
+        if (target is null || !Path.IsPathFullyQualified(target))
+            return true;
+        return PathContainment.IsWithin(_identity.RegisteredRoot, target);
+    }
+
+    private SharedMutationPreflight Unsafe(SharedBaseSnapshot snapshot, string? path, string? destination, string code) =>
+        new() { Identity = _identity, Snapshot = snapshot, CanonicalPath = path, CanonicalDestination = destination, IsSafe = false, ErrorCode = code };
+
+    private sealed class ByteArrayComparer : IComparer<byte[]>
+    {
+        public static ByteArrayComparer Instance { get; } = new();
+        public int Compare(byte[]? left, byte[]? right)
+        {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left is null) return -1;
+            if (right is null) return 1;
+            int length = Math.Min(left.Length, right.Length);
+            for (int index = 0; index < length; index++)
+            {
+                int result = left[index].CompareTo(right[index]);
+                if (result != 0) return result;
+            }
+            return left.Length.CompareTo(right.Length);
+        }
+    }
 
     internal void Publish(SharedBaseSnapshot snapshot)
     {
