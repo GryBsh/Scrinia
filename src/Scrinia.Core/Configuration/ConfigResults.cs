@@ -1,6 +1,18 @@
 namespace Scrinia.Core.Configuration;
 
-public enum ConfigurationErrorCode { None, WorkspaceConfigMalformed, TrackingPolicyInvalid, ConfigWriteFailed }
+public enum ConfigurationErrorCode
+{
+    None,
+    WorkspaceConfigMalformed,
+    TrackingPolicyInvalid,
+    ConfigWriteFailed,
+    SharedBaseAlreadyExists,
+    SharedBaseNotFound,
+    SharedBaseRootCollision,
+    SharedBaseUnsafePath,
+    SharedBaseNotGitRoot,
+    SharedTrackingPolicyDrift,
+}
 public enum ConfigurationExitClass { Success = 0, InvalidConfiguration = 2, PolicyFailure = 3, WriteFailure = 4 }
 public sealed record ConfigurationResult(
     ConfigurationErrorCode ErrorCode = ConfigurationErrorCode.None,
@@ -9,6 +21,17 @@ public sealed record ConfigurationResult(
 {
     public bool Succeeded => ErrorCode == ConfigurationErrorCode.None;
 }
+
+public sealed record SharedBaseResult(
+    ConfigurationErrorCode ErrorCode = ConfigurationErrorCode.None,
+    ConfigurationExitClass ExitClass = ConfigurationExitClass.Success,
+    SharedBaseEntry? Base = null,
+    Exception? Exception = null)
+{
+    public bool Succeeded => ErrorCode == ConfigurationErrorCode.None;
+}
+
+public sealed record SharedBaseCollision(string Name, string Root, string OtherName, string OtherRoot);
 
 public static class ConfigResults
 {

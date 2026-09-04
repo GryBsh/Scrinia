@@ -16,6 +16,14 @@ public sealed class SharedBaseEntry
 {
     [JsonPropertyName("root")]
     public required string Root { get; init; }
+
+    [JsonIgnore]
+    public string Name { get; init; } = "";
+
+    [JsonIgnore]
+    public TrackingPolicy Tracking { get; init; } = TrackingPolicy.ProjectGit;
+
+    internal SharedBaseEntry WithIdentity(string name) => new() { Root = Root, Name = name, Tracking = Tracking };
 }
 
 public sealed class SharedBasesMap : Dictionary<string, SharedBaseEntry>
@@ -74,15 +82,17 @@ public sealed class HomeConfigStore : IHomeConfigStore
         string lockPath = ConfigurationLock.GetPath(configPath);
         using (FileLock.AcquireExclusive(lockPath))
         {
-            string json = JsonSerializer.Serialize(config, HomeConfigJsonContext.Default.HomeConfig);
-            try
-            {
-                DurableFile.AtomicWriteAllText(configPath, json);
-            }
-            catch (DurableWriteException exception)
-            {
-                throw new ScriniaConfigurationException("The home config could not be written atomically.", exception);
-            }
+            SaveLocked(configPath, config);
+        }
+    }
+
+    internal void SaveLocked(string configPath, HomeConfig config)
+    {
+        string json = JsonSerializer.Serialize(config, HomeConfigJsonContext.Default.HomeConfig);
+        try { DurableFile.AtomicWriteAllText(configPath, json); }
+        catch (DurableWriteException exception)
+        {
+            throw new ScriniaConfigurationException("The home config could not be written atomically.", exception);
         }
     }
 
