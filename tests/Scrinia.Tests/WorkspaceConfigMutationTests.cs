@@ -52,7 +52,8 @@ public sealed class WorkspaceConfigMutationTests : IDisposable
 
         Action mutate = () => writer.SetValue("new", "value");
 
-        mutate.Should().Throw<DurableWriteException>();
+        mutate.Should().Throw<ScriniaConfigurationException>()
+            .Which.InnerException.Should().BeOfType<DurableWriteException>();
         WorkspaceConfig.Load(_root).GetValue("existing").Should().Be("old");
         WorkspaceConfig.Load(_root).GetValue("new").Should().BeNull();
         File.ReadAllText(Path.Combine(_root, ".scrinia", "config.json"))
