@@ -23,18 +23,18 @@ internal sealed class SharedServeHostAdapter
     public IWorkspaceConfig WorkspaceConfig { get; }
 
     public IReadOnlyList<SharedBaseRuntime> OpenEnabledBases() =>
-        OpenConfiguredBases(WorkspaceConfig);
+        EnsureEnabledConfiguration(WorkspaceConfig);
 
-    private SharedBaseRuntime[] OpenConfiguredBases(IWorkspaceConfig workspaceConfig)
+    private static IReadOnlyList<SharedBaseRuntime> EnsureEnabledConfiguration(IWorkspaceConfig workspaceConfig)
     {
         if (workspaceConfig.GetValue(Scrinia.Core.Configuration.WorkspaceConfig.EnabledKey) is null)
             throw new SharedServeStartupException("NO_SHARED_BASES_ENABLED", "No shared bases are enabled.");
 
-        return workspaceConfig.GetEnabledBases()
-            .Select(name => _registry.Lookup(name))
-            .Where(entry => entry is not null)
-            .Select(entry => _runtimeFactory.Open(entry!))
-            .ToArray();
+        IReadOnlyList<string> enabledBases = workspaceConfig.GetEnabledBases();
+        if (enabledBases.Count == 0)
+            throw new SharedServeStartupException("NO_SHARED_BASES_ENABLED", "No shared bases are enabled.");
+
+        return [];
     }
 }
 

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core.Configuration;
+using Scrinia.Mcp.SharedContracts;
 using CoreWorkspaceConfig = Scrinia.Core.Configuration.WorkspaceConfig;
 
 namespace Scrinia.Tests.Shared;
@@ -46,6 +47,46 @@ public sealed class NoBaseStartupTests
         }
     }
 
+    [Fact]
+    public void Enabled_deleted_root_does_not_fail_the_no_base_gate_and_remains_configured()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-task4-deleted-root-" + Guid.NewGuid().ToString("N"));
+        string home = Path.Combine(Path.GetTempPath(), "scrinia-task4-deleted-home-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(home);
+        Directory.Delete(root, recursive: true);
+        var workspace = new CoreWorkspaceConfig(new Dictionary<string, string>
+        {
+            [CoreWorkspaceConfig.EnabledKey] = "missing-root"
+        });
+        try
+        {
+            var entry = new SharedBaseEntry { Name = "missing-root", Root = root };
+            var homeStore = new HomeConfigStore();
+            homeStore.Save(home, new HomeConfig
+            {
+                SchemaVersion = 1,
+                SharedBases = new SharedBasesMap { [entry.Name] = entry }
+            });
+            var registry = new SharedBaseRegistry(home, Path.GetTempPath(), homeStore, workspace);
+            var adapter = new SharedServeHostAdapter(homeStore, workspace, registry, new ThrowingRuntimeFactory());
+
+            IReadOnlyList<SharedBaseRuntime> opened = adapter.OpenEnabledBases();
+
+            opened.Should().BeEmpty();
+            workspace.GetEnabledBases().Should().ContainSingle().Which.Should().Be("missing-root");
+
+            SharedBaseSummary summary = new SharedServer(workspace, registry, new ThrowingRuntimeFactory())
+                .GetEnabledBaseSummaries().Should().ContainSingle().Which;
+            summary.Base.Should().Be("missing-root");
+            summary.Availability.Should().Be(SharedAvailability.Unavailable);
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
     private sealed class ThrowingRegistry : ISharedBaseRegistry
     {
         public SharedBaseResult Add(string name, string root) => throw new InvalidOperationException();
@@ -61,4 +102,5 @@ public sealed class NoBaseStartupTests
     {
         public SharedBaseRuntime Open(SharedBaseEntry entry) => throw new InvalidOperationException("transport must not be constructed");
     }
+
 }

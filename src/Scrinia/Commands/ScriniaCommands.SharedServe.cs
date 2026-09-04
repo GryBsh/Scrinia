@@ -29,6 +29,7 @@ public sealed class SharedServeCommands
         // zero-base configuration, but it must not create a protocol transport that can never
         // serve a shared namespace.
         adapter.OpenEnabledBases();
+        _ = new SharedServer(workspaceConfig, registry, runtimeFactory).GetEnabledBaseSummaries();
 
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
