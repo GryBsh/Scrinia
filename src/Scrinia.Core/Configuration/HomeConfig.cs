@@ -71,7 +71,7 @@ public sealed class HomeConfigStore : IHomeConfigStore
 
         Directory.CreateDirectory(homeDirectory);
         string configPath = Path.Combine(homeDirectory, ConfigFileName);
-        string lockPath = configPath + ".lock";
+        string lockPath = ConfigurationLock.GetPath(configPath);
         using (FileLock.AcquireExclusive(lockPath))
         {
             string json = JsonSerializer.Serialize(config, HomeConfigJsonContext.Default.HomeConfig);

@@ -24,6 +24,7 @@ public sealed class AtomicConfigWriteTests : IDisposable
         var failure = write.Should().Throw<ScriniaConfigurationException>().Which;
         failure.InnerException.Should().BeOfType<DurableWriteException>();
         AssertConfigUnchanged(path, originalBytes);
+        AssertConfigArtifactsClean(path);
     }
 
     [Fact]
@@ -47,6 +48,31 @@ public sealed class AtomicConfigWriteTests : IDisposable
 
         write.Should().Throw<ScriniaConfigurationException>();
         AssertConfigUnchanged(path, originalBytes);
+        AssertConfigArtifactsClean(path);
+    }
+
+    [Fact]
+    public void ConfigWriteFailureMapsToWriteFailureAndPreservesExceptionDetails()
+    {
+        var exception = new ScriniaConfigurationException("write failed", new IOException("injected"));
+
+        ConfigurationResult result = ConfigResults.ConfigWriteFailed(exception);
+
+        result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigWriteFailed);
+        result.ExitClass.Should().Be(ConfigurationExitClass.WriteFailure);
+        result.Exception.Should().BeSameAs(exception);
+    }
+
+    [Fact]
+    public void SuccessfulConfigWritesLeaveNoTemporaryOrConfigLockArtifacts()
+    {
+        string workspaceConfig = Path.Combine(_root, ".scrinia", "config.json");
+        WorkspaceConfig.Save(_root, new Dictionary<string, string> { ["key"] = "value" });
+        AssertConfigArtifactsClean(workspaceConfig);
+
+        string homeConfig = Path.Combine(_root, "config.json");
+        new HomeConfigStore().Save(_root, new HomeConfig { SchemaVersion = 1, SharedBases = new SharedBasesMap() });
+        AssertConfigArtifactsClean(homeConfig);
     }
 
     public void Dispose()
@@ -63,6 +89,12 @@ public sealed class AtomicConfigWriteTests : IDisposable
         File.Exists(path).Should().BeTrue();
         File.ReadAllBytes(path).Should().Equal(originalBytes);
         TemporarySiblings(path).Should().BeEmpty();
+    }
+
+    private static void AssertConfigArtifactsClean(string path)
+    {
+        TemporarySiblings(path).Should().BeEmpty();
+        File.Exists(path + ".lock").Should().BeFalse();
     }
 
     private static IEnumerable<string> TemporarySiblings(string destination)

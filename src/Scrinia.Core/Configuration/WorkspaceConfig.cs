@@ -84,7 +84,7 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         string directory = Path.Combine(_workspaceRoot, ".scrinia");
         string path = Path.Combine(directory, "config.json");
         Directory.CreateDirectory(directory);
-        using (FileLock.AcquireExclusive(path + ".lock"))
+        using (FileLock.AcquireExclusive(ConfigurationLock.GetPath(path)))
         {
             string json = JsonSerializer.Serialize(_values, ConfigJsonContext.Default.DictionaryStringString);
             try
@@ -107,7 +107,7 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         string directory = Path.Combine(workspaceRoot, ".scrinia");
         string path = Path.Combine(directory, "config.json");
         Directory.CreateDirectory(directory);
-        using (FileLock.AcquireExclusive(path + ".lock"))
+        using (FileLock.AcquireExclusive(ConfigurationLock.GetPath(path)))
         {
             Dictionary<string, string> current = ReadValues(workspaceRoot);
             applyMutation(current);
