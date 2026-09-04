@@ -189,6 +189,35 @@ mutation: none
         ParseWithoutDuplicateKeys(yaml);
     }
 
+    [Theory]
+    [InlineData("*")]
+    [InlineData("&")]
+    [InlineData("!")]
+    [InlineData("|")]
+    [InlineData(">")]
+    [InlineData("@")]
+    [InlineData("`")]
+    public void Quotes_yaml_reserved_scalar_prefixes_and_parses_them_as_strings(string prefix)
+    {
+        var hit = new SearchHit("team", "/x", SharedHitKind.Entry, null, 1, prefix + "payload", new Dictionary<string, string[]>());
+
+        string yaml = SharedEnvelope.Success("team", hit).ToYaml();
+
+        yaml.Should().Contain("preview: \"" + prefix + "payload\"");
+        ParseWithoutDuplicateKeys(yaml);
+    }
+
+    [Fact]
+    public void Escapes_multiline_control_quote_and_backslash_scalars()
+    {
+        var hit = new SearchHit("team", "/x", SharedHitKind.Entry, null, 1, "line\n\r\t\b\f\u0001\\\"", new Dictionary<string, string[]>());
+
+        string yaml = SharedEnvelope.Success("team", hit).ToYaml();
+
+        yaml.Should().Contain("preview: \"line\\n\\r\\t\\u0008\\u000C\\u0001\\\\\\\"\"");
+        ParseWithoutDuplicateKeys(yaml);
+    }
+
     [Fact]
     public void Shared_envelope_context_rejects_unknown_json_properties()
     {

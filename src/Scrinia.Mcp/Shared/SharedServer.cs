@@ -262,10 +262,28 @@ internal static class SharedEnvelopeYaml
             !value.Contains('"') && !value.Contains('\'') && !value.Contains('\\') &&
             !value.Contains(':') && !value.Contains('#') && !value.Contains('{') && !value.Contains('}') && !value.Contains('[') && !value.Contains(']') &&
             !value.StartsWith('#') && !value.Contains(" #", StringComparison.Ordinal) &&
+            !"*&!|>@`".Contains(value[0]) &&
             value is not ("-" or "---" or "...") && !value.StartsWith("- ", StringComparison.Ordinal) &&
             !value.StartsWith('{') && !value.StartsWith('[') && !value.EndsWith('}') && !value.EndsWith(']') &&
             !IsYamlImplicit(value)) return value;
-        return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal).Replace("\t", "\\t", StringComparison.Ordinal) + "\"";
+        StringBuilder escaped = new(value.Length + 2);
+        escaped.Append('"');
+        foreach (char character in value)
+        {
+            switch (character)
+            {
+                case '\\': escaped.Append("\\\\"); break;
+                case '"': escaped.Append("\\\""); break;
+                case '\r': escaped.Append("\\r"); break;
+                case '\n': escaped.Append("\\n"); break;
+                case '\t': escaped.Append("\\t"); break;
+                default:
+                    if (char.IsControl(character)) escaped.Append($"\\u{(int)character:X4}");
+                    else escaped.Append(character);
+                    break;
+            }
+        }
+        return escaped.Append('"').ToString();
     }
 
     private static bool IsYamlImplicit(string value) => value.Equals("null", StringComparison.OrdinalIgnoreCase) || value.Equals("true", StringComparison.OrdinalIgnoreCase) || value.Equals("false", StringComparison.OrdinalIgnoreCase) || double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
