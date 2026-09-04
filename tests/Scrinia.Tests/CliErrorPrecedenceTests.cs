@@ -90,6 +90,25 @@ public sealed class CliErrorPrecedenceTests
     }
 
     [Fact]
+    public void OperationsFallbackProducerUsesPolicyClassForMalformedRoot()
+    {
+        string home = Path.Combine(Path.GetTempPath(), "scrinia-task8-fallback-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            SharedBaseResult result = new SharedBaseOperations(
+                new MinimalSharedBaseRegistry(), home, home).Add("team", "relative-root");
+
+            result.ErrorCode.Should().Be(ConfigurationErrorCode.SharedBaseUnsafePath);
+            result.ExitClass.Should().Be(ConfigurationExitClass.PolicyFailure);
+            result.ExitClass.Should().Be(ConfigResults.ExitClassFor(result.ErrorCode));
+        }
+        finally
+        {
+            if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
+        }
+    }
+
+    [Fact]
     public void BothSharedCliAdaptersEmitUnsafePathWithPolicyExitClass()
     {
         var originalOutput = Console.Out;
@@ -127,5 +146,16 @@ public sealed class CliErrorPrecedenceTests
         result.GitCommands.Should().BeEmpty();
         JsonDocument.Parse(JsonSerializer.Serialize(result, HomeConfigJsonContext.Default.ConfigurationJsonResult))
             .RootElement.GetProperty("errorCode").GetString().Should().Be("SHARED_BASE_ALREADY_EXISTS");
+    }
+
+    private sealed class MinimalSharedBaseRegistry : ISharedBaseRegistry
+    {
+        public SharedBaseResult Add(string name, string root) => throw new NotSupportedException();
+        public SharedBaseResult Remove(string name) => throw new NotSupportedException();
+        public IReadOnlyList<SharedBaseEntry> List(bool includeDisabled) => [];
+        public SharedBaseResult Enable(string name) => throw new NotSupportedException();
+        public SharedBaseResult Disable(string name) => throw new NotSupportedException();
+        public SharedBaseEntry? Lookup(string name) => null;
+        public IReadOnlyList<SharedBaseCollision> Collisions() => [];
     }
 }
