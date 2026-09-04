@@ -87,7 +87,14 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         using (FileLock.AcquireExclusive(path + ".lock"))
         {
             string json = JsonSerializer.Serialize(_values, ConfigJsonContext.Default.DictionaryStringString);
-            DurableFile.AtomicWriteAllText(path, json);
+            try
+            {
+                DurableFile.AtomicWriteAllText(path, json);
+            }
+            catch (DurableWriteException exception)
+            {
+                throw new ScriniaConfigurationException("The workspace config could not be written atomically.", exception);
+            }
         }
         Cache[_workspaceRoot] = new Dictionary<string, string>(_values, StringComparer.OrdinalIgnoreCase);
     }
@@ -105,7 +112,14 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
             Dictionary<string, string> current = ReadValues(workspaceRoot);
             applyMutation(current);
             string json = JsonSerializer.Serialize(current, ConfigJsonContext.Default.DictionaryStringString);
-            DurableFile.AtomicWriteAllText(path, json);
+            try
+            {
+                DurableFile.AtomicWriteAllText(path, json);
+            }
+            catch (DurableWriteException exception)
+            {
+                throw new ScriniaConfigurationException("The workspace config could not be written atomically.", exception);
+            }
             Cache[workspaceRoot] = new Dictionary<string, string>(current, StringComparer.OrdinalIgnoreCase);
         }
     }
