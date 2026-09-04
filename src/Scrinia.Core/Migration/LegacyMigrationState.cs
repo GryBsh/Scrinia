@@ -337,9 +337,18 @@ public sealed class LegacyMigrationService
     {
         string path = Path.Combine(workspaceRoot, ".scrinia", RecoveryJournalName);
         if (!File.Exists(path)) return;
-        string[] lines = File.ReadAllLines(path);
+        string content;
+        try { content = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path)); }
+        catch (DecoderFallbackException exception)
+        {
+            throw new ScriniaConfigurationException("The tracking recovery journal is malformed.", exception);
+        }
+        if (content is "complete" or "complete\n") { File.Delete(path); return; }
+        string[] lines = content.Split('\n');
+        if (lines.Length > 0 && lines[^1].Length == 0)
+            lines = lines[..^1];
         if (lines.Length == 0) throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
-        if (lines[0] == "complete") { File.Delete(path); return; }
+        if (lines[0] == "complete") throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
         if (lines[0] != "prepared") throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
         string directory = Path.GetFullPath(Path.Combine(workspaceRoot, ".scrinia"));
         var allowedNames = new HashSet<string>(StringComparer.Ordinal)

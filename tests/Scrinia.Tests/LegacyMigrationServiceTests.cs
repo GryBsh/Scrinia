@@ -158,6 +158,30 @@ public sealed class LegacyMigrationServiceTests
         inspection.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
     }
 
+    [Theory]
+    [InlineData("complete\nnot-base64|-")]
+    [InlineData("complete\nprepared")]
+    public void CompletedJournalWithTrailingContentIsRejectedByInspectAndMigrate(string journalContent)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string managed = Path.Combine(directory, ".gitignore");
+        File.WriteAllText(managed, "managed\n", new UTF8Encoding(false));
+        string journal = Path.Combine(directory, ".tracking-recovery.json");
+        File.WriteAllText(journal, journalContent, new UTF8Encoding(false));
+        var service = new LegacyMigrationService();
+
+        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir);
+        LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
+
+        inspection.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
+        inspection.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+        migration.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
+        migration.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+        File.ReadAllText(managed).Should().Be("managed\n");
+        File.ReadAllText(journal).Should().Be(journalContent);
+    }
+
     [Fact]
     public void MigrateMapsMalformedWorkspaceConfigWithoutLeakingAnException()
     {
