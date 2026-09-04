@@ -234,7 +234,9 @@ public sealed class LegacyMigrationService
         {
         try { Recover(workspaceRoot); }
         catch (Exception exception) { return MapFailure(exception); }
-        LegacyFilesystemObservation observation = InspectLocked(workspaceRoot);
+        LegacyFilesystemObservation observation;
+        try { observation = InspectLocked(workspaceRoot); }
+        catch (Exception exception) { return MapInspectionFailure(exception); }
         if (observation.ErrorCode is not ConfigurationErrorCode.None and not ConfigurationErrorCode.TrackingPolicyRequired)
             return new(observation.ErrorCode, observation.ExitClass, false);
         LegacyMigrationInput input = observation.Input!;
@@ -338,6 +340,7 @@ public sealed class LegacyMigrationService
         var allowedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "config.json", ".gitignore", ".gitattributes", "merge.config" };
         var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var records = new List<(string Destination, byte[]? Bytes)>();
         foreach (string line in lines.Skip(1))
         {
             string[] parts = line.Split('|', 2);
@@ -349,9 +352,13 @@ public sealed class LegacyMigrationService
                 !allowedNames.Contains(Path.GetFileName(fullDestination)) || !destinations.Add(fullDestination))
                 throw new ScriniaConfigurationException("The tracking recovery journal contains an unsafe path.");
             byte[]? bytes = parts[1] == "-" ? null : Convert.FromBase64String(parts[1]);
-            if (bytes is null) { if (File.Exists(fullDestination)) File.Delete(fullDestination); }
-            else DurableFile.AtomicWriteAllBytes(fullDestination, bytes);
+            records.Add((fullDestination, bytes));
         }
+        if (!destinations.SetEquals(allowedNames.Select(name => Path.Combine(directory, name))))
+            throw new ScriniaConfigurationException("The tracking recovery journal does not contain the complete target set.");
+        foreach ((string destination, byte[]? bytes) in records)
+            if (bytes is null) { if (File.Exists(destination)) File.Delete(destination); }
+            else DurableFile.AtomicWriteAllBytes(destination, bytes);
         File.Delete(path);
     }
 
@@ -361,6 +368,17 @@ public sealed class LegacyMigrationService
         DurableWriteException => new(ConfigurationErrorCode.ConfigWriteFailed, ConfigurationExitClass.WriteFailure),
         ScriniaConfigurationException { InnerException: DurableWriteException } => new(ConfigurationErrorCode.ConfigWriteFailed, ConfigurationExitClass.WriteFailure),
         UnauthorizedAccessException or IOException => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
+        _ => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
+    };
+
+    private static LegacyMigrationResult MapInspectionFailure(Exception exception) => exception switch
+    {
+        FileLockTimeoutException => new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure),
+        ScriniaConfigurationException { InnerException: JsonException } or ScriniaConfigurationException =>
+            new(ConfigurationErrorCode.WorkspaceConfigMalformed, ConfigurationExitClass.InvalidConfiguration),
+        DecoderFallbackException => new(ConfigurationErrorCode.ManagedFileUnsafe, ConfigurationExitClass.PolicyFailure),
+        UnauthorizedAccessException or IOException => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
+        FormatException => new(ConfigurationErrorCode.WorkspaceConfigMalformed, ConfigurationExitClass.InvalidConfiguration),
         _ => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
     };
 

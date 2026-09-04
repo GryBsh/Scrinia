@@ -91,6 +91,65 @@ public sealed class LegacyMigrationServiceTests
     }
 
     [Fact]
+    public void RecoveryJournalValidFirstInvalidSecondDoesNotMutate()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string config = Path.Combine(directory, "config.json");
+        File.WriteAllText(config, "original", new UTF8Encoding(false));
+        string Encode(string path) => Convert.ToBase64String(Encoding.UTF8.GetBytes(path));
+        File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"),
+            $"prepared\n{Encode(config)}|-\n{Encode(Path.Combine(directory, "memories", "entry"))}|-\n", new UTF8Encoding(false));
+
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+
+        result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
+        File.ReadAllText(config).Should().Be("original");
+    }
+
+    [Fact]
+    public void RecoveryJournalRequiresTheCompleteTargetSet()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string config = Path.Combine(directory, "config.json");
+        File.WriteAllText(config, "original", new UTF8Encoding(false));
+        string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(config));
+        File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"), $"prepared\n{encoded}|-\n", new UTF8Encoding(false));
+
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+
+        result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
+        File.Exists(config).Should().BeTrue();
+    }
+
+    [Fact]
+    public void MigrateMapsMalformedWorkspaceConfigWithoutLeakingAnException()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string config = Path.Combine(scope.WorkspaceDir, ".scrinia", "config.json");
+        File.WriteAllText(config, "not-json", new UTF8Encoding(false));
+
+        LegacyMigrationResult result = new LegacyMigrationService().Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
+
+        result.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
+        result.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+    }
+
+    [Fact]
+    public void MigrateMapsUnreadableManagedFileWithoutLeakingAnException()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitattributes");
+        File.WriteAllBytes(path, [0xC3, 0x28]);
+
+        LegacyMigrationResult result = new LegacyMigrationService().Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
+
+        result.ErrorCode.Should().Be(ConfigurationErrorCode.ManagedFileUnsafe);
+        result.ExitClass.Should().Be(ConfigurationExitClass.PolicyFailure);
+    }
+
+    [Fact]
     public async Task ConcurrentInspectionAndMigrationUseOneStableConfigurationLock()
     {
         using var scope = new TestHelpers.StoreScope();
