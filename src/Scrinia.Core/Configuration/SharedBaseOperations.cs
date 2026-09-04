@@ -114,12 +114,12 @@ public sealed class SharedBaseOperations
         {
             string normalized = SharedBaseRegistry.NormalizeRoot(root);
             return string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root) || !Directory.Exists(normalized)
-                ? Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base root is invalid.")
+                ? Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base root is invalid.", ConfigResults.ExitClassFor(ConfigurationErrorCode.SharedBaseUnsafePath))
                 : new(Base: new SharedBaseEntry { Root = normalized, Tracking = TrackingPolicy.ProjectGit });
         }
         catch (ArgumentException exception)
         {
-            return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, exception.Message, ConfigurationExitClass.InvalidConfiguration, exception);
+            return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, exception.Message, ConfigResults.ExitClassFor(ConfigurationErrorCode.SharedBaseUnsafePath), exception);
         }
     }
 

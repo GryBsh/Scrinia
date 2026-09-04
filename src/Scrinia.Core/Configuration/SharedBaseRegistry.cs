@@ -121,7 +121,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
 
     private SharedBaseResult SetEnabled(string name, Func<IReadOnlyList<string>, IReadOnlyList<string>> mutate, bool requireRegistration = true)
     {
-        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
+        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.CliInvalidArgument, "The shared base name is not canonical.", ConfigResults.ExitClassFor(ConfigurationErrorCode.CliInvalidArgument));
         if (requireRegistration && LookupRegistered(name) is null) return Failure(ConfigurationErrorCode.SharedBaseNotFound, "The shared base is not registered.");
         _workspaceConfig.UpdateEnabledBases(mutate);
         SharedBaseEntry? entry = LookupRegistered(name);

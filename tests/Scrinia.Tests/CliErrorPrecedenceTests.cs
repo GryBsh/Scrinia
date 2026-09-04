@@ -54,6 +54,42 @@ public sealed class CliErrorPrecedenceTests
     }
 
     [Fact]
+    public void EnableProducerUsesUsageClassForInvalidCanonicalName()
+    {
+        string home = Path.Combine(Path.GetTempPath(), "scrinia-task8-enable-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            SharedBaseResult result = new SharedBaseRegistry(home, home).Enable("Not Canonical");
+
+            result.ErrorCode.Should().Be(ConfigurationErrorCode.CliInvalidArgument);
+            result.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+        }
+        finally
+        {
+            if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void OperationsProducerUsesPolicyClassForMalformedRoot()
+    {
+        string home = Path.Combine(Path.GetTempPath(), "scrinia-task8-root-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            SharedBaseResult result = new SharedBaseOperations(
+                new SharedBaseRegistry(home, home), home, home).Add("team", "relative-root");
+
+            result.ErrorCode.Should().Be(ConfigurationErrorCode.SharedBaseUnsafePath);
+            result.ExitClass.Should().Be(ConfigurationExitClass.PolicyFailure);
+            result.ExitClass.Should().Be(ConfigResults.ExitClassFor(result.ErrorCode));
+        }
+        finally
+        {
+            if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
+        }
+    }
+
+    [Fact]
     public void BothSharedCliAdaptersEmitUnsafePathWithPolicyExitClass()
     {
         var originalOutput = Console.Out;
