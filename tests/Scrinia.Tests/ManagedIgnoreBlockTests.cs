@@ -55,4 +55,18 @@ public sealed class ManagedIgnoreBlockTests
         ManagedIgnoreBlock.Validate(content, TrackingPolicy.ProjectGit)
             .Should().Be(ManagedIgnoreValidation.Drift);
     }
+
+    [Theory]
+    [InlineData("# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n# >>> Scrinia managed: project-git derived files >>>\n")]
+    [InlineData("# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n# <<< Scrinia managed: project-git derived files <<<\n")]
+    [InlineData("# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n# >>> Scrinia managed: project-git derived files altered >>>\n")]
+    [InlineData("# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n# <<< Scrinia managed: project-git derived files >>>\n")]
+    public void ExactBlockDoesNotHideAnInvalidMarkerStructure(string content)
+    {
+        ManagedIgnoreBlock.Validate("user\n" + content, TrackingPolicy.ProjectGit)
+            .Should().Be(ManagedIgnoreValidation.Drift);
+
+        Action apply = () => ManagedIgnoreBlock.Apply("user\n" + content, TrackingPolicy.ProjectGit);
+        apply.Should().Throw<ScriniaConfigurationException>();
+    }
 }

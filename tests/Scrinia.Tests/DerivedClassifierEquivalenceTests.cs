@@ -12,6 +12,8 @@ public sealed class DerivedClassifierEquivalenceTests
     [InlineData("versions/old.nmp", "ArchivedCopies")]
     [InlineData("facts.json", "EntityFacts")]
     [InlineData(".restore-journal.json", "RestoreJournal")]
+    [InlineData("cache.tmp", "TemporaryTree")]
+    [InlineData("cache.tmp/child.bin", "TemporaryTree")]
     [InlineData("topic/cache.tmp", "TemporaryTree")]
     [InlineData("topic/cache.tmp/child.bin", "TemporaryTree")]
     [InlineData("worker.lock", "RootLockTree")]
