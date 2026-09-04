@@ -211,7 +211,7 @@ The configuration command forms are:
 ```text
 scri shared base add <name> <absolute-root> [--json]
 scri shared base remove <name> [--json]
-scri shared base list [--json]
+scri shared base list [--all] [--json]
 scri shared enable <name> [--json]
 scri shared disable <name> [--json]
 scri tracking status [--json]
@@ -228,7 +228,8 @@ Configuration mutations use an interprocess lock and same-directory atomic repla
 write preserves the prior complete state or leaves a deterministic recovery journal. Unrelated
 workspace configuration and user lines outside managed ignore blocks are preserved. Registry names
 disabled for a workspace remain private: they are not emitted by workspace resolution or diagnostics;
-only the explicit user `shared base list` command enumerates the registry.
+only the explicit user `scri shared base list --all` command enumerates the complete registry,
+including disabled entries. Without `--all`, the list is limited to enabled entries.
 
 Tracking migration recognizes `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`,
 `legacy-manual`, `legacy-unsafe`, `local`, `project-git`, and `policy-drift`. The declared errors
@@ -237,7 +238,7 @@ include `CLI_INVALID_ARGUMENT`, `WORKSPACE_CONFIG_MALFORMED`, `USER_CONFIG_MALFO
 `SHARED_BASE_ROOT_COLLISION`, `SHARED_BASE_UNSAFE_PATH`, `SHARED_BASE_NOT_GIT_ROOT`,
 `SHARED_TRACKING_POLICY_DRIFT`, `LEGACY_MIGRATION_REQUIRED`, `MANAGED_FILE_UNSAFE`,
 `TRACKING_POLICY_REQUIRED`, `TRACKING_POLICY_INVALID`, `MIGRATION_MANUAL_CLEANUP_REQUIRED`,
-`CONFIG_LOCK_TIMEOUT`, `CONFIG_WRITE_FAILED`, and `IO_FAILURE`.
+`CONFIG_LOCK_TIMEOUT`, `CONFIG_WRITE_FAILED`, `CONFIG_RECOVERY_REQUIRED`, and `IO_FAILURE`.
 
 ## What's Next
 

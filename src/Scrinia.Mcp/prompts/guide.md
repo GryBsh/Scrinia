@@ -139,7 +139,7 @@ The supported command forms are:
 ```text
 scri shared base add <name> <absolute-root> [--json]
 scri shared base remove <name> [--json]
-scri shared base list [--json]
+scri shared base list [--all] [--json]
 scri shared enable <name> [--json]
 scri shared disable <name> [--json]
 scri tracking status [--json]
@@ -152,13 +152,15 @@ Validation is filesystem-only and never invokes Git or inspects its index. Mutat
 interprocess lock and same-directory atomic replacement, preserving unrelated keys and unmanaged
 lines. Results report `gitIndexStatus: UNVERIFIED`. Disabled registry names and roots stay private
 to the registry and are not disclosed by workspace resolution or diagnostics; only the explicit
-user `shared base list` command enumerates them.
+user `scri shared base list --all` command enumerates the complete registry, including disabled
+entries; the default list shows enabled entries only.
 
 Tracking states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
 `legacy-unsafe`, `local`, `project-git`, and `policy-drift`. Errors use the declared Core codes,
 including `LEGACY_MIGRATION_REQUIRED`, `MANAGED_FILE_UNSAFE`, `TRACKING_POLICY_REQUIRED`,
 `TRACKING_POLICY_INVALID`, `MIGRATION_MANUAL_CLEANUP_REQUIRED`, `CONFIG_LOCK_TIMEOUT`,
-`CONFIG_WRITE_FAILED`, and `IO_FAILURE`, with argument/configuration, policy/state, and filesystem
+`CONFIG_WRITE_FAILED`, `CONFIG_RECOVERY_REQUIRED`, and `IO_FAILURE`, with argument/configuration,
+policy/state, and filesystem
 failures separated into exit classes 2, 3, and 4. `migrate-legacy` removes only recognized legacy
 artifacts and preserves unrelated content; no active merge surface is part of this
 contract.

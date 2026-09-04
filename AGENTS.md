@@ -105,7 +105,10 @@ Shared bases are fixed to `project-git`. The eight supported command forms are `
 `shared base remove`, `shared base list`, `shared enable`, `shared disable`, `tracking status`,
 `tracking set`, and `tracking migrate-legacy --to`. Config mutations use an interprocess lock and
 same-directory `DurableFile` replacement. Git is never invoked or inspected; reported index state is
-`UNVERIFIED`. Disabled registry names remain private except to the explicit user registry list.
+`UNVERIFIED`. Disabled registry names remain private except to the explicit
+`scri shared base list --all` registry listing, which includes disabled entries; the default list
+shows enabled entries only. Public error results include `CONFIG_RECOVERY_REQUIRED` for a failed
+compensation/recovery attempt.
 Migration states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
 `legacy-unsafe`, `local`, `project-git`, and `policy-drift`; declared errors and precedence live in
 the Core result contracts. The Task 6 parked bare-`complete` recovery-journal finding remains open

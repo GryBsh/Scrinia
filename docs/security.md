@@ -82,7 +82,8 @@ inspect the Git index, or claim that a file is tracked. Results use `gitIndexSta
 
 Disabled shared-base names are deliberately private. Workspace startup, resolution, warnings,
 diagnostics, and errors do not enumerate disabled registry entries or roots; the explicit user
-`scri shared base list` command is the sole complete registry listing surface.
+`scri shared base list --all` command is the sole complete registry listing surface, including
+disabled entries. The default list does not disclose disabled names or roots.
 
 ### Secrets in stored content
 

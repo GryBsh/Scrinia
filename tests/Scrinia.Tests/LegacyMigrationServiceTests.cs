@@ -256,7 +256,7 @@ public sealed class LegacyMigrationServiceTests
         try
         {
             LegacyMigrationResult result = new LegacyMigrationService().Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
-            result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigWriteFailed);
+            result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigRecoveryRequired);
             File.ReadAllText(ignore).Should().Be("user\n");
         }
         finally { DurableFile.FailureInjector = null; }

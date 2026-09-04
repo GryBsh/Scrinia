@@ -519,7 +519,7 @@ The complete command surface is:
 ```bash
 scri shared base add <name> <absolute-root> [--json]
 scri shared base remove <name> [--json]
-scri shared base list [--json]
+scri shared base list [--all] [--json]
 scri shared enable <name> [--json]
 scri shared disable <name> [--json]
 scri tracking status [--json]
@@ -536,7 +536,8 @@ Mutations take an interprocess lock and use same-directory atomic replacement. A
 preserves the previous complete bytes or leaves a recovery journal that restores them before the
 next operation. Unrelated flat keys and lines outside managed ignore blocks survive transitions.
 Disabled registry names and roots are private to the registry and are absent from workspace
-resolution, diagnostics, and warnings; only `scri shared base list` enumerates all registry entries.
+resolution, diagnostics, and warnings; only `scri shared base list --all` enumerates the complete
+registry, including disabled entries. Without `--all`, the list is limited to enabled entries.
 
 Tracking states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
 `legacy-unsafe`, `local`, `project-git`, and `policy-drift`. Declared errors include
@@ -545,7 +546,8 @@ Tracking states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, 
 `SHARED_BASE_ROOT_COLLISION`, `SHARED_BASE_UNSAFE_PATH`, `SHARED_BASE_NOT_GIT_ROOT`,
 `SHARED_TRACKING_POLICY_DRIFT`, `LEGACY_MIGRATION_REQUIRED`, `MANAGED_FILE_UNSAFE`,
 `TRACKING_POLICY_REQUIRED`, `TRACKING_POLICY_INVALID`, `MIGRATION_MANUAL_CLEANUP_REQUIRED`,
-`CONFIG_LOCK_TIMEOUT`, `CONFIG_WRITE_FAILED`, and `IO_FAILURE`. Exit classes are 2 for argument or
+`CONFIG_LOCK_TIMEOUT`, `CONFIG_WRITE_FAILED`, `CONFIG_RECOVERY_REQUIRED`, and `IO_FAILURE`. Exit
+classes are 2 for argument or
 configuration errors, 3 for policy/state refusals, and 4 for lock, filesystem, or atomic-write
 failures. `tracking migrate-legacy` is the only form that removes recognized legacy artifacts; it
 preserves unrelated content and never starts an active merge surface.
