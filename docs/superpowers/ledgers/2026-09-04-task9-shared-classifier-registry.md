@@ -1,0 +1,12 @@
+# Task 9 Ledger
+
+| Decision | Evidence |
+| --- | --- |
+| One ordered classifier is the sole derived-path authority | `SharedClassifier.Rules` feeds the managed ignore block (`ManagedIgnoreBlock.ProjectGit` lists every `IgnorePattern` in order), the fingerprint exclusion (`IsExcludedFromFingerprint`), and each rule's `CleanupPathspecs`; `Managed_block_and_cleanup_are_built_from_the_one_ordered_rule_set` asserts the byte-exact §8.2 block and that every rule carries an ignore pattern plus a cleanup pathspec. |
+| Managed ignore, fingerprint exclusion, and cleanup denote exactly the same union | `Classifier_sets_match...` compares all four views on ~33 representative paths (directories, singletons, any-depth `.tmp`, root-child `.lock` and descendants, authoritative files, `*.tmp.bak`/`*.lock.bak` negatives) and asserts derived == fingerprint-excluded == ignore-covered == cleanup-covered for each. |
+| First match wins over Git-pattern overlap | `First_match_wins...`: `embeddings/cache.tmp`, `indexes/worker.lock`, `versions/old.lock` classify by the earlier directory/singleton rule even though `**/*.tmp` / `/*.lock` also match; the block and cleanup still cover them via the winning rule only. |
+| Reserved-suffix rules are exhaustive and authoritative paths never carry them | `Reserved_suffix_rules...`: any `.tmp` segment at any depth or root-child `.lock` is derived; authoritative paths carry no reserved suffix; classification is filesystem-independent so deleted-but-indexed paths classify identically. |
+| Registry validates Git evidence by filesystem only | `Registry_accepts...` and `Worktree_marker_must_name...`: `.git` directory, LF/CRLF `gitdir:` with absolute/relative existing target, ancestor-only rejection, malformed-marker rejection (BOM, no space, wrong case, newline, empty target). |
+| Physical-root containment and collisions are registry-enforced | `Add_reports_nested...` (nested root → `SharedBaseRootCollision`), parent-overlap rejection, and `Collisions_reports_overlapping...` (seeded store) prove nested/overlapping/equal roots are refused; roots inside the workspace or equal to `.scrinia` return `SharedBaseRootCollision`. |
+| Shared tracking is fixed `project-git` | `ValidateRoot` returns `Base.Tracking == ProjectGit` for every accepted root; the policy is never read from user/workspace config. |
+| No Git invocation or index inspection | All assertions are built from on-disk `.git`/`gitdir:` bytes and `PathContainment`; the test doubles never launch `git`. |
