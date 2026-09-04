@@ -119,6 +119,50 @@ facts({ op: 'intersect', entities: ['person:jolene', 'place:france'] })
 
 ## Reference
 
+### Workspace tracking and shared bases
+
+Phase 2 has two configuration files. `<workspace-root>/.scrinia/config.json` remains a flat
+`Dictionary<string,string>`; its owned scalars are `Scrinia:Workspace:Tracking` (`local` or
+`project-git`) and `Scrinia:Shared:Enabled` (an ordered semicolon-separated list of canonical names).
+An absent Enabled key means zero enabled bases; an empty value is invalid. `SCRINIA_HOME/config.json`
+is the typed registry with `schemaVersion: 1` and `sharedBases` entries.
+
+`SCRINIA_HOME` uses a non-empty absolute override exactly, fails closed for empty or relative values,
+and otherwise resolves exactly to
+`Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Scrinia")`.
+Tracking precedence is `SCRINIA_WORKSPACE_TRACKING`, `SCRINIA__WORKSPACE__TRACKING`, the workspace
+scalar, then the command default. Enabled is read directly from workspace config; neither
+`SCRINIA_SHARED_ENABLED` nor `SCRINIA__SHARED__ENABLED` is honored.
+
+The supported command forms are:
+
+```text
+scri shared base add <name> <absolute-root> [--json]
+scri shared base remove <name> [--json]
+scri shared base list [--json]
+scri shared enable <name> [--json]
+scri shared disable <name> [--json]
+scri tracking status [--json]
+scri tracking set local|project-git [--json]
+scri tracking migrate-legacy --to local|project-git [--json]
+```
+
+Shared bases always use fixed `project-git`; canonical names match `^[a-z][a-z0-9-]{0,31}$`.
+Validation is filesystem-only and never invokes Git or inspects its index. Mutations use an
+interprocess lock and same-directory atomic replacement, preserving unrelated keys and unmanaged
+lines. Results report `gitIndexStatus: UNVERIFIED`. Disabled registry names and roots stay private
+to the registry and are not disclosed by workspace resolution or diagnostics; only the explicit
+user `shared base list` command enumerates them.
+
+Tracking states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
+`legacy-unsafe`, `local`, `project-git`, and `policy-drift`. Errors use the declared Core codes,
+including `LEGACY_MIGRATION_REQUIRED`, `MANAGED_FILE_UNSAFE`, `TRACKING_POLICY_REQUIRED`,
+`TRACKING_POLICY_INVALID`, `MIGRATION_MANUAL_CLEANUP_REQUIRED`, `CONFIG_LOCK_TIMEOUT`,
+`CONFIG_WRITE_FAILED`, and `IO_FAILURE`, with argument/configuration, policy/state, and filesystem
+failures separated into exit classes 2, 3, and 4. `migrate-legacy` removes only recognized legacy
+artifacts and preserves unrelated content; no active merge surface is part of this
+contract.
+
 ### Reserved paths
 
 Any path works; a few prefixes carry first-class behavior:

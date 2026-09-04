@@ -91,6 +91,26 @@ Skill paths are routed transparently through `recall` and `remember`:
 
 ## Core Abstractions
 
+### Phase 2 configuration and tracking boundary
+
+Phase 2 owns the reusable configuration and shared-base contracts in `Scrinia.Core`. The workspace
+file remains a flat `.scrinia/config.json` dictionary with `Scrinia:Workspace:Tracking` and
+`Scrinia:Shared:Enabled`; the typed per-user registry is `SCRINIA_HOME/config.json`. `UserHome.Resolve()`
+is the sole `SCRINIA_HOME` resolver: non-empty absolute overrides are exact, empty or relative
+overrides fail closed, and an unset value is exactly the LocalApplicationData/Scrinia combination.
+Tracking precedence is single-underscore environment, double-underscore environment, workspace
+value, then default. Enabled is workspace-only; neither Enabled environment spelling is honored.
+
+Shared bases are fixed to `project-git`. The eight supported command forms are `shared base add`,
+`shared base remove`, `shared base list`, `shared enable`, `shared disable`, `tracking status`,
+`tracking set`, and `tracking migrate-legacy --to`. Config mutations use an interprocess lock and
+same-directory `DurableFile` replacement. Git is never invoked or inspected; reported index state is
+`UNVERIFIED`. Disabled registry names remain private except to the explicit user registry list.
+Migration states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
+`legacy-unsafe`, `local`, `project-git`, and `policy-drift`; declared errors and precedence live in
+the Core result contracts. The Task 6 parked bare-`complete` recovery-journal finding remains open
+for final branch remediation.
+
 ### `IEncodingStrategy`
 
 Only one implementation exists: `Nmp2Strategy`. Namespace: `Scrinia.Core.Encoding`.

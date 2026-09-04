@@ -497,6 +497,59 @@ The `plugins:embeddings` key overrides the executable name used to launch the
 embeddings plugin process — only useful for custom builds. Scrinia ships no LLM
 plugin; the historical `plugins:llm` key has been removed.
 
+### Workspace tracking and shared bases
+
+Phase 2 uses two separate files. The workspace file, `<workspace-root>/.scrinia/config.json`, stays
+the flat `Dictionary<string,string>` configuration. Its owned scalars are
+`Scrinia:Workspace:Tracking` (`local` or `project-git`) and `Scrinia:Shared:Enabled` (an ordered,
+semicolon-separated list of canonical names). An absent Enabled key is the valid zero-base state;
+an empty value or an empty, duplicate, or noncanonical segment is invalid.
+
+The per-user registry is `SCRINIA_HOME/config.json`, exactly shaped as `schemaVersion: 1` plus a
+`sharedBases` object whose canonical keys contain `{ "root": "..." }` entries. A non-empty absolute
+`SCRINIA_HOME` is used exactly; empty or relative values fail closed. If it is unset, the resolver
+uses exactly `Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Scrinia")`.
+Workspace tracking precedence is `SCRINIA_WORKSPACE_TRACKING`, then
+`SCRINIA__WORKSPACE__TRACKING`, then the workspace scalar, then the command default. Enabled is read
+directly from the workspace file, so `SCRINIA_SHARED_ENABLED` and
+`SCRINIA__SHARED__ENABLED` are deliberately ignored.
+
+The complete command surface is:
+
+```bash
+scri shared base add <name> <absolute-root> [--json]
+scri shared base remove <name> [--json]
+scri shared base list [--json]
+scri shared enable <name> [--json]
+scri shared disable <name> [--json]
+scri tracking status [--json]
+scri tracking set local|project-git [--json]
+scri tracking migrate-legacy --to local|project-git [--json]
+```
+
+Shared bases always use `project-git`; that policy is fixed and is not stored per base. Canonical
+names match `^[a-z][a-z0-9-]{0,31}$`. Roots must be existing repositories or worktrees proven by
+their own `.git` directory or valid `gitdir:` marker. Validation is filesystem-only: no command
+invokes Git or inspects its index, and results label the index `gitIndexStatus: UNVERIFIED`.
+
+Mutations take an interprocess lock and use same-directory atomic replacement. A failed replacement
+preserves the previous complete bytes or leaves a recovery journal that restores them before the
+next operation. Unrelated flat keys and lines outside managed ignore blocks survive transitions.
+Disabled registry names and roots are private to the registry and are absent from workspace
+resolution, diagnostics, and warnings; only `scri shared base list` enumerates all registry entries.
+
+Tracking states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
+`legacy-unsafe`, `local`, `project-git`, and `policy-drift`. Declared errors include
+`CLI_INVALID_ARGUMENT`, `WORKSPACE_CONFIG_MALFORMED`, `USER_CONFIG_MALFORMED`,
+`USER_CONFIG_SCHEMA_UNSUPPORTED`, `SHARED_BASE_ALREADY_EXISTS`, `SHARED_BASE_NOT_FOUND`,
+`SHARED_BASE_ROOT_COLLISION`, `SHARED_BASE_UNSAFE_PATH`, `SHARED_BASE_NOT_GIT_ROOT`,
+`SHARED_TRACKING_POLICY_DRIFT`, `LEGACY_MIGRATION_REQUIRED`, `MANAGED_FILE_UNSAFE`,
+`TRACKING_POLICY_REQUIRED`, `TRACKING_POLICY_INVALID`, `MIGRATION_MANUAL_CLEANUP_REQUIRED`,
+`CONFIG_LOCK_TIMEOUT`, `CONFIG_WRITE_FAILED`, and `IO_FAILURE`. Exit classes are 2 for argument or
+configuration errors, 3 for policy/state refusals, and 4 for lock, filesystem, or atomic-write
+failures. `tracking migrate-legacy` is the only form that removes recognized legacy artifacts; it
+preserves unrelated content and never starts an active merge surface.
+
 ### scri migrate
 
 Migrates a workspace store to the v3 layout, where every memory lives under

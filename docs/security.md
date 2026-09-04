@@ -68,6 +68,22 @@ ones, so a memory body containing YAML syntax cannot restructure the envelope ar
 
 ## Threats NOT addressed
 
+### Configuration and shared-base boundaries
+
+The workspace configuration remains a flat dictionary at `.scrinia/config.json`; the per-user
+shared-base registry is the typed `SCRINIA_HOME/config.json`. `SCRINIA_HOME` accepts only a non-empty
+absolute override and fails closed for empty or relative values. Shared roots must be validated
+repository/worktree roots, and shared tracking is fixed to `project-git`.
+
+Registry and workspace mutations are serialized by an interprocess lock and committed with
+same-directory atomic replacement. Failed writes preserve the old bytes or leave a recovery journal
+for deterministic restoration. Scrinia performs filesystem validation only: it does not invoke Git,
+inspect the Git index, or claim that a file is tracked. Results use `gitIndexStatus: UNVERIFIED`.
+
+Disabled shared-base names are deliberately private. Workspace startup, resolution, warnings,
+diagnostics, and errors do not enumerate disabled registry entries or roots; the explicit user
+`scri shared base list` command is the sole complete registry listing surface.
+
 ### Secrets in stored content
 
 Scrinia does not scan memory bodies for tokens, credentials, or PII, and **agents store what they

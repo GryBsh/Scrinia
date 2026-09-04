@@ -187,6 +187,58 @@ The following ship with scrinia and load via `recall({ path: '/skill/{name}' })`
 
 Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [...] })` creates a project-specific override on disk.
 
+## Workspace Tracking and Shared Bases
+
+Phase 2 keeps two configuration files distinct:
+
+- `<workspace-root>/.scrinia/config.json` remains a flat `Dictionary<string,string>`. The owned
+  scalars are `Scrinia:Workspace:Tracking` (`local` or `project-git`) and
+  `Scrinia:Shared:Enabled` (an ordered, semicolon-separated list of canonical names). An absent
+  Enabled key means zero enabled bases; an empty value is invalid.
+- `SCRINIA_HOME/config.json` is the typed per-user registry with `schemaVersion: 1` and a
+  `sharedBases` object mapping canonical names to repository roots.
+
+`SCRINIA_HOME` resolves to a non-empty absolute environment value exactly. An empty or relative
+override fails closed. When unset, it resolves exactly to
+`Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Scrinia")`.
+Tracking configuration resolves in this order: `SCRINIA_WORKSPACE_TRACKING`,
+`SCRINIA__WORKSPACE__TRACKING`, the workspace scalar, then the command default. The Enabled scalar
+is read only from the workspace file; neither `SCRINIA_SHARED_ENABLED` nor
+`SCRINIA__SHARED__ENABLED` overrides it.
+
+The configuration command forms are:
+
+```text
+scri shared base add <name> <absolute-root> [--json]
+scri shared base remove <name> [--json]
+scri shared base list [--json]
+scri shared enable <name> [--json]
+scri shared disable <name> [--json]
+scri tracking status [--json]
+scri tracking set local|project-git [--json]
+scri tracking migrate-legacy --to local|project-git [--json]
+```
+
+Every registered shared base uses the fixed `project-git` policy. Names are canonical lowercase
+values matching `^[a-z][a-z0-9-]{0,31}$`; roots must be existing repository/worktree roots. The
+commands inspect filesystem evidence only, never invoke Git or inspect its index, and report
+`gitIndexStatus: UNVERIFIED`.
+
+Configuration mutations use an interprocess lock and same-directory atomic replacement. A failed
+write preserves the prior complete state or leaves a deterministic recovery journal. Unrelated
+workspace configuration and user lines outside managed ignore blocks are preserved. Registry names
+disabled for a workspace remain private: they are not emitted by workspace resolution or diagnostics;
+only the explicit user `shared base list` command enumerates the registry.
+
+Tracking migration recognizes `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`,
+`legacy-manual`, `legacy-unsafe`, `local`, `project-git`, and `policy-drift`. The declared errors
+include `CLI_INVALID_ARGUMENT`, `WORKSPACE_CONFIG_MALFORMED`, `USER_CONFIG_MALFORMED`,
+`USER_CONFIG_SCHEMA_UNSUPPORTED`, `SHARED_BASE_ALREADY_EXISTS`, `SHARED_BASE_NOT_FOUND`,
+`SHARED_BASE_ROOT_COLLISION`, `SHARED_BASE_UNSAFE_PATH`, `SHARED_BASE_NOT_GIT_ROOT`,
+`SHARED_TRACKING_POLICY_DRIFT`, `LEGACY_MIGRATION_REQUIRED`, `MANAGED_FILE_UNSAFE`,
+`TRACKING_POLICY_REQUIRED`, `TRACKING_POLICY_INVALID`, `MIGRATION_MANUAL_CLEANUP_REQUIRED`,
+`CONFIG_LOCK_TIMEOUT`, `CONFIG_WRITE_FAILED`, and `IO_FAILURE`.
+
 ## What's Next
 
 - **[CLI Reference](cli-reference.md)** -- Full command reference, configuration, embedding providers, MCP client setup
