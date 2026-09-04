@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Scrinia.Core;
 
 namespace Scrinia.Core.Configuration;
 
@@ -27,11 +28,18 @@ public sealed record SharedBaseIdentity
         ArgumentNullException.ThrowIfNull(entry);
         if (!SharedBaseRegistry.IsCanonicalName(entry.Name))
             throw new ArgumentException("The shared base entry must have a canonical name.", nameof(entry));
+        if (!Path.IsPathFullyQualified(entry.Root) || !Directory.Exists(entry.Root))
+            throw new ArgumentException("The shared base root must be an existing absolute directory.", nameof(entry));
+
+        string canonicalRoot = PathContainment.ResolveCanonical(entry.Root);
+        if (string.Equals(Path.GetFileName(canonicalRoot), ".scrinia", StringComparison.OrdinalIgnoreCase) ||
+            !PathContainment.IsWithin(canonicalRoot, Path.Combine(canonicalRoot, ".scrinia")))
+            throw new ArgumentException("The shared base root is unsafe.", nameof(entry));
 
         return new SharedBaseIdentity
         {
             BaseName = entry.Name,
-            RegisteredRoot = SharedBaseRegistry.NormalizeRoot(entry.Root),
+            RegisteredRoot = canonicalRoot,
         };
     }
 }

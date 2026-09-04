@@ -29,6 +29,24 @@ public static class PathContainment
         return candFull.StartsWith(withSep, PathComparison);
     }
 
+    /// <summary>Returns the canonical absolute path after resolving every existing link segment.</summary>
+    public static string ResolveCanonical(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        try
+        {
+            return ResolveReal(path);
+        }
+        catch (IOException exception)
+        {
+            throw new ArgumentException("The path cannot be resolved safely.", nameof(path), exception);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new ArgumentException("The path cannot be resolved safely.", nameof(path), exception);
+        }
+    }
+
     /// <summary>
     /// Canonicalizes <paramref name="path"/> to a real absolute path, resolving symlinks/junctions on every
     /// segment that already exists. The path may not exist yet (write destinations), so non-existent trailing
