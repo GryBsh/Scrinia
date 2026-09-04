@@ -51,7 +51,8 @@ public sealed record LegacyMigrationResult(
     bool Changed = false,
     string GitIndexStatus = "UNVERIFIED",
     IReadOnlyList<string>? Warnings = null,
-    IReadOnlyList<string>? DriverUnsetArgv = null)
+    IReadOnlyList<string>? DriverUnsetArgv = null,
+    Exception? Exception = null)
 {
     public bool Succeeded => ErrorCode == ConfigurationErrorCode.None;
 }
@@ -275,23 +276,26 @@ public sealed class LegacyMigrationService
             WorkspaceConfig.RefreshCache(workspaceRoot, values);
             return gate with { Warnings = plan.Warnings, DriverUnsetArgv = plan.DriverUnsetArgv };
         }
-        catch (DurableWriteException)
+        catch (DurableWriteException exception)
         {
-            TryRestore(originals);
-            return gate with { ErrorCode = ConfigurationErrorCode.ConfigWriteFailed, ExitClass = ConfigurationExitClass.WriteFailure,
-                Changed = false, Warnings = [], DriverUnsetArgv = [] };
+            Exception? rollbackFailure = TryRestore(originals);
+            return gate with { ErrorCode = rollbackFailure is null ? ConfigurationErrorCode.ConfigWriteFailed : ConfigurationErrorCode.ConfigRecoveryRequired,
+                ExitClass = ConfigurationExitClass.WriteFailure, Changed = false, Warnings = [], DriverUnsetArgv = [],
+                Exception = rollbackFailure is null ? exception : new AggregateException("Migration write and rollback both failed.", exception, rollbackFailure) };
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException exception)
         {
-            TryRestore(originals);
-            return gate with { ErrorCode = ConfigurationErrorCode.IoFailure, ExitClass = ConfigurationExitClass.WriteFailure,
-                Changed = false, Warnings = [], DriverUnsetArgv = [] };
+            Exception? rollbackFailure = TryRestore(originals);
+            return gate with { ErrorCode = rollbackFailure is null ? ConfigurationErrorCode.IoFailure : ConfigurationErrorCode.ConfigRecoveryRequired,
+                ExitClass = ConfigurationExitClass.WriteFailure, Changed = false, Warnings = [], DriverUnsetArgv = [],
+                Exception = rollbackFailure is null ? exception : new AggregateException("Migration write and rollback both failed.", exception, rollbackFailure) };
         }
-        catch (IOException)
+        catch (IOException exception)
         {
-            TryRestore(originals);
-            return gate with { ErrorCode = ConfigurationErrorCode.IoFailure, ExitClass = ConfigurationExitClass.WriteFailure,
-                Changed = false, Warnings = [], DriverUnsetArgv = [] };
+            Exception? rollbackFailure = TryRestore(originals);
+            return gate with { ErrorCode = rollbackFailure is null ? ConfigurationErrorCode.IoFailure : ConfigurationErrorCode.ConfigRecoveryRequired,
+                ExitClass = ConfigurationExitClass.WriteFailure, Changed = false, Warnings = [], DriverUnsetArgv = [],
+                Exception = rollbackFailure is null ? exception : new AggregateException("Migration write and rollback both failed.", exception, rollbackFailure) };
         }
         }
     }
@@ -315,12 +319,17 @@ public sealed class LegacyMigrationService
                 return new(observation.ErrorCode, observation.ExitClass, false);
 
             LegacyMigrationResult gate = LegacyMigrationStateMachine.ApplyCommand(observation.State, targetPolicy, isMigration: false);
-            if (!gate.Succeeded || !gate.Changed)
+            if (!gate.Succeeded)
                 return gate;
+            if (observation.Input?.TrackingPolicy == targetPolicy)
+                return gate with { Changed = false };
+            gate = gate with { Changed = true };
 
             var originals = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase)
             {
                 [configPath] = ReadBytes(configPath), [ignorePath] = ReadBytes(ignorePath),
+                [Path.Combine(directory, ".gitattributes")] = ReadBytes(Path.Combine(directory, ".gitattributes")),
+                [Path.Combine(directory, "merge.config")] = ReadBytes(Path.Combine(directory, "merge.config")),
             };
             try
             {
@@ -336,11 +345,13 @@ public sealed class LegacyMigrationService
             }
             catch (Exception exception) when (exception is DurableWriteException or UnauthorizedAccessException or IOException)
             {
-                TryRestore(originals);
+                Exception? rollbackFailure = TryRestore(originals);
                 return gate with
                 {
-                    ErrorCode = exception is DurableWriteException ? ConfigurationErrorCode.ConfigWriteFailed : ConfigurationErrorCode.IoFailure,
+                    ErrorCode = rollbackFailure is not null ? ConfigurationErrorCode.ConfigRecoveryRequired :
+                        exception is DurableWriteException ? ConfigurationErrorCode.ConfigWriteFailed : ConfigurationErrorCode.IoFailure,
                     ExitClass = ConfigurationExitClass.WriteFailure, Changed = false,
+                    Exception = rollbackFailure is null ? exception : new AggregateException("Tracking-set write and rollback both failed.", exception, rollbackFailure),
                 };
             }
         }
@@ -495,9 +506,16 @@ public sealed class LegacyMigrationService
         }
     }
 
-    private static void TryRestore(Dictionary<string, byte[]?> originals)
+    private static Exception? TryRestore(Dictionary<string, byte[]?> originals)
     {
-        try { Restore(originals); }
-        catch { /* The original write failure remains the declared boundary result. */ }
+        try
+        {
+            Restore(originals);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
     }
 }
