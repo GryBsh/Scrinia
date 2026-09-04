@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Scrinia.Core.Configuration;
 
 public enum DerivedPathClass
@@ -22,6 +24,33 @@ public sealed record DerivedPathRule(
 public sealed record DerivedPathClassification(DerivedPathClass Class, DerivedPathRule? Rule)
 {
     public bool IsDerived => Class != DerivedPathClass.Authoritative;
+}
+
+public enum SharedDurableAvailability { ReadWrite, ReadOnly, Unavailable }
+
+public sealed record SharedDurableEntry(string Path, string RelativeFile, SharedDurableAvailability Availability, string? ErrorCode = null);
+
+public static class SharedConflictScanner
+{
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
+    public static bool HasOrderedMarkerTriplet(ReadOnlySpan<byte> bytes)
+    {
+        string text;
+        try { text = StrictUtf8.GetString(bytes); }
+        catch (DecoderFallbackException) { return false; }
+
+        bool start = false;
+        bool separator = false;
+        foreach (string rawLine in text.Split('\n'))
+        {
+            string line = rawLine.EndsWith('\r') ? rawLine[..^1] : rawLine;
+            if (!start && line.StartsWith("<<<<<<< ", StringComparison.Ordinal)) { start = true; continue; }
+            if (start && !separator && line == "=======") { separator = true; continue; }
+            if (separator && line.StartsWith(">>>>>>> ", StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
 }
 
 /// <summary>Single ordered authority for derived paths and all consumers of that classification.</summary>

@@ -2,7 +2,11 @@ using System.Collections.Concurrent;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
+using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Core.Configuration;
 
@@ -55,6 +59,7 @@ public sealed record SharedBaseSnapshot
     public SharedBaseAvailability Availability { get; init; } = SharedBaseAvailability.Unavailable;
     public IReadOnlyList<string> Warnings { get; init; } = [];
     public IReadOnlyList<string> AuthoritativeFiles { get; init; } = [];
+    public IReadOnlyList<SharedDurableEntry> Entries { get; init; } = [];
 }
 
 public sealed record SharedRefreshValidation(bool Succeeded, SharedBaseSnapshot Snapshot);
@@ -244,6 +249,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
     {
         try
         {
+            DurableScanResult scan = DurableInventory.Scan(_identity.RegisteredRoot);
             string fingerprint = Fingerprint(_identity.RegisteredRoot);
             string inventoryRoot = Path.Combine(_identity.RegisteredRoot, ".scrinia");
             string[] files = Directory.EnumerateFiles(inventoryRoot, "*", SearchOption.AllDirectories)
@@ -251,9 +257,18 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
                 .Where(IsAuthoritative)
                 .OrderBy(path => path, StringComparer.Ordinal)
                 .ToArray();
-            var snapshot = new SharedBaseSnapshot { Identity = _identity, Generation = fingerprint, Fingerprint = fingerprint, Availability = SharedBaseAvailability.Available, AuthoritativeFiles = files };
+            var snapshot = new SharedBaseSnapshot
+            {
+                Identity = _identity,
+                Generation = fingerprint,
+                Fingerprint = fingerprint,
+                Availability = scan.HasConflict ? SharedBaseAvailability.Conflicted : SharedBaseAvailability.Available,
+                Warnings = scan.Warnings,
+                AuthoritativeFiles = files,
+                Entries = scan.HasConflict ? [] : scan.Entries,
+            };
             Publish(snapshot);
-            return new SharedRefreshValidation(true, snapshot);
+            return new SharedRefreshValidation(!scan.HasConflict, snapshot);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -303,6 +318,119 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
     }
 
     public void Dispose() => _generationGate.Dispose();
+}
+
+internal sealed record DurableScanResult(
+    IReadOnlyList<SharedDurableEntry> Entries,
+    IReadOnlyList<string> Warnings,
+    bool HasConflict);
+
+internal static class DurableInventory
+{
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
+    public static DurableScanResult Scan(string root)
+    {
+        string durableRoot = Path.Combine(root, ".scrinia");
+        var entries = new List<SharedDurableEntry>();
+        var warnings = new List<string>();
+        bool conflict = false;
+
+        foreach (string fullPath in Directory.EnumerateFiles(durableRoot, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(durableRoot, fullPath).Replace('\\', '/');
+            if (!SharedBaseRuntime.IsAuthoritative(relative)) continue;
+            byte[] bytes = File.ReadAllBytes(fullPath);
+            if (SharedConflictScanner.HasOrderedMarkerTriplet(bytes)) conflict = true;
+
+            if (relative.StartsWith("memories/", StringComparison.Ordinal) && relative.EndsWith(".meta.json", StringComparison.Ordinal))
+            {
+                InspectMemorySidecar(fullPath, relative, entries, warnings);
+                continue;
+            }
+            if (relative.StartsWith("skills/", StringComparison.Ordinal) && relative.EndsWith(".md", StringComparison.Ordinal))
+            {
+                InspectFileEntity(fullPath, relative, "/skill/", entries, warnings, isSkill: true);
+                continue;
+            }
+            if (relative.StartsWith("agent/", StringComparison.Ordinal) && relative.EndsWith(".md", StringComparison.Ordinal))
+                InspectFileEntity(fullPath, relative, "/agent/", entries, warnings, isSkill: false);
+        }
+
+        return new(entries, warnings, conflict);
+    }
+
+    private static void InspectMemorySidecar(string path, string relative, List<SharedDurableEntry> entries, List<string> warnings)
+    {
+        string fallback = "/" + Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(path));
+        string bodyPath = path[..^".meta.json".Length] + ".nmp2";
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+            JsonElement root = document.RootElement;
+            string? address = ReadString(root, "address");
+            string? artifactKey = ReadString(root, "artifactKey");
+            string visiblePath = string.IsNullOrWhiteSpace(address) ? fallback : address;
+            if (string.IsNullOrWhiteSpace(address) || string.IsNullOrWhiteSpace(artifactKey) || !File.Exists(bodyPath))
+            {
+                AddUnavailable(entries, warnings, visiblePath, relative, "SHARED_ENTRY_CORRUPT");
+                return;
+            }
+
+            byte[] body = File.ReadAllBytes(bodyPath);
+            string text = StrictUtf8.GetString(body);
+            if (!text.StartsWith("NMP/2 ", StringComparison.Ordinal))
+            {
+                AddUnavailable(entries, warnings, visiblePath, relative, text.StartsWith("NMP/", StringComparison.Ordinal) ? "SHARED_FORMAT_UNSUPPORTED" : "SHARED_ENTRY_CORRUPT");
+                return;
+            }
+            _ = Nmp2Strategy.Instance.Decode(text);
+            int? version = ReadInt(root, "v");
+            Add(entries, visiblePath, relative, version is > 1 ? SharedDurableAvailability.ReadOnly : SharedDurableAvailability.ReadWrite);
+        }
+        catch (JsonException) { AddUnavailable(entries, warnings, fallback, relative, "SHARED_ENTRY_CORRUPT"); }
+        catch (InvalidOperationException) { AddUnavailable(entries, warnings, fallback, relative, "SHARED_ENTRY_CORRUPT"); }
+        catch (DecoderFallbackException) { AddUnavailable(entries, warnings, fallback, relative, "SHARED_ENTRY_CORRUPT"); }
+        catch (Exception exception) when (exception is InvalidDataException or FormatException or ArgumentException or OverflowException)
+        { AddUnavailable(entries, warnings, fallback, relative, "SHARED_ENTRY_CORRUPT"); }
+    }
+
+    private static void InspectFileEntity(string path, string relative, string prefix, List<SharedDurableEntry> entries, List<string> warnings, bool isSkill)
+    {
+        string name = Path.GetFileNameWithoutExtension(path);
+        string logicalPath = prefix + name;
+        try
+        {
+            _ = StrictUtf8.GetString(File.ReadAllBytes(path));
+            int? version = null;
+            string metadata = Path.ChangeExtension(path, ".meta.json");
+            if (File.Exists(metadata))
+            {
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(metadata));
+                    version = ReadInt(document.RootElement, "v");
+                }
+                catch (JsonException) { /* malformed file-entity metadata is intentionally absent */ }
+            }
+            Add(entries, logicalPath, relative, version is > 1 ? SharedDurableAvailability.ReadOnly : SharedDurableAvailability.ReadWrite);
+        }
+        catch (DecoderFallbackException) { AddUnavailable(entries, warnings, logicalPath, relative, "SHARED_ENTRY_CORRUPT"); }
+        catch (IOException) { AddUnavailable(entries, warnings, logicalPath, relative, "SHARED_ENTRY_CORRUPT"); }
+    }
+
+    private static string? ReadString(JsonElement root, string name) => FindProperty(root, name) is { ValueKind: JsonValueKind.String } value ? value.GetString() : null;
+    private static int? ReadInt(JsonElement root, string name) => FindProperty(root, name) is { ValueKind: JsonValueKind.Number } value && value.TryGetInt32(out int result) ? result : null;
+    private static JsonElement? FindProperty(JsonElement root, string name)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return null;
+        foreach (JsonProperty property in root.EnumerateObject())
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)) return property.Value;
+        return null;
+    }
+    private static void Add(List<SharedDurableEntry> entries, string path, string relative, SharedDurableAvailability availability) => entries.Add(new(path, relative, availability));
+    private static void AddUnavailable(List<SharedDurableEntry> entries, List<string> warnings, string path, string relative, string code)
+    { entries.Add(new(path, relative, SharedDurableAvailability.Unavailable, code)); warnings.Add($"{code}:{path}"); }
 }
 
 public abstract class SharedBaseLease : IDisposable
