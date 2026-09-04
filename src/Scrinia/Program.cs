@@ -16,6 +16,9 @@ if (args.Length == 0 || args.Any(a => a is "--help" or "-h"))
 var app = ConsoleApp.Create();
 app.Add<ScriniaCommands>();
 app.Add<BundleCommands>("bundle");
+app.Add<SharedBaseCommands>("shared base");
+app.Add<SharedEnableCommands>("shared");
+app.Add<TrackingCliCommands>("tracking");
 await app.RunAsync(args);
 
 // Event sinks run detached so writes return promptly, which means a short-lived command can

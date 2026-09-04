@@ -18,7 +18,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
     private const string EnabledKey = WorkspaceConfig.EnabledKey;
     private readonly string _homeDirectory;
     private readonly string _workspaceRoot;
-    private readonly HomeConfigStore _homeConfigStore;
+    private readonly IHomeConfigStore _homeConfigStore;
     private readonly IWorkspaceConfig _workspaceConfig;
 
     public SharedBaseRegistry(string homeDirectory, string workspaceRoot, IHomeConfigStore? homeConfigStore = null, IWorkspaceConfig? workspaceConfig = null)
@@ -27,7 +27,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
         _homeDirectory = Path.GetFullPath(homeDirectory);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
-        _homeConfigStore = homeConfigStore as HomeConfigStore ?? new HomeConfigStore();
+        _homeConfigStore = homeConfigStore ?? new HomeConfigStore();
         _workspaceConfig = workspaceConfig ?? WorkspaceConfig.Load(_workspaceRoot);
     }
 
@@ -39,6 +39,13 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
     {
         ArgumentException.ThrowIfNullOrEmpty(root);
         return Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+    }
+
+    public SharedBaseResult ValidateRoot(string root)
+    {
+        if (!TryValidateRoot(root, out string canonicalRoot, out ConfigurationErrorCode errorCode))
+            return Failure(errorCode, "The shared base root is invalid.");
+        return new(Base: new SharedBaseEntry { Root = canonicalRoot, Tracking = TrackingPolicy.ProjectGit });
     }
 
     public SharedBaseResult Add(string name, string root)
@@ -59,7 +66,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
             SharedBaseCollision? collision = FindCollision(config, name, canonicalRoot);
             if (collision is not null) return Failure(ConfigurationErrorCode.SharedBaseRootCollision, "The shared base root collides with another root.");
             config.SharedBases[name] = new SharedBaseEntry { Root = canonicalRoot };
-            _homeConfigStore.SaveLocked(ConfigPath, config);
+            SaveLocked(config);
             return Success(config.SharedBases[name].WithIdentity(name));
         });
     }
@@ -70,7 +77,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         return WithLockedConfig(config =>
         {
             if (!config.SharedBases.Remove(name)) return new SharedBaseResult();
-            _homeConfigStore.SaveLocked(ConfigPath, config);
+            SaveLocked(config);
             return new SharedBaseResult();
         });
     }
@@ -135,6 +142,17 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
     }
 
     private string ConfigPath => Path.Combine(_homeDirectory, "config.json");
+
+    private void SaveLocked(HomeConfig config)
+    {
+        if (_homeConfigStore is HomeConfigStore store)
+        {
+            store.SaveLocked(ConfigPath, config);
+            return;
+        }
+
+        _homeConfigStore.Save(_homeDirectory, config);
+    }
 
     private bool TryValidateRoot(string root, out string canonicalRoot, out ConfigurationErrorCode errorCode)
     {
