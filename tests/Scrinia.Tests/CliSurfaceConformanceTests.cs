@@ -258,7 +258,7 @@ public sealed class CliSurfaceConformanceTests
         // CancellationToken" — ScriniaCommands.List does not take one, so that filter would
         // silently drop a real command and cover 22 of 23.
         using var scope = new AssertionScope();
-        foreach (var type in new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(TrackingCliCommands) })
+        foreach (var type in new[] { typeof(ScriniaCommands), typeof(BundleCommands), typeof(SharedBaseCommands), typeof(SharedEnableCommands), typeof(SharedServeCommands), typeof(TrackingCliCommands) })
         {
             foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             {
