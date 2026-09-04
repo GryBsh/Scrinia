@@ -9,19 +9,8 @@ internal static class WorkspaceConfig
     internal static string? GetValue(string workspaceRoot, string key) => CoreWorkspaceConfig.Load(workspaceRoot).GetValue(key);
 
     internal static void SetValue(string workspaceRoot, string key, string value)
-    {
-        CoreWorkspaceConfig config = CoreWorkspaceConfig.Load(workspaceRoot);
-        config.SetValue(key, value);
-        config.Save();
-    }
+        => CoreWorkspaceConfig.SetValue(workspaceRoot, key, value);
 
     internal static bool UnsetValue(string workspaceRoot, string key)
-    {
-        CoreWorkspaceConfig config = CoreWorkspaceConfig.Load(workspaceRoot);
-        if (config.GetValue(key) is null)
-            return false;
-        config.UnsetValue(key);
-        config.Save();
-        return true;
-    }
+        => CoreWorkspaceConfig.UnsetValue(workspaceRoot, key);
 }

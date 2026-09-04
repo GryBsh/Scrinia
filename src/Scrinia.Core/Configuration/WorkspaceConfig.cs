@@ -38,16 +38,42 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
     public static void Save(string workspaceRoot, Dictionary<string, string> values) =>
         new WorkspaceConfig(values, workspaceRoot).Save();
 
+    public static void SetValue(string workspaceRoot, string key, string value) =>
+        Mutate(workspaceRoot, values => values[key] = value);
+
+    public static bool UnsetValue(string workspaceRoot, string key)
+    {
+        bool removed = false;
+        Mutate(workspaceRoot, values => removed = values.Remove(key));
+        return removed;
+    }
+
     public string? GetValue(string key) => _values.TryGetValue(key, out string? value) ? value : null;
 
     public void SetValue(string key, string value)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
         ArgumentNullException.ThrowIfNull(value);
+        if (_workspaceRoot is not null)
+        {
+            SetValue(_workspaceRoot, key, value);
+            ReplaceValues(Load(_workspaceRoot)._values);
+            return;
+        }
         _values[key] = value;
     }
 
-    public void UnsetValue(string key) => _values.Remove(key);
+    public void UnsetValue(string key)
+    {
+        if (_workspaceRoot is null)
+        {
+            _values.Remove(key);
+            return;
+        }
+
+        UnsetValue(_workspaceRoot, key);
+        ReplaceValues(Load(_workspaceRoot)._values);
+    }
     public IReadOnlyList<string> GetEnabledBases() => ParseEnabled(GetValue(EnabledKey));
     public TrackingPolicy GetTrackingPolicy() => ParseTracking(GetValue(TrackingKey));
 
@@ -64,6 +90,31 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
             DurableFile.AtomicWriteAllText(path, json);
         }
         Cache[_workspaceRoot] = new Dictionary<string, string>(_values, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void Mutate(string workspaceRoot, Action<Dictionary<string, string>> applyMutation)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
+        ArgumentNullException.ThrowIfNull(applyMutation);
+
+        string directory = Path.Combine(workspaceRoot, ".scrinia");
+        string path = Path.Combine(directory, "config.json");
+        Directory.CreateDirectory(directory);
+        using (FileLock.AcquireExclusive(path + ".lock"))
+        {
+            Dictionary<string, string> current = ReadValues(workspaceRoot);
+            applyMutation(current);
+            string json = JsonSerializer.Serialize(current, ConfigJsonContext.Default.DictionaryStringString);
+            DurableFile.AtomicWriteAllText(path, json);
+            Cache[workspaceRoot] = new Dictionary<string, string>(current, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private void ReplaceValues(Dictionary<string, string> values)
+    {
+        _values.Clear();
+        foreach ((string key, string value) in values)
+            _values[key] = value;
     }
 
     public static IReadOnlyList<string> ParseEnabled(string? value)
