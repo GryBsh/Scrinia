@@ -17,7 +17,7 @@ public sealed class SharedBaseOperations
     public SharedBaseResult Add(string name, string root)
     {
         if (!SharedBaseRegistry.IsCanonicalName(name))
-            return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
+            return Failure(ConfigurationErrorCode.CliInvalidArgument, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
 
         SharedBaseEntry? existing = _registry.List(includeDisabled: true).FirstOrDefault(item => item.Name == name);
         if (existing is not null && !SamePhysical(existing.Root, root))

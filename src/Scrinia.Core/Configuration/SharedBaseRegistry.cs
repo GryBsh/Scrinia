@@ -50,7 +50,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
 
     public SharedBaseResult Add(string name, string root)
     {
-        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
+        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.CliInvalidArgument, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
         if (!TryValidateRoot(root, out string canonicalRoot, out ConfigurationErrorCode errorCode))
             return Failure(errorCode, "The shared base root is invalid.");
 
@@ -73,7 +73,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
 
     public SharedBaseResult Remove(string name)
     {
-        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
+        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.CliInvalidArgument, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
         return WithLockedConfig(config =>
         {
             if (!config.SharedBases.Remove(name)) return new SharedBaseResult();
@@ -95,7 +95,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
 
     public SharedBaseResult Disable(string name)
     {
-        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
+        if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.CliInvalidArgument, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
         return SetEnabled(name, enabled => enabled.Where(item => item != name).ToArray(), requireRegistration: false);
     }
 

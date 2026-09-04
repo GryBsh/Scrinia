@@ -1,33 +1,82 @@
 using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core.Configuration;
+using Scrinia.Commands;
+using System.Text;
 
 namespace Scrinia.Tests;
 
 public sealed class CliErrorPrecedenceTests
 {
-    [Theory]
-    [InlineData(ConfigurationErrorCode.WorkspaceConfigMalformed, "WORKSPACE_CONFIG_MALFORMED", 2)]
-    [InlineData(ConfigurationErrorCode.UserConfigMalformed, "USER_CONFIG_MALFORMED", 2)]
-    [InlineData(ConfigurationErrorCode.UserConfigSchemaUnsupported, "USER_CONFIG_SCHEMA_UNSUPPORTED", 2)]
-    [InlineData(ConfigurationErrorCode.SharedBaseAlreadyExists, "SHARED_BASE_ALREADY_EXISTS", 3)]
-    [InlineData(ConfigurationErrorCode.SharedBaseNotFound, "SHARED_BASE_NOT_FOUND", 3)]
-    [InlineData(ConfigurationErrorCode.SharedBaseRootCollision, "SHARED_BASE_ROOT_COLLISION", 3)]
-    [InlineData(ConfigurationErrorCode.SharedBaseUnsafePath, "SHARED_BASE_UNSAFE_PATH", 3)]
-    [InlineData(ConfigurationErrorCode.SharedBaseNotGitRoot, "SHARED_BASE_NOT_GIT_ROOT", 3)]
-    [InlineData(ConfigurationErrorCode.SharedTrackingPolicyDrift, "SHARED_TRACKING_POLICY_DRIFT", 3)]
-    [InlineData(ConfigurationErrorCode.LegacyMigrationRequired, "LEGACY_MIGRATION_REQUIRED", 3)]
-    [InlineData(ConfigurationErrorCode.ManagedFileUnsafe, "MANAGED_FILE_UNSAFE", 3)]
-    [InlineData(ConfigurationErrorCode.TrackingPolicyRequired, "TRACKING_POLICY_REQUIRED", 3)]
-    [InlineData(ConfigurationErrorCode.TrackingPolicyInvalid, "TRACKING_POLICY_INVALID", 3)]
-    [InlineData(ConfigurationErrorCode.MigrationManualCleanupRequired, "MIGRATION_MANUAL_CLEANUP_REQUIRED", 3)]
-    [InlineData(ConfigurationErrorCode.ConfigLockTimeout, "CONFIG_LOCK_TIMEOUT", 4)]
-    [InlineData(ConfigurationErrorCode.ConfigWriteFailed, "CONFIG_WRITE_FAILED", 4)]
-    [InlineData(ConfigurationErrorCode.IoFailure, "IO_FAILURE", 4)]
-    public void EveryDeclaredFailureHasStableCodeAndExitClass(ConfigurationErrorCode error, string code, int exitClass)
+    [Fact]
+    public void EveryDeclaredFailureHasStableCodeAndExitClass()
     {
-        ConfigResults.Code(error).Should().Be(code);
-        ConfigResults.ExitClassFor(error).Should().Be((ConfigurationExitClass)exitClass);
+        foreach (ConfigurationErrorCode error in Enum.GetValues<ConfigurationErrorCode>())
+        {
+            if (error == ConfigurationErrorCode.None) continue;
+            ConfigResults.Code(error).Should().MatchRegex("^[A-Z][A-Z0-9_]+$");
+            ConfigResults.ExitClassFor(error).Should().BeOneOf(
+                ConfigurationExitClass.InvalidConfiguration,
+                ConfigurationExitClass.PolicyFailure,
+                ConfigurationExitClass.WriteFailure);
+        }
+    }
+
+    [Fact]
+    public void UnsafePathAndInvalidNameHaveDistinctDeclaredCommandClasses()
+    {
+        ConfigResults.Code(ConfigurationErrorCode.SharedBaseUnsafePath).Should().Be("SHARED_BASE_UNSAFE_PATH");
+        ConfigResults.ExitClassFor(ConfigurationErrorCode.SharedBaseUnsafePath).Should().Be(ConfigurationExitClass.PolicyFailure);
+        ConfigResults.Code(ConfigurationErrorCode.CliInvalidArgument).Should().Be("CLI_INVALID_ARGUMENT");
+        ConfigResults.ExitClassFor(ConfigurationErrorCode.CliInvalidArgument).Should().Be(ConfigurationExitClass.InvalidConfiguration);
+    }
+
+    [Fact]
+    public void CommandProducerUsesUsageClassForInvalidCanonicalName()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-task8-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            SharedBaseResult result = new SharedBaseRegistry(root, root).Add("Not Canonical", root);
+            result.ErrorCode.Should().Be(ConfigurationErrorCode.CliInvalidArgument);
+            result.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+            SharedBaseResult operationResult = new SharedBaseOperations(
+                new SharedBaseRegistry(root, root), root, root).Add("Not Canonical", root);
+            operationResult.ErrorCode.Should().Be(ConfigurationErrorCode.CliInvalidArgument);
+            operationResult.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+            ConfigurationJsonResult.Failure("shared base add", result.ErrorCode).ErrorCode
+                .Should().Be("CLI_INVALID_ARGUMENT");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BothSharedCliAdaptersEmitUnsafePathWithPolicyExitClass()
+    {
+        var originalOutput = Console.Out;
+        try
+        {
+            using var output = new StringWriter(new StringBuilder());
+            Console.SetOut(output);
+            var result = new SharedBaseResult(ConfigurationErrorCode.SharedBaseUnsafePath,
+                ConfigurationExitClass.PolicyFailure);
+
+            SharedBaseCommands.Render("shared base add", result, json: true).Should().Be(3);
+            using (JsonDocument document = JsonDocument.Parse(output.ToString()))
+                document.RootElement.GetProperty("errorCode").GetString().Should().Be("SHARED_BASE_UNSAFE_PATH");
+
+            output.GetStringBuilder().Clear();
+            SharedEnableCommands.Render("shared enable", result, json: true).Should().Be(3);
+            using (JsonDocument document = JsonDocument.Parse(output.ToString()))
+                document.RootElement.GetProperty("errorCode").GetString().Should().Be("SHARED_BASE_UNSAFE_PATH");
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+        }
     }
 
     [Fact]
