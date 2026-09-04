@@ -10,7 +10,9 @@ public sealed class SharedEphemeralRefusalTests
     [Theory]
     [InlineData("~name")]
     [InlineData("/temp/name")]
-    public void Ephemeral_path_destination_and_prefix_are_refused_before_store_or_fingerprint_for_every_supported_spelling(string raw)
+    [InlineData("/TEMP/name")]
+    [InlineData(" ~name ")]
+    public void Ephemeral_addresses_are_refused_by_the_current_centralized_memory_address_contract(string raw)
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-task3-ephemeral-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(root, ".scrinia"));

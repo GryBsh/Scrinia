@@ -57,6 +57,8 @@ public sealed record SharedBaseSnapshot
     public IReadOnlyList<string> AuthoritativeFiles { get; init; } = [];
 }
 
+public sealed record SharedRefreshValidation(bool Succeeded, SharedBaseSnapshot Snapshot);
+
 public interface ISharedBaseRuntimeFactory
 {
     SharedBaseRuntime Open(SharedBaseEntry entry);
@@ -186,8 +188,14 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             return new() { Identity = _identity, Mutation = SharedMutationCertainty.Unknown, Generation = Snapshot.Generation, Manifest = plan.AuthoritativeFiles };
         }
 
-        RefreshSnapshot();
-        return new() { Identity = _identity, Mutation = SharedMutationCertainty.Applied, Generation = Snapshot.Generation, Manifest = plan.AuthoritativeFiles };
+        SharedRefreshValidation validation = RefreshSnapshot();
+        return new()
+        {
+            Identity = _identity,
+            Mutation = validation.Succeeded ? SharedMutationCertainty.Applied : SharedMutationCertainty.Unknown,
+            Generation = validation.Snapshot.Generation,
+            Manifest = plan.AuthoritativeFiles
+        };
     }
 
     public SharedRefreshCommit Refresh()
@@ -205,7 +213,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             throw new DirectoryNotFoundException(inventoryRoot);
 
         var files = Directory.EnumerateFiles(inventoryRoot, "*", SearchOption.AllDirectories)
-            .Where(path => !SharedClassifier.IsExcludedFromFingerprint(Path.GetRelativePath(inventoryRoot, path)))
+            .Where(path => IsAuthoritative(Path.GetRelativePath(inventoryRoot, path)))
             .Select(path => (Path: Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/'), FullPath: path))
             .OrderBy(item => System.Text.Encoding.UTF8.GetBytes(item.Path), ByteArrayComparer.Instance)
             .ToArray();
@@ -226,21 +234,32 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
     }
 
-    private void RefreshSnapshot()
+    public static bool IsAuthoritative(string relativePath)
+    {
+        string normalizedPath = relativePath.Replace('\\', '/').Trim('/');
+        return normalizedPath is not "config.json" and not ".gitignore" && !SharedClassifier.IsExcludedFromFingerprint(normalizedPath);
+    }
+
+    internal SharedRefreshValidation RefreshSnapshot()
     {
         try
         {
             string fingerprint = Fingerprint(_identity.RegisteredRoot);
-            string[] files = Directory.EnumerateFiles(Path.Combine(_identity.RegisteredRoot, ".scrinia"), "*", SearchOption.AllDirectories)
-                .Select(path => Path.GetRelativePath(Path.Combine(_identity.RegisteredRoot, ".scrinia"), path).Replace('\\', '/'))
-                .Where(path => !SharedClassifier.IsExcludedFromFingerprint(path))
+            string inventoryRoot = Path.Combine(_identity.RegisteredRoot, ".scrinia");
+            string[] files = Directory.EnumerateFiles(inventoryRoot, "*", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/'))
+                .Where(IsAuthoritative)
                 .OrderBy(path => path, StringComparer.Ordinal)
                 .ToArray();
-            Publish(new SharedBaseSnapshot { Identity = _identity, Generation = fingerprint, Fingerprint = fingerprint, Availability = SharedBaseAvailability.Available, AuthoritativeFiles = files });
+            var snapshot = new SharedBaseSnapshot { Identity = _identity, Generation = fingerprint, Fingerprint = fingerprint, Availability = SharedBaseAvailability.Available, AuthoritativeFiles = files };
+            Publish(snapshot);
+            return new SharedRefreshValidation(true, snapshot);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            Publish(new SharedBaseSnapshot { Identity = _identity, Availability = SharedBaseAvailability.Unavailable, Warnings = [exception.GetType().Name] });
+            var snapshot = new SharedBaseSnapshot { Identity = _identity, Availability = SharedBaseAvailability.Unavailable, Warnings = [exception.GetType().Name] };
+            Publish(snapshot);
+            return new SharedRefreshValidation(false, snapshot);
         }
     }
 

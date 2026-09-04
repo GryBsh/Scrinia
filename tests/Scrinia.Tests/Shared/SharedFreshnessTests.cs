@@ -23,6 +23,21 @@ public sealed class SharedFreshnessTests
         result.ErrorCode.Should().Be("SHARED_BASE_STALE");
     }
 
+    [Theory]
+    [InlineData("config.json")]
+    [InlineData(".gitignore")]
+    public void Control_files_do_not_change_the_open_generation(string controlFile)
+    {
+        using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
+        using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        string generation = runtime.Snapshot.Generation!;
+
+        File.WriteAllText(Path.Combine(fixture.Root, ".scrinia", controlFile), "changed control");
+
+        runtime.RevalidateBeforeMutation("/note", null).IsSafe.Should().BeTrue();
+        runtime.Snapshot.Generation.Should().Be(generation);
+    }
+
     [Fact]
     public void Refresh_swaps_snapshot_and_fingerprint_atomically()
     {
@@ -72,6 +87,20 @@ public sealed class SharedFreshnessTests
         commit.Mutation.Should().Be(SharedMutationCertainty.Unknown);
         runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Stale);
         runtime.RevalidateBeforeMutation("/note", null).ErrorCode.Should().Be("SHARED_BASE_STALE");
+    }
+
+    [Fact]
+    public void Successful_callback_with_invalid_postwrite_refresh_returns_unknown()
+    {
+        using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
+        using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = "/note" };
+
+        SharedMutationCommit commit = runtime.CommitMutation(plan, () => Directory.Delete(Path.Combine(fixture.Root, ".scrinia"), recursive: true));
+
+        commit.Mutation.Should().Be(SharedMutationCertainty.Unknown);
+        runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Unavailable);
+        runtime.RevalidateBeforeMutation("/note", null).IsSafe.Should().BeFalse();
     }
 
     private sealed class RuntimeFixture : IDisposable
