@@ -9,6 +9,7 @@ public interface IWorkspaceConfig : ITrackingPolicyStore
     void SetValue(string key, string value);
     void UnsetValue(string key);
     IReadOnlyList<string> GetEnabledBases();
+    IReadOnlyList<string> UpdateEnabledBases(Func<IReadOnlyList<string>, IReadOnlyList<string>> mutate);
     void Save();
 }
 
@@ -75,6 +76,29 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         ReplaceValues(Load(_workspaceRoot)._values);
     }
     public IReadOnlyList<string> GetEnabledBases() => ParseEnabled(GetValue(EnabledKey));
+    public IReadOnlyList<string> UpdateEnabledBases(Func<IReadOnlyList<string>, IReadOnlyList<string>> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+        if (_workspaceRoot is null)
+        {
+            IReadOnlyList<string> next = mutate(GetEnabledBases());
+            if (next.Count == 0) _values.Remove(EnabledKey);
+            else _values[EnabledKey] = string.Join(';', next);
+            return next;
+        }
+
+        IReadOnlyList<string> updated = [];
+        Mutate(_workspaceRoot, values =>
+        {
+            IReadOnlyList<string> next = mutate(ParseEnabled(values.GetValueOrDefault(EnabledKey)));
+            if (next.Count == 0) values.Remove(EnabledKey);
+            else values[EnabledKey] = string.Join(';', next);
+            updated = next;
+        });
+        ReplaceValues(Load(_workspaceRoot)._values);
+        return updated;
+    }
+
     public TrackingPolicy GetTrackingPolicy() => ParseTracking(GetValue(TrackingKey));
 
     public void Save()

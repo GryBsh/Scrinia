@@ -89,7 +89,6 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
     public SharedBaseResult Disable(string name)
     {
         if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
-        if (!_workspaceConfig.GetEnabledBases().Contains(name, StringComparer.Ordinal)) return new SharedBaseResult();
         return SetEnabled(name, enabled => enabled.Where(item => item != name).ToArray(), requireRegistration: false);
     }
 
@@ -117,12 +116,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
     {
         if (!IsCanonicalName(name)) return Failure(ConfigurationErrorCode.SharedBaseUnsafePath, "The shared base name is not canonical.", ConfigurationExitClass.InvalidConfiguration);
         if (requireRegistration && LookupRegistered(name) is null) return Failure(ConfigurationErrorCode.SharedBaseNotFound, "The shared base is not registered.");
-        IReadOnlyList<string> current = _workspaceConfig.GetEnabledBases();
-        IReadOnlyList<string> next = mutate(current);
-        if (next.SequenceEqual(current, StringComparer.Ordinal)) return Success(LookupRegistered(name)!.WithIdentity(name));
-        if (next.Count == 0) _workspaceConfig.UnsetValue(EnabledKey);
-        else _workspaceConfig.SetValue(EnabledKey, string.Join(';', next));
-        _workspaceConfig.Save();
+        _workspaceConfig.UpdateEnabledBases(mutate);
         SharedBaseEntry? entry = LookupRegistered(name);
         return entry is null ? new SharedBaseResult() : Success(entry.WithIdentity(name));
     }
@@ -173,8 +167,11 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         string text;
         try { text = new UTF8Encoding(false, true).GetString(bytes); } catch (DecoderFallbackException) { return false; }
         text = text.EndsWith("\r\n", StringComparison.Ordinal) ? text[..^2] : text.EndsWith('\n') ? text[..^1] : text;
-        return text.StartsWith("gitdir: ", StringComparison.Ordinal) && !text.Contains('\n') && !text.Contains('\r') &&
-            Directory.Exists(Path.IsPathFullyQualified(text[8..]) ? text[8..] : Path.Combine(root, text[8..]));
+        if (!text.StartsWith("gitdir: ", StringComparison.Ordinal) || text.Contains('\n') || text.Contains('\r')) return false;
+        string target = text[8..];
+        if (string.IsNullOrWhiteSpace(target)) return false;
+        return
+            Directory.Exists(Path.IsPathFullyQualified(target) ? target : Path.Combine(root, target));
     }
 
     private SharedBaseResult? ValidateCollisions(HomeConfig config, string name, string root) =>

@@ -140,6 +140,46 @@ public sealed class SharedBaseRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Add_RejectsEmptyWorktreeGitMarkerTarget()
+    {
+        string root = Path.Combine(_home, "empty-marker");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, ".git"), $"gitdir:   {Environment.NewLine}");
+        var registry = new SharedBaseRegistry(_home, _workspace);
+
+        registry.Add("empty-marker", root).ErrorCode.Should().Be(ConfigurationErrorCode.SharedBaseNotGitRoot);
+    }
+
+    [Fact]
+    public void Add_AllowsTraversalThatResolvesOutsideWorkspace()
+    {
+        string parent = Path.GetDirectoryName(_workspace)!;
+        string root = Path.Combine(parent, "repo");
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        var registry = new SharedBaseRegistry(_home, _workspace);
+
+        registry.Add("outside", Path.Combine(_workspace, "..", "repo")).Succeeded.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Enable_ConcurrentCallsRetainBothBases()
+    {
+        string first = CreateGitRoot("concurrent-first");
+        string second = CreateGitRoot("concurrent-second");
+        var firstRegistry = new SharedBaseRegistry(_home, _workspace);
+        var secondRegistry = new SharedBaseRegistry(_home, _workspace);
+        firstRegistry.Add("first", first).Succeeded.Should().BeTrue();
+        firstRegistry.Add("second", second).Succeeded.Should().BeTrue();
+        using var start = new Barrier(2);
+
+        Task firstEnable = Task.Run(() => { start.SignalAndWait(); firstRegistry.Enable("first"); });
+        Task secondEnable = Task.Run(() => { start.SignalAndWait(); secondRegistry.Enable("second"); });
+        await Task.WhenAll(firstEnable, secondEnable);
+
+        WorkspaceConfig.Load(_workspace).GetEnabledBases().Should().BeEquivalentTo(new[] { "first", "second" });
+    }
+
+    [Fact]
     public void DisableUnknownNameIsAnIdempotentSuccess()
     {
         var registry = new SharedBaseRegistry(_home, _workspace);
