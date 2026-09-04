@@ -49,6 +49,9 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         return removed;
     }
 
+    internal static void RefreshCache(string workspaceRoot, Dictionary<string, string> values) =>
+        Cache[workspaceRoot] = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
+
     public string? GetValue(string key) => _values.TryGetValue(key, out string? value) ? value : null;
 
     public void SetValue(string key, string value)
