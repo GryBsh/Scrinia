@@ -36,6 +36,9 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
     public static Dictionary<string, string> LoadValues(string workspaceRoot) =>
         new(Load(workspaceRoot)._values, StringComparer.OrdinalIgnoreCase);
 
+    internal static Dictionary<string, string> LoadValuesUncached(string workspaceRoot) =>
+        new(ReadValues(workspaceRoot), StringComparer.OrdinalIgnoreCase);
+
     public static void Save(string workspaceRoot, Dictionary<string, string> values) =>
         new WorkspaceConfig(values, workspaceRoot).Save();
 

@@ -38,6 +38,75 @@ public sealed class LegacyMigrationServiceTests
     }
 
     [Fact]
+    public void ConfiguredPolicyWithRecognizedLegacyStillRequiresLegacyCleanup()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        File.WriteAllText(Path.Combine(directory, ".gitignore"), ManagedIgnoreBlock.Local, new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(directory, ".gitattributes"), LegacyMergeRecognition.ScriniaMetaAttributeLine + "\n", new UTF8Encoding(false));
+        WorkspaceConfig.SetValue(scope.WorkspaceDir, WorkspaceConfig.TrackingKey, "local");
+
+        new LegacyMigrationService().Inspect(scope.WorkspaceDir).State.Should().Be(LegacyMigrationState.LegacyClean);
+    }
+
+    [Fact]
+    public void ConfiguredPolicyWithLegacyAndCustomContentIsMixed()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        File.WriteAllText(Path.Combine(directory, ".gitignore"), ManagedIgnoreBlock.Local, new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(directory, ".gitattributes"), LegacyMergeRecognition.ScriniaMetaAttributeLine + "\ncustom\n", new UTF8Encoding(false));
+        WorkspaceConfig.SetValue(scope.WorkspaceDir, WorkspaceConfig.TrackingKey, "local");
+
+        new LegacyMigrationService().Inspect(scope.WorkspaceDir).State.Should().Be(LegacyMigrationState.LegacyMixed);
+    }
+
+    [Fact]
+    public void InspectUsesPersistedConfigDespiteAnOldWorkspaceConfigCache()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        WorkspaceConfig.SetValue(scope.WorkspaceDir, WorkspaceConfig.TrackingKey, "local");
+        string configPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "config.json");
+        File.WriteAllText(configPath, "{\"Scrinia:Workspace:Tracking\":\"project-git\"}", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore"), ManagedIgnoreBlock.ProjectGit, new UTF8Encoding(false));
+
+        new LegacyMigrationService().Inspect(scope.WorkspaceDir).State.Should().Be(LegacyMigrationState.ProjectGit);
+    }
+
+    [Fact]
+    public void RecoveryJournalRejectsConflictDirectoryAndPreservesIt()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string conflict = Path.Combine(directory, "conflict");
+        Directory.CreateDirectory(conflict);
+        string journal = Path.Combine(directory, ".tracking-recovery.json");
+        string encodedPath = Convert.ToBase64String(Encoding.UTF8.GetBytes(conflict));
+        File.WriteAllText(journal, $"prepared\n{encodedPath}|-\n", new UTF8Encoding(false));
+
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+
+        result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
+        Directory.Exists(conflict).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ConcurrentInspectionAndMigrationUseOneStableConfigurationLock()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(Path.Combine(directory, "memories"));
+        File.WriteAllText(Path.Combine(directory, ".gitattributes"), LegacyMergeRecognition.ScriniaMetaAttributeLine + "\n", new UTF8Encoding(false));
+        var service = new LegacyMigrationService();
+
+        Task[] inspections = Enumerable.Range(0, 8).Select(_ => Task.Run(() => service.Inspect(scope.WorkspaceDir))).ToArray();
+        Task migration = Task.Run(() => service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local));
+        await Task.WhenAll(inspections.Append(migration));
+
+        service.Inspect(scope.WorkspaceDir).ErrorCode.Should().Be(ConfigurationErrorCode.None);
+    }
+
+    [Fact]
     public void MigrateChangesRealFilesAndIsIdempotent()
     {
         using var scope = new TestHelpers.StoreScope();
