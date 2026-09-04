@@ -9,6 +9,7 @@ using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
+using Scrinia.Mcp.SharedContracts;
 
 namespace Scrinia.Mcp;
 
@@ -32,7 +33,20 @@ namespace Scrinia.Mcp;
 [JsonSerializable(typeof(MemoryAddressError))]
 [JsonSerializable(typeof(MemorySearchRequest))]
 [JsonSerializable(typeof(MemoryListRequest))]
+[JsonSerializable(typeof(SharedBaseSummary))]
+[JsonSerializable(typeof(SearchHit))]
+[JsonSerializable(typeof(FileDriftRef))]
+[JsonSerializable(typeof(ListItem))]
+[JsonSerializable(typeof(RecallResult))]
+[JsonSerializable(typeof(EntityCount))]
+[JsonSerializable(typeof(FactsEntitiesResult))]
+[JsonSerializable(typeof(FactsProfileResult))]
+[JsonSerializable(typeof(FactsIntersectResult))]
+[JsonSerializable(typeof(MutationResult))]
+[JsonSerializable(typeof(RefreshResult))]
+[JsonSerializable(typeof(SharedWarning))]
 public partial class ScriniaMcpJsonContext : JsonSerializerContext;
+
 
 public sealed partial class ScriniaMcpTools
 {
