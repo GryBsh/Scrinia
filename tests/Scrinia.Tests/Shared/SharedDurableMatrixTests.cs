@@ -6,6 +6,64 @@ namespace Scrinia.Tests.Shared;
 
 public sealed class SharedDurableMatrixTests
 {
+    [Theory]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"artifacts/entry.nmp2\"}", "ReadWrite", null)]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"artifacts/entry.nmp2\",\"v\":null}", "ReadWrite", null)]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"artifacts/entry.nmp2\",\"v\":0}", "ReadWrite", null)]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"artifacts/entry.nmp2\",\"v\":1}", "ReadWrite", null)]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"artifacts/entry.nmp2\",\"v\":2}", "ReadOnly", null)]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"artifacts/entry.nmp2\",\"v\":\"bad\"}", "Unavailable", "SHARED_ENTRY_CORRUPT")]
+    [InlineData("memory", "{\"address\":\"/../entry\",\"artifactKey\":\"artifacts/entry.nmp2\"}", "Unavailable", "SHARED_ENTRY_CORRUPT")]
+    [InlineData("memory", "{\"address\":\"/entry\",\"artifactKey\":\"../entry.nmp2\"}", "Unavailable", "SHARED_ENTRY_CORRUPT")]
+    [InlineData("skill", "{\"v\":null}", "ReadWrite", null)]
+    [InlineData("skill", "{\"v\":0}", "ReadWrite", null)]
+    [InlineData("skill", "{\"v\":1}", "ReadWrite", null)]
+    [InlineData("skill", "{\"v\":2}", "ReadOnly", null)]
+    [InlineData("skill", "{\"v\":\"bad\"}", "ReadWrite", null)]
+    [InlineData("agent", "{\"v\":null}", "ReadWrite", null)]
+    [InlineData("agent", "{\"v\":0}", "ReadWrite", null)]
+    [InlineData("agent", "{\"v\":1}", "ReadWrite", null)]
+    [InlineData("agent", "{\"v\":2}", "ReadOnly", null)]
+    [InlineData("agent", "{\"v\":\"bad\"}", "ReadWrite", null)]
+    public void Sidecar_compatibility_matrix_is_explicit(string kind, string metadata, string expectedAvailability, string? expectedError)
+    {
+        using var fixture = DurableFixture.Create();
+        if (kind == "memory") fixture.WriteMemory("entry", fixture.ValidNmp, metadata);
+        else fixture.WriteFileEntity((kind == "skill" ? "skills/entry" : "agent/entry"), "# Entry", metadata);
+
+        using var runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        string path = kind == "memory" ? "/entry" : "/" + kind + "/entry";
+        SharedDurableEntry? entry = expectedAvailability == "Unavailable"
+            ? runtime.Snapshot.Entries.SingleOrDefault(candidate => candidate.ErrorCode == expectedError)
+            : runtime.Snapshot.Entries.SingleOrDefault(candidate => candidate.Path == path);
+        if (expectedAvailability == "Unavailable")
+        {
+            entry.Should().NotBeNull();
+            entry!.Availability.ToString().Should().Be(expectedAvailability);
+            entry.ErrorCode.Should().Be(expectedError);
+            return;
+        }
+        entry.Should().NotBeNull();
+        entry!.Availability.ToString().Should().Be(expectedAvailability);
+        entry.ErrorCode.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("memory", "entry.meta.json")]
+    [InlineData("skill", "skill.meta.json")]
+    [InlineData("agent", "agent.meta.json")]
+    public void Malformed_json_is_corrupt_for_memory_but_absent_metadata_for_file_entities(string kind, string expectedMetadataFile)
+    {
+        using var fixture = DurableFixture.Create();
+        if (kind == "memory") fixture.WriteMemory("entry", fixture.ValidNmp, "{");
+        else fixture.WriteFileEntity((kind == "skill" ? "skills/skill" : "agent/agent"), "# Entry", "{");
+        using var runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
+        string path = kind == "memory" ? "/entry" : "/" + kind + "/" + Path.GetFileNameWithoutExtension(expectedMetadataFile)[..^5];
+        SharedDurableEntry? entry = runtime.Snapshot.Entries.SingleOrDefault(candidate => candidate.Path == path);
+        if (kind == "memory") entry!.ErrorCode.Should().Be("SHARED_ENTRY_CORRUPT");
+        else entry!.Availability.Should().Be(SharedDurableAvailability.ReadWrite);
+    }
+
     [Fact]
     public void Covers_every_spec_4_4_row_and_spec_4_5_default()
     {

@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
@@ -377,6 +378,12 @@ internal static class DurableInventory
                 return;
             }
 
+            ArtifactEntry entry = JsonSerializer.Deserialize(File.ReadAllBytes(path), SharedDurableJsonContext.Default.ArtifactEntry)
+                ?? throw new JsonException("The memory sidecar is null.");
+            if (entry.Address.Kind != MemoryAddressKind.Persistent)
+                throw new ArgumentException("A shared memory sidecar must contain a persistent address.");
+            _ = PathParser.Parse(entry.Address.Value, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
             byte[] body = File.ReadAllBytes(bodyPath);
             string text = StrictUtf8.GetString(body);
             if (!text.StartsWith("NMP/2 ", StringComparison.Ordinal))
@@ -432,6 +439,10 @@ internal static class DurableInventory
     private static void AddUnavailable(List<SharedDurableEntry> entries, List<string> warnings, string path, string relative, string code)
     { entries.Add(new(path, relative, SharedDurableAvailability.Unavailable, code)); warnings.Add($"{code}:{path}"); }
 }
+
+[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
+[JsonSerializable(typeof(ArtifactEntry))]
+internal partial class SharedDurableJsonContext : JsonSerializerContext;
 
 public abstract class SharedBaseLease : IDisposable
 {

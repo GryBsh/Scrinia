@@ -19,6 +19,8 @@ public sealed class SharedConflictMarkerTests
             .Should().BeFalse();
         SharedConflictScanner.HasOrderedMarkerTriplet(Encoding.UTF8.GetBytes(">>>>>>> theirs\n=======\n<<<<<<< ours"))
             .Should().BeFalse();
+        SharedConflictScanner.HasOrderedMarkerTriplet([.. Encoding.UTF8.GetBytes("<<<<<<< ours\n"), 0xC3, 0x28, .. Encoding.UTF8.GetBytes("\n=======\n>>>>>>> theirs")])
+            .Should().BeFalse();
     }
 
     [Fact]
