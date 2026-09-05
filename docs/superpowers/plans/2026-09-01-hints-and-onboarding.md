@@ -1,6 +1,6 @@
 # Phase 4 — Hooks and Prompt-Hint Advisory Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add the fail-silent `scri hint` commit/push advisory, update supported hook and agent artifacts, and replace the retired shared onboarding without changing Phase 3's final response contract.
 
@@ -9,6 +9,22 @@
 **Tech Stack:** .NET 10 (`net10.0`), xUnit, FluentAssertions, `dotnet test`, `dotnet build`. No new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-shared-memory-global-tool-design.md` §7.3, §9, §13, §13.1, §14.8, §14.10; `docs/superpowers/reviews/2026-08-31-shared-memory-global-tool-spec-review.md` R1-03, R3-01, R3-05, R4-04, R5-01.
+
+## Progress / Phase Tracking
+
+| Phase | Status | Integration | SHA | Date |
+|-------|--------|-------------|-----|------|
+| Phase 4 — hints and prompt-hint advisory | COMPLETE | fast-forward into `main` from `sdd/hints-and-onboarding` | `112ed02` | 2026-09-05 |
+
+### Completion log
+
+#### Phase 4 — COMPLETE (2026-09-05, `112ed02`)
+
+Phase 4 (hints and prompt-hint advisory) is COMPLETE and integrated into `main` at `112ed02` via fast-forward from `sdd/hints-and-onboarding`.
+
+All 6 tasks (1–6) were implemented, reviewed, and approved via subagent-driven development.
+
+The independent Phase 4 exit gate PASSED — all 4 gate filters pass (PromptHintTransportTests 44/44, HintAdvisoryTransportTests 24/24, PluginOnboardingTemplateTests 4/4, HookAdvisoryOnboardingTests + OnboardingOwnershipTests 7/7); `dotnet build Scrinia.sln` 0 errors; `dotnet test Scrinia.sln` (benchmarks excluded) 0 failed; no Git process or spawn was introduced in any Phase 4 file; the four dated historical docs are unchanged; LF line endings are on all owned docs; and Phase 3's frozen response contract is untouched.
 
 ## Global Constraints
 
@@ -81,11 +97,11 @@
 
 **Interfaces:** Produces the three exact parser signatures and `PromptTransportResult` above. Use `Regex Token = new(@"[\p{L}\p{N}]+", RegexOptions.Compiled)` and the eight exact tokens.
 
-- [ ] **Step 1: Write failing tests** for positional-wins, raw input, one BOM, Unicode trim, empty input, exact JSON with trailing whitespace, extra properties, malformed JSON, nonobject JSON, missing/nonstring/case-mismatched `prompt`, trailing non-whitespace, NFKC fullwidth, punctuation boundaries, all eight inflections, case-insensitivity, negation, near misses (`commence`, `pushpin`, `recommit`, `committees`), both intents, and commit-before-push intent flags.
-- [ ] **Step 2: Run** `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~PromptHintTransportTests`; **Expected:** FAIL because the transport type is absent.
-- [ ] **Step 3: Implement** trim/BOM/empty handling; first-character `{` exact-object parsing with `JsonDocument` and required case-sensitive string `prompt`; raw otherwise; NFKC plus maximal letter/digit tokenization and exact token membership.
-- [ ] **Step 4: Run** the same filter; **Expected:** PASS for every parser boundary.
-- [ ] **Step 5: Commit** `src/Scrinia/Commands/PromptHintTransport.cs` and its test with `feat(hint): add exact prompt transport parser`.
+- [x] **Step 1: Write failing tests** for positional-wins, raw input, one BOM, Unicode trim, empty input, exact JSON with trailing whitespace, extra properties, malformed JSON, nonobject JSON, missing/nonstring/case-mismatched `prompt`, trailing non-whitespace, NFKC fullwidth, punctuation boundaries, all eight inflections, case-insensitivity, negation, near misses (`commence`, `pushpin`, `recommit`, `committees`), both intents, and commit-before-push intent flags.
+- [x] **Step 2: Run** `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~PromptHintTransportTests`; **Expected:** FAIL because the transport type is absent.
+- [x] **Step 3: Implement** trim/BOM/empty handling; first-character `{` exact-object parsing with `JsonDocument` and required case-sensitive string `prompt`; raw otherwise; NFKC plus maximal letter/digit tokenization and exact token membership.
+- [x] **Step 4: Run** the same filter; **Expected:** PASS for every parser boundary.
+- [x] **Step 5: Commit** `src/Scrinia/Commands/PromptHintTransport.cs` and its test with `feat(hint): add exact prompt transport parser`.
 
 ### Task 2: Bounded stdin transport
 
@@ -93,11 +109,11 @@
 
 **Interfaces:** `ConsoleStdinReader` implements `ReadAsync(CancellationToken)`; it reads repeatedly until EOF or 65,537 bytes, rejects over 65,536, decodes with `new UTF8Encoding(false, true)`, and applies a linked two-second cancellation deadline. `null` represents oversize, invalid UTF-8, timeout, or read failure.
 
-- [ ] **Step 1: Write failing transport tests** using an injectable reader for exactly 65,536 accepted bytes, 65,537 rejected bytes, invalid UTF-8, a delayed two-second timeout, `IOException`, repeated partial reads until EOF, and positional input proving the reader is never called.
-- [ ] **Step 2: Run** `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~HintAdvisoryTransportTests`; **Expected:** FAIL because the reader contract is absent.
-- [ ] **Step 3: Implement** repeated reads with a hard 65,537-byte ceiling, strict UTF-8 decoding only after EOF/limit, linked cancellation with `TimeSpan.FromSeconds(2)`, and fail-silent exception handling.
-- [ ] **Step 4: Run** the same filter; **Expected:** PASS, including read-until-EOF and timeout boundaries.
-- [ ] **Step 5: Commit** the reader and tests with `feat(hint): add bounded fail-silent stdin transport`.
+- [x] **Step 1: Write failing transport tests** using an injectable reader for exactly 65,536 accepted bytes, 65,537 rejected bytes, invalid UTF-8, a delayed two-second timeout, `IOException`, repeated partial reads until EOF, and positional input proving the reader is never called.
+- [x] **Step 2: Run** `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~HintAdvisoryTransportTests`; **Expected:** FAIL because the reader contract is absent.
+- [x] **Step 3: Implement** repeated reads with a hard 65,537-byte ceiling, strict UTF-8 decoding only after EOF/limit, linked cancellation with `TimeSpan.FromSeconds(2)`, and fail-silent exception handling.
+- [x] **Step 4: Run** the same filter; **Expected:** PASS, including read-until-EOF and timeout boundaries.
+- [x] **Step 5: Commit** the reader and tests with `feat(hint): add bounded fail-silent stdin transport`.
 
 ### Task 3: Advisory command and hook gate
 
@@ -105,39 +121,39 @@
 
 **Interfaces:** Consume `PromptHintTransport`, `IBoundedStdinReader`, and `HookClient`; produce `IsSupportedAdvisoryClient`, `HintAdvisory.CommitReminder`, and `HintAdvisory.PushReminder`.
 
-- [ ] **Step 1: Write failing tests** for `Default` and unknown clients, supported commit, supported push, both reminders in commit-then-push order, no intent, malformed input, timeout/read error, and unconditional exit 0. Assert reminders contain no base/root/Git-state claim.
-- [ ] **Step 2: Run** the advisory test filter; **Expected:** FAIL.
-- [ ] **Step 3: Implement** an advisory-only branch that parses positional input or the injected bounded reader, gates on `IsSupportedAdvisoryClient(ParseClient(client))`, emits only the exact applicable constants in order, and returns 0 on every path. Do not alter relevance hint computation or Phase 3 text.
-- [ ] **Step 4: Run** the filter; **Expected:** PASS.
-- [ ] **Step 5: Commit** with `feat(hint): emit fail-silent commit and push advisories`.
+- [x] **Step 1: Write failing tests** for `Default` and unknown clients, supported commit, supported push, both reminders in commit-then-push order, no intent, malformed input, timeout/read error, and unconditional exit 0. Assert reminders contain no base/root/Git-state claim.
+- [x] **Step 2: Run** the advisory test filter; **Expected:** FAIL.
+- [x] **Step 3: Implement** an advisory-only branch that parses positional input or the injected bounded reader, gates on `IsSupportedAdvisoryClient(ParseClient(client))`, emits only the exact applicable constants in order, and returns 0 on every path. Do not alter relevance hint computation or Phase 3 text.
+- [x] **Step 4: Run** the filter; **Expected:** PASS.
+- [x] **Step 5: Commit** with `feat(hint): emit fail-silent commit and push advisories`.
 
 ### Task 4: OpenCode save-to-hint
 
 **Files:** Modify `src/Scrinia.Mcp/plugins/opencode/scrinia.ts`; test `tests/Scrinia.Tests/PluginOnboardingTemplateTests.cs`.
 
-- [ ] **Step 1:** Add a failing assertion that `transform` invokes `scri hint --client opencode`, sends the prompt through stdin, and contains no `scri save`.
-- [ ] **Step 2:** Run the focused test; **Expected:** FAIL.
-- [ ] **Step 3:** Replace the save invocation and remove the obsolete alternate spawn block.
-- [ ] **Step 4:** Run the focused test; **Expected:** PASS.
-- [ ] **Step 5:** Commit with `feat(hint): route OpenCode transform through hint`.
+- [x] **Step 1:** Add a failing assertion that `transform` invokes `scri hint --client opencode`, sends the prompt through stdin, and contains no `scri save`.
+- [x] **Step 2:** Run the focused test; **Expected:** FAIL.
+- [x] **Step 3:** Replace the save invocation and remove the obsolete alternate spawn block.
+- [x] **Step 4:** Run the focused test; **Expected:** PASS.
+- [x] **Step 5:** Commit with `feat(hint): route OpenCode transform through hint`.
 
 ### Task 5: Agent artifacts and disjoint onboarding
 
 **Files:** Modify `src/Scrinia.Mcp/ScriniaPrimer.cs`, `docs/multi-user-setup.md`, `README.md`, `docs/getting-started.md`, `docs/security.md`, `src/Scrinia.Mcp/prompts/guide.md`; tests `HookAdvisoryOnboardingTests.cs` and `OnboardingOwnershipTests.cs`.
 
-- [ ] **Step 1: Write failing tests** for the primer's `scri hint --client <host>` hook-only wording, unchanged `McpInstructions`, `UserPromptSubmit` ending in `hint`, shared-base collaboration, fixed shared `project-git`, and each doc's explicit disjoint Phase 4/Phase 5 heading ownership.
-- [ ] **Step 2: Run** both focused filters; **Expected:** FAIL.
-- [ ] **Step 3: Update** only the owned headings. Replace `docs/multi-user-setup.md` with shared-base guidance; remove `scri-merge`, `reconcile`, and `setup --multi-user` workflow claims. Preserve Phase 3's exact staging command `git -C <root> add -A --` with individually quoted manifest paths. Leave Phase 5 headings untouched.
-- [ ] **Step 4: Run** both filters plus assertions that shared MCP has no prompt/correlation field, no Phase 4 Git process exists, and dated-history hashes are unchanged; **Expected:** PASS.
-- [ ] **Step 5: Commit** explicit paths with `docs: add Phase 4 hint and shared-base onboarding`.
+- [x] **Step 1: Write failing tests** for the primer's `scri hint --client <host>` hook-only wording, unchanged `McpInstructions`, `UserPromptSubmit` ending in `hint`, shared-base collaboration, fixed shared `project-git`, and each doc's explicit disjoint Phase 4/Phase 5 heading ownership.
+- [x] **Step 2: Run** both focused filters; **Expected:** FAIL.
+- [x] **Step 3: Update** only the owned headings. Replace `docs/multi-user-setup.md` with shared-base guidance; remove `scri-merge`, `reconcile`, and `setup --multi-user` workflow claims. Preserve Phase 3's exact staging command `git -C <root> add -A --` with individually quoted manifest paths. Leave Phase 5 headings untouched.
+- [x] **Step 4: Run** both filters plus assertions that shared MCP has no prompt/correlation field, no Phase 4 Git process exists, and dated-history hashes are unchanged; **Expected:** PASS.
+- [x] **Step 5: Commit** explicit paths with `docs: add Phase 4 hint and shared-base onboarding`.
 
 ### Task 6: Independent Phase 4 gate
 
-- [ ] **Step 1:** Run the parser, transport, template, artifact, and ownership filters independently; **Expected:** all PASS.
-- [ ] **Step 2:** Run `dotnet build Scrinia.sln`; **Expected:** clean.
-- [ ] **Step 3:** Run `dotnet test Scrinia.sln`; **Expected:** all non-benchmark tests PASS.
-- [ ] **Step 4:** Verify no `Process.Start`, `System.Diagnostics.Process`, or `child_process` spawn was introduced and no dated artifact changed.
-- [ ] **Step 5:** Commit any remaining Phase 4 files by explicit path; do not push.
+- [x] **Step 1:** Run the parser, transport, template, artifact, and ownership filters independently; **Expected:** all PASS.
+- [x] **Step 2:** Run `dotnet build Scrinia.sln`; **Expected:** clean.
+- [x] **Step 3:** Run `dotnet test Scrinia.sln`; **Expected:** all non-benchmark tests PASS.
+- [x] **Step 4:** Verify no `Process.Start`, `System.Diagnostics.Process`, or `child_process` spawn was introduced and no dated artifact changed.
+- [x] **Step 5:** Commit any remaining Phase 4 files by explicit path; do not push.
 
 ## Exit Gate
 
