@@ -89,6 +89,19 @@ foreach ($p in $Projects) {
     if ($p.rids -cnotin @('all', 'host')) { throw "Unknown rids scope '$($p.rids)' for $($p.id)" }
 }
 
+# Contract assertion (Phase 5 Task 6): the local publish scripts emit single-file release trees;
+# the single NuGet global tool is `scri`. The manifest must therefore declare exactly one single-
+# file CLI command (output=rid), and it must be `scri`; the optional plugin row (output=plugin) is
+# the separately-installed Vulkan command and is NOT part of the NuGet tool payload — Vulkan and
+# Merge are never packaged into the tool.
+$singleFileCommands = @($Projects | Where-Object { $_.output -ceq 'rid' })
+if ($singleFileCommands.Count -ne 1) {
+    throw "Publish manifest must declare exactly one single-file release-tree command (output=rid); found $($singleFileCommands.Count)."
+}
+if ($singleFileCommands[0].id -cne 'scri') {
+    throw "The single-file release-tree command must be `scri` (the one NuGet global tool); found '$($singleFileCommands[0].id)'."
+}
+
 # Overwrites the published native DLLs with the Vulkan-compiled variants. Single-file publish
 # flattens all native DLLs to the root, and the CPU backend's (ggml-base, ggml, llama, mtmd)
 # overwrite the Vulkan ones since they share filenames — so LLamaSharp would load CPU.

@@ -137,3 +137,28 @@ jobs:
           else
             gh release upload "${{ github.event.release.tag_name }}" "scri-${{ matrix.rid }}.tar.gz" "scri-${{ matrix.rid }}-embeddings.tar.gz" --clobber
           fi
+
+  publish-tool:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          include-prerelease: true
+      - run: dotnet restore
+      # The local release-tree job above produces per-RID single-file trees; this job produces the
+      # one immutable NuGet global tool (`scri`). The pack is a DotnetTool whose single command is
+      # `scri` — no Vulkan, no Merge, no mutable asset.
+      - name: Pack the scri global tool (Release)
+        run: dotnet pack src/Scrinia/Scrinia.csproj -c Release -o "${{ github.event.release.tag_name }}"
+      - name: Push the .nupkg to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          nupkg="$(ls "${{ github.event.release.tag_name }}"/scrinia-*.nupkg)"
+          dotnet nuget push "$nupkg" \
+            --source https://www.nuget.org/v3/index.json \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate
