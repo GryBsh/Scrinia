@@ -1,7 +1,14 @@
+using Scrinia.Core;
 using Scrinia.Core.Configuration;
+using CoreWorkspaceConfig = Scrinia.Core.Configuration.WorkspaceConfig;
 
 namespace Scrinia.Commands;
 
+/// <summary>
+/// Executable composition root for <c>scri shared serve</c>: resolves the Core services, fails before
+/// transport when no base is enabled, and opens every enabled base that Core can validate. Unavailable
+/// bases (deleted or otherwise invalid roots) are skipped so a single bad base never fails startup.
+/// </summary>
 internal sealed class SharedServeHostAdapter
 {
     private readonly ISharedBaseRegistry _registry;
@@ -22,19 +29,44 @@ internal sealed class SharedServeHostAdapter
     public IHomeConfigStore HomeConfigStore { get; }
     public IWorkspaceConfig WorkspaceConfig { get; }
 
-    public IReadOnlyList<SharedBaseRuntime> OpenEnabledBases() =>
-        EnsureEnabledConfiguration(WorkspaceConfig);
-
-    private static IReadOnlyList<SharedBaseRuntime> EnsureEnabledConfiguration(IWorkspaceConfig workspaceConfig)
+    /// <summary>
+    /// Opens every enabled base that Core can validate. Fails before transport when the Enabled key is
+    /// absent; an enabled base whose root is unavailable is skipped rather than failing startup.
+    /// </summary>
+    public IReadOnlyList<SharedBaseRuntime> OpenEnabledBases()
     {
-        if (workspaceConfig.GetValue(Scrinia.Core.Configuration.WorkspaceConfig.EnabledKey) is null)
+        EnsureEnabledConfiguration(WorkspaceConfig);
+        return OpenOpenableBases();
+    }
+
+    private static void EnsureEnabledConfiguration(IWorkspaceConfig workspaceConfig)
+    {
+        if (workspaceConfig.GetValue(CoreWorkspaceConfig.EnabledKey) is null)
             throw new SharedServeStartupException("NO_SHARED_BASES_ENABLED", "No shared bases are enabled.");
 
-        IReadOnlyList<string> enabledBases = workspaceConfig.GetEnabledBases();
-        if (enabledBases.Count == 0)
+        if (workspaceConfig.GetEnabledBases().Count == 0)
             throw new SharedServeStartupException("NO_SHARED_BASES_ENABLED", "No shared bases are enabled.");
+    }
 
-        return [];
+    private SharedBaseRuntime[] OpenOpenableBases()
+    {
+        var runtimes = new List<SharedBaseRuntime>();
+        foreach (string name in WorkspaceConfig.GetEnabledBases())
+        {
+            SharedBaseEntry? entry = _registry.Lookup(name);
+            if (entry is null)
+                continue;
+            try
+            {
+                runtimes.Add(_runtimeFactory.Open(entry));
+            }
+            catch
+            {
+                // An unavailable base must not fail startup; it surfaces as Unavailable on
+                // shared_bases and a freshness error on targeted operations.
+            }
+        }
+        return runtimes.ToArray();
     }
 }
 

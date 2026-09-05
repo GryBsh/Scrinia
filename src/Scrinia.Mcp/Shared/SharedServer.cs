@@ -3,7 +3,6 @@ using Scrinia.Core.Models;
 using Scrinia.Core;
 using System.Globalization;
 using System.Text;
-using Scrinia.Mcp;
 
 namespace Scrinia.Mcp.SharedContracts;
 
