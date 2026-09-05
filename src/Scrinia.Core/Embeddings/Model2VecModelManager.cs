@@ -1,59 +1,43 @@
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Configuration;
 
 namespace Scrinia.Core.Embeddings;
 
 /// <summary>
-/// Downloads the m2v-MiniLM-L6-v2 Model2Vec model from HuggingFace.
-/// This is a 384-dim distillation of all-MiniLM-L6-v2, vector-compatible with the
-/// Vulkan GGUF provider so both can share the same VectorStore without reindexing.
-/// Files: model.safetensors (~22MB, F16) + vocab.txt (~220KB).
+/// Downloads the m2v-MiniLM-L6-v2 Model2Vec model from HuggingFace. This is a 384-dim distillation of
+/// all-MiniLM-L6-v2, vector-compatible with the Vulkan GGUF provider so both can share the same
+/// VectorStore without reindexing. Files: model.safetensors (~22MB, F16) + vocab.txt (~220KB).
+///
+/// Downloads are content-verified and atomically promoted by <see cref="VerifiedModelDownloader"/>:
+/// each asset is streamed to a unique temp, hashed while writing, validated, and moved into place only
+/// once verified. Files publish under <c>Path.Combine(UserHome.Resolve(), "models", identifier, digest,
+/// filename)</c>, so the same content is idempotent and tampered content is rejected before promotion.
 /// </summary>
 public static class Model2VecModelManager
 {
+    /// <summary>Logical identifier scoping this model under <c>SCRINIA_HOME/models</c>.</summary>
+    public const string Identifier = "m2v-MiniLM-L6-v2";
+
     /// <summary>HuggingFace base URL for model files.</summary>
     public const string ModelBaseUrl = "https://huggingface.co/grybsh/m2v-MiniLM-L6-v2/resolve/main";
 
-    private static readonly string[] Files = ["model.safetensors", "vocab.txt"];
+    private static readonly DownloadableAsset[] Assets =
+    [
+        new(Identifier, $"{ModelBaseUrl}/model.safetensors", "model.safetensors", ExpectedSha256: null),
+        new(Identifier, $"{ModelBaseUrl}/vocab.txt", "vocab.txt", ExpectedSha256: null),
+    ];
 
-    /// <summary>Whether all model files exist in the given directory.</summary>
+    /// <summary>Whether every model file is published (directly or at its verified digest path). A
+    /// <c>.tmp</c> or partial file never counts as available.</summary>
     public static bool IsModelAvailable(string modelDir)
-        => Files.All(f => File.Exists(Path.Combine(modelDir, f)));
+        => Assets.All(a => VerifiedModelDownloader.IsAssetAvailable(modelDir, a));
 
-    /// <summary>Downloads model files if not already present.</summary>
-    public static async Task EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)
-    {
-        Directory.CreateDirectory(modelDir);
+    /// <summary>Downloads the model files if not already verified in place.</summary>
+    public static Task EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)
+        => EnsureModelAsync(modelDir, logger, Assets, static () => new HttpClient(), ct);
 
-        using var http = new HttpClient();
-        http.Timeout = TimeSpan.FromMinutes(10);
-
-        foreach (var file in Files)
-        {
-            string filePath = Path.Combine(modelDir, file);
-            if (File.Exists(filePath))
-                continue;
-
-            string url = $"{ModelBaseUrl}/{file}";
-            logger.LogInformation("Downloading {File} from {Url}...", file, url);
-
-            string tmpPath = filePath + ".tmp";
-            try
-            {
-                using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                response.EnsureSuccessStatusCode();
-
-                await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                await stream.CopyToAsync(fs, ct);
-            }
-            catch
-            {
-                try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best-effort cleanup */ }
-                throw;
-            }
-            File.Move(tmpPath, filePath, overwrite: true);
-            logger.LogInformation("Downloaded {File} ({Size:F1} MB)", file,
-                new FileInfo(filePath).Length / (1024.0 * 1024));
-        }
-    }
+    internal static Task EnsureModelAsync(
+        string modelDir, ILogger logger,
+        IReadOnlyList<DownloadableAsset> assets, Func<HttpClient> httpClientFactory, CancellationToken ct = default)
+        => VerifiedModelDownloader.EnsureModelAsync(modelDir, logger, assets, httpClientFactory, ct);
 }

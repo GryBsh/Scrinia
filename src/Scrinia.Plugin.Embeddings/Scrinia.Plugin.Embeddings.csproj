@@ -13,6 +13,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The embeddings test project drives the content-verified download through the manager's
+         internal EnsureModelAsync overload; keep the download seam internal to production. -->
+    <InternalsVisibleTo Include="Scrinia.Plugin.Embeddings.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Named explicitly now. These arrived transitively through a FrameworkReference on
          Microsoft.AspNetCore.App, which this project carried only so it could implement the
          DI and endpoint-mapping half of IScriniaPlugin. That half is gone; the config binding

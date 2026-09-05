@@ -1,13 +1,21 @@
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Embeddings;
 
 namespace Scrinia.Plugin.Embeddings;
 
 /// <summary>
 /// Downloads a GGUF embedding model from HuggingFace for use with VulkanEmbeddingProvider.
 /// Default model: all-MiniLM-L6-v2 in GGUF format.
+///
+/// Downloads are content-verified and atomically promoted by <see cref="VerifiedModelDownloader"/>:
+/// the file is streamed to a unique temp, hashed while writing, validated, and moved into place only
+/// once verified, publishing under <c>SCRINIA_HOME/models</c> keyed by the verified digest.
 /// </summary>
 public static class VulkanModelManager
 {
+    /// <summary>Logical identifier scoping this model under <c>SCRINIA_HOME/models</c>.</summary>
+    public const string Identifier = "all-MiniLM-L6-v2";
+
     /// <summary>HuggingFace URL for the GGUF model file.</summary>
     public const string DefaultModelUrl =
         "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf";
@@ -15,50 +23,26 @@ public static class VulkanModelManager
     /// <summary>GGUF model filename.</summary>
     public const string DefaultModelFile = "all-MiniLM-L6-v2-Q8_0.gguf";
 
-    /// <summary>Whether the GGUF model file exists.</summary>
+    private static readonly DownloadableAsset[] Assets =
+    [
+        new(Identifier, DefaultModelUrl, DefaultModelFile, ExpectedSha256: null),
+    ];
+
+    /// <summary>Whether the GGUF model file is published (directly or at its verified digest path). A
+    /// <c>.tmp</c> or partial file never counts as available.</summary>
     public static bool IsModelAvailable(string modelDir)
-        => File.Exists(Path.Combine(modelDir, DefaultModelFile));
+        => Assets.All(a => VerifiedModelDownloader.IsAssetAvailable(modelDir, a));
 
     /// <summary>Gets the path to the default GGUF model.</summary>
     public static string GetModelPath(string modelDir)
         => Path.Combine(modelDir, DefaultModelFile);
 
-    /// <summary>Downloads the GGUF model if not already present.</summary>
-    public static async Task EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)
-    {
-        Directory.CreateDirectory(modelDir);
+    /// <summary>Downloads the GGUF model if not already verified in place.</summary>
+    public static Task EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)
+        => EnsureModelAsync(modelDir, logger, Assets, static () => new HttpClient(), ct);
 
-        string filePath = Path.Combine(modelDir, DefaultModelFile);
-        if (File.Exists(filePath))
-            return;
-
-        logger.LogInformation("Downloading GGUF embedding model...");
-
-        using var http = new HttpClient();
-        http.Timeout = TimeSpan.FromMinutes(10);
-
-        string tmpPath = filePath + ".tmp";
-        try
-        {
-            using var response = await http.GetAsync(DefaultModelUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            await stream.CopyToAsync(fs, ct);
-        }
-        catch
-        {
-            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best-effort cleanup */ }
-            throw;
-        }
-        // fs + stream are disposed by now (scope ended at the try-block close), so
-        // File.Move can rename the .tmp on Windows. Without the explicit scope, the
-        // method-level `await using` left fs holding a write handle through Move,
-        // which Windows refuses (Linux rename(2) tolerates it — hence the Docker
-        // build never caught this).
-        File.Move(tmpPath, filePath, overwrite: true);
-        logger.LogInformation("Downloaded GGUF model ({Size:F1} MB)",
-            new FileInfo(filePath).Length / (1024.0 * 1024));
-    }
+    internal static Task EnsureModelAsync(
+        string modelDir, ILogger logger,
+        IReadOnlyList<DownloadableAsset> assets, Func<HttpClient> httpClientFactory, CancellationToken ct = default)
+        => VerifiedModelDownloader.EnsureModelAsync(modelDir, logger, assets, httpClientFactory, ct);
 }

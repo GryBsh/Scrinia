@@ -13,4 +13,10 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
     <PackageReference Include="System.IO.Hashing" Version="9.0.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The embeddings test project drives the content-verified download through the managers'
+         internal EnsureModelAsync overloads; keep the download seam internal to production. -->
+    <InternalsVisibleTo Include="Scrinia.Plugin.Embeddings.Tests" />
+  </ItemGroup>
 </Project>
