@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -43,6 +44,13 @@ public partial class ScriniaCommands
         string? enabled = WorkspaceSetup.GetConfigValue("Scrinia:Hint:Enabled");
         if (enabled is not null && enabled.Equals("false", StringComparison.OrdinalIgnoreCase))
             return 0;
+
+        // Advisory branch: supported hook clients get the fail-silent commit/push reminder rather
+        // than the relevance payload. It parses positional input or a bounded stdin read, gates on a
+        // verified prompt hook, and returns 0 on every path — never blocking the user's turn.
+        HookClient advisoryClient = HintCommand.ParseClient(client);
+        if (HintCommand.IsSupportedAdvisoryClient(advisoryClient))
+            return EmitCommitPushAdvisory(prompt, new ConsoleStdinReader(), advisoryClient, Console.Out);
 
         // Resolve thresholds from config with sane defaults.
         double minScore = HintCommand.DefaultMinScore;
@@ -152,5 +160,31 @@ public partial class ScriniaCommands
         }
         catch (System.Text.Json.JsonException) { /* fall through */ }
         return raw;
+    }
+
+    /// <summary>
+    /// Fail-silent commit/push advisory branch for <c>scri hint</c>. Selects the positional prompt
+    /// or reads stdin through the bounded reader, classifies commit/push intent, and — only for a
+    /// supported hook client — writes the applicable reminders in commit-then-push order. Any
+    /// unsupported client, no intent, malformed input, or read error writes nothing and still returns
+    /// exit code 0. It consumes <see cref="PromptHintTransport"/>, <see cref="IBoundedStdinReader"/>,
+    /// and <see cref="HintCommand.IsSupportedAdvisoryClient"/> and never touches the relevance payload.
+    /// </summary>
+    internal static int EmitCommitPushAdvisory(
+        string? positionalPrompt, IBoundedStdinReader reader, HookClient client, TextWriter output)
+    {
+        if (!HintCommand.IsSupportedAdvisoryClient(client))
+            return 0;
+
+        PromptTransportResult result = PromptHintTransport.Classify(
+            PromptHintTransport.SelectPrompt(positionalPrompt, reader));
+        if (!result.Present)
+            return 0;
+
+        if (result.CommitIntent)
+            output.WriteLine(HintAdvisory.CommitReminder);
+        if (result.PushIntent)
+            output.WriteLine(HintAdvisory.PushReminder);
+        return 0;
     }
 }

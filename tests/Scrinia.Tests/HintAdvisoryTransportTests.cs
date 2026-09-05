@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 
 using FluentAssertions;
@@ -115,6 +116,170 @@ public sealed class HintAdvisoryTransportTests
         string? result = reader.ReadBoundedStdin();
 
         result.Should().Be(original, "each small chunk must concatenate into the exact original text at EOF");
+    }
+
+    // ── Advisory: supported-client gate, reminders, order, exit 0 (Task 3) ──
+
+    [Fact]
+    public void IsSupportedAdvisoryClient_SupportedHookClients_ReturnsTrue()
+    {
+        // Claude Code, Codex, Copilot, and OpenCode retain a verified prompt hook transport.
+        HintCommand.IsSupportedAdvisoryClient(HookClient.ClaudeCode).Should().BeTrue();
+        HintCommand.IsSupportedAdvisoryClient(HookClient.Codex).Should().BeTrue();
+        HintCommand.IsSupportedAdvisoryClient(HookClient.Copilot).Should().BeTrue();
+        HintCommand.IsSupportedAdvisoryClient(HookClient.OpenCode).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsSupportedAdvisoryClient_Default_ReturnsFalse()
+    {
+        // The no-client reference format has no verified hook, so it gets no advisory.
+        HintCommand.IsSupportedAdvisoryClient(HookClient.Default).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Advisory_DefaultClient_EmitsNothing()
+    {
+        // Default (and any unknown client) is unsupported: no advisory, no stdin consumed.
+        var reader = new RecordingReader("commit");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.Default, writer);
+
+        exit.Should().Be(0);
+        writer.ToString().Should().BeEmpty();
+        reader.ReadCount.Should().Be(0, "an unsupported client must not consume stdin");
+    }
+
+    [Fact]
+    public void Advisory_SupportedCommitClient_EmitsCommitReminder()
+    {
+        var reader = new RecordingReader("commit");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.Codex, writer);
+        string output = writer.ToString();
+
+        exit.Should().Be(0);
+        output.Should().Contain(HintAdvisory.CommitReminder);
+        output.Should().NotContain(HintAdvisory.PushReminder, "pure commit intent must not also push");
+    }
+
+    [Fact]
+    public void Advisory_SupportedPushClient_EmitsPushReminder()
+    {
+        var reader = new RecordingReader("push");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.Codex, writer);
+        string output = writer.ToString();
+
+        exit.Should().Be(0);
+        output.Should().Contain(HintAdvisory.PushReminder);
+        output.Should().NotContain(HintAdvisory.CommitReminder, "pure push intent must not also commit");
+    }
+
+    [Fact]
+    public void Advisory_BothIntents_EmitsCommitBeforePush()
+    {
+        var reader = new RecordingReader("let's commit then push");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.ClaudeCode, writer);
+        string output = writer.ToString();
+
+        exit.Should().Be(0);
+        output.Should().Contain(HintAdvisory.CommitReminder);
+        output.Should().Contain(HintAdvisory.PushReminder);
+        output.IndexOf(HintAdvisory.CommitReminder).Should().BeLessThan(
+            output.IndexOf(HintAdvisory.PushReminder),
+            "reminders must be emitted in commit-then-push order");
+    }
+
+    [Fact]
+    public void Advisory_NoIntent_EmitsNothing()
+    {
+        var reader = new RecordingReader("hello there, how are you");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.Codex, writer);
+
+        exit.Should().Be(0);
+        writer.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Advisory_MalformedJson_EmitsNothing()
+    {
+        // Input beginning with '{' never falls back to raw text; a broken object is silent.
+        var reader = new RecordingReader("{ this is not valid json");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.Codex, writer);
+
+        exit.Should().Be(0);
+        writer.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Advisory_ReadError_EmitsNothing()
+    {
+        // A null reader result (timeout / invalid UTF-8 / read failure) is a fail-silent empty output.
+        var reader = new RecordingReader(null);
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, reader, HookClient.Codex, writer);
+
+        exit.Should().Be(0);
+        writer.ToString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Advisory_PositionalPrompt_Wins_SkipsReader()
+    {
+        var reader = new RecordingReader("push");
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory("commit", reader, HookClient.Codex, writer);
+        string output = writer.ToString();
+
+        exit.Should().Be(0);
+        output.Should().Contain(HintAdvisory.CommitReminder);
+        reader.ReadCount.Should().Be(0, "a positional prompt must win and never touch stdin");
+    }
+
+    [Theory]
+    [InlineData(HookClient.Default)]
+    [InlineData(HookClient.Codex)]
+    [InlineData(HookClient.ClaudeCode)]
+    [InlineData(HookClient.Copilot)]
+    [InlineData(HookClient.OpenCode)]
+    public void Advisory_UnconditionalExitZero_OnEveryPath(HookClient client)
+    {
+        var writer = new StringWriter();
+
+        int exit = ScriniaCommands.EmitCommitPushAdvisory(null, new RecordingReader("commit"), client, writer);
+
+        exit.Should().Be(0, "the advisory must never fail the user's turn with a non-zero exit");
+    }
+
+    [Fact]
+    public void Advisory_RemindersContainNoBaseRootGitStateClaim()
+    {
+        // The advisory must never assert repository, shared-base, root, or Git state, and must not
+        // leak a shared-MCP phase-3 error term. Compare case-insensitively via a lowercase copy.
+        foreach (string reminder in new[] { HintAdvisory.CommitReminder, HintAdvisory.PushReminder })
+        {
+            reminder.Should().NotBeNullOrWhiteSpace();
+            string lowered = reminder.ToLowerInvariant();
+            lowered.Should().NotContain("shared base");
+            lowered.Should().NotContain("root path");
+            lowered.Should().NotContain("no_shared_bases");
+            lowered.Should().NotContain("shared_", "phase-3 shared-mcp error terms must not leak");
+            lowered.Should().NotContain("repository");
+            lowered.Should().NotContain("uncommitted");
+            lowered.Should().NotContain("git");
+        }
     }
 
     private static byte[] RepeatingBytes(int count)

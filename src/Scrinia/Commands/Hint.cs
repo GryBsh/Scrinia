@@ -206,6 +206,15 @@ public sealed class HintCommand
     };
 
     /// <summary>
+    /// Whether a <see cref="HookClient"/> has a verified prompt hook that can drive the fail-silent
+    /// commit/push advisory. Claude Code, Codex, Copilot, and OpenCode retain a supported hook
+    /// transport; <see cref="HookClient.Default"/> (the no-client reference format) has no verified
+    /// hook and gets no advisory — see spec §7.3.
+    /// </summary>
+    public static bool IsSupportedAdvisoryClient(HookClient client) =>
+        client is HookClient.ClaudeCode or HookClient.Codex or HookClient.Copilot or HookClient.OpenCode;
+
+    /// <summary>
     /// Builds the <c>{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}</c>
     /// envelope shape understood by Claude Code, Codex, and Copilot (where supported).
     /// Uses <see cref="Utf8JsonWriter"/> so we don't pay the trim-warning tax that comes
@@ -273,3 +282,26 @@ public enum HookClient { Default, Codex, ClaudeCode, OpenCode, Copilot }
 /// <param name="Envelope">Wrap in the <c>hookSpecificOutput</c> JSON envelope (false = bare payload,
 /// for clients like OpenCode whose plugin injects the string directly).</param>
 internal readonly record struct HookClientProfile(bool Emit, bool Terse, bool Envelope);
+
+/// <summary>
+/// Fail-silent commit/push advisory reminders emitted by <c>scri hint</c> for supported hook
+/// clients. Each reminder names only the user's commit or push intent and points at a memory
+/// search; it never asserts repository, shared-base, root, or Git state and never leaks a shared
+/// MCP error term (spec §7.3). Reminders are emitted in commit-then-push order.
+/// </summary>
+public sealed class HintAdvisory
+{
+    /// <summary>
+    /// Emitted when the prompt carries commit intent, before <see cref="PushReminder"/>.
+    /// </summary>
+    public const string CommitReminder =
+        "<scrinia-advisory>Before you commit, search for relevant memories — they contain prior " +
+        "decisions and context the user expects you to remember.</scrinia-advisory>";
+
+    /// <summary>
+    /// Emitted when the prompt carries push intent, after <see cref="CommitReminder"/>.
+    /// </summary>
+    public const string PushReminder =
+        "<scrinia-advisory>Before you push, search for relevant memories — they contain prior " +
+        "decisions and context the user expects you to remember.</scrinia-advisory>";
+}
