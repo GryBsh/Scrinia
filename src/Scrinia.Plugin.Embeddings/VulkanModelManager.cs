@@ -25,7 +25,7 @@ public static class VulkanModelManager
 
     private static readonly DownloadableAsset[] Assets =
     [
-        new(Identifier, DefaultModelUrl, DefaultModelFile, ExpectedSha256: null),
+        new(Identifier, DefaultModelUrl, DefaultModelFile, ExpectedSha256: "263215c3cadd6e16740741a7624ab4cbb6c8e777688bd5331ecfbf5681c2f8ed"),
     ];
 
     /// <summary>Whether the GGUF model file is published (directly or at its verified digest path). A

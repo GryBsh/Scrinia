@@ -23,8 +23,8 @@ public static class Model2VecModelManager
 
     private static readonly DownloadableAsset[] Assets =
     [
-        new(Identifier, $"{ModelBaseUrl}/model.safetensors", "model.safetensors", ExpectedSha256: null),
-        new(Identifier, $"{ModelBaseUrl}/vocab.txt", "vocab.txt", ExpectedSha256: null),
+        new(Identifier, $"{ModelBaseUrl}/model.safetensors", "model.safetensors", ExpectedSha256: "0792db26b8391f89224e825fb3ed3f35498d8bda4936b92fa7658b4dda90cf28"),
+        new(Identifier, $"{ModelBaseUrl}/vocab.txt", "vocab.txt", ExpectedSha256: "eef2f6b6ea4166090d7e6c1feec524b17a105c621847f3f99c9af20291d3cee1"),
     ];
 
     /// <summary>Whether every model file is published (directly or at its verified digest path). A
