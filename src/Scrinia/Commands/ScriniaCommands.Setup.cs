@@ -74,7 +74,7 @@ public partial class ScriniaCommands
         // ── Step 1: Built-in Model2Vec model (always) ──
         AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
 
-        string modelDir = Path.Combine(exeDir, "models", "m2v-MiniLM-L6-v2");
+        string modelDir = Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2");
         Directory.CreateDirectory(modelDir);
 
         string[] files = ["model.safetensors", "vocab.txt"];
@@ -361,8 +361,7 @@ public partial class ScriniaCommands
     /// </summary>
     private static async Task EnsureEmbeddingModelAsync(CancellationToken ct)
     {
-        string exeDir = AppContext.BaseDirectory;
-        string modelDir = Path.Combine(exeDir, "models", "m2v-MiniLM-L6-v2");
+        string modelDir = Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2");
         string safetensors = Path.Combine(modelDir, "model.safetensors");
         string vocab = Path.Combine(modelDir, "vocab.txt");
 
