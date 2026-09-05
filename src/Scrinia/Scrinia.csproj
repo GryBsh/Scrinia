@@ -10,9 +10,30 @@
     <LangVersion>latest</LangVersion>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
     <IsTrimmable>true</IsTrimmable>
+
+    <!-- Immutable NuGet global tool (Phase 5 Task 4). The single packaged command is `scri`,
+         which implements both `scri serve` and `scri shared serve`. Vulkan (LLamaSharp),
+         Scrinia.Merge, and every mutable asset (models, plugin state, caches, workspace
+         data) live outside this package under SCRINIA_HOME, so the tool payload stays immutable. -->
+    <PackageId>scrinia</PackageId>
+    <PackageType>DotnetTool</PackageType>
+    <ToolCommandName>scri</ToolCommandName>
+    <PackAsTool>true</PackAsTool>
+    <PackageReadmeFile>package-readme.md</PackageReadmeFile>
+    <Description>Scrinia: portable LLM memory. Installs the `scri` global tool (local + shared MCP servers, BM25 + hybrid search, NMP/2 memory), with models and plugins living under SCRINIA_HOME.</Description>
+    <Authors>Scrinia</Authors>
+    <PackageTags>scrinia;llm;memory;mcp;vector-search;bm25;named-memory-protocol</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <None Remove="NUL" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The package readme sits at the package root; PackageReadmeFile references it by name. -->
+    <None Include="package-readme.md">
+      <Pack>true</Pack>
+      <PackagePath />
+    </None>
   </ItemGroup>
 
   <ItemGroup>
