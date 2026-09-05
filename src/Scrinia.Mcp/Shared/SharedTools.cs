@@ -9,7 +9,7 @@ namespace Scrinia.Mcp.SharedContracts;
 /// prompt, a correlation identifier, or a session identifier (§7.3). No handler branches on, or
 /// forwards, the initiating prompt text, and the shared surface never launches a process — its sole
 /// Git contact is the print-only, operation-based staging guidance in <c>SharedGitGuidance</c>.
-/// The stubbed handlers below are replaced by the shared server in Phase 3/5; that implementation
+/// The stubbed handlers below are placeholders; the shared server supplies the real implementations in Phase 3, and Phase 4 consumes this locked contract without altering the shared response wording. That implementation
 /// must preserve these two guarantees (see <c>SharedNoPromptCorrelationTests</c> and
 /// <c>SharedNoGitProcessTests</c>).
 /// </summary>

@@ -98,6 +98,30 @@ set during workspace initialization. Server instructions are supplied through
 
 Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
 
+## Shared Server Mode
+
+`scri shared serve` hosts the isolated shared-memory MCP server over the same stdio transport. It
+registers exactly the eleven `shared_*` tools through `WithTools<SharedTools>` and fails before the
+transport starts when no base is enabled (`NO_SHARED_BASES_ENABLED`). The executable owns only the
+host adapter; every shared abstraction lives in Core and is consumed through Core interfaces.
+
+```csharp
+// Scrinia/Commands/ScriniaCommands.SharedServe.cs
+var adapter = new SharedServeHostAdapter(homeConfigStore, workspaceConfig, registry, runtimeFactory);
+adapter.OpenEnabledBases();          // fails before transport when no base is enabled
+_ = new SharedServer(...).GetEnabledBaseSummaries();   // shared orchestration, Core interfaces only
+builder.Services.AddMcpServer().WithStdioServerTransport().WithTools<SharedTools>();
+```
+
+`SharedServeHostAdapter` is the executable composition root: it resolves the Core services, fails
+before transport when the `Scrinia:Shared:Enabled` key is absent or parses to zero bases, and opens
+every enabled base that Core can validate. An unavailable base (deleted or otherwise invalid root) is
+skipped rather than failing startup, so a single bad base never takes down the server.
+
+Local `scri serve` and shared `scri shared serve` are disjoint: the local surface still registers
+`WithTools<ScriniaMcpTools>` and the shared surface registers `WithTools<SharedTools>`; the two tool
+name sets never intersect, and the local store path and registration are byte-for-byte unchanged.
+
 ## Embeddings Integration
 
 ### Provider Selection

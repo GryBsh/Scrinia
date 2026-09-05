@@ -674,3 +674,59 @@ public sealed record CircuitBreakerOptions(int Threshold = 5, int CooldownSecond
 ```
 
 `EmbeddingOptions` (Core) exposes `MaxRetries`, `RetryBaseDelayMs`, `CircuitBreakerThreshold`, and `CircuitBreakerCooldownSeconds` properties that map to these records. They cover the remote embedding providers (Ollama, OpenAI, Voyage AI, Azure, Google); nothing else in the repository makes an outbound HTTP call.
+
+## Shared Base Abstractions
+
+The shared-memory surface (`scri shared serve`) is fully owned by Core. `Scrinia.Mcp` references Core
+and implements the shared handlers and envelope serialization; the executable owns only host adapters.
+Every shared abstraction below lives in `Scrinia.Core.Configuration` or `Scrinia.Core`:
+
+- `IHomeConfigStore` / `HomeConfigStore` — the per-user shared-base registry store (`HomeConfig`,
+  `SharedBaseEntry`, `SharedBasesMap`).
+- `IWorkspaceConfig` / `WorkspaceConfig` — the flat `.scrinia/config.json` workspace settings,
+  including the `Scrinia:Shared:Enabled` scalar and enabled-base selection.
+- `ISharedBaseRegistry` / `SharedBaseRegistry` — canonical-name validation, root evidence
+  (directory `.git` or exact `gitdir:` worktree marker), containment/collision detection, and enabled
+  filtering. Disabled registry names and roots are never surfaced.
+- `ISharedBaseRuntimeFactory` / `SharedBaseRuntimeFactory` — opens a base into a keyed runtime.
+- `ISharedBaseRuntime` / `SharedBaseRuntime` — per-base snapshot, generation/fingerprint, read/mutation
+  refresh leases, `RevalidateBeforeMutation` (F0), `CommitMutation` (F1), and `Refresh`.
+- `SharedClassifier` — the single authority for the durable classification matrix and the derived-path
+  union excluded from fingerprints.
+- `SharedManifest` — the deterministic authoritative mutation manifest (§7.2).
+- `SharedServer` — the MCP selector/orchestration surface (enabled-only selectors, base provenance,
+  persistent-only address parsing, and operation-based Git guidance).
+
+**Selectors and provenance.** `SharedServer.SelectBase` validates canonical-name syntax and
+enabled-membership before any registry lookup; no scalar base name is echoed before that validation.
+`SelectEnabledBases` preserves base provenance for every enabled base.
+
+**Persistent-only addresses.** Every Ephemeral spelling is refused with `SHARED_EPHEMERAL_NOT_SUPPORTED`
+before storage, cache access, fingerprinting, or I/O; shared inventory contains persistent entries
+only.
+
+**Enabled-only privacy.** Disabled names and roots never appear in any shared result, warning, error,
+diagnostic, instruction, follow-up, or log.
+
+**No-base startup.** An absent `Scrinia:Shared:Enabled` key makes `scri shared serve` fail before
+transport with `NO_SHARED_BASES_ENABLED`.
+
+**Refresh and freshness.** Each runtime owns a `ReaderWriterLockSlim` generation gate; `SharedSnapshot`
+carries a generation/fingerprint computed over authoritative files only. `RevalidateBeforeMutation`
+validates F0 while holding the mutation lease; the durable write validates and publishes F1 atomically.
+Any uncertain or newly invalid result is `unknown` and blocks writes until a successful `shared_refresh`
+or restart. The documented F0-to-F1 race limitation is not claimed.
+
+**Authoritative mutation manifest.** Every successful shared mutation returns a deterministic
+authoritative mutation manifest; each entry is made repository-root-relative (`.`scrinia/`-prefixed`),
+`/`-separated, sorted by UTF-8 ordinal bytes, and deduplicated, retaining only exact authoritative files
+(NMP bodies, memory sidecars, file-entity bodies/sidecars, skill/agent Markdown bodies/sidecars). No
+control file, derived file, directory, wildcard, or directory pathspec may enter a manifest.
+
+**Git prohibition and operation-based guidance.** Scrinia never launches `git` for any reason and never
+inspects or modifies the index. Guidance is print-only, operation-based, and shell-quoted: exactly one
+`git -C "<registered-root>" add -A -- '<manifest-path>' ...` command with every manifest path as an
+individual shell-quoted argument, followed by the fixed commit and push. It never claims Git state.
+
+**Phase 4 consumption rule.** Phase 4 consumes these final contracts and cannot alter the shared response
+wording (§13).

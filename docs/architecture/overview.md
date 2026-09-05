@@ -45,6 +45,35 @@ over MCP; they are not dynamically loaded class libraries.
 The embeddings implementation references Core and uses `MemoryVectorIndexer` and `VectorStore`
 rather than duplicating the indexing policy.
 
+## Shared server (Core/MCP/CLI direction)
+
+The shared-memory surface is the second MCP server, exposed by `scri shared serve` alongside the
+local `scri serve`. It is governed by the same Core/MCP/CLI boundary as the local surface, extended
+so that every shared abstraction lives in Core and the executable owns only host adapters:
+
+- `Scrinia.Core` owns all shared configuration, registry, base identity, runtime contract, snapshot,
+  fingerprint, classifier, and operation-result abstractions consumed by the shared surface
+  (`IHomeConfigStore`/`HomeConfigStore`, `IWorkspaceConfig`/`WorkspaceConfig`, `ISharedBaseRegistry`/
+  `SharedBaseRegistry`, `ISharedBaseRuntimeFactory`/`SharedBaseRuntimeFactory`, `ISharedBaseRuntime`/
+  `SharedBaseRuntime`, `SharedClassifier`, `SharedManifest`, the shared DTOs, and the `SharedServer`
+  selector/orchestration surface).
+- `Scrinia.Mcp` references Core only and implements the shared handlers and envelope serialization;
+  it never references the executable `Scrinia`.
+- The executable contains host adapters only: the `SharedServeHostAdapter` composition root for
+  `scri shared serve` resolves the Core services and owns command/transport startup; the local
+  `ScriniaMcpTools` registration and local store path remain unchanged.
+
+`scri shared serve` starts only with at least one enabled base and exposes exactly eleven prefixed
+tools: `shared_bases`, `shared_search`, `shared_list`, `shared_recall`, `shared_facts`,
+`shared_remember`, `shared_append`, `shared_forget`, `shared_compact`, `shared_link`, and
+`shared_refresh`. Local `scri serve` remains unchanged and disjoint — the two surfaces register
+disjoint tool sets, and no scalar base name appears before canonical-name syntax and enabled-membership
+validation. The shared surface is prompt-isolated and process-free: no shared input carries a prompt,
+correlation, or session field, and no shared handler launches a process (Git guidance is print-only).
+
+Phase 4 consumes these final contracts and cannot alter the shared response wording; this architecture
+is the exit gate that Phase 4 reads.
+
 ## Deployment
 
 The CLI reads and writes a local `.scrinia/` workspace. Built-in semantic search uses Model2Vec or
