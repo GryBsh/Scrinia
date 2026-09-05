@@ -157,7 +157,7 @@ jobs:
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
-          nupkg="$(ls "${{ github.event.release.tag_name }}"/scrinia-*.nupkg)"
+          nupkg="$(ls "${{ github.event.release.tag_name }}"/scrinia.*.nupkg)"
           dotnet nuget push "$nupkg" \
             --source https://www.nuget.org/v3/index.json \
             --api-key "$NUGET_API_KEY" \
