@@ -46,6 +46,17 @@ public static class PromptHintTransport
         => string.IsNullOrEmpty(positionalPrompt) ? stdinRaw : positionalPrompt;
 
     /// <summary>
+    /// Decide which input drives the advisory through a bounded stdin reader. A non-empty
+    /// positional prompt always wins and the reader is never invoked; otherwise the reader supplies
+    /// stdin verbatim. The reader's <c>null</c> result — oversize, invalid UTF-8, timeout, or read
+    /// failure — is returned as-is so the advisory can fail silently.
+    /// </summary>
+    public static string? SelectPrompt(string? positionalPrompt, IBoundedStdinReader reader)
+        => string.IsNullOrEmpty(positionalPrompt)
+            ? reader?.ReadBoundedStdin()
+            : positionalPrompt;
+
+    /// <summary>
     /// Classify a single selected prompt string. Strips one BOM and trims Unicode whitespace,
     /// extracts the exact case-sensitive string <c>prompt</c> property from a single JSON object
     /// when the first trimmed character is <c>{</c>, normalizes NFKC, tokenizes maximal
