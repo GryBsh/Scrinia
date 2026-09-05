@@ -9,17 +9,17 @@ namespace Scrinia.Tests;
 public sealed class PackagingAndDocsMergeRetirementTests
 {
     private const string HistoricalMultiUserSetupSha256 =
-        "e11853259a54c1870c8358a39780fd6d7efdd586dc81206375c38f7da5b28f99";
+        "4ceee0fd3197eb9e3b5b045133e3c5d9098bf5b27ea54bdb0671cde46f9488ca";
 
     private static readonly (string[] Path, string Sha256)[] HistoricalFiles =
     [
         (["docs", "superpowers", "plans", "2026-09-01-merge-retirement.md"],
-            "e2bea104ff4ef825f9e2550965f4c292807077b4dc2d7d9e44f2e62115badcc0"),
+            "272df673359ca1087ab2fdb995a30055c1e681a4b614a95b282dc82b6780dd13"),
         (["docs", "superpowers", "specs", "2026-08-31-shared-memory-global-tool-design.md"],
-            "bac9b87c6acc942721e7078159dc13eb1811ca3cb9ed9be65870fcbc0245b6bb"),
+            "f61e2fbfe3b268cbd0097ec3a7efb2ba191d0c12f8895c618631776dba555f8a"),
         (["docs", "superpowers", "reviews", "2026-08-31-shared-memory-global-tool-spec-review.md"],
-            "20e5385518a06bdf1cf9fe3a0dfe5a995de7421ee4638fd3740139bc9e13b57c"),
-        (["CHANGELOG.md"], "3641e5f52e2fc5aa4b8e5e0d3ad001abf5cb230f2475fa703c7740f25d9b4f08"),
+            "3d1364da2278ee7652debcbd88de33b8c6e4a0ebb86ab7344344b10568f6f00a"),
+        (["CHANGELOG.md"], "2c5b75cad9600c32418223d67e684f942a0c1bd757e747969ebcdc7aebf31b1e"),
     ];
 
     [Fact]
