@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
+using Scrinia.Core.Configuration;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
 using Scrinia.Services;
@@ -498,20 +500,147 @@ internal static class WorkspaceSetup
     /// </summary>
     private static bool IsEmbeddingsPluginInstalled() => ResolveEmbeddingsPluginExe() is not null;
 
-    private static string? ResolveEmbeddingsPluginExe()
+    /// <summary>
+    /// Resolves the embeddings plugin executable through the mandatory
+    /// <c>SCRINIA_HOME/plugins/&lt;plugin&gt;/&lt;version&gt;/&lt;rid&gt;/</c> hierarchy — never the
+    /// executable-relative <c>AppContext.BaseDirectory/plugins</c> tree the pre-fix discovery scanned.
+    /// Reads the configured plugin name and compatible version from config, then locates the plugin's
+    /// own executable inside the resolved version/RID directory.
+    /// </summary>
+    internal static string? ResolveEmbeddingsPluginExe()
     {
-        string exeDir = AppContext.BaseDirectory;
-        string pluginsDir = Path.Combine(exeDir, "plugins");
-        if (!Directory.Exists(pluginsDir)) return null;
+        string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+        string? version = GetConfigValue("plugins:embeddings:version");
+
+        PluginDirectoryResult resolution = ResolvePluginDirectory(pluginName, version);
+        if (resolution.PluginDir is null)
+        {
+            return null;
+        }
 
         string ext = OperatingSystem.IsWindows() ? ".exe" : "";
-        string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+        string exe = Path.Combine(resolution.PluginDir, $"{pluginName}{ext}");
+        return File.Exists(exe) ? exe : null;
+    }
 
-        // Subdirectory layout (multi-file publish) first, then flat (single-file).
-        string candidate = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
-        if (File.Exists(candidate)) return candidate;
-        candidate = Path.Combine(pluginsDir, $"{pluginName}{ext}");
-        return File.Exists(candidate) ? candidate : null;
+    /// <summary>
+    /// The outcome of resolving the mandatory plugin discovery path: the resolved
+    /// <c>SCRINIA_HOME/plugins/&lt;plugin&gt;/&lt;version&gt;/&lt;rid&gt;/</c> directory (or
+    /// <c>null</c> when the plugin is absent or rejected), whether the resolution degraded because the
+    /// current RID was unavailable, and a diagnostic naming the searched hierarchy and <c>SCRINIA_HOME</c>.
+    /// </summary>
+    internal sealed record PluginDirectoryResult(string? PluginDir, bool Degraded, string Diagnostics);
+
+    /// <summary>
+    /// Resolves the plugin executable directory through the mandatory
+    /// <c>SCRINIA_HOME/plugins/&lt;plugin&gt;/&lt;version&gt;/&lt;rid&gt;/</c> hierarchy for the given
+    /// plugin name and configured version, selecting the compatible version and current RID
+    /// deterministically and proving containment inside <c>SCRINIA_HOME</c>.
+    ///
+    /// <para>There is no flat fallback: a <c>plugins/&lt;plugin&gt;&lt;ext&gt;</c>,
+    /// <c>plugins/&lt;plugin&gt;/&lt;plugin&gt;</c>, or executable-relative path is never accepted.</para>
+    /// </summary>
+    internal static PluginDirectoryResult ResolvePluginDirectory(string pluginName, string? configuredVersion)
+    {
+        string home = UserHome.Resolve();
+        string hierarchy = $"SCRINIA_HOME/plugins/{pluginName}/<version>/<rid>/";
+        string pluginRoot = Path.Combine(home, "plugins", pluginName);
+        string diagnostics =
+            $"embeddings plugin not found under {hierarchy} (searched {pluginRoot}; SCRINIA_HOME={home})";
+
+        if (!IsSafeSegment(pluginName) ||
+            (configuredVersion is not null && configuredVersion.Length > 0 && !IsSafeSegment(configuredVersion)))
+        {
+            return new PluginDirectoryResult(null, false, diagnostics);
+        }
+
+        if (!Directory.Exists(pluginRoot))
+        {
+            return new PluginDirectoryResult(null, false, diagnostics);
+        }
+
+        string? version = SelectCompatibleVersion(pluginRoot, configuredVersion);
+        if (version is null)
+        {
+            return new PluginDirectoryResult(null, false, diagnostics);
+        }
+
+        string versionDir = Path.Combine(pluginRoot, version);
+        (string? ridDir, bool degraded) = SelectRidDirectory(versionDir);
+        if (ridDir is null)
+        {
+            return new PluginDirectoryResult(null, false, diagnostics);
+        }
+
+        // Fail closed: the resolved directory must live inside SCRINIA_HOME — a plugin name or version
+        // carrying a traversal segment can never escape the home into an arbitrary directory.
+        if (!PathContainment.IsWithin(home, ridDir))
+        {
+            return new PluginDirectoryResult(null, false, diagnostics);
+        }
+
+        diagnostics = degraded
+            ? $"embeddings plugin degraded to {ridDir} (current RID {CurrentRid()} absent under {versionDir}) " +
+              $"under mandatory {hierarchy} at SCRINIA_HOME={home}"
+            : $"embeddings plugin at {ridDir} under mandatory {hierarchy} at SCRINIA_HOME={home}";
+        return new PluginDirectoryResult(ridDir, degraded, diagnostics);
+    }
+
+    private static bool IsSafeSegment(string segment) =>
+        !string.IsNullOrEmpty(segment)
+        && !segment.Contains(Path.DirectorySeparatorChar)
+        && !segment.Contains(Path.AltDirectorySeparatorChar)
+        && segment != "..";
+
+    private static string CurrentRid() => RuntimeInformation.RuntimeIdentifier;
+
+    /// <summary>
+    /// Selects the version directory to use: the configured version when it is installed, otherwise the
+    /// highest installed version directory (deterministic, semver-ordered). Returns <c>null</c> when no
+    /// installable version directory exists.
+    /// </summary>
+    private static string? SelectCompatibleVersion(string pluginRoot, string? configuredVersion)
+    {
+        if (!string.IsNullOrEmpty(configuredVersion))
+        {
+            string configuredDir = Path.Combine(pluginRoot, configuredVersion);
+            if (Directory.Exists(configuredDir))
+            {
+                return configuredVersion;
+            }
+        }
+
+        Version? best = null;
+        string? bestDir = null;
+        foreach (string dir in Directory.EnumerateDirectories(pluginRoot))
+        {
+            string? name = Path.GetFileName(dir);
+            if (name is null || !Version.TryParse(name, out Version? parsed) || parsed is null) continue;
+            if (best is null || parsed.CompareTo(best) > 0)
+            {
+                best = parsed;
+                bestDir = dir;
+            }
+        }
+
+        return bestDir;
+    }
+
+    /// <summary>
+    /// Selects the RID directory to use: the current platform RID when installed, otherwise the single
+    /// available RID directory (degraded), otherwise <c>null</c>.
+    /// </summary>
+    private static (string? ridDir, bool degraded) SelectRidDirectory(string versionDir)
+    {
+        string currentRid = CurrentRid();
+        string ridDir = Path.Combine(versionDir, currentRid);
+        if (Directory.Exists(ridDir))
+        {
+            return (ridDir, false);
+        }
+
+        string[] ridDirs = Directory.EnumerateDirectories(versionDir).ToArray();
+        return ridDirs.Length is 1 ? (ridDirs[0], true) : (null, false);
     }
 
     private static async Task TryLoadVulkanPluginAsync(CancellationToken ct)
@@ -519,13 +648,11 @@ internal static class WorkspaceSetup
         string? embeddingsExe = ResolveEmbeddingsPluginExe();
         if (embeddingsExe is null) return;
 
-        string exeDir = AppContext.BaseDirectory;
-        string pluginsDir = Path.Combine(exeDir, "plugins");
-        string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
-
         // Vector data lives in the workspace-local .scrinia/ directory (per-project isolation).
         string dataDir = Path.Combine(Root, ".scrinia");
-        string modelsDir = Path.Combine(pluginsDir, pluginName);
+        // Models are mutable runtime state and live only under SCRINIA_HOME/models; the immutable
+        // global tool package (AppContext.BaseDirectory) is never written at runtime.
+        string modelsDir = Path.Combine(UserHome.Resolve(), "models");
         Directory.CreateDirectory(modelsDir);
 
         try

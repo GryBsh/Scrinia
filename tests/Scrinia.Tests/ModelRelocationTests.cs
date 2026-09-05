@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core.Configuration;
@@ -116,6 +117,70 @@ public sealed class ModelRelocationTests : IDisposable
         // or populate that executable-relative path.
         Directory.Exists(_appContextModelDir).Should().BeFalse(
             "Model2Vec must resolve under SCRINIA_HOME, never AppContext.BaseDirectory/models");
+    }
+
+    /// <summary>
+    /// Phase 5 Task 2 — the embeddings plugin exe resolves through the mandatory
+    /// <c>SCRINIA_HOME/plugins/&lt;plugin&gt;/&lt;version&gt;/&lt;rid&gt;/</c> hierarchy using the
+    /// workspace-configured plugin name and version, never the executable-relative
+    /// <c>AppContext.BaseDirectory/plugins</c> tree the pre-fix discovery scanned.
+    /// </summary>
+    [Fact]
+    public void ResolveEmbeddingsPluginExe_UsesMandatoryHierarchyUnderScriniaHome()
+    {
+        const string PluginName = "scri-plugin-embeddings";
+
+        // Configure the workspace root so GetConfigValue reads the plugin identity from workspace config.
+        WorkspaceSetup.Configure(_workspace);
+
+        string? previousPluginEnv = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS");
+        string? previousPluginDblEnv = Environment.GetEnvironmentVariable("PLUGINS__EMBEDDINGS");
+        string? previousVersionEnv = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION");
+        string? previousVersionDblEnv = Environment.GetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION");
+        bool appTrapCreated = false;
+        string appFlatExe = Path.Combine(AppContext.BaseDirectory, "plugins", PluginName, $"{PluginName}.exe");
+        try
+        {
+            // Eliminate any ambient environment override so the workspace config is authoritative.
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS", null);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS", null);
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", null);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", null);
+
+            Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings", PluginName);
+            Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings:version", "1.2.3");
+
+            // Install the plugin at the mandatory version/RID location under SCRINIA_HOME.
+            string rid = RuntimeInformation.RuntimeIdentifier;
+            string pluginDir = Path.Combine(_home, "plugins", PluginName, "1.2.3", rid);
+            Directory.CreateDirectory(pluginDir);
+            string installedExe = Path.Combine(pluginDir, $"{PluginName}.exe");
+            File.WriteAllText(installedExe, "plugin-exe");
+
+            // Trap the OLD executable-relative flat plugin path with a FILE: the pre-fix code scanned
+            // AppContext.BaseDirectory/plugins and would have found a there. The fix must never read it.
+            string appFlatParent = Path.GetDirectoryName(appFlatExe)!;
+            if (!Directory.Exists(appFlatParent)) Directory.CreateDirectory(appFlatParent);
+            appTrapCreated = !File.Exists(appFlatExe);
+            if (appTrapCreated) File.WriteAllText(appFlatExe, "app-relative-exe");
+
+            string? exe = WorkspaceSetup.ResolveEmbeddingsPluginExe();
+
+            exe.Should().Be(installedExe, "the exe resolves at SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/<plugin>.exe");
+            exe!.StartsWith(_home, StringComparison.Ordinal).Should().BeTrue(
+                "plugin discovery is rooted at SCRINIA_HOME");
+            exe.StartsWith(AppContext.BaseDirectory, StringComparison.Ordinal).Should().BeFalse(
+                "plugin discovery must never scan AppContext.BaseDirectory/plugins");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS", previousPluginEnv);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS", previousPluginDblEnv);
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", previousVersionEnv);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", previousVersionDblEnv);
+
+            try { if (appTrapCreated && File.Exists(appFlatExe)) File.Delete(appFlatExe); } catch { }
+        }
     }
 
 }
