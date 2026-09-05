@@ -33,6 +33,8 @@ public sealed class ModelRelocationTests : IDisposable
     private readonly string _homeModelsDir;
     private readonly string _workspace;
     private readonly string _appContextModelDir;
+    private readonly string _legacyRoot;
+    private readonly string _altHome;
 
     private string? _previousHome;
     private bool _trapCreated;
@@ -50,6 +52,15 @@ public sealed class ModelRelocationTests : IDisposable
 
         _workspace = Path.Combine(Path.GetTempPath(), $"scrinia_reloc_ws_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_workspace);
+
+        // A package-style executable-relative legacy tree the one-time migration must move OUT of
+        // (never into) — mirrors the immutable AppContext.BaseDirectory that production migrates from.
+        _legacyRoot = Path.Combine(Path.GetTempPath(), $"scrinia_legacy_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_legacyRoot);
+
+        // An isolated alt home for failure-path tests that must not disturb the shared _home.
+        _altHome = Path.Combine(Path.GetTempPath(), $"scrinia_alt_home_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_altHome);
 
         // Phase 2 resolver honors an isolated, non-empty absolute SCRINIA_HOME exactly.
         _previousHome = Environment.GetEnvironmentVariable(ScriniaHomeVar);
@@ -86,6 +97,8 @@ public sealed class ModelRelocationTests : IDisposable
 
         try { Directory.Delete(_home, recursive: true); } catch { }
         try { Directory.Delete(_workspace, recursive: true); } catch { }
+        try { Directory.Delete(_legacyRoot, recursive: true); } catch { }
+        try { Directory.Delete(_altHome, recursive: true); } catch { }
     }
 
     [Fact]
@@ -180,6 +193,208 @@ public sealed class ModelRelocationTests : IDisposable
             Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", previousVersionDblEnv);
 
             try { if (appTrapCreated && File.Exists(appFlatExe)) File.Delete(appFlatExe); } catch { }
+        }
+    }
+
+    // ── Phase 5 Task 3 — one-time migration of both executable-relative legacy asset trees ──────
+
+    /// <summary>
+    /// Phase 5 Task 3 — the migration boundary moves the executable-relative <c>models</c> tree from
+    /// <paramref name="legacyRoot"/> into <c>SCRINIA_HOME/models</c>, records completion under
+    /// <c>SCRINIA_HOME</c>, and never writes back under the package directory.
+    /// </summary>
+    [Fact]
+    public void MigrateLegacyAssets_MovesExecutableRelativeModelsIntoHome()
+    {
+        string legacyModels = Path.Combine(_legacyRoot, "models");
+        Directory.CreateDirectory(legacyModels);
+        File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy-model");
+        File.WriteAllText(Path.Combine(legacyModels, "vocab.txt"), "legacy-vocab");
+
+        ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+        File.ReadAllText(Path.Combine(_home, "models", "model.safetensors"))
+            .Should().Be("legacy-model", "legacy model content lands under SCRINIA_HOME/models");
+        File.ReadAllText(Path.Combine(_home, "models", "vocab.txt"))
+            .Should().Be("legacy-vocab");
+        File.Exists(Path.Combine(legacyModels, "model.safetensors"))
+            .Should().BeFalse("legacy executable-relative models are migrated out of the package directory");
+
+        // Completion is recorded in SCRINIA_HOME state, not merely implied by an emptied legacy tree.
+        string statePath = Path.Combine(_home, "migration-state.json");
+        File.Exists(statePath).Should().BeTrue("migration completion is recorded in SCRINIA_HOME state");
+    }
+
+    [Fact]
+    public async Task MigrateLegacyAssets_MovesExecutableRelativePluginsIntoVersionRidHierarchy()
+    {
+        WorkspaceSetup.Configure(_workspace);
+        string? prevName = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS");
+        string? prevVer = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION");
+        string? prevVerDbl = Environment.GetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION");
+        try
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS", null);
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", null);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", null);
+            Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings", "scri-plugin-embeddings");
+            Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings:version", "1.2.3");
+
+            string legacyPlugin = Path.Combine(_legacyRoot, "plugins", "scri-plugin-embeddings");
+            Directory.CreateDirectory(legacyPlugin);
+            File.WriteAllText(Path.Combine(legacyPlugin, "scri-plugin-embeddings.dll"), "legacy-plugin");
+
+            ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+            string rid = RuntimeInformation.RuntimeIdentifier;
+            string target = Path.Combine(_home, "plugins", "scri-plugin-embeddings", "1.2.3", rid, "scri-plugin-embeddings.dll");
+            target.StartsWith(_home, StringComparison.Ordinal).Should().BeTrue(
+                "legacy plugins migrate into the mandatory SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/ hierarchy");
+            File.Exists(target).Should().BeTrue("legacy plugin content is relocated to the selected version/RID directory");
+            File.Exists(Path.Combine(legacyPlugin, "scri-plugin-embeddings.dll"))
+                .Should().BeFalse("legacy executable-relative plugin is migrated out of the package directory");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS", prevName);
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", prevVer);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", prevVerDbl);
+        }
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_SecondRun_IsIdempotentNoOp()
+    {
+        string legacyModels = Path.Combine(_legacyRoot, "models");
+        Directory.CreateDirectory(legacyModels);
+        File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy-model");
+
+        ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+        // Re-seed the legacy tree; the recorded state must make the second run a no-op.
+        File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy-model-2");
+
+        var ex = Record.Exception(() => ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home));
+        ex.Should().BeNull("a second startup after a completed migration is an idempotent no-op");
+
+        File.ReadAllText(Path.Combine(_home, "models", "model.safetensors"))
+            .Should().Be("legacy-model", "the already-migrated home model is not overwritten by a stale reseed");
+        File.Exists(Path.Combine(legacyModels, "model.safetensors"))
+            .Should().BeTrue("idempotent second run leaves the reseeded legacy file untouched (no re-migration)");
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_PreservesExistingDestinationFiles()
+    {
+        string homeModels = Path.Combine(_home, "models");
+        Directory.CreateDirectory(homeModels);
+        File.WriteAllText(Path.Combine(homeModels, "model.safetensors"), "HOME-USER-MODEL");
+
+        string legacyModels = Path.Combine(_legacyRoot, "models");
+        Directory.CreateDirectory(legacyModels);
+        File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "LEGACY-MODEL");
+        File.WriteAllText(Path.Combine(legacyModels, "extra.txt"), "legacy-extra");
+
+        ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+        File.ReadAllText(Path.Combine(homeModels, "model.safetensors"))
+            .Should().Be("HOME-USER-MODEL", "an existing home destination file is preserved, not clobbered by the legacy copy");
+        File.ReadAllText(Path.Combine(homeModels, "extra.txt"))
+            .Should().Be("legacy-extra", "a legacy file with no home counterpart is migrated");
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_RejectsTraversalInPluginVersion()
+    {
+        WorkspaceSetup.Configure(_workspace);
+        string? prevVer = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION");
+        string? prevVerDbl = Environment.GetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION");
+        try
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", "../../escape-model");
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", "../../escape-model");
+
+            string legacyPlugin = Path.Combine(_legacyRoot, "plugins", "scri-plugin-embeddings");
+            Directory.CreateDirectory(legacyPlugin);
+            File.WriteAllText(Path.Combine(legacyPlugin, "scri-plugin-embeddings.dll"), "legacy-plugin");
+
+            var ex = Record.Exception(() => ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home));
+            ex.Should().BeNull("an invalid plugin version must not throw out of a best-effort migration boundary");
+
+            File.Exists(Path.Combine(legacyPlugin, "scri-plugin-embeddings.dll"))
+                .Should().BeTrue("a traversal-bearing version is not migrated");
+            File.Exists(Path.Combine(_home, "escape-model", "scri-plugin-embeddings.dll"))
+                .Should().BeFalse("traversal must never escape SCRINIA_HOME");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", prevVer);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", prevVerDbl);
+        }
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_MoveFailure_RemainsNonFatal()
+    {
+        // A pre-existing FILE at the models destination makes Directory.CreateDirectory(move target)
+        // fail deterministically; the boundary must swallow it and preserve startup.
+        string malformedModels = Path.Combine(_altHome, "models");
+        File.WriteAllText(malformedModels, "a-file-not-a-directory");
+
+        string legacyModels = Path.Combine(_legacyRoot, "models");
+        Directory.CreateDirectory(legacyModels);
+        File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy");
+
+        var ex = Record.Exception(() => ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _altHome));
+        ex.Should().BeNull("an expected migration I/O failure must not propagate past the boundary");
+
+        File.Exists(Path.Combine(legacyModels, "model.safetensors"))
+            .Should().BeTrue("a failed move leaves the legacy file in place for a later retry");
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_NeverWritesLegacyPackageDirectory()
+    {
+        string legacyModels = Path.Combine(_legacyRoot, "models");
+        Directory.CreateDirectory(legacyModels);
+        File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy");
+
+        WorkspaceSetup.Configure(_workspace);
+        string? prevName = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS");
+        string? prevVer = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION");
+        string? prevVerDbl = Environment.GetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION");
+        try
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS", null);
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", null);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", null);
+            Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings", "scri-plugin-embeddings");
+            Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings:version", "1.2.3");
+
+            string legacyPlugin = Path.Combine(_legacyRoot, "plugins", "scri-plugin-embeddings");
+            Directory.CreateDirectory(legacyPlugin);
+            File.WriteAllText(Path.Combine(legacyPlugin, "scri-plugin-embeddings.dll"), "legacy");
+
+            HashSet<string> before = Directory
+                .EnumerateFiles(_legacyRoot, "*", SearchOption.AllDirectories)
+                .ToHashSet();
+
+            ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+            HashSet<string> after = Directory
+                .EnumerateFiles(_legacyRoot, "*", SearchOption.AllDirectories)
+                .ToHashSet();
+
+            after.Should().NotContain(f => !before.Contains(f),
+                "the migration must never create a file under the executable-relative package directory");
+            File.Exists(Path.Combine(_legacyRoot, "migration-state.json"))
+                .Should().BeFalse("migration state is recorded under SCRINIA_HOME, never the package directory");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS", prevName);
+            Environment.SetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION", prevVer);
+            Environment.SetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION", prevVerDbl);
         }
     }
 

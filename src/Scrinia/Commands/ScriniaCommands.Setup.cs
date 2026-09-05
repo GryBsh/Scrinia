@@ -1,6 +1,8 @@
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -48,6 +50,13 @@ public partial class ScriniaCommands
         }
 
         string exeDir = AppContext.BaseDirectory;
+
+        // One-time, best-effort migration of the executable-relative legacy models/plugins trees
+        // into SCRINIA_HOME. The immutable global-tool package directory (AppContext.BaseDirectory)
+        // is the legacy source and is never written at runtime; all destinations live under the
+        // Phase 2-resolved home. Runs before the model downloads below so freshly migrated assets
+        // are the ones setup and startup then consume.
+        MigrateLegacyAssets(exeDir, UserHome.Resolve());
 
         // ── Step 0: Ollama auto-detect (offers to wire embeddings + completion through Ollama
         //           if it's already running, skipping the local-model downloads below). ──
@@ -147,6 +156,211 @@ public partial class ScriniaCommands
 
         return 0;
     }
+
+    /// <summary>
+    /// The single idempotent migration boundary for Phase 5. Moves the executable-relative legacy
+    /// <c>models</c> and <c>plugins</c> trees that a previous (pre-SCRINIA_HOME) installation left under
+    /// <paramref name="legacyRoot"/> — the immutable <c>AppContext.BaseDirectory</c> — into the
+    /// Phase 2-resolved home <paramref name="homeRoot"/>. Exactly one call site exists (see
+    /// <see cref="Setup"/>), and both asset classes are migrated here so the one-time move is a single,
+    /// auditable boundary rather than two scattered copies.
+    ///
+    /// <para>The boundary is:</para>
+    /// <list type="bullet">
+    ///   <item>idempotent — completion is recorded in <c>SCRINIA_HOME</c> state and a later run is a
+    ///   no-op;</item>
+    ///   <item>containment-faithful — every destination is canonicalized and proven inside
+    ///   <paramref name="homeRoot"/> with <see cref="PathContainment"/>; a plugin identity carrying a
+    ///   traversal segment is refused rather than followed;</item>
+    ///   <item>non-destructive — an already-present home destination is preserved, never clobbered;</item>
+    ///   <item>fail-safe — only expected migration I/O failures are swallowed (after the move is done so
+    ///   startup is preserved), and nothing is ever written back under <paramref name="legacyRoot"/>.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="legacyRoot">The executable-relative asset source (the immutable tool package dir).</param>
+    /// <param name="homeRoot">The resolved <c>SCRINIA_HOME</c> that owns all mutable runtime state.</param>
+    internal static void MigrateLegacyAssets(string legacyRoot, string homeRoot)
+    {
+        // Canonicalize both ends up front: a non-absolute or unresolvable home can never be a
+        // migration target, and canonicalizing the legacy source keeps the containment math honest.
+        string canonicalHome;
+        string canonicalLegacy;
+        try
+        {
+            canonicalHome = PathContainment.ResolveCanonical(homeRoot);
+            canonicalLegacy = PathContainment.ResolveCanonical(legacyRoot);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            // Unresolvable root — nothing safe to migrate and startup is already preserved.
+            LogMigrationWarning($"cannot canonicalize home/legacy root — {ex.Message}");
+            return;
+        }
+
+        LegacyAssetMigrationState state = ReadMigrationState(canonicalHome) ?? new LegacyAssetMigrationState(false, false, null);
+
+        // Fully migrated on a prior run — a true no-op: no moves, no state rewrite.
+        if (state.Models && state.Plugins)
+        {
+            return;
+        }
+
+        if (!state.Models)
+        {
+            try
+            {
+                MigrateModelsTree(canonicalLegacy, canonicalHome);
+                state = state with { Models = true };
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Expected migration I/O failure: leave the legacy tree in place for a later retry
+                // and preserve startup rather than surfacing it.
+                LogMigrationWarning($"models migration failed, left in place for retry — {ex.Message}");
+            }
+        }
+
+        if (!state.Plugins)
+        {
+            try
+            {
+                if (MigratePluginsTree(canonicalLegacy, canonicalHome))
+                    state = state with { Plugins = true };
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogMigrationWarning($"plugins migration failed, left in place for retry — {ex.Message}");
+            }
+        }
+
+        // Record completion. A state-write failure is non-fatal: the moves above already relocated the
+        // legacy content (an emptied legacy tree is itself a no-op marker on the next run), so startup
+        // is preserved either way.
+        try
+        {
+            WriteMigrationState(canonicalHome, state with { MigratedAt = DateTimeOffset.UtcNow.ToString("o") });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogMigrationWarning($"could not record migration state — {ex.Message}");
+        }
+    }
+
+    /// <summary>Migrates the executable-relative <c>models</c> tree into <c>SCRINIA_HOME/models</c>.</summary>
+    private static void MigrateModelsTree(string legacyRoot, string homeRoot)
+    {
+        string legacyModels = Path.Combine(legacyRoot, "models");
+        if (!Directory.Exists(legacyModels)) return;
+
+        string destination = Path.Combine(homeRoot, "models");
+        if (!PathContainment.IsWithin(homeRoot, destination))
+            throw new IOException($"models destination '{destination}' is not contained in SCRINIA_HOME");
+
+        MoveTreePreservingExisting(legacyModels, destination);
+    }
+
+    /// <summary>
+    /// Migrates the executable-relative <c>plugins</c> tree into the mandatory
+    /// <c>SCRINIA_HOME/plugins/&lt;plugin&gt;/&lt;version&gt;/&lt;rid&gt;/</c> hierarchy selected from the
+    /// workspace plugin identity. Returns <c>true</c> only when legacy plugin content was actually
+    /// relocated; a missing legacy dir, an unset version, or a traversal-bearing identity returns
+    /// <c>false</c> without throwing.
+    /// </summary>
+    private static bool MigratePluginsTree(string legacyRoot, string homeRoot)
+    {
+        string legacyPlugins = Path.Combine(legacyRoot, "plugins");
+        if (!Directory.Exists(legacyPlugins)) return false;
+
+        string pluginName = WorkspaceSetup.GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+        string? version = WorkspaceSetup.GetConfigValue("plugins:embeddings:version");
+        if (string.IsNullOrEmpty(version) || !IsSafePathSegment(pluginName) || !IsSafePathSegment(version))
+        {
+            // No configured version means no mandatory hierarchy to migrate into, and a traversal
+            // segment in either identity is refused rather than followed out of SCRINIA_HOME.
+            return false;
+        }
+
+        string rid = RuntimeInformation.RuntimeIdentifier;
+        string destination = Path.Combine(homeRoot, "plugins", pluginName, version, rid);
+        if (!PathContainment.IsWithin(homeRoot, destination))
+            return false;
+
+        string legacyPlugin = Path.Combine(legacyPlugins, pluginName);
+        if (!Directory.Exists(legacyPlugin)) return false;
+
+        MoveTreePreservingExisting(legacyPlugin, destination);
+        return true;
+    }
+
+    /// <summary>
+    /// Recursively moves every file and subdirectory from <paramref name="source"/> into
+    /// <paramref name="destination"/>, creating the destination as needed. An already-present
+    /// destination file is preserved (never clobbered); a per-entry I/O failure is logged and skipped
+    /// so one unreadable entry cannot abort the whole tree.
+    /// </summary>
+    private static void MoveTreePreservingExisting(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+
+        foreach (string file in Directory.GetFiles(source))
+        {
+            string destFile = Path.Combine(destination, Path.GetFileName(file));
+            if (File.Exists(destFile)) continue; // preserve the existing home destination
+            try { File.Move(file, destFile); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogMigrationWarning($"skipped '{file}' — {ex.Message}");
+            }
+        }
+
+        foreach (string dir in Directory.GetDirectories(source))
+        {
+            string subDestination = Path.Combine(destination, Path.GetFileName(dir));
+            try { MoveTreePreservingExisting(dir, subDestination); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogMigrationWarning($"skipped subdirectory '{dir}' — {ex.Message}");
+            }
+        }
+    }
+
+    private static bool IsSafePathSegment(string segment) =>
+        !string.IsNullOrEmpty(segment)
+        && !segment.Contains(Path.DirectorySeparatorChar)
+        && !segment.Contains(Path.AltDirectorySeparatorChar)
+        && segment != "..";
+
+    private static LegacyAssetMigrationState? ReadMigrationState(string homeRoot)
+    {
+        string statePath = Path.Combine(homeRoot, "migration-state.json");
+        if (!File.Exists(statePath)) return null;
+
+        try
+        {
+            string? json = File.ReadAllText(statePath);
+            if (json is null) return null;
+            return JsonSerializer.Deserialize(json, MigrationStateJsonContext.Default.LegacyAssetMigrationState);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // Corrupt or unreadable state is treated as "not yet migrated" so a retry is always safe.
+            return null;
+        }
+    }
+
+    private static void WriteMigrationState(string homeRoot, LegacyAssetMigrationState state)
+    {
+        string statePath = Path.Combine(homeRoot, "migration-state.json");
+        if (!PathContainment.IsWithin(homeRoot, statePath))
+            throw new IOException("migration state path is not contained in SCRINIA_HOME");
+
+        Directory.CreateDirectory(homeRoot);
+        string json = JsonSerializer.Serialize(state, MigrationStateJsonContext.Default.LegacyAssetMigrationState);
+        DurableFile.AtomicWriteAllText(statePath, json);
+    }
+
+    private static void LogMigrationWarning(string message) =>
+        Console.Error.WriteLine($"[scrinia:warn] legacy migration: {message}");
 
     /// <summary>
     /// Probes for a running Ollama at the default URL and, if detected, walks the user through
@@ -661,3 +875,19 @@ public partial class ScriniaCommands
         return result.Failed == 0 ? 0 : 1;
     }
 }
+
+/// <summary>
+/// One-time Phase 5 migration bookkeeping persisted as <c>migration-state.json</c> under
+/// <c>SCRINIA_HOME</c>. <see cref="Models"/> and <see cref="Plugins"/> record which legacy trees have
+/// already been relocated so the boundary is idempotent; <see cref="MigratedAt"/> is the ISO-8601
+/// timestamp of the most recent successful completion.
+/// </summary>
+internal sealed record LegacyAssetMigrationState(bool Models, bool Plugins, string? MigratedAt);
+
+/// <summary>
+/// Source-generated serialization context for <see cref="LegacyAssetMigrationState"/> so the SCRINIA_HOME
+/// migration-state marker stays trim-safe (reflection-based <c>JsonSerializer</c> is incompatible).
+/// </summary>
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(LegacyAssetMigrationState))]
+internal partial class MigrationStateJsonContext : JsonSerializerContext;
