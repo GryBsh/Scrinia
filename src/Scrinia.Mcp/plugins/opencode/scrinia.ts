@@ -7,7 +7,6 @@
 //
 // $$__SCRI__$$ is replaced at install time with the absolute path to the scri executable
 // (the plugin runs in a child process whose PATH may not contain scrinia).
-//import { spawnSync } from "node:child_process"
 import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
 const SCRI = "$$__SCRI__$$"
@@ -63,13 +62,7 @@ export const Scrinia: Plugin = async ({ project, client, $, directory, worktree 
         }
         if (!prompt) return
 
-        const res = await $`${SCRI} save --hook --client opencode < ${prompt}`.quiet()
-
-        //const res = spawnSync(SCRI, ["hint", "--client", "opencode"], {
-        //  input: prompt,
-        //  encoding: "utf8",
-        //  timeout: 5000,
-        //})
+        const res = await $`${SCRI} hint --client opencode < ${prompt}`.quiet()
 
         const hint = (res?.text() ?? "").trim()
         if (!hint) {

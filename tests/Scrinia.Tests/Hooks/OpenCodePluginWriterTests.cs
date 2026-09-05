@@ -43,8 +43,8 @@ public sealed class OpenCodePluginWriterTests : IDisposable
         string ts = File.ReadAllText(PluginPath());
         ts.Should().Contain("experimental.chat.messages.transform",
             "the prompt-aware injection point is the only one that sees the user's message");
-        ts.Should().Contain("\"hint\", \"--client\", \"opencode\"",
-            "the plugin shells out to the client-tailored hint");
+        ts.Should().Contain("hint --client opencode",
+            "the plugin shells out to the client-tailored hint on stdin (spawn block retired)");
         ts.Should().Contain("try").And.Contain("catch",
             "the experimental API must be wrapped so drift degrades to no-hint, not a crash");
         // The resolved scri path is baked in (no reliance on PATH at runtime).
