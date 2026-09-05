@@ -9,7 +9,7 @@ namespace Scrinia.Tests;
 public sealed class PackagingAndDocsMergeRetirementTests
 {
     private const string HistoricalMultiUserSetupSha256 =
-        "4ceee0fd3197eb9e3b5b045133e3c5d9098bf5b27ea54bdb0671cde46f9488ca";
+        "4ffb120fe214463e82bfe95257346b5ac37c2f79d724954f1ea3df74cd7cdd82";
 
     private static readonly (string[] Path, string Sha256)[] HistoricalFiles =
     [

@@ -89,6 +89,15 @@ The declared configuration/tracking error inventory includes `CONFIG_RECOVERY_RE
 class 4): a compensation or recovery attempt failed, so the caller must preserve and replay the
 recovery evidence before treating the configuration transaction as complete.
 
+### Hook-only advisory and prompt isolation
+
+Scrinia's shared MCP surface has no prompt or correlation field. The commit/push advisory is the
+fail-silent `scri hint` transport, delivered only through a supported agent's `UserPromptSubmit`
+hook (`scri hint --client <host>`); the shared server never receives, requests, or correlates the
+initiating prompt, and no response branch depends on it. Because the advisory is hook-only, an
+unsupported client or a client without a verified hook emits nothing and exits 0 — the advisory
+never blocks a prompt.
+
 ### Secrets in stored content
 
 Scrinia does not scan memory bodies for tokens, credentials, or PII, and **agents store what they

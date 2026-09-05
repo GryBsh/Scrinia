@@ -26,6 +26,9 @@ public static class ScriniaPrimer
         - Reserved paths: `/skill/`, `/agent/`, `/patterns/`, `/findings/`, `/learn/`,
           `/sessions/`, `/checkpoint/`, `/temp/`.
         - `.scrinia/` changes are part of your commits.
+        - Supported agent hooks run `scri hint --client <host>` before commit or push (the
+          `UserPromptSubmit` hook) to surface relevant memories; the shared MCP server takes no
+          prompt or correlation field — advisories come from the hook only.
 
         Call `guide()` for the full primer — chunks, skills, attributes, and recovery.
         """;

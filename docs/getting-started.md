@@ -16,8 +16,9 @@ Memories persist in a `.scrinia/` directory alongside your project (like `.git/`
 One way: `scri` is both a command-line tool and an MCP server over stdio. Your AI coding tool
 launches it; it reads and writes `.scrinia/` on disk.
 
-Sharing memories with other people uses ordinary source-control workflows. Commit `.scrinia/`
-like any other directory and resolve file conflicts manually.
+Sharing memories across a team uses ordinary source-control workflows: commit `.scrinia/` like any
+other directory, and share the same memories between repositories with a shared base registered via
+`scri shared base add`. See [Sharing Memory Across a Team](multi-user-setup.md).
 
 ## Installation
 

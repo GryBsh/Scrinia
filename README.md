@@ -138,8 +138,9 @@ Add to your MCP client config (Claude Code, Cursor, Copilot, etc.):
 its working directory; passing `--workspace-root` explicitly makes the server independent
 of whatever directory the client launches it from.
 
-To share memories with other people, commit `.scrinia/` and install the merge driver — see
-[Multi-User Setup](docs/multi-user-setup.md).
+To share memories across a team, commit `.scrinia/` like any other source file and, when the same
+memories should be shared between repositories, register a shared base with `scri shared base add`
+— see [Sharing Memory Across a Team](docs/multi-user-setup.md).
 
 ## CLI quick reference
 
@@ -229,7 +230,7 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 ### User Guides
 - **[Getting Started](docs/getting-started.md)** — overview, installation, quick start
 - **[CLI Reference](docs/cli-reference.md)** — commands, configuration, embedding providers, MCP client setup
-- **[Multi-User Setup](docs/multi-user-setup.md)** — sharing a workspace through git, merge driver setup
+- **[Sharing Memory Across a Team](docs/multi-user-setup.md)** — sharing a workspace through git, shared bases
 - **[Troubleshooting](docs/troubleshooting.md)** — common issues, plugin failures, recovery
 
 ### Architecture

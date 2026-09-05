@@ -215,4 +215,7 @@ After a context reset, `restore()` brings back your profile, patterns, session l
 
 ### Workspace
 
-Scrinia writes to `.scrinia/`. Commit those changes — that is how memory travels with the code.
+Scrinia writes to `.scrinia/`. Commit those changes — that is how memory travels with the code. To
+share memories across a team, commit `.scrinia/` like any other source file; to share the same
+memories between several repositories, register a shared base with `scri shared base add <name>
+<absolute-root>` — shared bases are always fixed to the `project-git` tracking policy.
