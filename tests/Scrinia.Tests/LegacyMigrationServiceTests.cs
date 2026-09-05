@@ -184,6 +184,27 @@ public sealed class LegacyMigrationServiceTests
     }
 
     [Fact]
+    public void RecoveryJournalCompleteMarkerIsCleanCompletion()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(directory);
+        string managed = Path.Combine(directory, ".gitignore");
+        File.WriteAllText(managed, ManagedIgnoreBlock.Local, new UTF8Encoding(false));
+        string config = Path.Combine(directory, "config.json");
+        File.WriteAllText(config, "{\"Scrinia:Workspace:Tracking\":\"local\"}", new UTF8Encoding(false));
+        string journal = Path.Combine(directory, ".tracking-recovery.json");
+        File.WriteAllText(journal, "complete\n", new UTF8Encoding(false));
+
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+
+        result.ErrorCode.Should().Be(ConfigurationErrorCode.None);
+        File.Exists(journal).Should().BeFalse();
+        File.ReadAllText(managed).Should().Be(ManagedIgnoreBlock.Local);
+        File.ReadAllText(config).Should().Be("{\"Scrinia:Workspace:Tracking\":\"local\"}");
+    }
+
+    [Fact]
     public void MigrateMapsMalformedWorkspaceConfigWithoutLeakingAnException()
     {
         using var scope = new TestHelpers.StoreScope();
