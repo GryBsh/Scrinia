@@ -12,7 +12,15 @@ namespace Scrinia.Commands;
 /// <summary>Hosts the isolated shared-memory MCP server.</summary>
 public sealed class SharedServeCommands
 {
-    /// <summary>Start <c>shared serve</c> over the local stdio transport.</summary>
+    /// <summary>
+    /// Hosts the isolated shared-memory MCP server over the local stdio transport. Registers exactly
+    /// the eleven <c>shared_*</c> tools and fails before transport when no base is enabled. The shared
+    /// surface is prompt-isolated and process-free: no shared input carries a prompt, correlation, or
+    /// session field (§7.3), and the complete shared call graph launches no process — Git guidance is
+    /// print-only. Audited by <c>SharedNoPromptCorrelationTests</c> and <c>SharedNoGitProcessTests</c>.
+    /// </summary>
+    /// <param name="workspaceRoot">Workspace root for the shared configuration. Defaults to the current directory.</param>
+    /// <param name="cancellationToken">Cancellation for the host.</param>
     public async Task<int> Serve(
         string? workspaceRoot = null,
         CancellationToken cancellationToken = default)
