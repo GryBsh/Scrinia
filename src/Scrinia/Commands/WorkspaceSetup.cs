@@ -50,9 +50,11 @@ internal static class WorkspaceSetup
 
     /// <summary>
     /// The configured store for this process. Throws if <see cref="Configure"/> has not run.
+    /// Resolves via <see cref="MemoryStoreContext.Current"/> ?? <see cref="MemoryStoreContext.Default"/>
+    /// so the generic-host thread boundary does not lose the store.
     /// </summary>
     internal static IMemoryStore Store =>
-        MemoryStoreContext.Current ?? throw new InvalidOperationException(
+        MemoryStoreContext.Current ?? MemoryStoreContext.Default ?? throw new InvalidOperationException(
             "WorkspaceSetup.Configure must be called before reading Store.");
 
     internal static void Configure(string? workspaceRoot)
@@ -64,7 +66,9 @@ internal static class WorkspaceSetup
         // recompiling. Defaults (RankerOptions.Default) match the historical composition —
         // see RankerOptions docstring for the formula and calibration notes.
         var rankerOptions = RankerOptions.FromConfig(GetConfigValue);
-        MemoryStoreContext.Current = new FileMemoryStore(root, rankerOptions);
+        var store = new FileMemoryStore(root, rankerOptions);
+        MemoryStoreContext.Current = store;
+        MemoryStoreContext.Default = store;
     }
 
     /// <summary>

@@ -33,6 +33,12 @@ public static class SearchContributorContext
 
     /// <summary>Process-wide default used when no AsyncLocal value is set (CLI single-session mode).</summary>
     public static ISearchScoreContributor? Default { get => _default; set => _default = value; }
+
+    internal static ISearchScoreContributor? RawCurrent
+    {
+        get => _current.Value;
+        set => _current.Value = value;
+    }
 }
 
 /// <summary>

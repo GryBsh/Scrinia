@@ -99,6 +99,12 @@ internal static class TestHelpers
         public string WorkspaceDir { get; }
         public string TempDir { get; }
         private readonly FileMemoryStore _store;
+        private readonly IMemoryStore? _prevStoreCurrent;
+        private readonly IMemoryStore? _prevStoreDefault;
+        private readonly IMemoryEventSink? _prevSinkCurrent;
+        private readonly IMemoryEventSink? _prevSinkDefault;
+        private readonly Scrinia.Core.Search.ISearchScoreContributor? _prevSearchCurrent;
+        private readonly Scrinia.Core.Search.ISearchScoreContributor? _prevSearchDefault;
 
         public StoreScope(bool createStoreDir = true)
         {
@@ -109,6 +115,17 @@ internal static class TestHelpers
             SessionBudget.OverrideStore(
                 new System.Collections.Concurrent.ConcurrentDictionary<string, long>(
                     StringComparer.OrdinalIgnoreCase));
+
+            // Capture previous context so we can restore both Current (AsyncLocal) and Default (process-wide)
+            // on dispose. Use RawCurrent to distinguish “no async-local set (fallback to Default)” from
+            // “explicitly set to Default's value” — otherwise restoring via the fallback getter would
+            // turn a null async-local into an explicit one, breaking the fallback contract for the next scope.
+            _prevStoreCurrent = MemoryStoreContext.RawCurrent;
+            _prevStoreDefault = MemoryStoreContext.Default;
+            _prevSinkCurrent = MemoryEventSinkContext.RawCurrent;
+            _prevSinkDefault = MemoryEventSinkContext.Default;
+            _prevSearchCurrent = Scrinia.Core.Search.SearchContributorContext.RawCurrent;
+            _prevSearchDefault = Scrinia.Core.Search.SearchContributorContext.Default;
 
             // Clean room, via the AsyncLocal cell rather than the process-wide one.
             //
@@ -135,6 +152,7 @@ internal static class TestHelpers
             MemoryEventSinkContext.Current = TestDoubles.SilentEventSink.Instance;
             _store = new FileMemoryStore(WorkspaceDir);
             MemoryStoreContext.Current = _store;
+            MemoryStoreContext.Default = _store;
         }
 
         public void Dispose()
@@ -145,11 +163,15 @@ internal static class TestHelpers
             BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
             SessionBudget.OverrideStore(null);
             _store.Dispose();
-            // Releases this flow's shadow so a later scope in the same flow starts from Default
-            // again. Per-flow, so it cannot disturb a test running in parallel — which the old
-            // `Default = null` here could, and did.
-            MemoryEventSinkContext.Current = null;
-            MemoryStoreContext.Current = null;
+            // Restore both RawCurrent (AsyncLocal) and Default (process-wide) so the outer scope's
+            // CLI host fallback is not lost, and parallel tests that captured Default are not
+            // disturbed. Using RawCurrent preserves the distinction between “fallback” and “explicit”.
+            MemoryStoreContext.RawCurrent = _prevStoreCurrent;
+            MemoryStoreContext.Default = _prevStoreDefault;
+            MemoryEventSinkContext.RawCurrent = _prevSinkCurrent;
+            MemoryEventSinkContext.Default = _prevSinkDefault;
+            Scrinia.Core.Search.SearchContributorContext.RawCurrent = _prevSearchCurrent;
+            Scrinia.Core.Search.SearchContributorContext.Default = _prevSearchDefault;
             try { Directory.Delete(WorkspaceDir, recursive: true); } catch { }
         }
     }

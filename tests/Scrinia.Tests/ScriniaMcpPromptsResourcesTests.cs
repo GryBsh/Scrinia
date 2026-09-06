@@ -42,9 +42,20 @@ public sealed class ScriniaMcpPromptsResourcesTests
     [Fact]
     public async Task ReadMemoryResource_NoStoreConfigured_Throws()
     {
-        MemoryStoreContext.Current = null;
-        var act = async () => await ScriniaMcpResources.ReadMemory("anything", CancellationToken.None);
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        var prevCurrent = MemoryStoreContext.RawCurrent;
+        var prevDefault = MemoryStoreContext.Default;
+        MemoryStoreContext.RawCurrent = null;
+        MemoryStoreContext.Default = null;
+        try
+        {
+            var act = async () => await ScriniaMcpResources.ReadMemory("anything", CancellationToken.None);
+            await act.Should().ThrowAsync<InvalidOperationException>();
+        }
+        finally
+        {
+            MemoryStoreContext.RawCurrent = prevCurrent;
+            MemoryStoreContext.Default = prevDefault;
+        }
     }
 
     [Fact]

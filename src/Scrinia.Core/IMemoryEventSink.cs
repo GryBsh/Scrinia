@@ -35,6 +35,12 @@ public static class MemoryEventSinkContext
     /// <summary>Process-wide default used when no AsyncLocal value is set (CLI single-session mode).</summary>
     public static IMemoryEventSink? Default { get => _default; set => _default = value; }
 
+    internal static IMemoryEventSink? RawCurrent
+    {
+        get => _current.Value;
+        set => _current.Value = value;
+    }
+
     /// <summary>Installs the process-wide default sink as a composite over <paramref name="sinks"/>.
     /// The one place <see cref="Default"/> is assigned from — the call sites in WorkspaceSetup each
     /// built their own CompositeEventSink, so a change to how the default is composed had that many

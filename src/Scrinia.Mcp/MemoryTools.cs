@@ -16,9 +16,7 @@ public sealed partial class ScriniaMcpTools
     // The count-pattern regex that used to live here moved into MemoryDerivation with the D-05
     // rule it served: the auto-derived review condition is derivation, and derivation has one home.
 
-    private static IMemoryStore CurrentStore =>
-        MemoryStoreContext.Current ?? throw new InvalidOperationException(
-            "No memory store configured. Call MemoryStoreContext.Current = ... before using MCP tools.");
+    private static IMemoryStore CurrentStore => MemoryStoreContext.Resolve();
 
     /// <summary>
     /// Resolves inline NMP/2 artifacts without requiring a configured store.
