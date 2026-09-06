@@ -1213,10 +1213,14 @@ public sealed partial class ScriniaMcpTools
             to, attributes: ReferenceTo(from), cancellationToken: cancellationToken);
 
         if (result1.IsError || result2.IsError)
+        {
+            var firstError = result1.IsError ? result1 : result2;
             return ResponseBuilder.Error(
-                $"Partial link failure:\n  {from}: {result1.Error ?? result1.Content}\n  {to}: {result2.Error ?? result2.Content}",
+                firstError.Error ?? firstError.Content ?? "Partial link failure",
                 ErrorCodes.Internal,
-                $"Verify both '{from}' and '{to}' exist via recall.");
+                $"Verify both '{from}' and '{to}' exist via recall.")
+                .WithInfo($"partial: {from} -> {to}");
+        }
 
         string linkMsg = $"Linked '{from}' <-> '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))

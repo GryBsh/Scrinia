@@ -48,6 +48,10 @@ jobs:
           include-prerelease: true
 
       # The checked-in scripts and manifest are the release contract.
+      - name: Publish CLI and merge
+        run: |
+          dotnet publish src/Scrinia/Scrinia.csproj -c Release -o publish
+          dotnet publish src/Scrinia.Merge/Scrinia.Merge.csproj -c Release -o publish
       - name: Publish release trees (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

@@ -36,6 +36,12 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>
+    /// Facts query result. Each of Rows / CoOccurrences / Timeline is truncated independently when
+    /// limit is reached; Truncated is true if any were cut.
+    /// </summary>
+    // Note: truncation is per-collection (entities/profile/intersect) not global.
+
+    /// <summary>
     /// The typed <c>facts</c> handler. Split out from the public tool method so the CLI
     /// (<c>scri facts</c>) can read <see cref="McpResponse.Status"/> for its exit code instead of
     /// grepping the rendered document — every other CLI passthrough already calls an internal

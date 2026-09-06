@@ -124,10 +124,14 @@ public sealed partial class ScriniaMcpTools
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
         if (chunkCount <= 1)
-            return ResponseBuilder.Warning("Already a single chunk, nothing to compact.").WithAction("compacted");
+            return ResponseBuilder.Success("Already single-chunk — nothing to compact.")
+                .WithAction("compacted")
+                .WithInfo("mutation: none");
 
         if (keepRecent > 0 && keepRecent >= chunkCount)
-            return ResponseBuilder.Warning($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted");
+            return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).")
+                .WithAction("compacted")
+                .WithInfo("mutation: none");
 
         // The compacted CHUNKS, not a re-encoded artifact: the store encodes what it is given, and
         // handing it the chunk array is what keeps the chunk boundaries a caller asked to keep

@@ -1,0 +1,27 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  skill-doc-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          count=$(ls src/Scrinia.Mcp/skills/*.md 2>/dev/null | wc -l)
+          rows=$(grep -c "^\s*|.*skill" docs/getting-started.md || true)
+          echo "skills on disk: $count, table rows: $rows"
+          test "$count" -eq "$rows"
+          test "$count" -eq 7
+  version-single-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if grep -R --include="*.cs" --include="*.csproj" "<Version>" src/ | grep -v "Directory.Build.props"; then
+            echo "ERROR: literal <Version> outside Directory.Build.props"
+            exit 1
+          fi
+  xml-doc-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: dotnet build Scrinia.sln -c Release -warnaserror:CS1591
