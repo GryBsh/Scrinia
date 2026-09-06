@@ -247,6 +247,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // FileRetry classifies as permanent and will not retry — the same collision the
             // sidecar write-back documents in LoadIndexUnsafe. The content is a fixed constant,
             // so whichever move landed left the file correct. Rethrow only if it really is absent.
+            // See FileLock.Acquire IsTransientIoException — only ERROR_SHARING_VIOLATION /
+            // ERROR_LOCK_VIOLATION retry; UnauthorizedAccessException (ERROR_ACCESS_DENIED)
+            // from File.Move collision is benign success, not a retry.
             if (!File.Exists(gitIgnorePath)) throw;
         }
     }

@@ -72,7 +72,7 @@ public sealed class FileLock : IDisposable
                 var stream = new FileStream(lockPath, FileMode.OpenOrCreate, access, share);
                 return new FileLock(stream);
             }
-            catch (IOException) when (sw.Elapsed < timeout)
+            catch (IOException ex) when (sw.Elapsed < timeout && IsTransientIoException(ex))
             {
                 if (!contended)
                 {
@@ -82,12 +82,32 @@ public sealed class FileLock : IDisposable
                 Thread.Sleep(delayMs);
                 delayMs = Math.Min(delayMs * 2, 500);
             }
+            catch (UnauthorizedAccessException)
+            {
+                // Benign collision on deterministic sidecar content (see EnsureGitIgnore:241
+                // race comment and FileMemoryStore LoadIndexUnsafe migration write-back).
+                // The file that won the race left correct bytes; do not loop, do not throw.
+                // Return a lock over nothing so the caller can proceed to read the correct file.
+                if (File.Exists(lockPath))
+                    return new FileLock();
+                throw;
+            }
             catch (IOException)
             {
                 LockTimedOut(log, lockPath, sw.ElapsedMilliseconds, null);
                 throw new FileLockTimeoutException(lockPath, timeout);
             }
         }
+    }
+
+    private static bool IsTransientIoException(IOException ex)
+    {
+        // Only retry known transient sharing violations. Every other IOException
+        // propagates to FileRetry outer window or surfaces as timeout.
+        int hr = System.Runtime.InteropServices.Marshal.GetHRForException(ex);
+        int win32 = hr & 0xFFFF;
+        return win32 == 32  // ERROR_SHARING_VIOLATION
+            || win32 == 33; // ERROR_LOCK_VIOLATION
     }
 
     // Compile-time-bound structured log messages — zero allocation when the level is disabled.
