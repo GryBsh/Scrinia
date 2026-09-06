@@ -10,6 +10,24 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-31-shared-memory-global-tool-design.md` §3.1, §4.3, §10.1–§10.3, §13.1, §13.5; `docs/superpowers/reviews/2026-08-31-shared-memory-global-tool-spec-review.md` R3-01, R4-04, R5-01.
 
+## Progress / Phase Tracking
+
+| Phase | Status | Integration | SHA | Date |
+|-------|--------|-------------|-----|------|
+| Phase 5 — global tool packaging | COMPLETE | fast-forward into `main` from `sdd/global-tool-packaging` | `59eb939` | 2026-09-05 |
+
+### Completion log
+
+#### Phase 5 — COMPLETE (2026-09-05, `59eb939`)
+
+Phase 5 (global tool packaging) is COMPLETE and integrated into `main` at `59eb939` via fast-forward from `sdd/global-tool-packaging`.
+
+All tasks (1, 2, 2A, 3, 4, 5, 6, 7, 8) implemented/reviewed/approved via subagent-driven development (Task 6 required one glob-fix round; Task 2A required one digest-population round).
+
+Independent exit gate PASSED at `59eb939`: `dotnet build Scrinia.sln -c Release` 0 errors; `dotnet test Scrinia.sln -c Release` 0 failed (Scrinia.Tests 2686 passed/20 skipped, Embeddings.Tests 41/41, Retrieval.Benchmarks.Tests 272/272); independent filters all PASS (PackageContent 11, ModelRelocation 10, PluginDiscovery+DocContract 19, GlobalToolInstall 1, ModelDownloadIntegrity 9, PackagingManifest/ReleaseWorkflow 20+3 skips); no AppContext.BaseDirectory runtime writes; no flat plugin fallback; no Git process in Phase 5 files; no Phase 1/Phase 4 ownership violation; CHANGELOG released entries byte-identical (Unreleased-only addition).
+
+Phase 2 UserHome.Resolve() consumed unchanged; Phase 3 frozen contract untouched.
+
 ## Global Constraints
 
 - Phase 2 owns the `UserHome` resolver. Phase 5 consumes `UserHome.Resolve()`; it must not redefine, wrap, or reorder Phase 2 config precedence.
@@ -89,88 +107,88 @@ Keep these exact method names and existing signatures while changing their path 
 
 **Files:** Modify `src/Scrinia/Commands/ScriniaCommands.Setup.cs`; test `tests/Scrinia.Tests/ModelRelocationTests.cs`.
 
-- [ ] **Step 1: Write failing tests** that drive setup/model resolution with an isolated `SCRINIA_HOME` and assert Model2Vec resolves to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2`, never `AppContext.BaseDirectory/models`.
-- [ ] **Step 2: Run** `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~ModelRelocationTests`; **Expected:** FAIL because setup still uses executable-relative paths.
-- [ ] **Step 3: Replace** every Phase 5 model path in setup with `Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2")`; use the existing Phase 2 resolver without redefining it.
-- [ ] **Step 4: Run** the focused filter; **Expected:** PASS.
-- [ ] **Step 5: Commit** with `feat: relocate Model2Vec data under SCRINIA_HOME`.
+- [x] **Step 1: Write failing tests** that drive setup/model resolution with an isolated `SCRINIA_HOME` and assert Model2Vec resolves to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2`, never `AppContext.BaseDirectory/models`.
+- [x] **Step 2: Run** `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter FullyQualifiedName~ModelRelocationTests`; **Expected:** FAIL because setup still uses executable-relative paths.
+- [x] **Step 3: Replace** every Phase 5 model path in setup with `Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2")`; use the existing Phase 2 resolver without redefining it.
+- [x] **Step 4: Run** the focused filter; **Expected:** PASS.
+- [x] **Step 5: Commit** with `feat: relocate Model2Vec data under SCRINIA_HOME`.
 
 ### Task 2: Mandatory version/RID plugin discovery
 
 **Files:** Modify `src/Scrinia/Commands/WorkspaceSetup.cs`; test `tests/Scrinia.Tests/ModelRelocationTests.cs` and `tests/Scrinia.Tests/PluginDiscoveryDiagnosticTests.cs`.
 
-- [ ] **Step 1: Write failing tests** for discovery at exactly `SCRINIA_HOME/plugins/scri-plugin-embeddings/1.2.3/<current-rid>/`, compatible-version selection, current-RID selection, missing version/RID, and rejection of both `SCRINIA_HOME/plugins/<plugin>/<plugin>` and any flat plugin path. Assert diagnostics name the searched hierarchy and `SCRINIA_HOME`.
-- [ ] **Step 2: Run** the two focused filters; **Expected:** FAIL because discovery uses executable-relative or flat paths.
-- [ ] **Step 3: Update** only the named `WorkspaceSetup` methods. Resolve `plugins/<plugin>/<version>/<rid>/`, select the configured compatible version and current RID deterministically, verify containment with `PathContainment.IsWithin`, and pass `Path.Combine(UserHome.Resolve(), "models")` to `McpPluginHost.StartAsync`. Do not add a flat fallback.
-- [ ] **Step 4: Run** both filters; **Expected:** PASS, including exact not-found/degraded diagnostics.
-- [ ] **Step 5: Commit** with `feat: discover plugins by version and RID under SCRINIA_HOME`.
+- [x] **Step 1: Write failing tests** for discovery at exactly `SCRINIA_HOME/plugins/scri-plugin-embeddings/1.2.3/<current-rid>/`, compatible-version selection, current-RID selection, missing version/RID, and rejection of both `SCRINIA_HOME/plugins/<plugin>/<plugin>` and any flat plugin path. Assert diagnostics name the searched hierarchy and `SCRINIA_HOME`.
+- [x] **Step 2: Run** the two focused filters; **Expected:** FAIL because discovery uses executable-relative or flat paths.
+- [x] **Step 3: Update** only the named `WorkspaceSetup` methods. Resolve `plugins/<plugin>/<version>/<rid>/`, select the configured compatible version and current RID deterministically, verify containment with `PathContainment.IsWithin`, and pass `Path.Combine(UserHome.Resolve(), "models")` to `McpPluginHost.StartAsync`. Do not add a flat fallback.
+- [x] **Step 4: Run** both filters; **Expected:** PASS, including exact not-found/degraded diagnostics.
+- [x] **Step 5: Commit** with `feat: discover plugins by version and RID under SCRINIA_HOME`.
 
 ### Task 2A: Verified model-download identity and atomic promotion
 
 **Files:** Modify `src/Scrinia.Core/Embeddings/Model2VecModelManager.cs` and `src/Scrinia.Plugin.Embeddings/VulkanModelManager.cs`; add `tests/Scrinia.Plugin.Embeddings.Tests/ModelDownloadIntegrityTests.cs`. The existing download callers are `tests/Scrinia.Plugin.Embeddings.Tests/EmbeddingBenchmarkAllTests.cs:38-58` and the production setup paths in `src/Scrinia/Commands/ScriniaCommands.Setup.cs:84-88,420-437`.
 
-- [ ] **Step 1: Write failing tests** in `ModelDownloadIntegrityTests.cs` against both current managers' `EnsureModelAsync` entry points. Use a fake `HttpMessageHandler`/response stream and an isolated temporary `SCRINIA_HOME/models` directory to assert: (a) the asset key/path contains the model identifier and the expected lowercase SHA-256 content digest; (b) a response whose bytes do not match the expected digest throws before promotion and leaves no final model file; (c) two concurrent downloads use distinct per-download temporary paths and produce one valid final asset without exposing either partial file; (d) cancellation, a stream failure, or a pre-seeded crash/partial temp leaves no visible model and a later retry starts cleanly; and (e) matching bytes are flushed, validated, atomically promoted into `SCRINIA_HOME/models`, and are visible only after promotion. Name tests `DigestMismatch_IsRejectedBeforePromotion`, `ConcurrentDownloads_UseUniqueTempsAndPublishOneValidAsset`, `CrashOrPartialTemp_IsNotVisible_AndRetrySucceeds`, and `MatchingDigest_IsAtomicallyPromoted`.
-- [ ] **Step 2: Run** `dotnet test tests/Scrinia.Plugin.Embeddings.Tests/Scrinia.Plugin.Embeddings.Tests.csproj --filter FullyQualifiedName~ModelDownloadIntegrityTests`; **Expected:** FAIL because the managers currently use fixed `<file>.tmp` names, do not verify content digests, and promote any HTTP response bytes.
-- [ ] **Step 3: Implement** the minimum shared behavior in each manager while retaining the public `EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)` contract: define each downloadable asset by model identifier, URL, filename, and expected SHA-256; derive the destination below `Path.Combine(UserHome.Resolve(), "models")` from the identifier plus verified digest; create a unique sibling temp file per download (PID/ GUID or equivalent); hash while streaming and flush/close before validation; reject and delete a digest-mismatched, cancelled, or failed temp; and atomically move only a validated temp into the final path. If another download wins the promotion race, discard the validated duplicate and treat the already-valid destination as success. Keep retries idempotent and ensure no `.tmp` or partial file is considered available by `IsModelAvailable`.
-- [ ] **Step 4: Run** the focused filter again; **Expected:** PASS for digest mismatch, concurrent downloads, crash/partial temp recovery, retry, and successful promotion. Then run `dotnet test tests/Scrinia.Plugin.Embeddings.Tests/Scrinia.Plugin.Embeddings.Tests.csproj --filter FullyQualifiedName~EmbeddingProvidersFixture` to confirm the existing Model2Vec/Vulkan callers still compile against the unchanged manager entry points.
-- [ ] **Step 5: Commit** with `fix: verify model downloads before atomic promotion`.
+- [x] **Step 1: Write failing tests** in `ModelDownloadIntegrityTests.cs` against both current managers' `EnsureModelAsync` entry points. Use a fake `HttpMessageHandler`/response stream and an isolated temporary `SCRINIA_HOME/models` directory to assert: (a) the asset key/path contains the model identifier and the expected lowercase SHA-256 content digest; (b) a response whose bytes do not match the expected digest throws before promotion and leaves no final model file; (c) two concurrent downloads use distinct per-download temporary paths and produce one valid final asset without exposing either partial file; (d) cancellation, a stream failure, or a pre-seeded crash/partial temp leaves no visible model and a later retry starts cleanly; and (e) matching bytes are flushed, validated, atomically promoted into `SCRINIA_HOME/models`, and are visible only after promotion. Name tests `DigestMismatch_IsRejectedBeforePromotion`, `ConcurrentDownloads_UseUniqueTempsAndPublishOneValidAsset`, `CrashOrPartialTemp_IsNotVisible_AndRetrySucceeds`, and `MatchingDigest_IsAtomicallyPromoted`.
+- [x] **Step 2: Run** `dotnet test tests/Scrinia.Plugin.Embeddings.Tests/Scrinia.Plugin.Embeddings.Tests.csproj --filter FullyQualifiedName~ModelDownloadIntegrityTests`; **Expected:** FAIL because the managers currently use fixed `<file>.tmp` names, do not verify content digests, and promote any HTTP response bytes.
+- [x] **Step 3: Implement** the minimum shared behavior in each manager while retaining the public `EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)` contract: define each downloadable asset by model identifier, URL, filename, and expected SHA-256; derive the destination below `Path.Combine(UserHome.Resolve(), "models")` from the identifier plus verified digest; create a unique sibling temp file per download (PID/ GUID or equivalent); hash while streaming and flush/close before validation; reject and delete a digest-mismatched, cancelled, or failed temp; and atomically move only a validated temp into the final path. If another download wins the promotion race, discard the validated duplicate and treat the already-valid destination as success. Keep retries idempotent and ensure no `.tmp` or partial file is considered available by `IsModelAvailable`.
+- [x] **Step 4: Run** the focused filter again; **Expected:** PASS for digest mismatch, concurrent downloads, crash/partial temp recovery, retry, and successful promotion. Then run `dotnet test tests/Scrinia.Plugin.Embeddings.Tests/Scrinia.Plugin.Embeddings.Tests.csproj --filter FullyQualifiedName~EmbeddingProvidersFixture` to confirm the existing Model2Vec/Vulkan callers still compile against the unchanged manager entry points.
+- [x] **Step 5: Commit** with `fix: verify model downloads before atomic promotion`.
 
 ### Task 3: One-time migration of both legacy asset trees
 
 **Files:** Modify `src/Scrinia/Commands/ScriniaCommands.Setup.cs`; test `tests/Scrinia.Tests/ModelRelocationTests.cs`.
 
-- [ ] **Step 1: Write failing tests** for executable-relative `models` migration, executable-relative `plugins` migration into the mandatory plugin/version/RID hierarchy, idempotent second startup, existing destination preservation, traversal rejection, and move/copy failure remaining non-fatal. Test that no package-directory file is created.
-- [ ] **Step 2: Run** the relocation filter; **Expected:** FAIL because the migration helper and both call sites are absent.
-- [ ] **Step 3: Implement** one internal idempotent migration boundary with exact inputs `string legacyRoot, string homeRoot`, canonicalize and contain every destination, migrate legacy model content to `SCRINIA_HOME/models`, migrate legacy plugin content to the selected `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/`, record completion in `SCRINIA_HOME` state, and swallow only expected migration I/O failures after preserving startup. Never write under `AppContext.BaseDirectory`.
-- [ ] **Step 4: Run** the focused filter; **Expected:** PASS for both asset classes and second-run behavior.
-- [ ] **Step 5: Commit** with `feat: migrate legacy models and plugins into SCRINIA_HOME once`.
+- [x] **Step 1: Write failing tests** for executable-relative `models` migration, executable-relative `plugins` migration into the mandatory plugin/version/RID hierarchy, idempotent second startup, existing destination preservation, traversal rejection, and move/copy failure remaining non-fatal. Test that no package-directory file is created.
+- [x] **Step 2: Run** the relocation filter; **Expected:** FAIL because the migration helper and both call sites are absent.
+- [x] **Step 3: Implement** one internal idempotent migration boundary with exact inputs `string legacyRoot, string homeRoot`, canonicalize and contain every destination, migrate legacy model content to `SCRINIA_HOME/models`, migrate legacy plugin content to the selected `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/`, record completion in `SCRINIA_HOME` state, and swallow only expected migration I/O failures after preserving startup. Never write under `AppContext.BaseDirectory`.
+- [x] **Step 4: Run** the focused filter; **Expected:** PASS for both asset classes and second-run behavior.
+- [x] **Step 5: Commit** with `feat: migrate legacy models and plugins into SCRINIA_HOME once`.
 
 ### Task 4: Immutable NuGet global-tool package and readme
 
 **Files:** Modify `src/Scrinia/Scrinia.csproj`; create `src/Scrinia/package-readme.md`; test `tests/Scrinia.Tests/PackageContentTests.cs`.
 
-- [ ] **Step 1: Write failing package tests** that pack Release output and assert the allowlist contains the `scri` command, managed dependencies, embedded prompts/skills/schemas/setup templates, and `package-readme.md`; assert the denylist contains no Merge, `scri-merge`, Vulkan/LLamaSharp/native RID asset, model, repository, `.scrinia`, or mutable cache.
-- [ ] **Step 2: Run** the package filter; **Expected:** FAIL because the project is not yet the required global tool.
-- [ ] **Step 3: Add** `PackageId` `scrinia`, `PackageType` `GlobalTool`, `ToolCommandName` `scri`, `PackTool` `true`, `PackageReadmeFile` `package-readme.md`, and explicit package include/exclude rules. Keep Vulkan and `Scrinia.Merge` out of the package. Write the readme with exact install/update/uninstall commands, immutable package wording, `SCRINIA_HOME` layout, mandatory plugin path, both server commands, and separate Vulkan installation.
-- [ ] **Step 4: Run** `dotnet pack src/Scrinia/Scrinia.csproj -c Release` and the focused package filter; **Expected:** PASS with the exact allowlist/denylist.
-- [ ] **Step 5: Commit** with `feat: package scri as an immutable NuGet global tool`.
+- [x] **Step 1: Write failing package tests** that pack Release output and assert the allowlist contains the `scri` command, managed dependencies, embedded prompts/skills/schemas/setup templates, and `package-readme.md`; assert the denylist contains no Merge, `scri-merge`, Vulkan/LLamaSharp/native RID asset, model, repository, `.scrinia`, or mutable cache.
+- [x] **Step 2: Run** the package filter; **Expected:** FAIL because the project is not yet the required global tool.
+- [x] **Step 3: Add** `PackageId` `scrinia`, `PackageType` `GlobalTool`, `ToolCommandName` `scri`, `PackTool` `true`, `PackageReadmeFile` `package-readme.md`, and explicit package include/exclude rules. Keep Vulkan and `Scrinia.Merge` out of the package. Write the readme with exact install/update/uninstall commands, immutable package wording, `SCRINIA_HOME` layout, mandatory plugin path, both server commands, and separate Vulkan installation.
+- [x] **Step 4: Run** `dotnet pack src/Scrinia/Scrinia.csproj -c Release` and the focused package filter; **Expected:** PASS with the exact allowlist/denylist.
+- [x] **Step 5: Commit** with `feat: package scri as an immutable NuGet global tool`.
 
 ### Task 5: Isolated local-feed install, update, uninstall, and both handshakes
 
 **Files:** Create `tests/Scrinia.Tests/GlobalToolInstallTests.cs`.
 
-- [ ] **Step 1: Write failing smoke tests** that pack Release output into a temporary feed, install into an empty isolated tool path outside the source checkout, run `scri --version`, handshake `scri serve` and `scri shared serve` over MCP stdio, update from a second package, restart after config/state changes, and uninstall cleanly. Capture the installed package tree before execution and assert it is byte-identical afterward; assert models/plugins/state are below isolated `SCRINIA_HOME`.
-- [ ] **Step 2: Run** the install filter; **Expected:** FAIL because packaging/install and relocation are incomplete.
-- [ ] **Step 3: Implement** only test helpers that invoke `dotnet pack`, `dotnet tool install --tool-path`, `dotnet tool update --tool-path`, `dotnet tool uninstall --tool-path`, and both MCP initialize/initialized handshakes with verified exit codes. Do not skip either server handshake.
-- [ ] **Step 4: Run** the filter; **Expected:** PASS for install, update, both handshakes, immutable package tree, isolated assets, and uninstall.
-- [ ] **Step 5: Commit** with `test: verify isolated global-tool lifecycle and server handshakes`.
+- [x] **Step 1: Write failing smoke tests** that pack Release output into a temporary feed, install into an empty isolated tool path outside the source checkout, run `scri --version`, handshake `scri serve` and `scri shared serve` over MCP stdio, update from a second package, restart after config/state changes, and uninstall cleanly. Capture the installed package tree before execution and assert it is byte-identical afterward; assert models/plugins/state are below isolated `SCRINIA_HOME`.
+- [x] **Step 2: Run** the install filter; **Expected:** FAIL because packaging/install and relocation are incomplete.
+- [x] **Step 3: Implement** only test helpers that invoke `dotnet pack`, `dotnet tool install --tool-path`, `dotnet tool update --tool-path`, `dotnet tool uninstall --tool-path`, and both MCP initialize/initialized handshakes with verified exit codes. Do not skip either server handshake.
+- [x] **Step 4: Run** the filter; **Expected:** PASS for install, update, both handshakes, immutable package tree, isolated assets, and uninstall.
+- [x] **Step 5: Commit** with `test: verify isolated global-tool lifecycle and server handshakes`.
 
 ### Task 6: Release manifest, scripts, and workflow
 
 **Files:** Modify `publish.projects.tsv`, `publish.ps1`, `publish.sh`, `.github/workflows/release.yml`.
 
-- [ ] **Step 1:** Add exact comments/assertions stating the local publish scripts produce single-file release trees, while the one NuGet global tool is `scri`; Vulkan and Merge are not packaged.
-- [ ] **Step 2:** Add a release job that packs `src/Scrinia/Scrinia.csproj` in Release and pushes the resulting `.nupkg` to NuGet using the repository's existing secret convention; retain the existing local release-tree job unchanged.
-- [ ] **Step 3:** Verify the workflow YAML and script assertions; **Expected:** exactly one packaged command, no Vulkan/Merge payload, local tree contract preserved.
-- [ ] **Step 4:** Commit with `chore: publish the scri global tool alongside release trees`.
+- [x] **Step 1:** Add exact comments/assertions stating the local publish scripts produce single-file release trees, while the one NuGet global tool is `scri`; Vulkan and Merge are not packaged.
+- [x] **Step 2:** Add a release job that packs `src/Scrinia/Scrinia.csproj` in Release and pushes the resulting `.nupkg` to NuGet using the repository's existing secret convention; retain the existing local release-tree job unchanged.
+- [x] **Step 3:** Verify the workflow YAML and script assertions; **Expected:** exactly one packaged command, no Vulkan/Merge payload, local tree contract preserved.
+- [x] **Step 4:** Commit with `chore: publish the scri global tool alongside release trees`.
 
 ### Task 7: Phase 5 living documentation and exact diagnostics
 
 **Files:** Modify the exact headings listed in Files and Ownership; create `docs/installation.md`; add the unreleased `CHANGELOG.md` section; test `tests/Scrinia.Tests/PluginDiscoveryDiagnosticTests.cs`.
 
-- [ ] **Step 1: Write failing doc/source tests** for the exact headings `Install`, `Where data lives`, `Model2Vec`, `Install the global tool`, `Plugin trust`, `Immutable tool package`, `Embeddings integration`, `Plugin host`, `Plugin location and installation`, and all six troubleshooting headings. Assert `SCRINIA_HOME/models`, the mandatory version/RID plugin path, no flat fallback, separate Vulkan install, and no stale `{exeDir}/models` or `{exeDir}/plugins` in Phase 5-owned living docs, Phase 5-owned source/help text, setup output, or diagnostics. The scan fixture must explicitly exclude `docs/superpowers/**`, `docs/reviews/**`, `docs/planning/**`, dated planning/review snapshots elsewhere under `docs/`, and released changelog history; those historical artifacts retain their historical-doc exemption.
-- [ ] **Step 2: Run** the documentation/diagnostic filter; **Expected:** FAIL.
-- [ ] **Step 3: Edit** only the Phase 5 headings. Add `docs/installation.md` and package-readme installation/layout material; keep Phase 4 onboarding sections and Phase 1 merge/conflict material unchanged. Update source-generated path diagnostics to name `SCRINIA_HOME` and the mandatory hierarchy.
-- [ ] **Step 4: Run** the focused filter and scan only the Phase 5-owned living/source/help scope: `rg -n "exeDir/(plugins|models)" README.md src/Scrinia/Commands/ScriniaCommands.Setup.cs src/Scrinia/Commands/WorkspaceSetup.cs src/Scrinia/package-readme.md docs/getting-started.md docs/cli-reference.md docs/security.md docs/architecture/cli.md docs/troubleshooting.md docs/plugin-authoring.md docs/installation.md`. Do not scan `docs/superpowers/**`, `docs/reviews/**`, `docs/planning/**`, any other dated planning/review artifacts, or released changelog history; preserve the historical-doc exemption for those artifacts. **Expected:** no stale matches in the owned scope; historical documents remain unchanged.
-- [ ] **Step 5: Commit** explicit documentation paths with `docs: document global-tool installation and plugin layout`.
+- [x] **Step 1: Write failing doc/source tests** for the exact headings `Install`, `Where data lives`, `Model2Vec`, `Install the global tool`, `Plugin trust`, `Immutable tool package`, `Embeddings integration`, `Plugin host`, `Plugin location and installation`, and all six troubleshooting headings. Assert `SCRINIA_HOME/models`, the mandatory version/RID plugin path, no flat fallback, separate Vulkan install, and no stale `{exeDir}/models` or `{exeDir}/plugins` in Phase 5-owned living docs, Phase 5-owned source/help text, setup output, or diagnostics. The scan fixture must explicitly exclude `docs/superpowers/**`, `docs/reviews/**`, `docs/planning/**`, dated planning/review snapshots elsewhere under `docs/`, and released changelog history; those historical artifacts retain their historical-doc exemption.
+- [x] **Step 2: Run** the documentation/diagnostic filter; **Expected:** FAIL.
+- [x] **Step 3: Edit** only the Phase 5 headings. Add `docs/installation.md` and package-readme installation/layout material; keep Phase 4 onboarding sections and Phase 1 merge/conflict material unchanged. Update source-generated path diagnostics to name `SCRINIA_HOME` and the mandatory hierarchy.
+- [x] **Step 4: Run** the focused filter and scan only the Phase 5-owned living/source/help scope: `rg -n "exeDir/(plugins|models)" README.md src/Scrinia/Commands/ScriniaCommands.Setup.cs src/Scrinia/Commands/WorkspaceSetup.cs src/Scrinia/package-readme.md docs/getting-started.md docs/cli-reference.md docs/security.md docs/architecture/cli.md docs/troubleshooting.md docs/plugin-authoring.md docs/installation.md`. Do not scan `docs/superpowers/**`, `docs/reviews/**`, `docs/planning/**`, any other dated planning/review artifacts, or released changelog history; preserve the historical-doc exemption for those artifacts. **Expected:** no stale matches in the owned scope; historical documents remain unchanged.
+- [x] **Step 5: Commit** explicit documentation paths with `docs: document global-tool installation and plugin layout`.
 
 ### Task 8: Independent Phase 5 exit gate
 
-- [ ] **Step 1:** Run `dotnet build Scrinia.sln -c Release`; **Expected:** clean.
-- [ ] **Step 2:** Run `dotnet test Scrinia.sln -c Release`; **Expected:** all non-benchmark tests PASS.
-- [ ] **Step 3:** Run package allowlist/denylist, relocation/migration, plugin discovery, diagnostic, and isolated lifecycle filters independently; **Expected:** each PASS.
-- [ ] **Step 4:** Verify no `AppContext.BaseDirectory` runtime writes, no flat plugin fallback, no Git process, no Phase 1/Phase 4 file ownership violation, and no released-history change.
-- [ ] **Step 5:** Commit remaining Phase 5 files by explicit path; do not push.
+- [x] **Step 1:** Run `dotnet build Scrinia.sln -c Release`; **Expected:** clean.
+- [x] **Step 2:** Run `dotnet test Scrinia.sln -c Release`; **Expected:** all non-benchmark tests PASS.
+- [x] **Step 3:** Run package allowlist/denylist, relocation/migration, plugin discovery, diagnostic, and isolated lifecycle filters independently; **Expected:** each PASS.
+- [x] **Step 4:** Verify no `AppContext.BaseDirectory` runtime writes, no flat plugin fallback, no Git process, no Phase 1/Phase 4 file ownership violation, and no released-history change.
+- [x] **Step 5:** Commit remaining Phase 5 files by explicit path; do not push.
 
 ## Exit Gate
 
