@@ -53,6 +53,9 @@ public sealed partial class ScriniaMcpTools
             return false;
         }
 
+        // Ephemeral alias seam: /temp/ resolved before store, store sees only ~subject.
+        // Fence-aware extraction (``` fences) runs at the store boundary on ~subject form.
+        // See TryParseLogicalAddress canonicalization.
         string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input);
         if (!canonical.StartsWith('/') && !canonical.StartsWith('~'))
             canonical = "/" + canonical;
