@@ -5,6 +5,6 @@ id	project	condition	profile	output	rids
 #   - scri                       -> single-file CLI release tree (output=rid)
 #   - scri-plugin-embeddings     -> optional Vulkan plugin release tree (output=plugin)
 # The single NuGet global tool is `scri`; the tool package contains no Vulkan (LLamaSharp),
-# no Scrinia.Merge / scri-merge payload, and no mutable asset - those live under SCRINIA_HOME.
+# no retired merge driver payload, and no mutable asset - those live under SCRINIA_HOME.
 scri	src/Scrinia/Scrinia.csproj	always	trimmed	rid	all
 scri-plugin-embeddings	src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj	with-embeddings	plain	plugin	all
