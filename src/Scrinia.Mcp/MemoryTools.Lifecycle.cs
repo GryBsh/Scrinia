@@ -19,13 +19,13 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Bundle operations — export and import memory topics.
     /// No longer exposed as an MCP tool; available via CLI (scri export, scri import).</summary>
     /// <remarks>
-    /// Deliberately keeps returning rendered YAML while the internal handlers return
-    /// <see cref="McpResponse"/>. It is <c>public</c> on <see cref="ScriniaMcpTools"/> — part of the
-    /// assembly's external surface — but has no in-assembly caller, so it sits at the same
-    /// serialisation boundary as the twelve <c>[McpServerTool]</c> methods even though it carries no
-    /// attribute. Retyping it would push YAML rendering onto external embedders for no internal gain.
+    /// Internal — not an MCP tool. Previously public for external embedders, but
+    /// <c>WithTools&lt;T&gt;</c> registers all public instance methods as tools, so a public
+    /// non-tool helper leaks the MCP surface. Keeps returning rendered YAML while the
+    /// internal handlers return <see cref="McpResponse"/>; internal callers use the
+    /// handlers directly.
     /// </remarks>
-    public async Task<string> Bundle(
+    internal async Task<string> Bundle(
         [Description("Action: 'export' or 'import'.")] string action,
         [Description("Topic names to export, or topic filter for import.")] string[]? topics = null,
         [Description("Bundle file path (required for import, optional filename for export).")] string? bundlePath = null,
