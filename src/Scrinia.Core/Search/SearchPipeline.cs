@@ -19,11 +19,12 @@ public readonly record struct SearchOutcome(
 /// keeps the pipeline callable from a test without installing AsyncLocal state.</para>
 /// <para><b>The pipeline owns <see cref="SearchQuery.SupplementalScores"/>,
 /// <see cref="SearchQuery.EntityGraphScores"/>, and <see cref="SearchQuery.Candidates"/>.</b>
-/// <see cref="ExecuteAsync"/> unconditionally overwrites all three on the query it passes to
-/// <c>IMemoryStore.SearchAll</c> with what it computed (or <see langword="null"/>, when no
-/// contributor ran) — a caller-supplied value on the incoming <see cref="SearchQuery"/> is
-/// replaced, never merged with or deferred to. No current caller sets any of the three before
-/// calling in, so this is a documented constraint rather than an observed bug.</para>
+/// <see cref="ExecuteAsync"/> is the sole materialization path: it produces the
+/// candidate list exactly once via <c>ListScoped</c> (or reuses
+/// <see cref="SearchQuery.Candidates"/> when the caller already supplied it) and
+/// passes it to <c>IMemoryStore.SearchAll</c>, which suppresses its own
+/// <c>ListScoped</c> when <c>Candidates</c> is set. Supplemental and entity-graph
+/// scores are computed over that same list.</para>
 /// </summary>
 public static class SearchPipeline
 {
@@ -36,6 +37,9 @@ public static class SearchPipeline
         bool surfaceEntityFacts = false,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(query);
+
         // Augment the query with caller-supplied context for scoring. The bare query is preserved
         // for any user-facing echo; the effective query feeds BM25, attribute scoring, and
         // embeddings alike so a single signal carries through all three.
@@ -43,26 +47,23 @@ public static class SearchPipeline
             ? query.Query
             : $"{query.Query} {context}";
 
-        // Both contributors run over the same excludeTopics-filtered candidates so excluded topics
-        // don't influence scoring. The entity-graph signal is a separate fusion source, not summed
-        // into supplemental — see EntityGraphScoreContributor.
-        IReadOnlyList<ScopedArtifact>? candidates = null;
-        if (contributor is not null || entityContributor is not null || surfaceEntityFacts)
-            candidates = store.ListScoped(query.Scopes, query.ExcludeTopics);
+        // Sole materialization: exactly one ListScoped when the caller did not already
+        // supply candidates. When Candidates is set, suppress the store read entirely —
+        // the store will FilterToQueryScopes rather than re-list (M2/M4).
+        // This keeps scoring and entity-fact derivation on the same snapshot.
+        IReadOnlyList<ScopedArtifact> candidates = query.Candidates
+            ?? store.ListScoped(query.Scopes, query.ExcludeTopics);
 
         IReadOnlyDictionary<string, double>? supplemental = null;
         IReadOnlyDictionary<string, double>? entityScores = null;
-        if (candidates is not null)
+        if (contributor is not null)
+            supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, ct);
+        if (entityContributor is not null)
         {
-            if (contributor is not null)
-                supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, ct);
-            if (entityContributor is not null)
-            {
-                var factStore = query.Scopes is not { Count: > 0 } && query.ExcludeTopics is not { Count: > 0 }
-                    ? store.GetEntityFactStore()                       // cached, no rebuild
-                    : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
-                entityScores = entityContributor.Score(factStore, query: effectiveQuery);
-            }
+            var factStore = query.Scopes is not { Count: > 0 } && query.ExcludeTopics is not { Count: > 0 }
+                ? store.GetEntityFactStore()                       // cached, no rebuild
+                : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
+            entityScores = entityContributor.Score(factStore, query: effectiveQuery);
         }
 
         var effective = query with
@@ -70,16 +71,13 @@ public static class SearchPipeline
             Query = effectiveQuery,
             SupplementalScores = supplemental is { Count: > 0 } ? supplemental : null,
             EntityGraphScores = entityScores,
-            // Built from this query's own Scopes/ExcludeTopics a few lines above, which is the
-            // contract SearchQuery.Candidates documents. Null when no contributor ran, in which
-            // case the store materializes them itself.
             Candidates = candidates,
         };
 
         var filtered = store.SearchAll(effective);
 
         IReadOnlyList<EntityFactSummary> entityFacts = [];
-        if (surfaceEntityFacts && candidates is { Count: > 0 })
+        if (surfaceEntityFacts && candidates.Count > 0)
             entityFacts = BuildEntityFacts(store, effectiveQuery, candidates);
 
         return new SearchOutcome(filtered, entityFacts);
