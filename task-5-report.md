@@ -1,51 +1,37 @@
-# Task 5 Report — Packaging and Active Documentation Merge Retirement
+# Wave 1 Task 5 Report — C5 MCP Tool Surface Leak
 
-## Status
+## Summary
+Sealed MCP tool surface to exactly 11 public `[McpServerTool]` instance methods via visibility change; verified no public helper leaks via reflection test. `MatchesRefAttribute` spelling already correct (single `b`), no rename needed. `Bundle` was the sole leaking public instance helper and was made `internal`.
 
-Implemented Task 5 only in worktree `merge-retirement`.
-
-- BASE: `5b3073bb6a1ee34b2b08f5e75044f6b6f7bc1772`
-- Scope: active publish manifest, release workflow/scripts, and Phase 1-owned living documentation.
-- Explicitly untouched: `docs/multi-user-setup.md`, dated planning/review artifacts, and later Phase 5 relocation work.
+## Requirement vs Reality
+- **Plan states:** exactly 12 tools (`guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`, `facts`)
+- **Reality after merge retirement (Task 3, commit d792410):** `reconcile` removed from every agent-visible surface, pinned by `ReconcileRemovalTests` (MCP, CLI, guide, goldens). Live set is 11.
+- **This task implements 11** — the correct post-retirement count. A 12-tool test would reintroduce `reconcile` and fail `ReconcileRemovalTests`. Report notes divergence for plan update.
 
 ## Changes
+- `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs`:
+  - `Bundle` changed `public` → `internal` with updated XML remarks explaining `WithTools<T>` leak. Sole instance helper leak.
+- `tests/Scrinia.Tests/Wave1/McpToolSurfaceTests.cs` (new):
+  - 5 tests: `ExposesExactly11Tools`, `NoPublicHelperOutsideToolSet` (DeclaredOnly-scoped to avoid `System.Object` noise), `MatchesRefAttribute_SpellingIsSingleB`, `WithToolsRegistersExactly11`, `ReconcileIsNotATool`.
+  - Expected names: `append`, `compact`, `facts`, `forget`, `guide`, `link`, `list`, `recall`, `remember`, `restore`, `search` (alphabetical comparison).
 
-- Removed `scri-merge` from the publish manifest and release archive/test surfaces.
-- Removed retired merge-driver comments from `publish.ps1` and `publish.sh`.
-- Removed the active `merge-safety` skill.
-- Removed active `reconcile`, `--multi-user`, merge-driver, and multi-user references from `cli-reference.md` and `getting-started.md`.
-- Added the manual-only conflict cleanup section to `troubleshooting.md`.
-- Added packaging/documentation retirement and historical-byte-preservation tests.
-- Updated the existing release workflow test to assert the retired executable is absent.
+## Why Bundle was the leak
+`WithTools<ScriniaMcpTools>` registers all public instance methods; an un-attributed public `Bundle` would be iterable as a tool by overly-broad hosts. History comment said "deliberately public for external embedders" — no external caller exists; CLI uses `BundleCommands`. Sealing to `internal` restores compiler-checked guarantee.
 
-## TDD evidence
-
-The new focused test was run before implementation and failed for the expected missing-retirement reason: the workflow still contained `scri-merge` and the living docs still contained `reconcile`. After the smallest scoped edits, the focused test passed.
+## Static helpers note
+`FormatBytes` (`MemoryTools.Bundling.cs`) and `CreateToolSerializerOptions` (`MemoryTools.Skills.cs`) remain `public static`. They are required cross-assembly (`Scrinia` host and `scri serve` startup) and `WithTools` scans only instance methods, so they do not leak the tool surface. `rg "public "` still shows them; instance-only `rg` or reflection test is the correct gate.
 
 ## Verification
+- `dotnet build Scrinia.sln -c Debug` — clean, 0 errors (warnings only from preview SDK + unrelated CA rules).
+- `dotnet test tests/Scrinia.Tests --filter McpToolSurface` — 5/5 passed.
+- `ReconcileRemovalTests` — still green (reconcile absent on CLI, MCP, guide, goldens).
+- `rg "public " src/Scrinia.Mcp/MemoryTools*.cs` after fix:
+  - Instance public = 11 `[McpServerTool]` methods only (`Guide`, `MemoryRemember`, `MemoryRecall`, `MemorySearch`, `MemoryList`, `MemoryAppend`, `MemoryForget`, `MemoryCompact`, `MemoryLink`, `MemoryRestore`, `Facts`).
+  - Static public = 2 (`FormatBytes`, `CreateToolSerializerOptions`) — intentional, not tools.
 
-Command:
-
-```text
-dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~PackagingAndDocsMergeRetirementTests|FullyQualifiedName~PublishManifestTests|FullyQualifiedName~SetupMergeRetirementTests|FullyQualifiedName~MergeRetirementAbsenceTests" --no-restore
-```
-
-Result: **37 passed, 0 failed, 3 skipped**. The skipped cases are the existing platform-dependent `publish.sh` reader checks.
-
-The test suite also verifies SHA-256 byte identity for `docs/multi-user-setup.md`, the Task 5 plan, the architecture spec, its review, and `CHANGELOG.md`.
-
-## Concerns
-
-- The repository uses a preview .NET 10 SDK and emits existing analyzer/preview warnings.
-- Full solution verification and the independent Phase 1 exit gate remain Task 6 scope.
-
-## Round 1 finding fix
-
-At `ec743cc`, the Phase 1 troubleshooting section still contained Phase 3 guidance for
-`shared_refresh`, shared-mutation serialization, and shared staging/commit handling. The section is
-now narrowed to retired driver-key cleanup and manual conflict resolution only. The regression test
-asserts the exact Phase 1 commands and rejects those Phase 3 terms.
-
-- Focused Task 5 test: **5 passed, 0 failed, 0 skipped**.
-- Phase 4 `docs/multi-user-setup.md` and Phase 5 relocation ownership remain untouched.
-- No separate ledger file exists in this worktree; this report is the Task 5 ledger append.
+## Checklist
+- [x] Early Exit: test asserts guard before any filesystem touch (reflection only)
+- [x] Parse Don’t Validate: scope/topic validated at construction, not here
+- [x] Atomic Predictability: visibility change is pure, no mutation
+- [x] Fail Fast: helper leak fails test immediately with collection dump
+- [x] Intentional Naming: `MatchesRefAttribute` spelling pinned
