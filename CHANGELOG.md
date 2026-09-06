@@ -8,6 +8,28 @@ The single source of truth for the version number is `Directory.Build.props` at 
 repository root — bumping it there propagates to the CLI banner, the MCP `ServerInfo`,
 and all assembly attributes.
 
+## [Unreleased]
+
+### Added — immutable `scri` global tool and `SCRINIA_HOME` runtime layout
+
+- `scrinia` is now packaged as an immutable NuGet **global tool** whose single command is `scri`,
+  implementing both server modes (`scri serve` and `scri shared serve`) plus the configuration,
+  tracking, and shared-base commands. The package ships only the managed command, its managed
+  dependencies, the offline-required embedded prompts/skills/schemas/setup templates, and the
+  package readme; it deliberately excludes Merge (`scri-merge`), the Vulkan plugin, Vulkan/LLamaSharp
+  native RID assets, downloaded models, repository data, `.scrinia`, and mutable caches. Vulkan is a
+  separately installed, RID-specific asset.
+- All mutable state now lives below `SCRINIA_HOME` (the Phase 2-resolved per-user home). The built-in
+  Model2Vec model and any plugin-downloaded model resolve to `SCRINIA_HOME/models`; the one-time
+  migration relocates the executable-relative legacy `models` and `plugins` trees once, and the
+  embeddings plugin is discovered only through the mandatory
+  `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy with no flat fallback. `AppContext
+  .BaseDirectory` is never written at runtime.
+- Documented the exact installation, update, and uninstall commands, the immutable-package contract,
+  the `SCRINIA_HOME` layout, the mandatory plugin hierarchy, both server commands, and the separate
+  Vulkan install in the new `docs/installation.md` and `src/Scrinia/package-readme.md`, and pinned the
+  living-doc headings and `SCRINIA_HOME`-naming source diagnostics with doc/source tests.
+
 ## [0.6.0] — 2026-08-27
 
 ### Changed (breaking) — unified logical memory addressing

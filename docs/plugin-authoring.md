@@ -12,8 +12,20 @@ CLI; build and publish an executable.
 independently. API keys are placed in the child environment, never on the command line.
 
 The executable should read MCP requests from stdin and write MCP responses to stdout. Diagnostics
-belong on stderr. The host discovers `{exeDir}/plugins/{name}/{name}[.exe]` first, then
-`{exeDir}/plugins/{name}[.exe]`; the name comes from `plugins:embeddings`.
+belong on stderr. The host discovers the plugin executable only through the mandatory
+`SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — there is no flat plugin fallback — and
+the name comes from `plugins:embeddings`.
+
+## Plugin location and installation
+
+A plugin is a **separately installed**, RID-specific executable — it is not part of the immutable
+`scri` global tool package. After installation its executable, managed assemblies, and native
+libraries live only at the mandatory hierarchy `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/`, and
+any mutable plugin state lives at `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/state/`. The `scri`
+host discovers the plugin executable only through this hierarchy — there is no flat
+`plugins/<plugin>` fallback and nothing is written into the immutable package directory at runtime.
+Install it into `SCRINIA_HOME` with your plugin's own packaging (for the optional Vulkan plugin:
+`dotnet tool install --global --add-source <local-feed> scri-plugin-embeddings`).
 
 ## Embeddings plugin tools
 

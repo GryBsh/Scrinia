@@ -34,7 +34,7 @@ to migrate its memories:
 - To make resolution independent of the directory a command or MCP client happens to launch from, pass `--workspace-root /path/to/project` explicitly.
 - The warning only fires on `store`/`forget`/`append`/`compact`/`link`, `setup`, `serve` startup, and `restore` — never on read-only commands like `hint`, `recall`, `search`, `list`, or `show`. If you only ever run read commands, run `scri restore` (or any write) once to surface it.
 
-### "Model not found" / Semantic search not working
+### Model not found
 
 On its first startup, `scri serve` automatically downloads the built-in Model2Vec embedding model
 (approximately 50 MB total, including supporting files), unless you pass `--no-auto-setup`. When an HTTP provider or the Vulkan provider is
@@ -45,9 +45,17 @@ configured, that provider may use its own model and model-download process inste
 scri setup
 ```
 
-This downloads `m2v-MiniLM-L6-v2` to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Without the built-in
+This downloads `m2v-MiniLM-L6-v2` to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`. Without the built-in
 model, search falls back to BM25-only (keyword matching still works). If you use an HTTP or
 Vulkan provider, follow that provider's model configuration instead.
+
+### Semantic search not working
+
+If semantic search returns nothing or degrades to BM25-only, the built-in Model2Vec model is
+missing from `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`, the configured HTTP or Vulkan provider is
+unavailable, or the active provider failed to start. Verify the model is present (run `scri setup`),
+confirm the active provider with `scri config Scrinia:Embeddings:Provider`, and read the embedding
+provider warning on stderr.
 
 ### Slow first search after startup
 
@@ -55,7 +63,7 @@ The first search in a scope may load index entries, decode artifacts, and load v
 LRU caches decoded artifact text; it does not cache BM25 corpus statistics, which are computed for
 each search over that search's candidate set.
 
-### "Access denied" when publishing
+### Access denied when publishing
 
 The `scri` executable is locked while the MCP server is running.
 
@@ -83,15 +91,19 @@ Symptoms: semantic search uses the in-process provider instead of the Vulkan plu
 falls back to BM25 and path scoring after the configured plugin fails.
 
 **Checklist:**
-1. The configured plugin binary exists at `{exeDir}/plugins/{name}/{name}[.exe]` (checked first), or `{exeDir}/plugins/{name}[.exe]` (checked second). The default name is `scri-plugin-embeddings`.
+1. The configured plugin binary exists at the mandatory
+   `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — the default name is
+   `scri-plugin-embeddings`, resolved as
+   `SCRINIA_HOME/plugins/scri-plugin-embeddings/<version>/<rid>/scri-plugin-embeddings.exe`. There
+   is no flat `plugins/<plugin>` fallback.
 2. Vulkan drivers are installed and up to date
 3. GPU supports Vulkan (check with `vulkaninfo`)
-4. The GGUF model exists at `{exeDir}/plugins/{name}/models/` (with the default name,
-   `{exeDir}/plugins/scri-plugin-embeddings/models/`)
+4. The GGUF model exists at `SCRINIA_HOME/models/` (the default is
+   `all-MiniLM-L6-v2-Q8_0.gguf`)
 
 **Diagnostic:** Check CLI output during `scri serve` — plugin discovery is logged.
 
-### Plugin crashes / "degraded to BM25-only"
+### Plugin crashes / degraded to BM25-only
 
 The CLI auto-reconnects crashed plugins up to 3 times. After 3 failures, it sets `_degraded = true`
 and falls back to BM25 and path scoring. Plugin failures never break core memory operations.
@@ -103,16 +115,18 @@ and falls back to BM25 and path scoring. Plugin failures never break core memory
 
 ### Plugin not found despite being installed
 
-Plugin discovery looks for executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then
-`{exeDir}/plugins/{name}[.exe]`. The plugin name comes from the `plugins:embeddings` config
-setting (default: `scri-plugin-embeddings`). When a plugin executable is found, Scrinia skips
-built-in Model2Vec; if that plugin cannot start or becomes unavailable, it does not switch back to
-Model2Vec and search falls back to BM25 and path scoring.
+Plugin discovery resolves the executable only through the mandatory
+`SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — there is no flat `plugins/<plugin>`
+fallback. The plugin name comes from the `plugins:embeddings` config setting (default:
+`scri-plugin-embeddings`), and the compatible version and current RID are selected from that
+directory. When a plugin executable is found, Scrinia skips built-in Model2Vec; if that plugin
+cannot start or becomes unavailable, it does not switch back to Model2Vec and search falls back to
+BM25 and path scoring.
 
 **Fix:**
 ```sh
 scri config plugins:embeddings    # Check current setting
-ls $(dirname $(which scri))/plugins/  # List discovered plugins
+ls "$SCRINIA_HOME/plugins"        # List installed plugins under SCRINIA_HOME
 ```
 
 ## Memory Issues

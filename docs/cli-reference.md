@@ -324,7 +324,7 @@ Interactive workspace setup. Two things in order:
    - Streams `POST /api/pull` with per-layer progress for any missing model.
    - Writes the resulting `Scrinia:Embeddings:*` config to the workspace.
 2. **Built-in embedding model** (`m2v-MiniLM-L6-v2`, 384-dim, ~22MB) downloaded
-   from HuggingFace to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Only used when
+   from HuggingFace to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`. Only used when
    Ollama isn't configured and the Vulkan embeddings plugin isn't installed.
 
 Setup does **not** prompt for any LLM configuration. Scrinia ships zero
@@ -650,7 +650,7 @@ Setup:
 scri setup
 ```
 
-Downloads `model.safetensors` (~22MB) and `vocab.txt` to `{exeDir}/models/m2v-MiniLM-L6-v2/`.
+Downloads `model.safetensors` (~22MB) and `vocab.txt` to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`.
 
 ### Vulkan Provider (Optional Plugin)
 
@@ -847,10 +847,14 @@ scri bundle import ./project-knowledge.scrinia-bundle --topics api
 
 ## Custom Plugin Executable
 
-The CLI discovers plugin executables at `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`. You can override the embeddings plugin name:
+The CLI discovers plugin executables only through the mandatory
+`SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — there is no flat plugin fallback and
+nothing is scanned from the executable directory. You can override the embeddings plugin name:
 
 ```bash
 scri config plugins:embeddings my-custom-embeddings
 ```
 
-The CLI looks for `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`.
+The resolved executable must live at
+`SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/<plugin>[.exe]`; discovery never scans the executable
+directory or a flat `plugins/<plugin>` path.

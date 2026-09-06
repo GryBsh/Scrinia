@@ -141,9 +141,8 @@ Model2Vec initialization paths are skipped.
 
 **Optional Vulkan plugin (child process, preferred when installed):**
 - Resolve the configured plugin name from `plugins:embeddings` (default:
-  `scri-plugin-embeddings`)
-- Check `{exeDir}/plugins/{name}/{name}[.exe]` first, then
-  `{exeDir}/plugins/{name}[.exe]`
+  `scri-plugin-embeddings`), then its executable through the mandatory
+  `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — there is no flat plugin fallback.
 - If found: launch via `McpPluginHost`; the plugin takes ownership of the embedding path
   and built-in Model2Vec is skipped
 - If no plugin is found: initialize the in-process provider, normally Model2Vec
@@ -151,7 +150,7 @@ Model2Vec initialization paths are skipped.
   search remains available through BM25 and path scoring, but semantic plugin scoring is absent
 
 This means semantic search works out of the box with zero plugins installed when the built-in
-Model2Vec model files are available at `{exeDir}/models/m2v-MiniLM-L6-v2/`. An installed plugin is
+Model2Vec model files are available at `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`. An installed plugin is
 an explicit preference; if plugin startup fails, Scrinia does not silently fall back to Model2Vec.
 
 ### CoreEmbeddingEventHandler
@@ -187,8 +186,9 @@ It implements both extension interfaces so the CLI can use a single object for a
 ### Startup Sequence
 
 1. `WorkspaceSetup.LoadPluginsAsync()` resolves the configured plugin name from
-   `plugins:embeddings` (default: `scri-plugin-embeddings`) and checks
-   `{exeDir}/plugins/{name}/{name}[.exe]` first, then `{exeDir}/plugins/{name}[.exe]`
+   `plugins:embeddings` (default: `scri-plugin-embeddings`) and its executable through the mandatory
+   `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — never the executable-relative
+   plugins tree and never a flat fallback.
 2. For each discovered plugin executable:
    - Launch as child process via `StdioClientTransport`
    - Pass `--data-dir`, `--models-dir`, and `--config KEY=VALUE` arguments
@@ -222,7 +222,7 @@ _hasStatus = tools.Any(t => t.Name == "status");
 Workspace configuration is forwarded to plugins as CLI arguments:
 
 ```
-scri-plugin-embeddings --data-dir /path/.scrinia --models-dir /path/plugins/scri-plugin-embeddings --config Scrinia:Embeddings:Provider=vulkan
+scri-plugin-embeddings --data-dir /path/.scrinia --models-dir "$SCRINIA_HOME/models" --config Scrinia:Embeddings:Provider=vulkan
 ```
 
 ## Configuration Resolution

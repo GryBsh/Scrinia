@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
 using Scrinia.Core.Configuration;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
@@ -185,5 +186,176 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         var result = WorkspaceSetup.ResolvePluginDirectory("../../../../etc", "1.2.3");
 
         result.PluginDir.Should().BeNull("a plugin name that escapes SCRINIA_HOME is rejected");
+    }
+}
+
+/// <summary>
+/// Phase 5 Task 7 — the exact living-document headings and source diagnostics.
+///
+/// <para>These tests pin the Phase 5-owned documentation contract: every required <c>##</c>/<c>###</c>
+/// heading is present in its owned living doc, the layout is described in terms of
+/// <c>SCRINIA_HOME/models</c> and the mandatory
+/// <c>SCRINIA_HOME/plugins/&lt;plugin&gt;&lt;/version&gt;/&lt;rid&gt;/</c> hierarchy, Vulkan is a
+/// separate install, and there is no flat plugin fallback. They also assert that no stale
+/// executable-relative <c>{exeDir}/models</c> or <c>{exeDir}/plugins</c> reference survives in the
+/// owned living docs, the package readme, the setup command, or <c>WorkspaceSetup</c>.</para>
+///
+/// <para>The scan scope is exactly the Phase 5-owned living docs and source. Historical artifacts —
+/// <c>docs/superpowers/**</c>, <c>docs/reviews/**</c>, <c>docs/planning/**</c>, dated
+/// planning/review snapshots elsewhere under <c>docs/</c>, and the released CHANGELOG history — are
+/// deliberately excluded and retain their historical-doc exemption.</para>
+/// </summary>
+public sealed class Phase5DocumentationContractTests
+{
+    /// <summary>The exact Phase 5-owned living docs + source/help scope (mirrors the Task 7 rg scan).</summary>
+    private static IReadOnlyList<string> OwnedDocFiles() =>
+    [
+        "README.md",
+        "docs/getting-started.md",
+        "docs/cli-reference.md",
+        "docs/security.md",
+        "docs/troubleshooting.md",
+        "docs/plugin-authoring.md",
+        "docs/installation.md",
+        "docs/architecture/cli.md",
+        "src/Scrinia/package-readme.md",
+    ];
+
+    /// <summary>The Phase 5-owned source files that carry path diagnostics / setup output.</summary>
+    private static IReadOnlyList<string> OwnedSourceFiles() =>
+    [
+        "src/Scrinia/Commands/ScriniaCommands.Setup.cs",
+        "src/Scrinia/Commands/WorkspaceSetup.cs",
+    ];
+
+    private static string Read(string relativePath) =>
+        File.ReadAllText(RepoPaths.Combine(relativePath));
+
+    private static string ReadAllOwnedDocs() => string.Join("\n", OwnedDocFiles().Select(Read));
+
+    private static string ReadAllOwnedSource() => string.Join("\n", OwnedSourceFiles().Select(Read));
+
+    private static void AssertHeadingPresent(string file, string heading)
+    {
+        string content = Read(file);
+        content.Should().Contain(heading, $"`{file}` is missing the exact Phase 5 heading \"{heading}\"");
+    }
+
+    [Fact]
+    public void README_has_Install_and_Where_data_lives_headings()
+    {
+        AssertHeadingPresent("README.md", "## Install");
+        AssertHeadingPresent("README.md", "## Where data lives");
+    }
+
+    [Fact]
+    public void GettingStarted_has_Model2Vec_and_Install_the_global_tool_headings()
+    {
+        AssertHeadingPresent("docs/getting-started.md", "## Model2Vec");
+        AssertHeadingPresent("docs/getting-started.md", "### Install the global tool");
+    }
+
+    [Fact]
+    public void Security_has_Plugin_trust_and_Immutable_tool_package_headings()
+    {
+        AssertHeadingPresent("docs/security.md", "### Plugin trust");
+        AssertHeadingPresent("docs/security.md", "## Immutable tool package");
+    }
+
+    [Fact]
+    public void Architecture_cli_has_Embeddings_integration_and_Plugin_host_headings()
+    {
+        AssertHeadingPresent("docs/architecture/cli.md", "## Embeddings Integration");
+        AssertHeadingPresent("docs/architecture/cli.md", "## Plugin Host");
+    }
+
+    [Fact]
+    public void PluginAuthoring_has_Plugin_location_and_installation_heading()
+    {
+        AssertHeadingPresent("docs/plugin-authoring.md", "## Plugin location and installation");
+    }
+
+    [Fact]
+    public void Troubleshooting_has_all_six_phase_5_headings()
+    {
+        AssertHeadingPresent("docs/troubleshooting.md", "### Model not found");
+        AssertHeadingPresent("docs/troubleshooting.md", "### Semantic search not working");
+        AssertHeadingPresent("docs/troubleshooting.md", "### Vulkan plugin not loading");
+        AssertHeadingPresent("docs/troubleshooting.md", "### Plugin crashes / degraded to BM25-only");
+        AssertHeadingPresent("docs/troubleshooting.md", "### Plugin not found despite being installed");
+        AssertHeadingPresent("docs/troubleshooting.md", "### Access denied when publishing");
+    }
+
+    [Fact]
+    public void Installation_doc_covers_tool_layout_and_plugin_hierarchy()
+    {
+        string installation = Read("docs/installation.md");
+        installation.Should().NotBeEmpty("docs/installation.md must exist");
+
+        // Immutable tool + SCRINIA_HOME models layout.
+        installation.Should().Contain("Immutable tool", "the package is immutable once installed");
+        installation.Should().Contain("SCRINIA_HOME/models", "built-in and plugin models live under SCRINIA_HOME/models");
+        installation
+            .Should()
+            .Contain("SCRINIA_HOME/plugins/", "separately installed plugins live at the mandatory SCRINIA_HOME/plugins path");
+
+        // Separate Vulkan install + mandatory version/RID hierarchy.
+        installation.Should().Contain("Vulkan", "Vulkan is documented");
+        installation.Should().Contain("<version>", "the mandatory plugin hierarchy names <version>");
+        installation.Should().Contain("<rid>", "the mandatory plugin hierarchy names <rid>");
+    }
+
+    [Fact]
+    public void Owned_docs_state_mandatory_plugin_path_and_separate_vulkan_and_no_flat_fallback()
+    {
+        string allDocs = ReadAllOwnedDocs();
+
+        // Mandatory version/RID hierarchy is named explicitly somewhere in the owned scope.
+        allDocs.Should().Contain("<plugin>", "the mandatory plugin hierarchy names <plugin>");
+        allDocs.Should().Contain("<version>", "the mandatory plugin hierarchy names <version>");
+        allDocs.Should().Contain("<rid>", "the mandatory plugin hierarchy names <rid>");
+
+        // Separate Vulkan install is stated.
+        allDocs
+            .Should()
+            .Contain("separately installed", "Vulkan / plugins are separately installed, not part of the immutable tool");
+
+        // The absence of a flat plugin fallback is stated somewhere in the owned scope.
+        bool statesNoFlatFallback = OwnedDocFiles()
+            .Select(Read)
+            .Any(c => c.Contains("no flat", StringComparison.OrdinalIgnoreCase) ||
+                      c.Contains("never a flat", StringComparison.OrdinalIgnoreCase));
+        statesNoFlatFallback.Should().BeTrue(
+            "the owned docs state there is no flat plugin fallback");
+    }
+
+    [Fact]
+    public void Owned_scope_has_no_stale_executable_relative_model_or_plugin_paths()
+    {
+        string docs = ReadAllOwnedDocs();
+        string source = ReadAllOwnedSource();
+
+        // Doc / help / setup-output form: the executable-relative placeholder paths.
+        foreach (string stale in new[] { "{exeDir}/models", "{exeDir}/plugins" })
+        {
+            docs.Should().NotContain(stale, $"the stale executable-relative reference \"{stale}\" must not survive in owned living docs");
+            source.Should().NotContain(stale, $"the stale executable-relative reference \"{stale}\" must not survive in owned source");
+        }
+
+        // Source form: the executable-relative models/plugins directory construction.
+        foreach (string stale in new[] { "Path.Combine(exeDir, \"models\")", "Path.Combine(exeDir, \"plugins\")" })
+        {
+            source.Should().NotContain(stale, $"the stale executable-relative path consumer \"{stale}\" must not survive in owned source");
+        }
+    }
+
+    [Fact]
+    public void Setup_output_names_SCRINIA_HOME_models_and_mandatory_plugin_hierarchy()
+    {
+        string setup = Read("src/Scrinia/Commands/ScriniaCommands.Setup.cs");
+        setup.Should().Contain("SCRINIA_HOME/models", "setup output paths the GGUF model under SCRINIA_HOME/models");
+        setup
+            .Should()
+            .Contain("ResolveEmbeddingsPluginExe", "setup discovers the plugin through the mandatory SCRINIA_HOME hierarchy, not a flat scan");
     }
 }

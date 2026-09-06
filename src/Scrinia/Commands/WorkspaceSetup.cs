@@ -227,8 +227,9 @@ internal static class WorkspaceSetup
 
         string workspaceDir = Path.Combine(Root, ".scrinia");
         string embeddingsDir = Path.Combine(workspaceDir, "embeddings");
-        string exeDir = AppContext.BaseDirectory;
-        string modelsDir = Path.Combine(exeDir, "models");
+        // Models are mutable runtime state and live only under SCRINIA_HOME/models; the immutable
+        // global tool package (AppContext.BaseDirectory) is never written at runtime.
+        string modelsDir = Path.Combine(UserHome.Resolve(), "models");
 
         // Entity-graph signal is embedder-independent and on by default — set it once here,
         // unconditionally, so it's active regardless of which embeddings branch runs below

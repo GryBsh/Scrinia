@@ -119,13 +119,23 @@ encryption) if your threat model includes offline attackers or backup media.
 `scri serve` inherits its parent's trust. Anyone who can attach a debugger to the parent, or read
 the stdio pipe, is effectively you. This is the same property every MCP server has.
 
+### Immutable tool package
+
+The `scri` global tool is an **immutable** NuGet package: once `dotnet tool install --global
+scrinia` completes, the tool directory is never written at runtime. The package ships only the
+managed `scri` command, its managed dependencies, the offline-required embedded prompts/skills,
+and the package readme — no Merge driver, no Vulkan/LLamaSharp assembly, no native RID asset, no
+downloaded model, no repository data, and no `.scrinia`. All mutable state lives below
+`SCRINIA_HOME`, so the installed package can never be tampered with by runtime writes.
+
 ### Plugin trust
 
-The embeddings plugin is launched as a **child process** — `{exeDir}/plugins/{name}/{name}[.exe]`,
-resolved from the `plugins:embeddings` config key — and runs with your permissions, not a
-sandbox's. Treat the plugin directory as an executable allowlist:
+The embeddings plugin is a **separately installed** child process launched from the mandatory
+`SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — never the immutable package directory
+or a flat `plugins/<plugin>` fallback — resolved from the `plugins:embeddings` config key, and it
+runs with your permissions, not a sandbox's. Treat the plugin directory as an executable allowlist:
 
-- Restrict write permission on `{exeDir}/plugins/` to your own account. Anyone who can write there
+- Restrict write permission on `SCRINIA_HOME/plugins/` to your own account. Anyone who can write there
   can run code as you the next time `scri serve` starts.
 - Only install plugins you have read.
 - Pin plugin versions in source control.

@@ -24,6 +24,21 @@ other directory, and share the same memories between repositories with a shared 
 
 Shell examples marked `sh` use POSIX syntax; PowerShell examples are marked explicitly.
 
+### Install the global tool
+
+Install the immutable `scri` global tool from NuGet:
+
+```sh
+dotnet tool install --global scrinia
+```
+
+This installs the `scri` command onto your global tool path. Verify with `scri --version`. All
+mutable data — configuration, models, plugins, and plugin state — lives below
+[`SCRINIA_HOME`](installation.md#where-data-lives); the installed package directory is immutable and
+is never written at runtime.
+
+For local development, build from source instead:
+
 ### Build from Source
 
 Requires [.NET 10 SDK](https://dotnet.microsoft.com/download).
@@ -43,7 +58,7 @@ dotnet build
 Produces a single-file `scri.exe` on Windows and `scri` on Linux/macOS (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
 
 When `scri serve` starts, it automatically downloads the built-in Model2Vec embedding model (`m2v-MiniLM-L6-v2`, approximately 50 MB total including supporting files) on first startup unless you pass `--no-auto-setup`. The model is
-stored in `{exeDir}/models/m2v-MiniLM-L6-v2/`; if it is unavailable, semantic search falls back
+stored in `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`; if it is unavailable, semantic search falls back
 to BM25. Configured HTTP providers and the optional Vulkan provider may use their own configured
 models instead of the built-in Model2Vec model.
 
@@ -58,6 +73,17 @@ For optional Vulkan GPU acceleration:
 ```powershell
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
+
+## Model2Vec
+
+Scrinia's default embedding provider is the in-process **Model2Vec** model (`m2v-MiniLM-L6-v2`), a
+384-dimensional distillation of all-MiniLM-L6-v2 with zero native dependencies. On first startup
+`scri serve` (or `scri setup`) downloads it to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`; if it is
+unavailable, semantic search falls back to BM25.
+
+Models are mutable runtime state and live only below `SCRINIA_HOME` — never inside the immutable
+global-tool package. HTTP and Vulkan providers may use their own configured models instead. See
+[Installation](installation.md) for the full `SCRINIA_HOME` layout.
 
 ## Quick Start
 

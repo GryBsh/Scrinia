@@ -102,21 +102,17 @@ public partial class ScriniaCommands
         }
 
         // ── Step 2: Vulkan plugin GGUF model (if plugin is installed) ──
-        string pluginsDir = Path.Combine(exeDir, "plugins");
-        string pluginName = WorkspaceSetup.GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
-        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
+        // The embeddings plugin is discovered only through the mandatory
+        // SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/ hierarchy — never the executable-relative
+        // plugins tree a pre-SCRINIA_HOME package scanned, and never a flat fallback.
+        string? pluginExe = WorkspaceSetup.ResolveEmbeddingsPluginExe();
 
-        // Check both subdirectory layout (multi-file publish) and flat layout (single-file)
-        string pluginExe = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
-        if (!File.Exists(pluginExe))
-            pluginExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
-
-        if (File.Exists(pluginExe))
+        if (pluginExe is not null)
         {
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[bold]Vulkan plugin (GPU acceleration)[/]");
 
-            string vulkanModelsDir = Path.Combine(pluginsDir, pluginName);
+            string vulkanModelsDir = Path.Combine(UserHome.Resolve(), "models");
             Directory.CreateDirectory(vulkanModelsDir);
 
             const string ggufFile = "all-MiniLM-L6-v2-Q8_0.gguf";

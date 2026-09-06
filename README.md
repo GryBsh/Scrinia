@@ -101,7 +101,15 @@ Full instructions, ablations, and per-question diff recipes: [`benchmarks/Scrini
 
 ## Install
 
-Build from source (.NET 10 SDK required):
+Install the immutable `scri` global tool from NuGet:
+
+```sh
+dotnet tool install --global scrinia
+```
+
+This installs the `scri` command onto your global tool path. Verify with `scri --version`.
+
+Build from source (.NET 10 SDK required) instead:
 
 ```bash
 git clone https://github.com/nickd-scrinia/scrinia
@@ -117,6 +125,27 @@ scri setup
 # Optional: with Vulkan GPU-accelerated embeddings plugin
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
+
+## Where data lives
+
+All writable state goes below `SCRINIA_HOME` (the per-user home resolved deterministically; unset
+defaults to `<LocalApplicationData>\Scrinia`). The installed global-tool package is immutable and is
+never written at runtime.
+
+```
+SCRINIA_HOME/
+  config.json                 # per-user registry (shared bases, tracking)
+  models/                     # Model2Vec and plugin-downloaded models
+  plugins/
+    <plugin>/
+      <version>/
+        <rid>/                # separately installed plugin executable, managed assemblies, native libraries
+        state/                # mutable plugin runtime state
+```
+
+Models resolve to `SCRINIA_HOME/models`; separately installed plugins live only at the mandatory
+`SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — there is no flat plugin fallback. The
+optional Vulkan plugin is installed separately (see [Installation](docs/installation.md)).
 
 ## MCP setup
 
