@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Scrinia.Core;
 using Scrinia.Core.Embeddings.Models;
 using Scrinia.Core.Resilience;
 
@@ -408,7 +409,34 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// <summary>Returns the count of vectors across all loaded scopes.</summary>
     public int Count() => _scopeVectors.Values.Sum(v => v.Count);
 
-    private string GetFilePath(string scope) => Path.Combine(_baseDir, ScopeToRelativeDir(scope), "vectors.bin");
+    private string GetFilePath(string scope)
+    {
+        string relative = ScopeToRelativeDir(scope);
+        string candidate = Path.Combine(_baseDir, relative, "vectors.bin");
+
+        // Fail-fast containment guard before any filesystem touch. PathContainment resolves
+        // symlinks/junctions and trailing-separator edge cases; fall back to GetFullPath
+        // StartsWith if containment reports false due to non-existent path.
+        string fullBase = Path.GetFullPath(_baseDir);
+        string fullCandidate = Path.GetFullPath(candidate);
+        bool within = PathContainment.IsWithin(_baseDir, candidate);
+        if (!within)
+        {
+            // PathContainment returns false for traversal that escapes baseDir even when the
+            // trail does not exist yet — deny closed.
+            throw new ArgumentException($"CROSS_VECTOR_PATH_FORBIDDEN: scope '{scope}' escapes baseDir", nameof(scope));
+        }
+
+        // Defense-in-depth: also verify lexical containment.
+        string withSep = fullBase.EndsWith(Path.DirectorySeparatorChar) ? fullBase : fullBase + Path.DirectorySeparatorChar;
+        if (!fullCandidate.Equals(fullBase, StringComparison.OrdinalIgnoreCase) &&
+            !fullCandidate.StartsWith(withSep, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"CROSS_VECTOR_PATH_FORBIDDEN: scope '{scope}' escapes baseDir", nameof(scope));
+        }
+
+        return candidate;
+    }
 
     /// <summary>
     /// Maps a scope to its storage directory. Separators become real nested directories so
@@ -417,6 +445,56 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// </summary>
     private static string ScopeToRelativeDir(string scope)
     {
+        if (string.IsNullOrWhiteSpace(scope))
+            throw new ArgumentException("Scope must not be null, empty, or whitespace.", nameof(scope));
+
+        // Absolute-path guard before any Path.Combine — fail fast, no filesystem touch.
+        if (Path.IsPathRooted(scope) || scope.StartsWith('/') || scope.StartsWith('\\'))
+            throw new ArgumentException($"CROSS_VECTOR_PATH_FORBIDDEN: scope '{scope}' escapes baseDir", nameof(scope));
+
+        // Windows drive-letter absolute (e.g. C:\windows or C:/windows) — Path.IsPathRooted
+        // is false for this on Linux, so check explicitly.
+        if (scope.Length >= 2 && char.IsLetter(scope[0]) && scope[1] == ':' )
+            throw new ArgumentException($"CROSS_VECTOR_PATH_FORBIDDEN: scope '{scope}' escapes baseDir", nameof(scope));
+
+        // Backslash is a path separator in VectorStore's scope mapping; reject bare backslash
+        // abuse that would otherwise be sanitized away.
+        string[] rawSegments = scope.Split([':', '/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        foreach (string seg in rawSegments)
+        {
+            if (seg == ".." || seg == ".")
+                throw new ArgumentException($"CROSS_VECTOR_PATH_FORBIDDEN: scope '{scope}' escapes baseDir", nameof(scope));
+            if (Path.IsPathRooted(seg))
+                throw new ArgumentException($"Scope segment '{seg}' is not allowed.", nameof(scope));
+        }
+
+        // Validate through the single scope constructor before any Path.Combine.
+        // Ephemeral is allowed as-is; everything else must be buildable.
+        if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+        {
+            string topic = scope.StartsWith("local:", StringComparison.OrdinalIgnoreCase)
+                ? scope["local:".Length..]
+                : scope.Equals("local", StringComparison.OrdinalIgnoreCase) ? "" : scope;
+
+            if (topic.Length > 0)
+            {
+                // Single constructor is the validation gate; SanitizeSegment is not.
+                if (!MemoryNaming.TryBuildScopedTopicScope(topic, out string normalized))
+                    throw new ArgumentException($"Scope '{scope}' is not a valid scope.", nameof(scope));
+                // Reject any segment that after sanitization still contains traversal tokens
+                foreach (var seg in normalized.Split([':', '/'], StringSplitOptions.RemoveEmptyEntries))
+                {
+                    string sanitized = SanitizeSegment(seg);
+                    if (sanitized.Contains("..", StringComparison.Ordinal) || sanitized.Contains(':') || Path.IsPathRooted(seg))
+                        throw new ArgumentException($"Scope segment '{seg}' is not allowed.", nameof(scope));
+                }
+            }
+            else if (!scope.Equals("local", StringComparison.OrdinalIgnoreCase) && !scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Scope '{scope}' is not a valid scope.", nameof(scope));
+            }
+        }
+
         string[] segments = scope.Split([':', '/', '\\'], StringSplitOptions.RemoveEmptyEntries);
         if (segments.Length == 0)
             return SanitizeSegment(scope);

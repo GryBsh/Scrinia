@@ -258,6 +258,36 @@ public static class MemoryNaming
             return false;
         }
 
+        // Fail-fast directory-traversal guard before any sanitization.
+        // This is the single scope constructor, so rejecting here prevents VectorStore and
+        // every other caller from minting a path that escapes the store.
+        // NOTE: Leading/trailing slashes and redundant "//" are deliberately allowed and
+        // collapsed via RemoveEmptyEntries (see DualModeParseTests) — they are not traversal.
+        // Only colon (scope separator), backslash (non-portable), and dot-traversal segments
+        // are rejected here; absolute-path shape is enforced by VectorStore's scope-shape
+        // check (local / local:* / ephemeral), not by this low-level builder.
+        if (topic.Contains(':'))
+        {
+            error = $"Scope topic '{topic}' must not contain ':' — use '/' to separate topic segments.";
+            return false;
+        }
+
+        if (topic.Contains('\\'))
+        {
+            error = $"Scope topic '{topic}' must not contain '\\' — use '/' to separate topic segments.";
+            return false;
+        }
+
+        // Check raw segments for traversal tokens before RemoveEmptyEntries collapses them.
+        foreach (string raw in topic.Split('/', StringSplitOptions.None))
+        {
+            if (raw == ".." || raw == ".")
+            {
+                error = $"Scope segment '{raw}' is not allowed.";
+                return false;
+            }
+        }
+
         // RemoveEmptyEntries collapses "a//b", "/a" and "a/" — each of which would otherwise
         // produce a distinct scope string for the same directory chain.
         return TryBuild(topic.Split('/', StringSplitOptions.RemoveEmptyEntries), out scope, out error);
