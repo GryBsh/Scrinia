@@ -108,6 +108,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     internal static Exception? InjectAppendFault(AppendFaultPoint point, string operationId, string path) =>
         AppendFaultInjector?.Invoke(point, operationId, path);
 
+    internal static void InjectWholeFault(WholeMemoryFaultPoint point, string path)
+    {
+        Exception? failure = WholeMemoryFaultInjector?.Invoke(point, path);
+        if (failure is not null)
+            throw failure;
+    }
+
+    internal string WholeMemoryJournalPath(string scope) =>
+        AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions"));
+
     /// <summary>Test-only crash seam around journal durable transitions.</summary>
     internal static AsyncLocal<Func<RestoreJournalTransition, string, Exception?>?> RestoreJournalFailureInjector { get; } = new();
     /// <summary>Test-only seam receiving the exact bytes successfully written to a derived file.</summary>
@@ -1926,6 +1936,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 updatedAt: existingEph is not null ? DateTimeOffset.UtcNow : null);
         }
 
+        if (appendOperationId is null)
+            return await StorePersistentAsync(write, artifact, originalBytes, chunkCount, derived, ct)
+                .ConfigureAwait(false);
+
         // The typed address is the canonical identity. `MemoryWrite.Scope` is retained as the
         // resolved pair for legacy callers, but a public write can still carry the default
         // "local" scope alongside a qualified address. Deriving both values here prevents the
@@ -2098,6 +2112,122 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
 
         return entry;
+    }
+
+    private async Task<ArtifactEntry> StorePersistentAsync(
+        MemoryWrite write, string artifact, long originalBytes, int chunkCount,
+        DerivedMetadata derived, CancellationToken cancellationToken)
+    {
+        var (scope, subject) = ResolveAddress(write.Address);
+        EnsureMaterialized(scope);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        await RecoverAppendUnsafeAsync(scope, "store-recovery", cancellationToken).ConfigureAwait(false);
+
+        ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope)
+            .FirstOrDefault(entry => entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (existingEntry is not null)
+            subject = existingEntry.Name;
+
+        if (existingEntry is not null && ArtifactSidecarPolicy.IsReadOnly(existingEntry))
+            throw new ScopeReadOnlyException(scope, existingEntry.Name, existingEntry.SchemaVersion ?? 1,
+                DurableFormats.ArtifactSidecar.Current);
+
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset createdAt = existingEntry?.CreatedAt ?? startedAt;
+        DateTimeOffset? updatedAt = existingEntry is null ? null : startedAt;
+        ArtifactEntry entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount,
+            createdAt, updatedAt, derived, existingEntry);
+
+        RawMemberSnapshot oldArtifact = await CaptureWholeMemberAsync(
+            ArtifactPath(subject, scope), WholeMemoryFaultPoint.RawArtifactRead, cancellationToken)
+            .ConfigureAwait(false);
+        RawMemberSnapshot oldSidecar = await CaptureWholeMemberAsync(
+            MetaPath(subject, scope), WholeMemoryFaultPoint.RawSidecarRead, cancellationToken)
+            .ConfigureAwait(false);
+        byte[] newArtifactBytes = System.Text.Encoding.UTF8.GetBytes(artifact);
+        byte[] newSidecarBytes = System.Text.Encoding.UTF8.GetBytes(SerializeSidecar(entry));
+        ArchivePlan archive = BuildArchivePlan(subject, scope, existingEntry is not null,
+            oldSidecar.Existed, startedAt);
+        var transaction = new WholeMemoryTransaction(
+            Guid.NewGuid().ToString("N"), scope, write.Address.ToString(), false,
+            oldArtifact, oldSidecar,
+            RawMemberSnapshot.Capture(oldArtifact.Path, true, newArtifactBytes),
+            RawMemberSnapshot.Capture(oldSidecar.Path, true, newSidecarBytes),
+            new ArchivePairPlan(archive.Required, archive.ArtifactArchivePath, archive.SidecarArchivePath,
+                archive.PruneCandidates), startedAt);
+
+        var coordinator = new WholeMemoryTransactionCoordinator(this);
+        await coordinator.ExecuteAsync(transaction, async ct =>
+        {
+            if (archive.Required)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(archive.ArtifactArchivePath!)!);
+                InjectWholeFault(WholeMemoryFaultPoint.ArchiveArtifactWrite, archive.ArtifactArchivePath!);
+                DurableFile.AtomicWriteAllBytes(archive.ArtifactArchivePath!, oldArtifact.Bytes);
+                if (oldSidecar.Existed && archive.SidecarArchivePath is not null)
+                {
+                    InjectWholeFault(WholeMemoryFaultPoint.ArchiveSidecarWrite, archive.SidecarArchivePath);
+                    DurableFile.AtomicWriteAllBytes(archive.SidecarArchivePath, oldSidecar.Bytes);
+                }
+            }
+
+            ct.ThrowIfCancellationRequested();
+            InjectWholeFault(WholeMemoryFaultPoint.LiveArtifactWrite, transaction.NewArtifact.Path);
+            await WriteArtifactAsync(subject, scope, artifact, transaction.OperationId, ct)
+                .ConfigureAwait(false);
+            InjectWholeFault(WholeMemoryFaultPoint.LiveSidecarWrite, transaction.NewSidecar.Path);
+            UpsertForAppend(entry, scope, transaction.OperationId);
+            InjectWholeFault(WholeMemoryFaultPoint.VerificationRead, transaction.NewArtifact.Path);
+            VerifyWholeMember(transaction.NewArtifact);
+            VerifyWholeMember(transaction.NewSidecar);
+        }, cancellationToken).ConfigureAwait(false);
+
+        PruneWholeArchives(subject, scope);
+
+        return entry;
+    }
+
+    private void PruneWholeArchives(string subject, string scope)
+    {
+        string versionsDirectory = Path.Combine(GetStoreDirForScope(scope), "versions");
+        if (!Directory.Exists(versionsDirectory))
+            return;
+
+        string safe = SanitizeName(subject);
+        foreach (string artifactPath in Directory.GetFiles(versionsDirectory, $"{safe}_*.nmp2")
+                     .OrderByDescending(path => path, StringComparer.Ordinal)
+                     .Skip(10))
+        {
+            try
+            {
+                File.Delete(artifactPath);
+                File.Delete(Path.ChangeExtension(artifactPath, null) + ".meta.json");
+            }
+            catch
+            {
+                // Archive cleanup is post-commit and must not undo the live pair.
+            }
+        }
+    }
+
+    private async Task<RawMemberSnapshot> CaptureWholeMemberAsync(
+        string path, WholeMemoryFaultPoint faultPoint, CancellationToken cancellationToken)
+    {
+        InjectWholeFault(faultPoint, path);
+        if (!File.Exists(path))
+            return RawMemberSnapshot.Capture(path, false, []);
+        return RawMemberSnapshot.Capture(path, true, await File.ReadAllBytesAsync(path, cancellationToken)
+            .ConfigureAwait(false));
+    }
+
+    private static void VerifyWholeMember(RawMemberSnapshot expected)
+    {
+        if (!File.Exists(expected.Path))
+            throw new IOException($"Expected whole-memory member is missing: {expected.Path}");
+        byte[] actual = File.ReadAllBytes(expected.Path);
+        string hash = Convert.ToHexStringLower(SHA256.HashData(actual));
+        if (!hash.Equals(expected.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new IOException($"Whole-memory member verification failed: {expected.Path}");
     }
 
     /// <inheritdoc/>
