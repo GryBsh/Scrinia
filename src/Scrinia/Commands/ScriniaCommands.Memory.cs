@@ -243,12 +243,12 @@ public partial class ScriniaCommands
         // the embeddings + entity-graph contributors it just loaded (not BM25-only) and surfaces
         // the same per-hit attributes/dates/anchors the tool does. MemoryStoreContext.Current is
         // set by WorkspaceSetup.Configure above.
-        var store = MemoryStoreContext.Current!;
         // Task 9, D-3: the CLI keeps comma-separated `--scopes`/`--exclude-topics` arguments on
         // purpose and splits at this boundary — see the matching comment on `List` above. A scope
         // name containing a comma is therefore unaddressable from `scri search`, unlike the MCP
         // `search` tool, which takes a real array.
         IReadOnlyList<SearchResult> matches;
+        var store = MemoryStoreContext.Current!;
         try
         {
             matches = (await SearchPipeline.ExecuteAsync(
@@ -556,8 +556,8 @@ public partial class ScriniaCommands
         return RenderEnvelope(response, result);
     }
 
-    /// <summary>Append a new chunk to an existing memory.</summary>
-    /// <param name="name">Memory name to append to (e.g. 'session-notes', '/sessions/2026-05-11').</param>
+    /// <summary>Append a new chunk to an existing memory, or create it when the target is missing.</summary>
+    /// <param name="name">Memory name to append to (e.g. 'session-notes', '/sessions/2026-05-11'). A missing name is created.</param>
     /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
@@ -606,6 +606,7 @@ public partial class ScriniaCommands
         {
             return EmitRecoveryBlocked(exception, json, "append");
         }
+
         return EmitMcpResult(response, json, "append");
     }
 

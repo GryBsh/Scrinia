@@ -14,6 +14,13 @@ public interface IMemoryEventSink
     Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct);
 }
 
+/// <summary>Optional append-event extension for sinks that consume operation correlation IDs.</summary>
+public interface IOperationAwareMemoryEventSink
+{
+    Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store,
+        string operationId, CancellationToken ct);
+}
+
 /// <summary>
 /// AsyncLocal context for making <see cref="IMemoryEventSink"/> available
 /// to MCP tools without passing it through every method.

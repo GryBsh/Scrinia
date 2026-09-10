@@ -1,168 +1,194 @@
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using FluentAssertions;
 using Scrinia.Core.Process;
 using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
-/// <summary>
-/// Phase 5 Task 4 — the immutable <c>scri</c> NuGet global tool package.
-///
-/// <para>These tests pack <c>src/Scrinia/Scrinia.csproj</c> in Release, then assert the exact
-/// allowlist/denylist contract from the global-tool architecture: the package is a
-/// <c>DotnetTool</c> whose single command is <c>scri</c>, it carries the managed command and its
-/// managed dependencies, the offline-required embedded prompts/skills/setup templates, and the
-/// package readme; and it contains no <c>Scrinia.Merge</c>/<c>scri-merge</c>, no Vulkan or
-/// <c>LLamaSharp</c>, no native RID asset, no downloaded model, no repository or workspace data,
-/// and no mutable cache.</para>
-///
-/// <para>The pack runs once per process (a real <c>dotnet pack</c>), so the collection is
-/// non-parallel and the snapshot is shared; the mutable <c>SCRINIA_HOME</c> and workspace state are
-/// never touched by these tests.</para>
-/// </summary>
+/// <summary>Artifact-level contract tests for the immutable <c>scri</c> global tool package.</summary>
 [Collection(PackageContentCollection.Name)]
 public sealed class PackageContentTests
 {
-    private static readonly Lazy<PackageSnapshot> Pack = new(
-        PackageSnapshot.Build, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<PackagePair> Packs = new(
+        PackagePair.Build, LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private static PackageSnapshot Snapshot => Pack.Value;
-
-    private static IReadOnlyList<string> Entries => Snapshot.Entries;
-
-    private static string PackageId => Snapshot.PackageId;
-
-    private static string PackageType => Snapshot.PackageType;
-
-    private static IReadOnlyList<string> McpEmbeddedResources => Snapshot.McpEmbeddedResources;
+    private static PackageSnapshot Snapshot => Packs.Value.First;
 
     [Fact]
-    public void Package_DeclaresScriToolId_AndDotnetToolType()
+    public void Package_DeclaresExactToolMetadata()
     {
-        // The package id is the stable product name, not the assembly/command name, and the package
-        // type must be the immutable global-tool type — the pre-fix library package declared neither.
-        PackageId.Should().Be("scrinia");
-        PackageType.Should().Be("DotnetTool");
+        Snapshot.Metadata.Id.Should().Be("scrinia");
+        Snapshot.Metadata.Version.Should().Be("0.6.0");
+        Snapshot.Metadata.Authors.Should().Be("Scrinia");
+        Snapshot.Metadata.LicenseType.Should().Be("expression");
+        Snapshot.Metadata.LicenseValue.Should().Be("BSD-3-Clause");
+        Snapshot.Metadata.Readme.Should().Be("package-readme.md");
+        Snapshot.Metadata.PackageType.Should().Be("DotnetTool");
+        Snapshot.Metadata.Description.Should().Be(
+            "Scrinia: portable LLM memory. Installs the `scri` global tool (local + shared MCP servers, BM25 + hybrid search, NMP/2 memory), with models and plugins living under SCRINIA_HOME.");
+        Snapshot.Metadata.Tags.Should().Be(
+            "scrinia llm memory mcp vector-search bm25 named-memory-protocol");
     }
 
     [Fact]
     public void Package_PutsScriCommandUnderTools_NotLib()
     {
-        // A global tool ships its command under tools/<tfm>/; a library package ships under lib/.
-        // The managed command assembly is `scri.dll` (no native .exe for a framework-dependent tool).
-        Entries.Should().Contain(p =>
-            p.StartsWith("tools/", StringComparison.Ordinal) &&
-            p.EndsWith("scri.dll", StringComparison.OrdinalIgnoreCase),
-            because: "the one packaged scri command must live under tools/ for a global tool");
+        Snapshot.EntryPaths.Should().Contain(path =>
+            path.StartsWith("tools/", StringComparison.Ordinal) &&
+            path.EndsWith("/scri.dll", StringComparison.OrdinalIgnoreCase));
+        Snapshot.EntryPaths.Should().NotContain(path =>
+            path.StartsWith("lib/", StringComparison.Ordinal));
+
+        Snapshot.ToolCommand.Should().Be(("scri", "scri.dll", "dotnet"));
     }
 
     [Fact]
     public void Package_ContainsManagedDependencies()
     {
-        // ConsoleAppFramework v5 is a source generator with no runtime assembly, so it never ships
-        // as its own DLL; the managed dependencies that do ship are the ones asserted below.
-        string[] expectedManagedDependencies =
+        string[] expectedDependencies =
         [
             "Scrinia.Core.dll",
             "Scrinia.Mcp.dll",
+            "Scrinia.Plugin.Abstractions.dll",
             "Spectre.Console.dll",
             "Microsoft.Extensions.Hosting.dll",
             "ModelContextProtocol.dll",
         ];
 
-        foreach (string dependency in expectedManagedDependencies)
+        foreach (string dependency in expectedDependencies)
         {
-            Entries.Should().Contain(
-                p => p.Split('/').Last().Equals(dependency, StringComparison.OrdinalIgnoreCase),
-                because: $"{dependency} is a managed dependency of the scri command and must ship");
+            Snapshot.EntryPaths.Should().Contain(path =>
+                path.Split('/').Last().Equals(dependency, StringComparison.OrdinalIgnoreCase),
+                because: $"{dependency} is part of the packaged command closure");
         }
     }
 
     [Fact]
-    public void Package_IncludesEmbeddedPromptsSkillsSchemasAndSetupTemplates()
+    public void Package_IncludesCompleteOfflineResourceSet()
     {
-        McpEmbeddedResources.Should().NotBeEmpty(
-            because: "the offline prompts/skills/setup templates are embedded in Scrinia.Mcp");
+        string[] expectedResources =
+        [
+            "Scrinia.Mcp.plugins.opencode.scrinia.ts",
+            "Scrinia.Mcp.prompts.guide.md",
+            "Scrinia.Mcp.prompts.scrinia-memory-skill.md",
+            "Scrinia.Mcp.prompts.scaffolds.domain-expert.md",
+            "Scrinia.Mcp.prompts.scaffolds.researcher.md",
+            "Scrinia.Mcp.prompts.scaffolds.reviewer.md",
+            "Scrinia.Mcp.skills.auditor.md",
+            "Scrinia.Mcp.skills.chaos-engineer.md",
+            "Scrinia.Mcp.skills.debugger.md",
+            "Scrinia.Mcp.skills.evolutionary.md",
+            "Scrinia.Mcp.skills.onboarder.md",
+            "Scrinia.Mcp.skills.qa.md",
+            "Scrinia.Mcp.skills.self-reflector.md",
+        ];
 
-        McpEmbeddedResources.Should().Contain("Scrinia.Mcp.prompts.guide.md",
-            because: "the guide prompt must be embedded for offline guide()");
-        McpEmbeddedResources.Should().Contain("Scrinia.Mcp.skills.qa.md",
-            because: "the built-in skills must be embedded");
-        McpEmbeddedResources.Should().Contain("Scrinia.Mcp.prompts.scaffolds.researcher.md",
-            because: "the setup templates (scaffolds) must be embedded");
-        McpEmbeddedResources.Should().Contain("Scrinia.Mcp.plugins.opencode.scrinia.ts",
-            because: "the opencode plugin must be embedded");
+        Snapshot.McpEmbeddedResources.Should().BeEquivalentTo(expectedResources);
+        Snapshot.McpEmbeddedResourceContents.Values.Should().OnlyContain(content => !string.IsNullOrWhiteSpace(content));
     }
 
     [Fact]
     public void Package_IncludesPackageReadme_AtRoot()
     {
-        Entries.Should().Contain("package-readme.md",
-            because: "the package readme is a required part of the immutable tool package");
+        Snapshot.EntryPaths.Should().Contain("package-readme.md");
+    }
+
+    [Fact]
+    public void Package_PacksHaveEquivalentContractContent()
+    {
+        PackageSnapshot other = Packs.Value.Second;
+
+        PackagePathNormalizer.Normalize(@"tools\net10.0\any\scri.dll")
+            .Should().Be("tools/net10.0/any/scri.dll");
+        Snapshot.EntryFingerprints.Keys.Should().BeEquivalentTo(other.EntryFingerprints.Keys);
+        foreach (string path in Snapshot.EntryFingerprints.Keys)
+        {
+            Snapshot.EntryFingerprints[path].Should().BeEquivalentTo(other.EntryFingerprints[path],
+                because: $"contract entry {path} must be identical across fresh packs");
+        }
+
+        Snapshot.Metadata.Should().BeEquivalentTo(other.Metadata);
+        Snapshot.ToolCommand.Should().Be(other.ToolCommand);
+        Snapshot.McpEmbeddedResources.Should().BeEquivalentTo(other.McpEmbeddedResources);
+        Snapshot.McpEmbeddedResourceContents.Should().BeEquivalentTo(other.McpEmbeddedResourceContents);
     }
 
     [Fact]
     public void Package_ExcludesMergeAndScriMerge()
     {
-        Entries.Should().NotContain(p =>
-            p.Contains("Scrinia.Merge", StringComparison.OrdinalIgnoreCase) ||
-            p.Contains("scri-merge", StringComparison.OrdinalIgnoreCase) ||
-            p.EndsWith("Merge.dll", StringComparison.OrdinalIgnoreCase),
-            because: "Merge is retired and must never ship in the global tool package");
+        AssertNoPathContaining("scrinia.merge");
+        AssertNoPathContaining("scri-merge");
+        AssertNoPathContaining("merge.dll");
     }
 
     [Fact]
     public void Package_ExcludesVulkanAndLLamaSharp()
     {
-        Entries.Should().NotContain(p =>
-            p.Contains("Vulkan", StringComparison.OrdinalIgnoreCase) ||
-            p.Contains("LLamaSharp", StringComparison.OrdinalIgnoreCase),
-            because: "Vulkan is a separately installed plugin, not part of the immutable tool");
+        AssertNoPathContaining("vulkan");
+        AssertNoPathContaining("llamasharp");
     }
 
     [Fact]
     public void Package_ExcludesNativeRidAssets()
     {
-        Entries.Should().NotContain(p =>
-            p.EndsWith(".so", StringComparison.Ordinal) ||
-            p.EndsWith(".dylib", StringComparison.Ordinal),
-            because: "native RID assets belong under SCRINIA_HOME, not the immutable tool package");
+        foreach (string normalized in NormalizedPaths())
+        {
+            normalized.Should().NotMatchRegex(@"(?:^|/)(?:[^/]+\.(?:so|dylib|a|lib))(?:$|/)");
+            normalized.Should().NotMatchRegex(@"(?:^|/)runtimes/[^/]+/native(?:/|$)");
+        }
     }
 
     [Fact]
     public void Package_ExcludesDownloadedModels()
     {
-        Entries.Should().NotContain(p =>
-            p.Contains(".gguf", StringComparison.OrdinalIgnoreCase) ||
-            p.Contains(".safetensors", StringComparison.OrdinalIgnoreCase) ||
-            p.StartsWith("models/", StringComparison.Ordinal),
-            because: "models live under SCRINIA_HOME/models, never in the immutable tool package");
+        AssertNoPathSegment("models");
+        AssertNoPathSegment("model");
+        AssertNoPathContaining(".gguf");
+        AssertNoPathContaining(".safetensors");
     }
 
     [Fact]
     public void Package_ExcludesRepositoryAndWorkspaceData()
     {
-        Entries.Should().NotContain(p =>
-            p.Contains(Path.DirectorySeparatorChar.ToString() + ".git" + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
-            p.EndsWith(".git", StringComparison.Ordinal) ||
-            p.Contains(".scrinia", StringComparison.Ordinal),
-            because: "repository and per-workspace .scrinia data never ship in the tool package");
+        AssertNoPathSegment(".git");
+        AssertNoPathSegment(".scrinia");
+        AssertNoPathSegment("repository");
+        AssertNoPathSegment("repositories");
     }
 
     [Fact]
     public void Package_ExcludesMutableCaches()
     {
-        Entries.Should().NotContain(p =>
-            p.Contains("/embeddings/", StringComparison.Ordinal) ||
-            p.Contains("/indexes/", StringComparison.Ordinal) ||
-            p.Contains("/exports/", StringComparison.Ordinal) ||
-            p.Contains("/versions/", StringComparison.Ordinal) ||
-            p.EndsWith(".tmp", StringComparison.Ordinal) ||
-            p.EndsWith(".lock", StringComparison.Ordinal),
-            because: "mutable caches are derived/rebuildable and must not ship in the immutable tool");
+        foreach (string segment in new[] { "embeddings", "indexes", "exports", "versions", "cache", "caches" })
+        {
+            AssertNoPathSegment(segment);
+        }
+
+        foreach (string normalized in NormalizedPaths())
+        {
+            normalized.Should().NotMatchRegex(@"(?:^|/)[^/]+\.(?:tmp|lock)(?:$|/)");
+        }
+    }
+
+    private static IEnumerable<string> NormalizedPaths() =>
+        Snapshot.EntryPaths.Select(PackagePathNormalizer.Normalize);
+
+    private static void AssertNoPathContaining(string prohibitedText)
+    {
+        NormalizedPaths().Should().NotContain(path => path.Contains(prohibitedText, StringComparison.Ordinal),
+            because: $"the package must not contain {prohibitedText}");
+    }
+
+    private static void AssertNoPathSegment(string prohibitedSegment)
+    {
+        NormalizedPaths().Should().NotContain(path =>
+            path.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                .Contains(prohibitedSegment, StringComparer.Ordinal),
+            because: $"the package must not contain the {prohibitedSegment} path segment");
     }
 
     [CollectionDefinition(Name, DisableParallelization = true)]
@@ -172,21 +198,41 @@ public sealed class PackageContentTests
     }
 }
 
-/// <summary>
-/// A single packed <c>scri</c> global-tool package: its nuspec metadata, the ordered list of entry
-/// paths, and the embedded-resource names of the packaged <c>Scrinia.Mcp</c> assembly.
-/// </summary>
+internal static class PackagePathNormalizer
+{
+    public static string Normalize(string path) =>
+        path.Replace('\\', '/').Trim('/').ToLowerInvariant();
+}
+
+internal sealed class PackagePair
+{
+    public required PackageSnapshot First { get; init; }
+
+    public required PackageSnapshot Second { get; init; }
+
+    public static PackagePair Build()
+    {
+        return new PackagePair
+        {
+            First = PackageSnapshot.Build(),
+            Second = PackageSnapshot.Build(),
+        };
+    }
+}
+
 internal sealed class PackageSnapshot
 {
-    public required string PackageId { get; init; }
+    public required PackageMetadata Metadata { get; init; }
 
-    public required string PackageType { get; init; }
+    public required IReadOnlyDictionary<string, PackageEntryFingerprint> EntryFingerprints { get; init; }
 
-    public required string NuspecText { get; init; }
-
-    public required IReadOnlyList<string> Entries { get; init; }
+    public required IReadOnlyList<string> EntryPaths { get; init; }
 
     public required IReadOnlyList<string> McpEmbeddedResources { get; init; }
+
+    public required IReadOnlyDictionary<string, string> McpEmbeddedResourceContents { get; init; }
+
+    public required (string Name, string EntryPoint, string Runner) ToolCommand { get; init; }
 
     public static PackageSnapshot Build()
     {
@@ -195,81 +241,175 @@ internal sealed class PackageSnapshot
 
         string csproj = RepoPaths.Combine("src", "Scrinia", "Scrinia.csproj");
         string packOut = Path.Combine(Path.GetTempPath(), $"scrinia-pack-{Guid.NewGuid():N}");
+        List<string> temporaryFiles = [];
         Directory.CreateDirectory(packOut);
 
-        ProcessResult result = new ProcessRunner().RunAsync(
-            dotnet!,
-            ["pack", csproj, "-c", "Release", "-o", packOut],
-            null,
-            CancellationToken.None).GetAwaiter().GetResult();
+        try
+        {
+            ProcessResult result = new ProcessRunner().RunAsync(
+                dotnet!, ["pack", csproj, "-c", "Release", "-o", packOut, "--disable-build-servers", "--no-restore"], null,
+                CancellationToken.None).GetAwaiter().GetResult();
+            result.ExitCode.Should().Be(0, because:
+                $"dotnet pack exited {result.ExitCode}.\nSTDOUT:\n{result.Stdout}\nSTDERR:\n{result.Stderr}");
 
-        result.ExitCode.Should().Be(0, because:
-            $".dotnet pack exited {result.ExitCode}.\nSTDOUT:\n{result.Stdout}\nSTDERR:\n{result.Stderr}");
+            string[] nupkgs = Directory.GetFiles(packOut, "*.nupkg");
+            nupkgs.Should().ContainSingle("dotnet pack must produce exactly one .nupkg");
+            return ReadArtifact(nupkgs[0], temporaryFiles);
+        }
+        finally
+        {
+            CleanupPackageArtifacts(packOut, temporaryFiles);
+        }
+    }
 
-        string[] nupkgs = Directory.GetFiles(packOut, "*.nupkg");
-        nupkgs.Should().HaveCount(1, because: "dotnet pack must produce exactly one .nupkg");
-        string nupkg = nupkgs[0];
-
-        string extractDir = Path.Combine(Path.GetTempPath(), $"scrinia-extract-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(extractDir);
-        string mcpDllPath = Path.Combine(extractDir, "Scrinia.Mcp.dll");
-
-        List<string> entries;
+    private static PackageSnapshot ReadArtifact(string nupkg, ICollection<string> temporaryFiles)
+    {
+        Dictionary<string, PackageEntryFingerprint> fingerprints = new(StringComparer.Ordinal);
+        string? mcpDllPath = null;
         string nuspecText;
-        List<string> mcpResources;
+        string toolSettingsText;
 
-        using (var zip = ZipFile.OpenRead(nupkg))
+        using (ZipArchive zip = ZipFile.OpenRead(nupkg))
         {
-            entries = zip.Entries
-                .Select(e => e.FullName)
-                .OrderBy(name => name, StringComparer.Ordinal)
-                .ToList();
-
-            ZipArchiveEntry nuspecEntry = zip.Entries
-                .First(e => e.FullName.EndsWith(".nuspec", StringComparison.OrdinalIgnoreCase));
-            nuspecText = new StreamReader(nuspecEntry.Open(), Encoding.UTF8).ReadToEnd();
-
-            ZipArchiveEntry? mcpEntry = zip.Entries.FirstOrDefault(e =>
-                e.Name == "Scrinia.Mcp.dll" && e.FullName.StartsWith("tools/", StringComparison.Ordinal));
-            if (mcpEntry is not null)
+            foreach (ZipArchiveEntry entry in zip.Entries)
             {
-                mcpEntry.ExtractToFile(mcpDllPath, overwrite: true);
+                byte[] content;
+                using (Stream stream = entry.Open())
+                using (MemoryStream buffer = new())
+                {
+                    stream.CopyTo(buffer);
+                    content = buffer.ToArray();
+                }
+
+                fingerprints.Add(PackagePathNormalizer.Normalize(entry.FullName),
+                    PackageEntryFingerprint.Create(content));
+                if (entry.FullName.EndsWith("/Scrinia.Mcp.dll", StringComparison.Ordinal))
+                {
+                    mcpDllPath = Path.Combine(Path.GetTempPath(), $"scrinia-mcp-{Guid.NewGuid():N}.dll");
+                    temporaryFiles.Add(mcpDllPath);
+                    File.WriteAllBytes(mcpDllPath, content);
+                }
             }
+
+            ZipArchiveEntry nuspec = zip.Entries.First(entry =>
+                entry.FullName.EndsWith(".nuspec", StringComparison.OrdinalIgnoreCase));
+            nuspecText = ReadText(nuspec);
+
+            ZipArchiveEntry settings = zip.Entries.First(entry =>
+                entry.FullName.EndsWith("DotnetToolSettings.xml", StringComparison.Ordinal));
+            toolSettingsText = ReadText(settings);
         }
 
-        if (File.Exists(mcpDllPath))
-        {
-            Assembly assembly = Assembly.LoadFrom(mcpDllPath);
-            mcpResources = assembly
-                .GetManifestResourceNames()
-                .OrderBy(name => name, StringComparer.Ordinal)
-                .ToList();
-        }
-        else
-        {
-            mcpResources = new List<string>();
-        }
+        mcpDllPath.Should().NotBeNull("the MCP assembly is part of the command closure");
+        Assembly mcpAssembly = Assembly.Load(File.ReadAllBytes(mcpDllPath!));
+        string[] resourceNames = mcpAssembly.GetManifestResourceNames()
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        Dictionary<string, string> resourceContents = resourceNames.ToDictionary(
+            name => name,
+            name => ReadManifestResource(mcpAssembly, name),
+            StringComparer.Ordinal);
 
-        (string id, string type) = ParseNuspec(nuspecText);
+        XDocument nuspecDocument = XDocument.Parse(nuspecText, LoadOptions.PreserveWhitespace);
+        PackageMetadata metadata = PackageMetadata.Parse(nuspecDocument);
+        (string Name, string EntryPoint, string Runner) toolCommand = ParseToolCommand(toolSettingsText);
 
         return new PackageSnapshot
         {
-            PackageId = id,
-            PackageType = type,
-            NuspecText = nuspecText,
-            Entries = entries,
-            McpEmbeddedResources = mcpResources,
+            Metadata = metadata,
+            EntryFingerprints = fingerprints,
+            EntryPaths = fingerprints.Keys.OrderBy(path => path, StringComparer.Ordinal).ToArray(),
+            McpEmbeddedResources = resourceNames,
+            McpEmbeddedResourceContents = resourceContents,
+            ToolCommand = toolCommand,
         };
     }
 
-    private static (string Id, string Type) ParseNuspec(string nuspec)
+    private static void CleanupPackageArtifacts(string packOut, IEnumerable<string> temporaryFiles)
     {
-        // The <id> is an element; the <packageType> is a self-closing element carrying the type in
-        // its `name` attribute, so both shapes are parsed here.
-        string id = Regex.Match(nuspec, @"<id\b[^>]*>(?<v>.+?)</id>", RegexOptions.Singleline)
-            .Groups["v"].Value.Trim();
-        string type = Regex.Match(nuspec, @"<packageType\b[^>]*name=""(?<v>[^""]+)""", RegexOptions.Singleline)
-            .Groups["v"].Value.Trim();
-        return (id, type);
+        List<Exception> failures = [];
+        foreach (string path in temporaryFiles.Append(packOut))
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, recursive: true);
+                    continue;
+                }
+
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(new IOException($"Failed to remove package test artifact '{path}'.", ex));
+            }
+        }
+
+        if (failures.Count > 0)
+            throw new AggregateException("Package snapshot cleanup was incomplete; temporary package artifacts remain.", failures);
+    }
+
+    private static string ReadText(ZipArchiveEntry entry)
+    {
+        using Stream stream = entry.Open();
+        using StreamReader reader = new(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
+    private static string ReadManifestResource(Assembly assembly, string resourceName)
+    {
+        using Stream stream = assembly.GetManifestResourceStream(resourceName)!;
+        using StreamReader reader = new(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
+    private static (string Name, string EntryPoint, string Runner) ParseToolCommand(string xml)
+    {
+        XElement command = XDocument.Parse(xml).Descendants("Command").Single();
+        return (
+            (string?)command.Attribute("Name") ?? string.Empty,
+            (string?)command.Attribute("EntryPoint") ?? string.Empty,
+            (string?)command.Attribute("Runner") ?? string.Empty);
+    }
+}
+
+internal sealed record PackageEntryFingerprint(long Size, string Sha256, byte[] Content)
+{
+    public static PackageEntryFingerprint Create(byte[] content) =>
+        new(content.LongLength, Convert.ToHexString(SHA256.HashData(content)), content);
+}
+
+internal sealed record PackageMetadata(
+    string Id,
+    string Version,
+    string Authors,
+    string LicenseType,
+    string LicenseValue,
+    string Readme,
+    string Description,
+    string Tags,
+    string PackageType)
+{
+    public static PackageMetadata Parse(XDocument document)
+    {
+        XNamespace ns = "http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd";
+        XElement metadata = document.Root?.Element(ns + "metadata")
+            ?? throw new InvalidDataException("The package nuspec has no metadata element.");
+
+        string Required(string name) => metadata.Element(ns + name)?.Value
+            ?? throw new InvalidDataException($"The package nuspec has no {name} element.");
+
+        string packageType = metadata.Element(ns + "packageTypes")?.Element(ns + "packageType")?
+            .Attribute("name")?.Value
+            ?? throw new InvalidDataException("The package nuspec has no package type.");
+
+        return new PackageMetadata(
+            Required("id"), Required("version"), Required("authors"),
+            metadata.Element(ns + "license")?.Attribute("type")?.Value
+                ?? throw new InvalidDataException("The package nuspec has no license type."),
+            Required("license"),
+            Required("readme"), Required("description"), Required("tags"), packageType);
     }
 }

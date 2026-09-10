@@ -17,6 +17,11 @@ public sealed class CliRecoveryBlockedRouteTests
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
         string journalPath = WriteMalformedJournal(store);
+        string scopeDirectory = store.GetStoreDirForScope("local:notes");
+        using (FileLock.AcquireShared(Path.Combine(scopeDirectory, ".lock")))
+        {
+        }
+        ScopeSnapshot originalScope = SnapshotScope(scopeDirectory);
         string contentPath = Path.Combine(scope.WorkspaceDir, "content.txt");
         await File.WriteAllTextAsync(contentPath, "content");
 
@@ -37,9 +42,23 @@ public sealed class CliRecoveryBlockedRouteTests
 
             exit.Should().Be(1, route.Name);
             using var document = JsonDocument.Parse(output);
-            McpResponseAssert response = ResponseParser.Parse(document.RootElement.GetProperty("yaml").GetString()!);
+            document.RootElement.TryGetProperty("yaml", out JsonElement yaml).Should().BeTrue($"{route.Name}: {output}");
+            McpResponseAssert response = ResponseParser.Parse(yaml.GetString()!);
             response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked, route.Name);
+            response.Status.Should().Be("error", route.Name);
+            response.Scope.Should().Be("local:notes", route.Name);
+            response.JournalPath.Should().Be(journalPath, route.Name);
+            response.ActionNeeded.Should().ContainSingle()
+                .Which.Should().Contain("Resolve the retained restore journal", route.Name);
+            if (route.Name == "append")
+            {
+                response.OperationId.Should().MatchRegex("^[0-9a-f]{32}$", route.Name);
+            }
+            else
+                response.OperationId.Should().BeNull(route.Name);
             response.Error.Should().Contain("local:notes").And.Contain(journalPath);
+            File.ReadAllBytes(journalPath).Should().Equal(Encoding.UTF8.GetBytes("{]"), route.Name);
+            SnapshotScope(scopeDirectory).Should().BeEquivalentTo(originalScope, route.Name);
         }
     }
 
@@ -81,6 +100,11 @@ public sealed class CliRecoveryBlockedRouteTests
                 using var document = JsonDocument.Parse(output);
                 McpResponseAssert response = ResponseParser.Parse(document.RootElement.GetProperty("yaml").GetString()!);
                 response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked, route.Name);
+                response.Status.Should().Be("error", route.Name);
+                response.Scope.Should().Be("local:notes", route.Name);
+                response.JournalPath.Should().Be(journalPath, route.Name);
+                response.ActionNeeded.Should().ContainSingle()
+                    .Which.Should().Contain("Resolve the retained restore journal", route.Name);
                 response.Error.Should().Be(expected.Error, $"{route.Name} must preserve the MCP recovery envelope");
                 File.ReadAllBytes(journalPath).Should().Equal(originalJournal,
                     because: $"{route.Name} must retain {failureClass} recovery evidence byte-for-byte");
@@ -92,10 +116,45 @@ public sealed class CliRecoveryBlockedRouteTests
         }
     }
 
+    [Fact]
+    public async Task Append_UnrelatedInternalFailure_IsNotPromotedByAnUnrelatedRestoreJournalFile()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        string directory = store.GetStoreDirForScope("local:notes");
+        string journalPath = Path.Combine(directory, ".restore-journal.json");
+        string contentPath = Path.Combine(scope.WorkspaceDir, "content.txt");
+        await File.WriteAllTextAsync(contentPath, "content");
+
+        FileMemoryStore.AppendFaultInjector = (point, _, _) =>
+        {
+            if (point != AppendFaultPoint.RawArtifactRead)
+                return null;
+
+            Directory.CreateDirectory(directory);
+            File.WriteAllBytes(journalPath, Encoding.UTF8.GetBytes("unrelated evidence"));
+            FileMemoryStore.AppendFaultInjector = null;
+            return new IOException("Injected unrelated append failure.");
+        };
+
+        var (exit, output) = await CaptureJsonAsync(
+            () => new ScriniaCommands().Append("/notes/note", contentPath, scope.WorkspaceDir, json: true));
+
+        exit.Should().Be(1);
+        using var document = JsonDocument.Parse(output);
+        document.RootElement.GetProperty("error").GetString()
+            .Should().Be("Append failed after establishing its operation boundary.");
+        document.RootElement.TryGetProperty("yaml", out _).Should().BeFalse();
+    }
+
     private static string WriteMalformedJournal(FileMemoryStore store)
     {
         string directory = store.GetStoreDirForScope("local:notes");
         Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory, "note.nmp2"), [1, 2, 3]);
+        File.WriteAllText(Path.Combine(directory, "note.meta.json"), "{\"name\":\"note\"}");
+        File.WriteAllText(Path.Combine(directory, "index.json"), "{\"entries\":[]}");
+        File.WriteAllText(Path.Combine(directory, "metadata.json"), "{\"scope\":\"local:notes\"}");
         string journalPath = Path.Combine(directory, ".restore-journal.json");
         File.WriteAllBytes(journalPath, Encoding.UTF8.GetBytes("{]"));
         return journalPath;
@@ -140,4 +199,24 @@ public sealed class CliRecoveryBlockedRouteTests
             Console.SetOut(prior);
         }
     }
+
+    private static ScopeSnapshot SnapshotScope(string directory)
+    {
+        string[] files = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var fileBytes = files.ToDictionary(
+            path => Path.GetRelativePath(directory, path),
+            File.ReadAllBytes,
+            StringComparer.Ordinal);
+        string[] directories = Directory.EnumerateDirectories(directory, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(directory, path))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        return new ScopeSnapshot(fileBytes, directories);
+    }
+
+    private sealed record ScopeSnapshot(
+        Dictionary<string, byte[]> Files,
+        string[] Directories);
 }

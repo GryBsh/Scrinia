@@ -36,6 +36,8 @@ namespace Scrinia.Core.Models;
 /// <summary>Describes a persistent subject that cannot safely produce every durable filename.</summary>
 public sealed class InvalidMemoryWriteException : ArgumentException
 {
+    /// <summary>Correlation identifier assigned when append validation began.</summary>
+    public string? AppendOperationId { get; set; }
     /// <summary>Initializes a categorized write-policy refusal.</summary>
     public InvalidMemoryWriteException(MemoryError error)
         : base(error.Message, error.Field)

@@ -24,12 +24,12 @@ public sealed class NoObsoleteAddressSurfaceTests
         {
             ["CHANGELOG.md"] = "released history",
             ["task-11-report.md"] = "historical acceptance report",
-            [".superpowers/sdd/2026-08-29-unified-memory-addressing-task-1/task-10-debug-report.md"] = "historical task report",
-            [".superpowers/sdd/2026-08-29-unified-memory-addressing-whole-branch-review/FINAL-REVIEW.md"] = "historical whole-branch review",
             ["docs/superpowers/plans/2026-08-29-unified-memory-addressing.md"] = "historical plan",
             ["docs/superpowers/plans/2026-09-06-wave-1-critical.md"] = "historical plan",
             ["docs/superpowers/plans/2026-09-06-wave-2-major.md"] = "historical plan",
-            ["docs/superpowers/plans/2026-09-06-wave-3-minor.md"] = "historical plan",
+             ["docs/superpowers/plans/2026-09-06-wave-3-minor.md"] = "historical plan",
+             ["docs/superpowers/plans/2026-09-06-wave-1-task-6-report.md"] = "historical task report",
+             ["task-6-report.md"] = "historical task report",
             ["docs/superpowers/specs/2026-09-06-review-remediation-design.md"] = "historical specification",
             ["docs/superpowers/specs/2026-08-29-unified-memory-addressing-design.md"] = "historical specification",
             ["docs/cli-reference.md"] = "explicit unsupported-input guidance",
@@ -74,7 +74,7 @@ public sealed class NoObsoleteAddressSurfaceTests
             ["tests/Scrinia.Tests/Store/JournaledRestoreRecoveryTests.cs"] = "legacy compatibility fixtures",
             ["tests/Scrinia.Tests/Store/TransactionalRestoreTests.cs"] = "legacy compatibility fixtures",
             ["tests/Scrinia.Tests/StoreLayoutMigrationTests.cs"] = "legacy compatibility fixtures"
-        };
+         };
 
     [Fact]
     public void Forbidden_address_surface_is_absent_outside_classified_historical_text()

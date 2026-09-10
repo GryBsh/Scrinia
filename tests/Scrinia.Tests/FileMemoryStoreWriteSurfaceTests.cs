@@ -347,8 +347,8 @@ public class FileMemoryStoreWriteSurfaceTests
 
         var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("mixedcase".StartsWith("/") || "mixedcase".StartsWith("~") ? "mixedcase" : "/" + "mixedcase"), "local", ["the appended body"]));
 
-        appended.Name.Should().Be("MixedCase");
-        appended.ChunkCount.Should().Be(2);
+        appended.Entry!.Name.Should().Be("MixedCase");
+        appended.Entry.ChunkCount.Should().Be(2);
         (await DecodeAsync(tmp.Store, "MixedCase"))
             .Should().Be("the original bodythe appended body",
                 because: "an append must add to the memory, not replace it");
@@ -372,16 +372,16 @@ public class FileMemoryStoreWriteSurfaceTests
 
         var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("carrier".StartsWith("/") || "carrier".StartsWith("~") ? "carrier" : "/" + "carrier"), "local", ["the third chunk"]));
 
-        appended.Keywords.Should().Contain("vulpine",
+        appended.Entry!.Keywords.Should().Contain("vulpine",
             because: "an append that dropped the memory's curated keywords would destroy them");
-        appended.FileHashes.Should().ContainKey("tracked.cs",
+        appended.Entry.FileHashes.Should().ContainKey("tracked.cs",
             because: "an append must not destroy the memory's drift baseline");
-        appended.ContentPreview.Should().Be("a curated description",
+        appended.Entry.ContentPreview.Should().Be("a curated description",
             because: "regenerating the preview from content drops a curated description on every append");
         // The appended chunk's entry is contiguous with the ones already there — 1-based, and the
         // earlier two survive rather than being replaced by the new one alone.
-        appended.ChunkEntries!.Select(c => c.ChunkIndex).Should().Equal([1, 2, 3]);
-        appended.TermFrequencies!["vulpine"].Should().Be(5,
+        appended.Entry.ChunkEntries!.Select(c => c.ChunkIndex).Should().Equal([1, 2, 3]);
+        appended.Entry.TermFrequencies!["vulpine"].Should().Be(5,
             because: "a carried-forward curated keyword stays an agent term");
     }
 
@@ -392,8 +392,8 @@ public class FileMemoryStoreWriteSurfaceTests
 
         var entry = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("brand-new".StartsWith("/") || "brand-new".StartsWith("~") ? "brand-new" : "/" + "brand-new"), "local", ["the only body"]));
 
-        entry.ChunkCount.Should().Be(1);
-        entry.UpdatedAt.Should().BeNull(because: "nothing was updated — this is a first write");
+        entry.Entry!.ChunkCount.Should().Be(1);
+        entry.Entry.UpdatedAt.Should().BeNull(because: "nothing was updated — this is a first write");
         tmp.Store.LoadIndex("local").Should().ContainSingle(e => e.Name == "brand-new");
     }
 
@@ -418,7 +418,7 @@ public class FileMemoryStoreWriteSurfaceTests
 
         var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["the second thought"]));
 
-        appended.ChunkCount.Should().Be(2);
+        appended.Entry!.ChunkCount.Should().Be(2);
         tmp.Store.GetEphemeral("scratch")!.ChunkCount.Should().Be(2);
         tmp.Store.LoadIndex("local").Should().BeEmpty();
     }

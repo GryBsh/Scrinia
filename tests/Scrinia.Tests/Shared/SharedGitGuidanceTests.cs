@@ -68,4 +68,14 @@ public sealed class SharedGitGuidanceTests
         // POSIX single-quote escaping wraps the token and represents the embedded quote as '"'"'
         addLine.Should().Contain(".scrinia/memories/a'\"'\"'b.nmp2'");
     }
+
+    [Fact]
+    public void Root_escapes_double_quote_backslash_and_command_substitution_characters()
+    {
+        string root = "C:\\shared root\\quoted\" $HOME `date`";
+
+        string addLine = SharedGitGuidance.Render(root, [".scrinia/memory.nmp2"])!.Split('\n')[0];
+
+        addLine.Should().Be("""git -C "C:\\shared root\\quoted\" \$HOME \`date\`" add -A -- '.scrinia/memory.nmp2'""");
+    }
 }

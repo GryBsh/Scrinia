@@ -39,8 +39,21 @@ public static class SharedGitGuidance
     private static string QuoteManifestPath(string path) => "'" + path.Replace("'", "'\"'\"'") + "'";
 
     /// <summary>
-    /// Double-quotes the registered root so a copied <c>git -C</c> argument survives spaces and
-    /// backslashes verbatim, matching the §7.2 staging command shape.
+    /// Double-quotes the registered root so a copied <c>git -C</c> argument survives spaces,
+    /// backslashes, quotes, and shell expansion characters, matching the §7.2 staging command shape.
     /// </summary>
-    private static string QuoteRoot(string root) => "\"" + root.Replace("\"", "\"\"") + "\"";
+    private static string QuoteRoot(string root)
+    {
+        var quoted = new System.Text.StringBuilder(root.Length + 2);
+        quoted.Append('"');
+        foreach (char character in root)
+        {
+            if (character is '\\' or '"' or '$' or '`')
+                quoted.Append('\\');
+
+            quoted.Append(character);
+        }
+
+        return quoted.Append('"').ToString();
+    }
 }

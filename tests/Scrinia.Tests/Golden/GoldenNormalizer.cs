@@ -15,6 +15,7 @@ internal static class GoldenNormalizer
 {
     private static readonly Regex Score = new(@"score=\d+(\.\d+)?", RegexOptions.Compiled);
     private static readonly Regex TempDir = new(@"scrinia_test_[0-9a-fA-F]{32}", RegexOptions.Compiled);
+    private static readonly Regex OperationId = new(@"(?<=operationId: )[0-9a-fA-F]{32}", RegexOptions.Compiled);
     private static readonly Regex IsoTimestamp = new(@"\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+\-]\d{2}:\d{2})", RegexOptions.Compiled);
     private static readonly Regex BareDate = new(@"\d{4}-\d{2}-\d{2}", RegexOptions.Compiled);
 
@@ -37,6 +38,7 @@ internal static class GoldenNormalizer
         string s = yaml.Replace("\r", "");
         s = Score.Replace(s, "score=<SCORE>");
         s = TempDir.Replace(s, "<WORKSPACE>");
+        s = OperationId.Replace(s, "<OPERATION_ID>");
         s = IsoTimestamp.Replace(s, "<TIMESTAMP>");
         s = BareDate.Replace(s, "<DATE>");
         return s.TrimEnd('\n');

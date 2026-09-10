@@ -27,11 +27,17 @@ public static class ErrorCodes
     /// <summary>A retained restore journal blocks access to its persistent topic scope.</summary>
     public const string RecoveryBlocked = "RECOVERY_BLOCKED";
 
+    /// <summary>An append left durable evidence that requires recovery before retry.</summary>
+    public const string RecoveryRequired = "RECOVERY_REQUIRED";
+
     /// <summary>Bundle content is missing, malformed, unsafe, or unsupported by this build.</summary>
     public const string InvalidBundle = "INVALID_BUNDLE";
 
     /// <summary>Fallback for unexpected internal failures and uncategorised errors.</summary>
     public const string Internal = "INTERNAL";
+
+    /// <summary>Append cancellation was observed before its durable commit point.</summary>
+    public const string AppendCancelled = "APPEND_CANCELLED";
 
     /// <summary>The operation needs a capability the active store does not have — in practice,
     /// an operation the active store cannot perform.</summary>
@@ -60,17 +66,24 @@ public sealed record McpResponse
     public bool IsError => Status == "error";
 
     /// <summary>True when this response reports that the operation completed without doing what
-    /// was asked — an empty import, an entity that matched nothing, a no-op update. Not an error:
+    /// was asked — an empty import, an entity that matched nothing, a no-op update — or completed
+    /// with a non-fatal warning. Not an error:
     /// nothing failed. Not a success either: the caller's request was not performed, so a surface
     /// that renders this as success (green text, exit 0, HTTP 200) is lying to a CI step. Callers
     /// must treat it as a non-success outcome.</summary>
-    public bool IsWarning => Status == "warning";
+    public bool IsWarning => Status is "warning" or "success_with_warning";
 
     public string? Action { get; init; }           // "created", "completed", "listed", etc.
     public string? Path { get; init; }              // "/goal/G-60-abc", "/concern/SEC-054", etc.
     /// <summary>The canonical address returned by a completed durable write. This is transport
     /// metadata rather than a response field, so the YAML renderer does not emit it.</summary>
     public string? PersistedPath { get; init; }
+    /// <summary>Correlation ID for a typed append result.</summary>
+    public string? OperationId { get; init; }
+    /// <summary>Persistent scope affected by a recovery-blocked operation.</summary>
+    public string? Scope { get; init; }
+    /// <summary>Retained recovery journal associated with the affected scope.</summary>
+    public string? JournalPath { get; init; }
     public string? Instruction { get; init; }      // what the agent must do next
     public string[]? ActionNeeded { get; init; }    // action-needed items
     public string[]? Info { get; init; }           // informational items
@@ -167,6 +180,13 @@ public static class ResponseBuilder
         return new() { Status = "warning", Content = truncated, ContentTruncated = wasTruncated };
     }
 
+    /// <summary>Creates a successful append response whose durable result carries a warning.</summary>
+    public static McpResponse SuccessWithWarning(string? content = null)
+    {
+        string? truncated = Truncate(content, out bool wasTruncated);
+        return new() { Status = "success_with_warning", Content = truncated, ContentTruncated = wasTruncated };
+    }
+
     // Fluent extensions --------------------------------------------------
 
     public static McpResponse WithInstruction(this McpResponse r, string? instruction) =>
@@ -188,6 +208,13 @@ public static class ResponseBuilder
     /// rendered MCP response.</summary>
     public static McpResponse WithPersistedPath(this McpResponse r, string path) =>
         r with { PersistedPath = path };
+
+    /// <summary>Attaches the store operation correlation ID to a response.</summary>
+    public static McpResponse WithOperationId(this McpResponse r, string operationId) =>
+        r with { OperationId = operationId };
+
+    public static McpResponse WithRecovery(this McpResponse r, string scope, string journalPath) =>
+        r with { Scope = scope, JournalPath = journalPath };
 
     public static McpResponse WithAction(this McpResponse r, string action) =>
         r with { Action = action };
@@ -247,6 +274,12 @@ public static class McpResponseExtensions
             sb.AppendLine(ci, $"action: {r.Action}");
         if (r.Path is not null)
             sb.AppendLine(ci, $"path: {YamlEscape(r.Path)}");
+        if (r.OperationId is not null)
+            sb.AppendLine(ci, $"operationId: {YamlEscape(r.OperationId)}");
+        if (r.Scope is not null)
+            sb.AppendLine(ci, $"scope: {YamlEscape(r.Scope)}");
+        if (r.JournalPath is not null)
+            sb.AppendLine(ci, $"journalPath: {YamlEscape(r.JournalPath)}");
         if (r.Error is not null)
             sb.AppendLine(ci, $"error: {YamlEscape(r.Error)}");
         if (r.ErrorCode is not null)

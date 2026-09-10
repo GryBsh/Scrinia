@@ -43,17 +43,19 @@ internal enum RestoreRecoveryFailure
 internal sealed class RestoreRecoveryException : IOException
 {
     public RestoreRecoveryException(string scope, string journalPath, RestoreRecoveryFailure failure, string message,
-        Exception? innerException = null)
+        Exception? innerException = null, int? unsupportedVersion = null)
         : base(message, innerException)
     {
         Scope = scope;
         JournalPath = journalPath;
         Failure = failure;
+        UnsupportedVersion = unsupportedVersion;
     }
 
     public string Scope { get; }
     public string JournalPath { get; }
     public RestoreRecoveryFailure Failure { get; }
+    public int? UnsupportedVersion { get; }
 }
 
 internal sealed class RestoreJournalStateJsonConverter : JsonConverter<RestoreJournalState>
@@ -384,7 +386,7 @@ internal static class RestoreJournalCodec
 
     private static RestoreRecoveryException Unsupported(string scope, string journalPath, int version) =>
         new(scope, journalPath, RestoreRecoveryFailure.UnsupportedVersion,
-            $"Restore journal version {version} is unsupported.");
+            $"Restore journal version {version} is unsupported.", unsupportedVersion: version);
 
     private static RestoreRecoveryException Malformed(string scope, string journalPath, string message,
         Exception? innerException = null) =>

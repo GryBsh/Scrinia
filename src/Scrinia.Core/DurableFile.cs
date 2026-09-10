@@ -19,6 +19,14 @@ internal static class DurableFile
         set => FailureInjectorContext.Value = value;
     }
 
+    /// <summary>Raises an append-specific injected failure at a deterministic durable boundary.</summary>
+    internal static void ThrowAppendFault(AppendFaultPoint point, string operationId, string path)
+    {
+        Exception? failure = FileMemoryStore.InjectAppendFault(point, operationId, path);
+        if (failure is not null)
+            throw failure;
+    }
+
     internal static void AtomicWriteAllText(string path, string content)
     {
         byte[] bytes;
@@ -38,14 +46,29 @@ internal static class DurableFile
     internal static void AtomicWriteAllBytes(string path, ReadOnlySpan<byte> content) =>
         AtomicWrite(path, content, "write bytes");
 
+    internal static void AtomicWriteAllTextForAppend(
+        string path, string content, string operationId,
+        AppendFaultPoint writePoint, AppendFaultPoint flushPoint) =>
+        AtomicWrite(path, Utf8NoBom.GetBytes(content), "write text", operationId, writePoint, flushPoint);
+
+    internal static void AtomicWriteAllBytesForAppend(
+        string path, ReadOnlySpan<byte> content, string operationId,
+        AppendFaultPoint writePoint, AppendFaultPoint flushPoint) =>
+        AtomicWrite(path, content, "write bytes", operationId, writePoint, flushPoint);
+
     private static void AtomicWrite(string path, ReadOnlySpan<byte> content, string operation)
+        => AtomicWrite(path, content, operation, null, null, null);
+
+    private static void AtomicWrite(
+        string path, ReadOnlySpan<byte> content, string operation, string? operationId,
+        AppendFaultPoint? writePoint, AppendFaultPoint? flushPoint)
     {
         byte[] bytes = content.ToArray();
         string temporaryPath = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
 
         try
         {
-            FileRetry.Run(() => WriteTemporaryFile(temporaryPath, bytes, path));
+            FileRetry.Run(() => WriteTemporaryFile(temporaryPath, bytes, path, operationId, writePoint, flushPoint));
             FileRetry.Run(() =>
             {
                 ThrowInjected(DurableWritePhase.BeforeMove, path);
@@ -59,13 +82,19 @@ internal static class DurableFile
         }
     }
 
-    private static void WriteTemporaryFile(string temporaryPath, byte[] bytes, string destination)
+    private static void WriteTemporaryFile(
+        string temporaryPath, byte[] bytes, string destination, string? operationId = null,
+        AppendFaultPoint? writePoint = null, AppendFaultPoint? flushPoint = null)
     {
+        if (operationId is not null && writePoint is not null)
+            ThrowAppendFault(writePoint.Value, operationId, destination);
         ThrowInjected(DurableWritePhase.BeforeWrite, destination);
 
         using var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None);
         stream.Write(bytes);
 
+        if (operationId is not null && flushPoint is not null)
+            ThrowAppendFault(flushPoint.Value, operationId, destination);
         ThrowInjected(DurableWritePhase.BeforeFlush, destination);
         stream.Flush(flushToDisk: true);
     }

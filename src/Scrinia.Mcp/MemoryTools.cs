@@ -309,40 +309,70 @@ public sealed partial class ScriniaMcpTools
         return response.ToYaml();
     }
 
-    private static McpResponse DurableWriteFailureResponse(Exception exception) =>
-        ResponseBuilder.Error(
+    private static McpResponse DurableWriteFailureResponse(Exception exception)
+    {
+        McpResponse response = ResponseBuilder.Error(
             exception.Message,
             ErrorCodes.DurableWriteFailed,
             "Check permissions, free disk space if needed, and retry after upgrading scri when the existing sidecar is newer.");
+        string? operationId = (exception as DurableWriteException)?.AppendOperationId ??
+            (exception as ScopeReadOnlyException)?.AppendOperationId;
+        return operationId is null ? response : response.WithOperationId(operationId);
+    }
 
-    private static McpResponse RecoveryBlockedResponse(RestoreRecoveryException exception)
+    private static McpResponse RecoveryBlockedResponse(
+        RestoreRecoveryException exception, string? operationId = null)
     {
         string error = exception.Failure switch
         {
             RestoreRecoveryFailure.UnsupportedVersion =>
-                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal version {ExtractUnsupportedJournalVersion(exception)} is newer than this build supports (1). The journal was left unchanged at '{exception.JournalPath}'. Upgrade scri, then retry the operation.",
+                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal version {FormatUnsupportedVersion(exception)} is newer than this build supports (1). The journal was left unchanged at '{exception.JournalPath}'. Upgrade scri, then retry the operation.",
             RestoreRecoveryFailure.MalformedOrIntegrityFailed =>
                 $"Recovery is blocked for topic scope '{exception.Scope}': restore journal '{exception.JournalPath}' is malformed or failed integrity verification. No files were changed and the journal was retained. Inspect or restore the journal with a compatible scri build, then retry.",
             _ =>
                 $"Recovery could not complete for topic scope '{exception.Scope}'; the journal remains at '{exception.JournalPath}' and access is blocked until retry succeeds. Check permissions and free disk space, then retry."
         };
 
-        return ResponseBuilder.Error(
+        McpResponse response = ResponseBuilder.Error(
             error,
             ErrorCodes.RecoveryBlocked,
             "Resolve the retained restore journal for the named topic scope, then retry.");
+        response = response.WithRecovery(exception.Scope, exception.JournalPath);
+        return operationId is null ? response : response.WithOperationId(operationId);
     }
 
-    private static string ExtractUnsupportedJournalVersion(RestoreRecoveryException exception)
+    private static McpResponse AppendRecoveryBlockedResponse(
+        AppendStoreException exception, string scope)
     {
-        const string prefix = "Restore journal version ";
-        const string suffix = " is unsupported.";
-        string message = exception.Message;
-        if (!message.StartsWith(prefix, StringComparison.Ordinal) || !message.EndsWith(suffix, StringComparison.Ordinal))
-            return "unknown";
+        AppendRecoveryInfo recovery = exception.Recovery
+            ?? throw new InvalidOperationException("Append recovery response is missing structured evidence.");
+        string journalPath = recovery.JournalPath;
 
-        return message[prefix.Length..^suffix.Length];
+        return ResponseBuilder.Error(
+                $"Recovery is blocked for topic scope '{scope}': append journal '{journalPath}' " +
+                "failed integrity verification. The journal was retained and no further append " +
+                "mutation was admitted.",
+                ErrorCodes.RecoveryBlocked,
+                "Resolve the retained append journal for the named topic scope, then retry.")
+            .WithOperationId(exception.OperationId)
+            .WithRecovery(scope, journalPath);
     }
+
+    private static McpResponse AppendRecoveryBlockedResponse(
+        string scope, string journalPath, string? operationId)
+    {
+        McpResponse response = ResponseBuilder.Error(
+                $"Recovery is blocked for topic scope '{scope}': restore journal '{journalPath}' " +
+                "is malformed or failed integrity verification. No files were changed and the " +
+                "journal was retained.",
+                ErrorCodes.RecoveryBlocked,
+                "Resolve the retained restore journal for the named topic scope, then retry.")
+            .WithRecovery(scope, journalPath);
+        return operationId is null ? response : response.WithOperationId(operationId);
+    }
+
+    private static string FormatUnsupportedVersion(RestoreRecoveryException exception) =>
+        exception.UnsupportedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
 
     [McpServerTool(Name = "recall"), Description(
         "Read a memory by path. Returns the full content unless a chunk index is provided. " +
@@ -506,6 +536,12 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (AppendStoreException ex) when (
+            ex.Code == AppendStoreErrorCode.RecoveryRequired && ex.Recovery is not null)
+        {
+            var (scope, _) = CurrentStore.ResolveAddress(parsedPath);
+            return AppendRecoveryBlockedResponse(ex, scope).ToYaml();
         }
 
         // Same hint application as MemoryRemember: applied to the typed response before

@@ -3,11 +3,32 @@ using Scrinia.Commands;
 using Scrinia.Core.Configuration;
 using Scrinia.Mcp.SharedContracts;
 using CoreWorkspaceConfig = Scrinia.Core.Configuration.WorkspaceConfig;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests.Shared;
 
 public sealed class NoBaseStartupTests
 {
+    [Fact]
+    public void ScriniaHomeScope_RestoresAfterFailure()
+    {
+        string? previous = Environment.GetEnvironmentVariable("SCRINIA_HOME");
+        using (ProcessEnvironmentLock.Acquire())
+        {
+            try
+            {
+                using var scope = new EnvironmentVariableScope("SCRINIA_HOME", Path.GetTempPath());
+                throw new InvalidOperationException("deterministic fixture failure");
+            }
+            catch (InvalidOperationException)
+            {
+                // The scope must restore even when the fixture body fails.
+            }
+        }
+
+        Environment.GetEnvironmentVariable("SCRINIA_HOME").Should().Be(previous);
+    }
+
     [Fact]
     public void No_enabled_key_fails_before_transport_with_NO_SHARED_BASES_ENABLED()
     {
@@ -30,8 +51,8 @@ public sealed class NoBaseStartupTests
         string homeRoot = Path.Combine(Path.GetTempPath(), "scrinia-task4-home-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workspaceRoot);
         Directory.CreateDirectory(homeRoot);
-        string? previousHome = Environment.GetEnvironmentVariable("SCRINIA_HOME");
-        Environment.SetEnvironmentVariable("SCRINIA_HOME", homeRoot);
+        using ProcessEnvironmentLock environmentLock = ProcessEnvironmentLock.Acquire();
+        using EnvironmentVariableScope homeScope = new("SCRINIA_HOME", homeRoot);
         try
         {
             Func<Task<int>> serve = () => new SharedServeCommands().Serve(workspaceRoot);
@@ -41,7 +62,6 @@ public sealed class NoBaseStartupTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("SCRINIA_HOME", previousHome);
             Directory.Delete(workspaceRoot, recursive: true);
             Directory.Delete(homeRoot, recursive: true);
         }

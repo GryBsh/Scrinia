@@ -19,6 +19,12 @@ namespace Scrinia.TestDoubles;
 /// </summary>
 public class FakeMemoryStore : IMemoryStore
 {
+    /// <summary>Optional result returned by the append seam.</summary>
+    public AppendStoreResult? AppendResult { get; set; }
+
+    /// <summary>Optional exception raised by the append seam.</summary>
+    public Exception? AppendFailure { get; set; }
+
     public virtual ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default) =>
         ValueTask.FromException<ArtifactEntry?>(new NotSupportedException("Fake store does not support typed reads."));
     public virtual ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write, CancellationToken ct = default) =>
@@ -42,8 +48,18 @@ public class FakeMemoryStore : IMemoryStore
     // cares about derivation gets a real answer.
     public virtual Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default) =>
         Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.Content.Count, DateTimeOffset.UtcNow));
-    public virtual Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default) =>
-        Task.FromResult(new ArtifactEntry(write.Name, "", 0, write.Content.Count, DateTimeOffset.UtcNow));
+    public virtual Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+    {
+        if (AppendFailure is not null)
+            return Task.FromException<AppendStoreResult>(AppendFailure);
+        if (AppendResult is not null)
+            return Task.FromResult(AppendResult);
+
+        return Task.FromResult(new AppendStoreResult(
+            AppendStoreOutcome.Appended,
+            new ArtifactEntry(write.Name, "", 0, write.Content.Count, DateTimeOffset.UtcNow),
+            "fake-operation"));
+    }
     public virtual IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
     public virtual void Upsert(ArtifactEntry entry, string scope = "local") { }
     public virtual bool Remove(MemoryAddress address) => false;

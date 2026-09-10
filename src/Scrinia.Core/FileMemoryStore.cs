@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
@@ -39,6 +40,54 @@ internal enum RestoreJournalTransition
 /// </summary>
 public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
+    private static readonly AsyncLocal<Func<AppendFaultPoint, string, string, Exception?>?> AppendFaultInjectorContext = new();
+
+    internal static Func<AppendFaultPoint, string, string, Exception?>? AppendFaultInjector
+    {
+        get => AppendFaultInjectorContext.Value;
+        set => AppendFaultInjectorContext.Value = value;
+    }
+
+    internal static IReadOnlyList<AppendFaultPoint> PreCommitFaultPoints { get; } =
+    [
+        AppendFaultPoint.RawArtifactRead,
+        AppendFaultPoint.RawSidecarRead,
+        AppendFaultPoint.JournalWrite,
+        AppendFaultPoint.JournalFlush,
+        AppendFaultPoint.JournalParse,
+        AppendFaultPoint.JournalDelete,
+        AppendFaultPoint.ArchiveArtifactWrite,
+        AppendFaultPoint.ArchiveArtifactFlush,
+        AppendFaultPoint.ArchiveSidecarWrite,
+        AppendFaultPoint.ArchiveSidecarFlush,
+        AppendFaultPoint.LiveArtifactWrite,
+        AppendFaultPoint.LiveArtifactFlush,
+        AppendFaultPoint.LiveSidecarWrite,
+        AppendFaultPoint.LiveSidecarFlush,
+        AppendFaultPoint.VerificationRead,
+        AppendFaultPoint.RollbackWrite,
+        AppendFaultPoint.RollbackDelete
+    ];
+
+    internal void FailOnceAt(AppendFaultPoint point) =>
+        AppendFaultInjector = (faultPoint, _, _) =>
+        {
+            if (faultPoint != point)
+                return null;
+            AppendFaultInjector = null;
+            return new IOException($"Injected append fault at {point}.");
+        };
+
+    internal void FailPersistentlyAt(AppendFaultPoint point) =>
+        AppendFaultInjector = (faultPoint, _, _) => faultPoint == point
+            ? new IOException($"Injected append fault at {point}.")
+            : null;
+
+    internal void ClearFaults() => AppendFaultInjector = null;
+
+    internal static Exception? InjectAppendFault(AppendFaultPoint point, string operationId, string path) =>
+        AppendFaultInjector?.Invoke(point, operationId, path);
+
     /// <summary>Test-only crash seam around journal durable transitions.</summary>
     internal static AsyncLocal<Func<RestoreJournalTransition, string, Exception?>?> RestoreJournalFailureInjector { get; } = new();
     /// <summary>Test-only seam receiving the exact bytes successfully written to a derived file.</summary>
@@ -63,6 +112,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
+
+    internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
+    internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
+    internal AppendTransaction? LastPreparedAppendTransactionForTest { get; private set; }
 
     // Topic discovery cache. Invalidated event-driven (set to null), never on a timer: SaveIndex
     // and PersistMigratedEntry clear it for any "local:" scope they touch, while Upsert and
@@ -729,6 +782,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         Action<bool>? afterRecovery = null) =>
         WithExclusiveLock(scope, () => { body(); return true; }, timeout, afterRecovery);
 
+    private void RunUnderAppendLock(string scope, string? operationId, Action body)
+    {
+        if (operationId is not null)
+        {
+            body();
+            return;
+        }
+
+        WithExclusiveLock(scope, body);
+    }
+
     /// <summary>
     /// Holds the scope's shared lock across a persistent read. If a journal is present, releases
     /// the shared lock before escalating, recovers under the exclusive lock, then retries the
@@ -892,6 +956,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             lk.ExitReadLock();
         }
+    }
+
+    private List<ArtifactEntry> LoadIndexUnderExclusiveAppendLock(string scope)
+    {
+        if (_indexCache.TryGetValue(scope, out var cached))
+            return cached.Entries;
+        return LoadIndexUnsafe(scope);
     }
 
     private List<ArtifactEntry> LoadIndexUnsafe(string scope)
@@ -1246,7 +1317,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     internal void InvokeWriteSidecarsForTest(List<ArtifactEntry> entries, string storeDir)
         => WriteSidecars(entries, storeDir);
 
-    private void WriteSidecar(ArtifactEntry entry, string storeDir) => WriteSidecarCore(entry, storeDir);
+    private void WriteSidecar(ArtifactEntry entry, string storeDir, string? operationId = null) =>
+        WriteSidecarCore(entry, storeDir, operationId);
 
     /// <summary>
     /// Static core of sidecar writing: normalize, sort for stable diffs, serialize via
@@ -1256,7 +1328,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// exists — that call site depends on this producing byte-identical sidecars to a normal
     /// store write.
     /// </summary>
-    private static void WriteSidecarCore(ArtifactEntry entry, string storeDir)
+    private static void WriteSidecarCore(ArtifactEntry entry, string storeDir, string? operationId = null)
     {
         // Unconditional backstop, deliberately below every caller. After Task 3's forward-fill
         // skip and this task's two gates it should be unreachable from any path we enumerated --
@@ -1266,41 +1338,38 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             throw new ScopeReadOnlyException(
                 storeDir, entry.Name, entry.SchemaVersion ?? 1, DurableFormats.ArtifactSidecar.Current);
 
-        // Write chokepoint: guarantees the on-disk sidecar is always keyed "attributes", never
-        // the pre-rename "fields", regardless of which caller reached here (read-time forward-fill,
-        // PersistMigratedEntry, the legacy-index expansion, or a plain Upsert of an entry that still
-        // carries a legacy value). No-op for an already-normalized or freshly-constructed entry.
-        entry = entry.NormalizeAttributesKey();
-
         string metaPath = Path.Combine(storeDir, SanitizeNameCore(entry.Name) + ".meta.json");
+        string json = SerializeSidecar(entry);
+        if (operationId is null)
+            DurableFile.AtomicWriteAllText(metaPath, json);
+        else
+            DurableFile.AtomicWriteAllTextForAppend(
+                metaPath, json, operationId,
+                AppendFaultPoint.LiveSidecarWrite,
+                AppendFaultPoint.LiveSidecarFlush);
+    }
 
-        // Sort metadata for stable git diffs (G-29: multi-user merge safety)
+    private static string SerializeSidecar(ArtifactEntry entry)
+    {
+        entry = entry.NormalizeAttributesKey();
         var sorted = entry with
         {
             Keywords = entry.Keywords?.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray(),
-            TermFrequencies = entry.TermFrequencies?
-                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            TermFrequencies = entry.TermFrequencies?.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(kv => kv.Key, kv => kv.Value),
-            FileHashes = entry.FileHashes?
-                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            FileHashes = entry.FileHashes?.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(kv => kv.Key, kv => kv.Value),
             ChunkEntries = entry.ChunkEntries?.Select(ce => ce with
             {
                 Keywords = ce.Keywords?.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray(),
-                TermFrequencies = ce.TermFrequencies?
-                    .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                TermFrequencies = ce.TermFrequencies?.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(kv => kv.Key, kv => kv.Value)
             }).ToArray(),
-            // Unknown keys come from a schema this build cannot reason about, and JSON keys are
-            // case-sensitive, so Ordinal (not OrdinalIgnoreCase, unlike the members above) is the
-            // only correct comparer here.
-            Unknown = entry.Unknown?
-                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            Unknown = entry.Unknown?.OrderBy(kv => kv.Key, StringComparer.Ordinal)
                 .ToDictionary(kv => kv.Key, kv => kv.Value)
         };
 
-        string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
-        DurableFile.AtomicWriteAllText(metaPath, json);
+        return JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
     }
 
     /// <summary>
@@ -1480,9 +1549,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         InvalidateEntityFacts();
     }
 
-    public void Upsert(ArtifactEntry entry, string scope = "local")
+    public void Upsert(ArtifactEntry entry, string scope = "local") =>
+        UpsertCore(entry, scope, operationId: null);
+
+    private void UpsertForAppend(ArtifactEntry entry, string scope, string operationId) =>
+        UpsertCore(entry, scope, operationId);
+
+    private void UpsertCore(ArtifactEntry entry, string scope, string? operationId)
     {
-        WithExclusiveLock(scope, () =>
+        RunUnderAppendLock(scope, operationId, () =>
         {
             entry = CanonicalizeEntryForScope(entry, scope);
             string storeDir = GetStoreDirForScope(scope);
@@ -1513,7 +1588,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     scope, entry.Name, entry.SchemaVersion ?? 1, DurableFormats.ArtifactSidecar.Current);
 
             // Write the sidecar for this single entry
-            WriteSidecar(entry, storeDir);
+            WriteSidecar(entry, storeDir, operationId);
 
             // Copy-on-write cache update. Never re-read the scope's sidecars here: that made a
             // single write cost a full directory enumeration plus one read and JSON parse per
@@ -1790,9 +1865,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     /// <inheritdoc/>
     public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
+        => await StoreAsyncCore(write, ct, appendOperationId: null);
+
+    private async Task<ArtifactEntry> StoreAsyncCore(
+        MemoryWrite write, CancellationToken ct, string? appendOperationId = null)
     {
         ArgumentNullException.ThrowIfNull(write);
-        write.ValidateOrThrow(_writeValidationOptions);
+        try
+        {
+            write.ValidateOrThrow(_writeValidationOptions);
+        }
+        catch (InvalidMemoryWriteException exception) when (appendOperationId is not null)
+        {
+            exception.AppendOperationId = appendOperationId;
+            throw;
+        }
 
         // Ephemerality is the store's question, not the pipeline's — it decides where the memory
         // lands, and it suppresses the auto-derived review condition (D-05).
@@ -1835,10 +1922,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // the caller's casing here would leave the fix depending on the filesystem to fold case on
         // its behalf — right on NTFS, and a twin alongside the original anywhere case-sensitive.
         // Twelve sites of this exact shape were fixed across two earlier branches; this is not one.
-        var existingEntry = LoadIndex(scope).FirstOrDefault(
-            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        var existingEntry = (appendOperationId is null
+                ? LoadIndex(scope)
+                : LoadIndexUnderExclusiveAppendLock(scope))
+            .FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
         if (existingEntry is not null)
             subject = existingEntry.Name;
+
+        // A sidecar without its artifact is an orphan, not an overwrite target. Preserve the
+        // sidecar as a raw before-image while giving this create the same StoreAsync semantics as
+        // any other missing target.
+        if (appendOperationId is not null && !File.Exists(ArtifactPath(subject, scope)))
+            existingEntry = null;
 
         DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
         DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
@@ -1871,14 +1967,61 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             ArchiveVersion(subject, scope);
         }
 
-        await WriteArtifactAsync(subject, scope, artifact, ct: ct);
-
         var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount, createdAt, updatedAt, derived,
             prior: existingEntry);
 
+        AppendTransaction? createTransaction = null;
+        bool appendCommitted = false;
+        if (appendOperationId is not null && existingEntry is null)
+        {
+            // Creation is normally the same write surface as StoreAsync, but once its append
+            // operation has a durable identity both live members need a frozen before-image. A
+            // sidecar can exist without an artifact after an interrupted older write; capturing it
+            // here means recovery preserves that unrelated-to-this-operation member instead of
+            // treating it as newly created. The shared raw capture seam also makes this boundary
+            // deterministic under the append fault injector.
+            RawMemberSnapshot oldArtifact = await CaptureRawMemberAsync(
+                ArtifactPath(subject, scope), AppendFaultPoint.RawArtifactRead, appendOperationId, ct);
+            RawMemberSnapshot oldSidecar = await CaptureRawMemberAsync(
+                MetaPath(subject, scope), AppendFaultPoint.RawSidecarRead, appendOperationId, ct);
+            LastCapturedOldArtifactBytesForTest = oldArtifact.Bytes;
+            LastCapturedOldSidecarBytesForTest = oldSidecar.Bytes;
+            byte[] newArtifactBytes = System.Text.Encoding.UTF8.GetBytes(artifact);
+            byte[] newSidecarBytes = System.Text.Encoding.UTF8.GetBytes(SerializeSidecar(entry));
+            createTransaction = new AppendTransaction(
+                appendOperationId, entry.Address, scope, true, oldArtifact, oldSidecar,
+                RawMemberSnapshot.Capture(oldArtifact.Path, true, newArtifactBytes),
+                RawMemberSnapshot.Capture(oldSidecar.Path, true, newSidecarBytes),
+                new ArchivePlan(false, null, null, ArchiveMemberStatus.NotRequired,
+                    ArchiveMemberStatus.NotRequired, []), DateTimeOffset.UtcNow);
+            LastPreparedAppendTransactionForTest = createTransaction;
+            PersistAppendJournal(createTransaction, AppendJournalState.Prepared);
+        }
+
         try
         {
-            Upsert(entry, scope);
+            if (createTransaction is not null)
+                PersistAppendJournal(createTransaction, AppendJournalState.NewPairInProgress);
+            await WriteArtifactAsync(subject, scope, artifact, appendOperationId, ct);
+            if (appendOperationId is null)
+                Upsert(entry, scope);
+            else
+                UpsertForAppend(entry, scope, appendOperationId);
+
+            if (createTransaction is not null)
+            {
+                VerifyAppendMember(createTransaction.NewArtifact, appendOperationId!);
+                VerifyAppendMember(createTransaction.NewSidecar, appendOperationId!);
+                string committedHash = Convert.ToHexStringLower(SHA256.HashData(
+                    createTransaction.NewArtifact.Bytes.Concat(createTransaction.NewSidecar.Bytes).ToArray()));
+                PersistAppendJournal(createTransaction, AppendJournalState.Committed, committedHash);
+                appendCommitted = true;
+                DeleteAppendJournal(createTransaction);
+            }
+        }
+        catch (Exception exception) when (appendCommitted)
+        {
+            throw new AppendPostCommitCleanupException(appendOperationId!, entry, exception);
         }
         catch
         {
@@ -1889,14 +2032,48 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // AppendAsync below. The destructive form of this block — an unconditional delete —
             // is what the server's own store path did; it was deleted, not ported.
             // CancellationToken.None: a cancelled store must still be rolled back.
-            try
+            if (createTransaction is not null)
             {
-                if (previousArtifact is not null)
-                    await WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
-                else
-                    DeleteArtifact(subject, scope);
+                if (!TryRestoreAppendTransaction(createTransaction))
+                {
+                    try
+                    {
+                        PersistAppendJournal(createTransaction, AppendJournalState.RecoveryRequired,
+                            detail: "Create rollback could not prove both original live members were restored.");
+                    }
+                    catch
+                    {
+                        // Retain the existing journal when recovery-state persistence itself fails.
+                    }
+                    throw RecoveryRequired(
+                        AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                        "Create rollback could not prove both missing live members were restored.",
+                        operationId: appendOperationId!);
+                }
+                try
+                {
+                    PersistAppendJournal(createTransaction, AppendJournalState.RolledBack);
+                    DeleteAppendJournal(createTransaction);
+                }
+                catch (Exception recoveryException)
+                {
+                    throw RecoveryRequired(
+                        AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                        "Create rollback completed but the journal could not be removed.",
+                        recoveryException, appendOperationId!);
+                }
             }
-            catch { /* best-effort rollback */ }
+            else
+            {
+                try
+                {
+                    if (previousArtifact is not null)
+                        await WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
+                    else
+                        DeleteArtifact(subject, scope);
+                }
+                catch { /* best-effort rollback */ }
+            }
             throw;
         }
 
@@ -1904,15 +2081,125 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <inheritdoc/>
-    public async Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+    public async Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(write);
-        write.ValidateOrThrow(_writeValidationOptions, isAppend: true);
+        string operationId = Guid.NewGuid().ToString("N");
+        try
+        {
+            ArgumentNullException.ThrowIfNull(write);
+            write.ValidateOrThrow(_writeValidationOptions, isAppend: true);
+        }
+        catch (InvalidMemoryWriteException exception)
+        {
+            exception.AppendOperationId = operationId;
+            throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            throw new AppendOperationCanceledException(operationId, exception);
+        }
+        catch (Exception exception)
+        {
+            throw new AppendStoreException(AppendStoreErrorCode.Internal, operationId,
+                "Append input could not be admitted.", exception);
+        }
+        try
+        {
+            DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+
+            bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
+            if (ephemeral)
+            {
+                if (GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name)) is null)
+                {
+                    ArtifactEntry created = await StoreAsyncCore(write, ct, operationId);
+                    return new AppendStoreResult(AppendStoreOutcome.Created, created, operationId);
+                }
+
+                return await AppendAsyncCore(write, operationId, startedAt, ct);
+            }
+
+            var resolved = ResolveAddress(write.Address);
+            string scope = resolved.Scope;
+            EnsureMaterialized(scope);
+            using FileLock fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+            string subject = resolved.Subject;
+            // Append admission shares the persistent scope with the restore journal.  Recover
+            // that journal before deciding whether this is a create or an append; otherwise a
+            // missing live artifact can enter StoreAsyncCore and bypass the recovery barrier.
+            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
+            await RecoverAppendUnsafeAsync(scope, operationId, ct);
+            ArtifactEntry? canonicalEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
+                entry => entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (canonicalEntry is not null)
+                subject = canonicalEntry.Name;
+
+            if (!File.Exists(ArtifactPath(subject, scope)))
+            {
+                try
+                {
+                    ArtifactEntry created = await StoreAsyncCore(write, ct, operationId);
+                    return new AppendStoreResult(AppendStoreOutcome.Created, created, operationId);
+                }
+                catch (AppendPostCommitCleanupException exception)
+                {
+                    return new AppendStoreResult(
+                        AppendStoreOutcome.SuccessWithWarning,
+                        exception.Entry,
+                        exception.OperationId,
+                        new AppendStoreWarning(
+                            AppendWarningCode.PostCommitCleanupFailed,
+                            "Append committed, but journal cleanup failed; retained journal evidence."));
+                }
+            }
+            return await AppendAsyncCore(write, operationId, startedAt, ct);
+        }
+        catch (DurableWriteException exception)
+        {
+            throw new DurableWriteException(exception.Operation, exception.Destination,
+                exception.InnerException ?? exception, operationId);
+        }
+        catch (ScopeReadOnlyException exception)
+        {
+            throw new ScopeReadOnlyException(exception.Scope, exception.MemoryName,
+                exception.DeclaredVersion, exception.SupportedVersion, operationId);
+        }
+        catch (OperationCanceledException exception)
+        {
+            if (exception is AppendOperationCanceledException)
+                throw;
+            throw new AppendOperationCanceledException(operationId, exception);
+        }
+        catch (AppendStoreException)
+        {
+            throw;
+        }
+        catch (RestoreRecoveryException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new AppendStoreException(
+                AppendStoreErrorCode.Internal,
+                operationId,
+                "Append failed after establishing its operation boundary.",
+                exception);
+        }
+    }
+
+    private async Task<AppendStoreResult> AppendAsyncCore(
+        MemoryWrite write, string operationId, DateTimeOffset startedAt, CancellationToken ct)
+    {
 
         bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
         var (scope, subject) = ResolveAddress(write.Address);
+        if (!ephemeral)
+            await RecoverAppendUnsafeAsync(scope, operationId, ct);
         ArtifactEntry? existingEntry = null;
         EphemeralEntry? existingEph = null;
+        RawMemberSnapshot? oldArtifact = null;
+        RawMemberSnapshot? oldSidecar = null;
         string? existingArtifact = null;
 
         if (ephemeral)
@@ -1922,21 +2209,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
         else
         {
-            // Identity is resolved from the index BEFORE the artifact is read, and the ORDER is the
-            // fix: reading under the caller's casing threw FileNotFoundException on a case-sensitive
-            // filesystem, fell through to the create-new path, and overwrote the memory with the
-            // appended chunk alone — append() silently behaving as replace().
-            existingEntry = LoadIndex(scope).FirstOrDefault(
+            existingEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
                 e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
             if (existingEntry is not null)
                 subject = existingEntry.Name;
 
-            try { existingArtifact = await ReadArtifactAsync(subject, scope, ct); }
-            catch (FileNotFoundException) { /* nothing to append to — created below */ }
+            oldArtifact = await CaptureRawMemberAsync(
+                ArtifactPath(subject, scope), AppendFaultPoint.RawArtifactRead, operationId, ct);
+            oldSidecar = await CaptureRawMemberAsync(
+                MetaPath(subject, scope), AppendFaultPoint.RawSidecarRead, operationId, ct);
+            LastCapturedOldArtifactBytesForTest = oldArtifact.Bytes;
+            LastCapturedOldSidecarBytesForTest = oldSidecar.Bytes;
+            existingArtifact = oldArtifact.Existed
+                ? System.Text.Encoding.UTF8.GetString(oldArtifact.Bytes)
+                : null;
         }
 
         if (existingArtifact is null)
-            return await StoreAsync(write, ct);
+            throw new AppendStoreException(AppendStoreErrorCode.Internal, operationId,
+                "Append admission found a missing live artifact after the transaction lock was acquired.");
 
         string appended = write.RawContent[0];
         string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended);
@@ -1970,8 +2261,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             fileHasher: HashWorkspaceFile);
 
         if (ephemeral)
-            return PersistEphemeral(write.Name, newArtifact, originalBytes, chunkCount, derived,
+        {
+            var appendedEphemeral = PersistEphemeral(write.Name, newArtifact, originalBytes, chunkCount, derived,
                 createdAt: existingEph!.CreatedAt, updatedAt: DateTimeOffset.UtcNow);
+            return new AppendStoreResult(AppendStoreOutcome.Appended, appendedEphemeral, operationId);
+        }
 
         // Same user-facing gate as StoreAsync's, and for the same reason: refuse before any side
         // effect rather than depend on the rollback path below. `existingEntry` can genuinely be
@@ -1985,38 +2279,771 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // The bytes to revert to, already in hand from the read above: appending to an existing
         // memory must restore its content on failure, not delete it. Nothing reads versions/ back,
         // so a delete here would leave the user no way to recover.
-        string? previousArtifact = existingEntry is not null ? existingArtifact : null;
-        if (existingEntry is not null)
-            ArchiveVersion(subject, scope);
-
-        await WriteArtifactAsync(subject, scope, newArtifact, ct: ct);
-
         var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount,
             createdAt: existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow,
             updatedAt: DateTimeOffset.UtcNow,
             derived,
             prior: existingEntry);
 
+        byte[] newArtifactBytes = System.Text.Encoding.UTF8.GetBytes(newArtifact);
+        byte[] newSidecarBytes = System.Text.Encoding.UTF8.GetBytes(SerializeSidecar(entry));
+        var transaction = new AppendTransaction(
+            operationId,
+            entry.Address,
+            scope,
+            IsCreate: existingEntry is null,
+            oldArtifact ?? RawMemberSnapshot.Capture(ArtifactPath(subject, scope), false, []),
+            oldSidecar ?? RawMemberSnapshot.Capture(MetaPath(subject, scope), false, []),
+            RawMemberSnapshot.Capture(ArtifactPath(subject, scope), true, newArtifactBytes),
+            RawMemberSnapshot.Capture(MetaPath(subject, scope), true, newSidecarBytes),
+            BuildArchivePlan(subject, scope, existingEntry is not null, oldSidecar?.Existed == true, startedAt),
+            startedAt);
+        LastPreparedAppendTransactionForTest = transaction;
+
+        PersistAppendJournal(transaction, AppendJournalState.Prepared);
+        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+
+        // Archive publication is part of the frozen plan boundary. If it fails, no live member has
+        // been touched and there is nothing to roll back.
         try
         {
-            Upsert(entry, scope);
+            transaction = await PublishFrozenArchiveAsync(transaction, ct);
+            LastPreparedAppendTransactionForTest = transaction;
+            PersistAppendJournal(transaction, AppendJournalState.Archived);
         }
-        catch
+        catch (Exception exception)
         {
-            // CancellationToken.None: a cancelled append must still be rolled back.
+            if (ct.IsCancellationRequested)
+            {
+                string journalPath = AppendJournalCodec.GetJournalPath(
+                    Path.Combine(GetStoreDirForScope(scope), "versions"));
+                AppendTransaction? rollbackTransaction = TryReadAppendTransactionForRollback(
+                    journalPath, scope);
+                bool archivesReconciled = rollbackTransaction is not null &&
+                    TryRemoveCreatedArchiveMembers(rollbackTransaction);
+                bool liveMembersRestored = rollbackTransaction is not null &&
+                    TryRestoreAppendTransaction(rollbackTransaction);
+                if (!archivesReconciled || !liveMembersRestored)
+                {
+                    string detail = !archivesReconciled
+                        ? "Cancellation rollback could not prove operation-owned archive members were removed."
+                        : "Cancellation rollback could not prove both live members were restored.";
+                    try
+                    {
+                        PersistAppendJournal(rollbackTransaction ?? transaction,
+                            AppendJournalState.RecoveryRequired, detail: detail);
+                    }
+                    catch
+                    {
+                        // Keep the existing journal when recovery-state persistence fails.
+                    }
+                    throw RecoveryRequired(
+                        journalPath,
+                        detail,
+                        exception, operationId);
+                }
+
+                try
+                {
+                    PersistAppendJournal(transaction, AppendJournalState.RolledBack,
+                        detail: "Append cancellation was rolled back byte-for-byte.");
+                    DeleteAppendJournal(transaction);
+                }
+                catch (Exception recoveryException)
+                {
+                    throw RecoveryRequired(
+                        AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                        "Cancellation rollback completed but the journal could not be removed.",
+                        recoveryException, operationId);
+                }
+
+                throw new AppendOperationCanceledException(operationId, exception);
+            }
+
             try
             {
-                if (previousArtifact is not null)
-                    await WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
-                else
-                    DeleteArtifact(subject, scope);
+                PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
+                    detail: "Archive publication did not complete; retained evidence requires recovery.");
             }
-            catch { /* best-effort rollback */ }
+            catch (Exception journalFailure)
+            {
+                throw RecoveryRequired(
+                    AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                    "Archive publication failed and its recovery state could not be persisted.",
+                    new AggregateException(exception, journalFailure), operationId);
+            }
+            throw RecoveryRequired(
+                AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                "Archive publication did not complete safely.", exception, operationId);
+        }
+
+        try
+        {
+            await PublishLiveAppendAsync(transaction, entry, newArtifact, ct);
+        }
+        catch (Exception exception)
+        {
+            // CancellationToken.None: a cancelled append must still be rolled back.
+            if (!TryRestoreAppendTransaction(transaction))
+            {
+                try
+                {
+                    PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
+                        detail: "Pre-commit rollback could not prove both live members were restored.");
+                }
+                catch
+                {
+                    // Preserve the original recovery boundary if journal persistence itself fails.
+                }
+                throw RecoveryRequired(
+                    AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                    "Pre-commit rollback could not prove both live members were restored.",
+                    exception, operationId);
+            }
+
+                try
+                {
+                    PersistAppendJournal(transaction, AppendJournalState.RolledBack,
+                        detail: "Pre-commit append failure was rolled back byte-for-byte.");
+                    DeleteAppendJournal(transaction);
+                }
+                catch (Exception recoveryException)
+                {
+                    throw RecoveryRequired(
+                    AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
+                    "Rollback completed but the journal could not be removed.", recoveryException, operationId);
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                throw new AppendOperationCanceledException(operationId, exception);
+            }
+
+            if (exception is OperationCanceledException ||
+                exception.InnerException is OperationCanceledException)
+            {
+                throw new AppendStoreException(
+                    AppendStoreErrorCode.Internal,
+                    operationId,
+                    "Live append publication failed with a non-caller cancellation.",
+                    exception);
+            }
+
             throw;
         }
 
-        return entry;
+        ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, ct);
+        bool pruningFailed = cleanup.Failed;
+        bool journalCleanupFailed = false;
+        if (!pruningFailed)
+        {
+            try
+            {
+                DeleteAppendJournal(transaction);
+            }
+            catch (Exception exception)
+            {
+                cleanup = cleanup with { Failed = true, Failures = cleanup.Failures.Append(
+                    $"journal cleanup: {exception.Message}").ToArray() };
+                journalCleanupFailed = true;
+            }
+        }
+
+        if (pruningFailed || journalCleanupFailed)
+        {
+            string journalPath = AppendJournalCodec.GetJournalPath(
+                Path.Combine(GetStoreDirForScope(scope), "versions"));
+            string committedHash = Convert.ToHexStringLower(SHA256.HashData(
+                transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
+            try
+            {
+                PersistAppendJournal(transaction, AppendJournalState.CleanupPending,
+                    committedHash, cleanup.Detail);
+            }
+            catch (Exception exception)
+            {
+                return new AppendStoreResult(
+                    AppendStoreOutcome.RecoveryRequired,
+                    entry,
+                    operationId,
+                    Recovery: new AppendRecoveryInfo(
+                        journalPath,
+                        AppendJournalState.Committed.ToString(),
+                        "retain the committed append and resolve cleanup evidence",
+                        $"Post-commit cleanup evidence could not be updated: {exception.Message}"));
+            }
+        }
+
+        return pruningFailed || journalCleanupFailed
+            ? new AppendStoreResult(
+                AppendStoreOutcome.SuccessWithWarning,
+                entry,
+                operationId,
+                new AppendStoreWarning(
+                    AppendWarningCode.PostCommitCleanupFailed,
+                     cleanup.Detail))
+            : new AppendStoreResult(AppendStoreOutcome.Appended, entry, operationId);
     }
+
+    private async Task<RawMemberSnapshot> CaptureRawMemberAsync(
+        string path, AppendFaultPoint faultPoint, string operationId, CancellationToken ct)
+    {
+        Exception? injected = InjectAppendFault(faultPoint, operationId, path);
+        if (injected is not null)
+            throw injected;
+
+        if (!File.Exists(path))
+            return RawMemberSnapshot.Capture(path, false, []);
+
+        byte[] bytes = await File.ReadAllBytesAsync(path, ct);
+        return RawMemberSnapshot.Capture(path, true, bytes);
+    }
+
+    internal ArchivePlan BuildArchivePlanForTest(string subject, string scope, bool required, DateTimeOffset startedAt) =>
+        BuildArchivePlan(subject, scope, required, sidecarRequired: true, startedAt);
+
+    internal string[] PruneCommittedArchivesForTest(AppendTransaction transaction) =>
+        PruneCommittedArchives(transaction, CancellationToken.None).Failures;
+
+    private ArchivePlan BuildArchivePlan(
+        string subject, string scope, bool required, bool sidecarRequired, DateTimeOffset startedAt)
+    {
+        if (!required)
+            return new ArchivePlan(false, null, null, ArchiveMemberStatus.NotRequired,
+                ArchiveMemberStatus.NotRequired, []);
+
+        string versionsDir = Path.Combine(GetStoreDirForScope(scope), "versions");
+        string safe = SanitizeName(subject);
+        string baseName = $"{safe}_{startedAt:yyyyMMdd-HHmmss-fff}";
+        string artifactPath = Path.Combine(versionsDir, baseName + ".nmp2");
+        for (int suffix = 2; File.Exists(artifactPath); suffix++)
+            artifactPath = Path.Combine(versionsDir, $"{baseName}-{suffix}.nmp2");
+
+        string sidecarPath = Path.ChangeExtension(artifactPath, null) + ".meta.json";
+        var archiveBodies = Directory.Exists(versionsDir)
+            ? Directory.GetFiles(versionsDir, $"{safe}_*.nmp2").Append(artifactPath)
+            : [artifactPath];
+        var candidates = archiveBodies
+            .Where(path => !string.Equals(path, artifactPath, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(path => path, StringComparer.Ordinal)
+            .Skip(10)
+            .SelectMany(path => new[] { path, Path.ChangeExtension(path, null) + ".meta.json" })
+            .ToArray();
+
+        return new ArchivePlan(true, artifactPath, sidecarPath, ArchiveMemberStatus.Planned,
+            sidecarRequired ? ArchiveMemberStatus.Planned : ArchiveMemberStatus.NotRequired, candidates);
+    }
+
+    private async Task<AppendTransaction> PublishFrozenArchiveAsync(AppendTransaction transaction, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        ArchivePlan plan = transaction.Archive;
+        if (!plan.Required)
+            return transaction;
+
+        string versionsDirectory = Path.GetDirectoryName(plan.ArtifactArchivePath!)!;
+        Directory.CreateDirectory(versionsDirectory);
+        ArchiveMemberStatus artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!, transaction.OperationId,
+            AppendFaultPoint.ArchiveArtifactWrite, AppendFaultPoint.ArchiveArtifactFlush);
+            transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
+        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+
+        ArchiveMemberStatus sidecarStatus = ArchiveMemberStatus.NotRequired;
+        if (transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null)
+            sidecarStatus = WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
+                AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush);
+
+        transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, sidecarStatus) };
+        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+        return transaction;
+    }
+
+    private static ArchiveMemberStatus WriteArchiveMember(
+        string memberName, RawMemberSnapshot member, string destination, string operationId,
+        AppendFaultPoint writePoint, AppendFaultPoint flushPoint)
+    {
+        if (!member.Existed)
+            return ArchiveMemberStatus.NotRequired;
+
+        try
+        {
+            Exception? injected = InjectAppendFault(writePoint, operationId, destination);
+            if (injected is not null)
+                throw injected;
+
+            if (File.Exists(destination))
+            {
+                byte[] existingBytes = File.ReadAllBytes(destination);
+                string existingHash = Convert.ToHexStringLower(SHA256.HashData(existingBytes));
+                if (string.Equals(existingHash, member.Sha256, StringComparison.OrdinalIgnoreCase))
+                    return ArchiveMemberStatus.AlreadyPresentVerified;
+
+                throw new AppendStoreException(
+                    AppendStoreErrorCode.RecoveryRequired,
+                    operationId,
+                    $"Archive {memberName} destination contains different bytes: {destination}",
+                    recovery: new AppendRecoveryInfo(
+                        AppendJournalCodec.GetJournalPath(Path.GetDirectoryName(destination)!),
+                        AppendJournalState.RecoveryRequired.ToString(),
+                        "resolve the retained append journal before retrying",
+                        $"Archive {memberName} destination contains different bytes."));
+            }
+
+            DurableFile.AtomicWriteAllBytesForAppend(destination, member.Bytes, operationId, writePoint, flushPoint);
+        }
+        catch (AppendStoreException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new AppendStoreException(
+                AppendStoreErrorCode.RecoveryRequired,
+                operationId,
+                $"Archive {memberName} publication failed at '{destination}'.",
+                exception,
+                new AppendRecoveryInfo(
+                    AppendJournalCodec.GetJournalPath(Path.GetDirectoryName(destination)!),
+                    AppendJournalState.RecoveryRequired.ToString(),
+                    "resolve the retained append journal before retrying",
+                    exception.Message));
+        }
+        return ArchiveMemberStatus.Created;
+    }
+
+    private sealed record ArchiveCleanupResult(bool Failed, string[] Failures)
+    {
+        internal string Detail => Failures.Length == 0
+            ? "Archive cleanup did not complete."
+            : $"Archive cleanup did not complete: {string.Join("; ", Failures)}";
+    }
+
+    private static ArchiveCleanupResult PruneCommittedArchives(AppendTransaction transaction, CancellationToken ct)
+    {
+        var failures = new List<string>();
+        if (ct.IsCancellationRequested)
+            return new ArchiveCleanupResult(true, ["archive cleanup cancelled."]);
+
+        Exception? cleanupFailure = InjectAppendFault(
+            AppendFaultPoint.ArchiveCleanup, transaction.OperationId, transaction.Scope);
+        if (cleanupFailure is not null)
+            return new ArchiveCleanupResult(
+                true,
+                [$"archive cleanup: {cleanupFailure.Message}"]);
+
+        string versionsRoot = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(transaction.Archive.ArtifactArchivePath ?? transaction.NewArtifact.Path)!, "..", "versions"));
+        string liveArtifact = Path.GetFullPath(transaction.NewArtifact.Path);
+        string liveSidecar = Path.GetFullPath(transaction.NewSidecar.Path);
+        string? currentArtifact = transaction.Archive.ArtifactArchivePath is null
+            ? null : Path.GetFullPath(transaction.Archive.ArtifactArchivePath);
+        string? currentSidecar = transaction.Archive.SidecarArchivePath is null
+            ? null : Path.GetFullPath(transaction.Archive.SidecarArchivePath);
+
+        foreach (string candidate in transaction.Archive.PruneCandidates)
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                string fullCandidate = Path.GetFullPath(candidate);
+                if (!PathContainment.IsWithin(versionsRoot, fullCandidate) ||
+                    string.Equals(fullCandidate, liveArtifact, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fullCandidate, liveSidecar, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fullCandidate, currentArtifact, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fullCandidate, currentSidecar, StringComparison.OrdinalIgnoreCase))
+                {
+                    failures.Add($"refused unsafe archive candidate: {candidate}");
+                    break;
+                }
+                Exception? injected = InjectAppendFault(
+                    AppendFaultPoint.PruningDelete, transaction.OperationId, fullCandidate);
+                if (injected is not null)
+                    throw injected;
+                File.Delete(fullCandidate);
+            }
+            catch (OperationCanceledException exception)
+            {
+                failures.Add($"pruning cancelled: {exception.Message}");
+                break;
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"{candidate}: {exception.Message}");
+                break;
+            }
+        }
+
+        return new ArchiveCleanupResult(failures.Count > 0, failures.ToArray());
+    }
+
+    private async Task PublishLiveAppendAsync(
+        AppendTransaction transaction, ArtifactEntry entry, string artifact, CancellationToken ct)
+    {
+        await WriteArtifactAsync(entry.Name, transaction.Scope, artifact, transaction.OperationId, ct);
+        PersistAppendJournal(transaction, AppendJournalState.NewPairInProgress);
+        UpsertForAppend(entry, transaction.Scope, transaction.OperationId);
+
+        VerifyAppendMember(transaction.NewArtifact, transaction.OperationId);
+        VerifyAppendMember(transaction.NewSidecar, transaction.OperationId);
+        string committedHash = Convert.ToHexStringLower(SHA256.HashData(
+            transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
+        PersistAppendJournal(transaction, AppendJournalState.Committed, committedHash);
+    }
+
+    internal async Task RecoverAppendAsync(string scope, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        EnsureMaterialized(scope);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        await RecoverAppendUnsafeAsync(scope, "recovery", cancellationToken);
+    }
+
+    internal void WriteAppendRecoveryRequiredJournalForTest(string operationId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+        AppendTransaction transaction = LastPreparedAppendTransactionForTest
+            ?? throw new InvalidOperationException("An append transaction must be prepared before the recovery seam is used.");
+        transaction = transaction with { OperationId = operationId };
+        LastPreparedAppendTransactionForTest = transaction;
+        PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
+            detail: "Deterministic recovery evidence created for testing.");
+    }
+
+    private Task RecoverAppendUnsafeAsync(string scope, string operationId = "recovery", CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ct.ThrowIfCancellationRequested();
+        string storeDirectory = GetStoreDirForScope(scope);
+        string journalPath = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
+        if (!File.Exists(journalPath))
+            return Task.CompletedTask;
+
+        AppendJournal journal;
+        try
+        {
+            byte[] journalBytes = File.ReadAllBytes(journalPath);
+            Exception? parseFailure = InjectAppendFault(AppendFaultPoint.JournalParse, operationId, journalPath);
+            if (parseFailure is not null)
+                throw parseFailure;
+            journal = AppendJournalCodec.ParseAndValidate(journalBytes, scope, journalPath, storeDirectory);
+        }
+        catch (Exception exception) when (exception is AppendJournalException or IOException)
+        {
+            string recoveryOperationId = exception is AppendJournalException journalException
+                ? journalException.OperationId ?? operationId
+                : operationId;
+            throw RecoveryRequired(journalPath, "The append journal failed integrity verification.", exception,
+                recoveryOperationId);
+        }
+
+        // From this boundary onward the journal is the source of truth for correlation. The
+        // caller's ID is only meaningful while admitting the journal; recovery work belongs to
+        // the append attempt recorded by the durable evidence.
+        operationId = journal.OperationId;
+        AppendTransaction transaction = journal.ToTransaction();
+        if (journal.State is AppendJournalState.RecoveryRequired or AppendJournalState.ArchiveInProgress)
+        {
+            try
+            {
+                transaction = ReplayArchiveMembers(transaction, journalPath);
+                PersistAppendJournal(transaction, AppendJournalState.Archived,
+                    detail: "Recorded archive members were deterministically completed.");
+            }
+            catch (Exception exception)
+            {
+                PersistRecoveryRequiredOrThrow(transaction, journalPath,
+                    "Archive recovery could not prove every recorded archive member.", exception, operationId);
+            }
+        }
+
+        if (journal.State is AppendJournalState.Committed or AppendJournalState.CleanupPending)
+        {
+            Exception? verificationFailure = InjectAppendFault(
+                AppendFaultPoint.VerificationRead, journal.OperationId, journalPath);
+            if (verificationFailure is not null)
+                throw RecoveryRequired(journalPath, "Committed append verification could not be completed.",
+                    verificationFailure, journal.OperationId);
+
+            bool currentMembers = AreAppendMembersCurrent(transaction);
+            if (currentMembers && !HasCommittedHash(transaction, journal.CommittedHash))
+                throw RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
+                    operationId: operationId);
+
+            if (currentMembers)
+            {
+                if (journal.State == AppendJournalState.CleanupPending)
+                {
+                    ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, CancellationToken.None);
+                    if (cleanup.Failed)
+                        throw RecoveryRequired(journalPath,
+                            cleanup.Detail,
+                            operationId: transaction.OperationId);
+                }
+
+                try
+                {
+                    TryDeleteAppendJournal(journalPath, transaction.OperationId);
+                }
+                catch (Exception exception)
+                {
+                    throw RecoveryRequired(journalPath,
+                        "Committed append cleanup could not remove its journal evidence.",
+                        exception, transaction.OperationId);
+                }
+                return Task.CompletedTask;
+            }
+
+            if (!TryRestoreAppendTransaction(transaction))
+                throw RecoveryRequired(journalPath, "The committed append does not match its recorded bytes",
+                    operationId: operationId);
+        }
+        else if (!TryRestoreAppendTransaction(transaction))
+        {
+            PersistRecoveryRequiredOrThrow(transaction, journalPath,
+                "Raw rollback could not prove the original pair.", null, operationId);
+        }
+
+        try
+        {
+            PersistAppendJournal(transaction, AppendJournalState.RolledBack);
+            TryDeleteAppendJournal(journalPath, transaction.OperationId);
+        }
+        catch (Exception exception)
+        {
+            PersistRecoveryRequiredOrThrow(transaction, journalPath,
+                "Rollback completed but final journalization could not be proven.", exception, operationId);
+        }
+        return Task.CompletedTask;
+    }
+
+    private AppendTransaction ReplayArchiveMembers(AppendTransaction transaction, string journalPath)
+    {
+        ArchivePlan plan = transaction.Archive;
+        if (!plan.Required)
+            return transaction;
+
+        ArchiveMemberStatus artifactStatus = plan.ArtifactStatus;
+        if (artifactStatus is not (ArchiveMemberStatus.AlreadyPresentVerified or ArchiveMemberStatus.Created))
+            artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!,
+                transaction.OperationId, AppendFaultPoint.ArchiveArtifactWrite,
+                AppendFaultPoint.ArchiveArtifactFlush);
+        transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
+        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+
+        ArchiveMemberStatus sidecarStatus = plan.SidecarStatus;
+        if (sidecarStatus is not (ArchiveMemberStatus.AlreadyPresentVerified or ArchiveMemberStatus.Created))
+        {
+            sidecarStatus = transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null
+                ? WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
+                    AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush)
+                : ArchiveMemberStatus.NotRequired;
+        }
+
+        return transaction with { Archive = plan.WithStatuses(artifactStatus, sidecarStatus) };
+    }
+
+    private void PersistRecoveryRequiredOrThrow(AppendTransaction transaction, string journalPath,
+        string detail, Exception? failure, string operationId)
+    {
+        try
+        {
+            PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired, detail: detail);
+        }
+        catch (Exception journalFailure)
+        {
+            failure = failure is null
+                ? journalFailure
+                : new AggregateException(detail, failure, journalFailure);
+        }
+        throw RecoveryRequired(journalPath, detail, failure, operationId);
+    }
+
+    private void PersistAppendJournal(AppendTransaction transaction, AppendJournalState state,
+        string? committedHash = null, string? detail = null)
+    {
+        string storeDirectory = GetStoreDirForScope(transaction.Scope);
+        Directory.CreateDirectory(Path.Combine(storeDirectory, "versions"));
+        string path = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
+        AppendJournal current = File.Exists(path)
+            ? AppendJournalCodec.ParseAndValidate(
+                File.ReadAllBytes(path), transaction.Scope, path, storeDirectory)
+            : AppendJournalCodec.CreatePrepared(transaction);
+        current = current with
+        {
+            ArchiveArtifactStatus = transaction.Archive.ArtifactStatus,
+            ArchiveSidecarStatus = transaction.Archive.SidecarStatus
+        };
+        AppendJournal journal = AppendJournalCodec.WithState(current, state, committedHash, detail);
+        byte[] bytes = AppendJournalCodec.Serialize(journal);
+        DurableFile.AtomicWriteAllBytesForAppend(path, bytes, transaction.OperationId,
+            AppendFaultPoint.JournalWrite, AppendFaultPoint.JournalFlush);
+    }
+
+    private void DeleteAppendJournal(AppendTransaction transaction)
+    {
+        string path = AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(transaction.Scope), "versions"));
+        TryDeleteAppendJournal(path, transaction.OperationId);
+    }
+
+    private static void TryDeleteAppendJournal(string path, string operationId)
+    {
+        Exception? failure = InjectAppendFault(AppendFaultPoint.JournalDelete, operationId, path);
+        if (failure is not null)
+            throw failure;
+        File.Delete(path);
+    }
+
+    private static void VerifyAppendMember(RawMemberSnapshot expected, string operationId)
+    {
+        Exception? failure = InjectAppendFault(AppendFaultPoint.VerificationRead, operationId, expected.Path);
+        if (failure is not null)
+            throw failure;
+        if (!File.Exists(expected.Path))
+            throw new IOException($"Append member is missing after publication: {expected.Path}");
+        byte[] actual = File.ReadAllBytes(expected.Path);
+        if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(actual)), expected.Sha256,
+                StringComparison.Ordinal))
+            throw new IOException($"Append member hash mismatch after publication: {expected.Path}");
+    }
+
+    private static bool AreAppendMembersCurrent(AppendTransaction transaction) =>
+        MatchesAppendMember(transaction.NewArtifact) && MatchesAppendMember(transaction.NewSidecar);
+
+    private static bool HasCommittedHash(AppendTransaction transaction, string? committedHash)
+    {
+        if (string.IsNullOrWhiteSpace(committedHash))
+            return false;
+
+        byte[] artifact = File.ReadAllBytes(transaction.NewArtifact.Path);
+        byte[] sidecar = File.ReadAllBytes(transaction.NewSidecar.Path);
+        string actualHash = Convert.ToHexStringLower(SHA256.HashData(artifact.Concat(sidecar).ToArray()));
+        return string.Equals(actualHash, committedHash, StringComparison.Ordinal);
+    }
+
+    private static bool MatchesAppendMember(RawMemberSnapshot expected)
+    {
+        if (!File.Exists(expected.Path))
+            return false;
+        return string.Equals(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(expected.Path))),
+            expected.Sha256, StringComparison.Ordinal);
+    }
+
+    private static bool TryRestoreAppendTransaction(AppendTransaction transaction)
+    {
+        bool artifactRestored = RestoreAppendMember(
+            transaction.OldArtifact, transaction.NewArtifact, transaction.OperationId);
+        bool sidecarRestored = RestoreAppendMember(
+            transaction.OldSidecar, transaction.NewSidecar, transaction.OperationId);
+        return artifactRestored && sidecarRestored &&
+            MatchesAppendState(transaction.OldArtifact) && MatchesAppendState(transaction.OldSidecar);
+    }
+
+    private static bool TryRemoveCreatedArchiveMembers(AppendTransaction transaction)
+    {
+        ArchivePlan plan = transaction.Archive;
+        return ReconcileArchiveMember(plan.ArtifactStatus, plan.ArtifactArchivePath,
+                   transaction.OldArtifact, transaction.OperationId) &&
+               ReconcileArchiveMember(plan.SidecarStatus, plan.SidecarArchivePath,
+                   transaction.OldSidecar, transaction.OperationId);
+    }
+
+    private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope)
+    {
+        try
+        {
+            return AppendJournalCodec.ParseAndValidate(
+                    File.ReadAllBytes(journalPath), scope, journalPath,
+                    Path.GetDirectoryName(Path.GetDirectoryName(journalPath))!)
+                .ToTransaction();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool ReconcileArchiveMember(
+        ArchiveMemberStatus status, string? destination, RawMemberSnapshot expected, string operationId)
+    {
+        if (status is ArchiveMemberStatus.NotRequired or ArchiveMemberStatus.AlreadyPresentVerified)
+            return true;
+        if (destination is null)
+            return false;
+
+        try
+        {
+            if (status is not ArchiveMemberStatus.Created)
+            {
+                if (!File.Exists(destination))
+                    return true;
+                // A planned member may already be present from an earlier operation. Matching
+                // bytes make it safe to retain; a mismatch is evidence that ownership cannot be
+                // established, so the journal must remain for recovery.
+                return MatchesArchiveBytes(destination, expected);
+            }
+            if (!File.Exists(destination))
+                return true;
+            if (!MatchesArchiveBytes(destination, expected))
+                return false;
+
+            Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, destination);
+            if (failure is not null)
+                throw failure;
+            File.Delete(destination);
+            return !File.Exists(destination);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool MatchesArchiveBytes(string path, RawMemberSnapshot expected) =>
+        string.Equals(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))), expected.Sha256,
+            StringComparison.Ordinal);
+
+    private static bool RestoreAppendMember(RawMemberSnapshot oldMember, RawMemberSnapshot newMember,
+        string operationId)
+    {
+        try
+        {
+            if (oldMember.Existed)
+            {
+                if (File.Exists(oldMember.Path) && !MatchesAppendMember(newMember) && !MatchesAppendMember(oldMember))
+                    return false;
+                DurableFile.AtomicWriteAllBytesForAppend(oldMember.Path, oldMember.Bytes, operationId,
+                    AppendFaultPoint.RollbackWrite, AppendFaultPoint.RollbackWrite);
+                return true;
+            }
+
+            if (!File.Exists(oldMember.Path))
+                return true;
+            if (!MatchesAppendMember(newMember))
+                return false;
+            Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, oldMember.Path);
+            if (failure is not null)
+                throw failure;
+            File.Delete(oldMember.Path);
+            return !File.Exists(oldMember.Path);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool MatchesAppendState(RawMemberSnapshot expected) =>
+        expected.Existed ? MatchesAppendMember(expected) : !File.Exists(expected.Path);
+
+    private static AppendStoreException RecoveryRequired(string journalPath, string detail,
+        Exception? inner = null, string operationId = "recovery") =>
+        new(AppendStoreErrorCode.RecoveryRequired, operationId,
+            $"Append recovery is required at '{journalPath}': {detail}", inner,
+            new AppendRecoveryInfo(
+                journalPath,
+                AppendJournalState.RecoveryRequired.ToString(),
+                "resolve the retained append journal before retrying",
+                detail));
 
     /// <summary>Assembles the index entry from the derived half plus the store's own bookkeeping.
     /// <see cref="AttributeMigration.Forward"/> is the same safety net both pre-collapse write paths
@@ -2150,13 +3177,23 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     // ── Artifact file I/O ────────────────────────────────────────────────────
 
     internal async Task WriteArtifactAsync(string subject, string scope, string artifactText,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        await WriteArtifactAsync(subject, scope, artifactText, operationId: null, ct);
+
+    private async Task WriteArtifactAsync(string subject, string scope, string artifactText,
+        string? operationId, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        WithExclusiveLock(scope, () =>
+        RunUnderAppendLock(scope, operationId, () =>
         {
             string path = ArtifactPath(subject, scope);
-            DurableFile.AtomicWriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(artifactText));
+            if (operationId is null)
+                DurableFile.AtomicWriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(artifactText));
+            else
+                DurableFile.AtomicWriteAllBytesForAppend(
+                    path, System.Text.Encoding.UTF8.GetBytes(artifactText), operationId,
+                    AppendFaultPoint.LiveArtifactWrite,
+                    AppendFaultPoint.LiveArtifactFlush);
             _artifactCache.Invalidate($"{scope}|{subject}|");
         });
         await Task.CompletedTask;

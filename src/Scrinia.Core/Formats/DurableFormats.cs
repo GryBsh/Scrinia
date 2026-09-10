@@ -91,9 +91,14 @@ public static class DurableFormats
         new("restore-journal", Current: 1, AbsentMeans: null,
             FormatDisposition.Refuse, FormatDisposition.Refuse);
 
+    /// <summary>A scope-local append transaction journal. Unknown versions are never replayed.</summary>
+    public static readonly FormatContract AppendJournal =
+        new("append-journal", Current: 1, AbsentMeans: null,
+            FormatDisposition.Refuse, FormatDisposition.Refuse);
+
     public static IReadOnlyList<FormatContract> All { get; } =
     [
         ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta,
-        RestoreJournal
+        RestoreJournal, AppendJournal
     ];
 }

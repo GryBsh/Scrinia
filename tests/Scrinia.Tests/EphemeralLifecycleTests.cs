@@ -71,7 +71,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
         var appended = await _store.AppendAsync(
             MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["no new file reference in this chunk"]));
 
-        appended.FileHashes.Should().ContainKey("src/thing.cs").WhoseValue.Should().Be(originalHash,
+        appended.Entry!.FileHashes.Should().ContainKey("src/thing.cs").WhoseValue.Should().Be(originalHash,
             because: "an append must carry the ORIGINAL baseline forward, not silently re-hash the " +
                 "file to its current (possibly drifted) content");
         _store.GetEphemeral("scratch")!.FileHashes.Should().ContainKey("src/thing.cs")

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Plugin.Embeddings;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
@@ -25,20 +26,22 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 public sealed class ModelDownloadIntegrityTests : IDisposable
 {
     private readonly string _home;
-    private readonly string? _previousHome;
+    private readonly ProcessEnvironmentLock _environmentLock;
+    private readonly EnvironmentVariableScope _homeScope;
     private readonly ILogger _logger = NullLogger.Instance;
 
     public ModelDownloadIntegrityTests()
     {
-        _previousHome = Environment.GetEnvironmentVariable("SCRINIA_HOME");
+        _environmentLock = ProcessEnvironmentLock.Acquire();
         _home = Path.Combine(Path.GetTempPath(), $"scrinia_home_{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("SCRINIA_HOME", _home);
+        _homeScope = new EnvironmentVariableScope("SCRINIA_HOME", _home);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("SCRINIA_HOME", _previousHome);
+        _homeScope.Dispose();
         try { Directory.Delete(_home, recursive: true); } catch { /* best-effort */ }
+        _environmentLock.Dispose();
     }
 
     private string ModelsRoot => Path.Combine(_home, "models");

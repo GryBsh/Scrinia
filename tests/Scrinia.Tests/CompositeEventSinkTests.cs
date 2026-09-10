@@ -60,6 +60,33 @@ public sealed class CompositeEventSinkTests
         await act.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task OperationAwareDispatchPreservesLegacySinksAndPassesTheOperationId()
+    {
+        var aware = new OperationAwareSink();
+        var legacy = new RecordingSink();
+        var composite = new CompositeEventSink([aware, legacy]);
+
+        await composite.OnAppendedAsync(MemoryAddress.Parse("/test/topic"), "extra", null!,
+            "op-123", CancellationToken.None);
+
+        aware.OperationId.Should().Be("op-123");
+        aware.LegacyCalls.Should().Be(0);
+        legacy.AppendedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task OperationAwareFailureIsPropagatedWithTheOperationIdBoundaryIntact()
+    {
+        var composite = new CompositeEventSink([new ThrowingOperationAwareSink()]);
+
+        Func<Task> dispatch = () => composite.OnAppendedAsync(MemoryAddress.Parse("/test/topic"),
+            "extra", null!, "op-456", CancellationToken.None);
+
+        await dispatch.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("operation-aware boom");
+    }
+
     private sealed class RecordingSink : IMemoryEventSink
     {
         public int StoredCount, AppendedCount, ForgottenCount;
@@ -84,5 +111,46 @@ public sealed class CompositeEventSinkTests
 
         public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
             => throw new InvalidOperationException("boom");
+    }
+
+    private sealed class OperationAwareSink : IMemoryEventSink, IOperationAwareMemoryEventSink
+    {
+        public string? OperationId { get; private set; }
+        public int LegacyCalls { get; private set; }
+
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
+        {
+            LegacyCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store,
+            string operationId, CancellationToken ct)
+        {
+            OperationId = operationId;
+            return Task.CompletedTask;
+        }
+
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+    }
+
+    private sealed class ThrowingOperationAwareSink : IMemoryEventSink, IOperationAwareMemoryEventSink
+    {
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store,
+            string operationId, CancellationToken ct) =>
+            throw new InvalidOperationException("operation-aware boom");
+
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
     }
 }

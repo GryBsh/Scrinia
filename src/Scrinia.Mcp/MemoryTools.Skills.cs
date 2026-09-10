@@ -46,6 +46,11 @@ namespace Scrinia.Mcp;
 [JsonSerializable(typeof(MutationResult))]
 [JsonSerializable(typeof(RefreshResult))]
 [JsonSerializable(typeof(SharedWarning))]
+[JsonSerializable(typeof(AppendStoreResult))]
+[JsonSerializable(typeof(AppendStoreWarning))]
+[JsonSerializable(typeof(AppendRecoveryInfo))]
+[JsonSerializable(typeof(AppendStoreOutcome))]
+[JsonSerializable(typeof(AppendWarningCode))]
 public partial class ScriniaMcpJsonContext : JsonSerializerContext;
 
 

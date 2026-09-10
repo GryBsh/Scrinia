@@ -200,6 +200,23 @@ public sealed class CliReviewGapTests
     }
 
     [Theory]
+    [InlineData("single", "warning", 1)]
+    [InlineData("multiple", "success", 0)]
+    public async Task CompactJsonUsesStatusToSelectExitCode(string shape, string expectedStatus, int expectedExit)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string name = shape == "single" ? "/findings/table-single" : "/findings/table-multiple";
+        string[] chunks = shape == "single" ? ["only chunk"] : ["first chunk", "second chunk"];
+        await new ScriniaMcpTools().Remember(chunks, MemoryAddress.Parse(name));
+
+        var (exit, json) = await RunJsonAsync(() =>
+            new ScriniaCommands().Compact(name, workspaceRoot: scope.WorkspaceDir, json: true));
+
+        exit.Should().Be(expectedExit);
+        JsonSerializer.Deserialize(json, CliJsonContext.Default.CliMcpOutput)!.Status.Should().Be(expectedStatus);
+    }
+
+    [Theory]
     [InlineData("success", 0)]
     [InlineData("warning", 1)]
     [InlineData("error", 1)]

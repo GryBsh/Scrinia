@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core.Configuration;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
@@ -29,18 +30,26 @@ public sealed class ModelRelocationTests : IDisposable
 {
     private const string ScriniaHomeVar = "SCRINIA_HOME";
 
-    private readonly string _home;
-    private readonly string _homeModelsDir;
-    private readonly string _workspace;
-    private readonly string _appContextModelDir;
-    private readonly string _legacyRoot;
-    private readonly string _altHome;
+    private string _home = null!;
+    private string _homeModelsDir = null!;
+    private string _workspace = null!;
+    private string _appContextModelDir = null!;
+    private string _legacyRoot = null!;
+    private string _altHome = null!;
 
-    private string? _previousHome;
     private bool _trapCreated;
+    private readonly ProcessEnvironmentLock? _environmentLock;
+    private EnvironmentVariableScope? _homeScope;
 
-    public ModelRelocationTests()
+    public ModelRelocationTests() : this(false)
     {
+    }
+
+    internal ModelRelocationTests(bool injectSetupFailure, bool injectFailureAfterTrapCreation = false)
+    {
+        try
+        {
+            _environmentLock = ProcessEnvironmentLock.Acquire();
         _home = Path.Combine(Path.GetTempPath(), $"scrinia_reloc_home_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_home);
 
@@ -63,8 +72,10 @@ public sealed class ModelRelocationTests : IDisposable
         Directory.CreateDirectory(_altHome);
 
         // Phase 2 resolver honors an isolated, non-empty absolute SCRINIA_HOME exactly.
-        _previousHome = Environment.GetEnvironmentVariable(ScriniaHomeVar);
-        Environment.SetEnvironmentVariable(ScriniaHomeVar, _home);
+        _homeScope = new EnvironmentVariableScope(ScriniaHomeVar, _home);
+
+        if (injectSetupFailure)
+            throw new InvalidOperationException("intentional constructor setup failure");
 
         // Trap the OLD executable-relative model path with a FILE so the pre-fix code's
         // Directory.CreateDirectory(AppContext/models/m2v-MiniLM-L6-v2) throws immediately —
@@ -75,30 +86,97 @@ public sealed class ModelRelocationTests : IDisposable
         if (File.Exists(appContextModelsParent))
             File.Delete(appContextModelsParent);
         Directory.CreateDirectory(appContextModelsParent);
+        if (Directory.Exists(_appContextModelDir))
+            Directory.Delete(_appContextModelDir, recursive: true);
         if (!File.Exists(_appContextModelDir))
         {
             File.WriteAllText(_appContextModelDir, "model-relocation-trap");
             _trapCreated = true;
         }
+
+        if (injectFailureAfterTrapCreation)
+            throw new InvalidOperationException("intentional constructor setup failure after trap creation");
+        }
+        catch (Exception setupException)
+        {
+            var cleanupFailures = new List<Exception>();
+            AttemptCleanup("SCRINIA_HOME restoration", () => _homeScope?.Dispose());
+            AttemptCleanup("constructor executable-relative model trap", () =>
+            {
+                if (!string.IsNullOrEmpty(_appContextModelDir))
+                    DeletePathAndVerify(_appContextModelDir);
+            });
+            AttemptCleanup("constructor home", () => DeletePathAndVerify(_home));
+            AttemptCleanup("constructor workspace", () => DeletePathAndVerify(_workspace));
+            AttemptCleanup("constructor legacy root", () => DeletePathAndVerify(_legacyRoot));
+            AttemptCleanup("constructor alternate home", () => DeletePathAndVerify(_altHome));
+            AttemptCleanup("constructor environment lock", () => _environmentLock?.Dispose());
+
+            if (cleanupFailures.Count > 0)
+                throw new AggregateException("Model relocation constructor compensation failed.", [setupException, .. cleanupFailures]);
+
+            throw;
+
+            void AttemptCleanup(string description, Action cleanup)
+            {
+                try
+                {
+                    cleanup();
+                }
+                catch (Exception ex)
+                {
+                    cleanupFailures.Add(new IOException($"Could not clean up {description} after constructor failure.", ex));
+                }
+            }
+        }
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(ScriniaHomeVar, _previousHome);
+        var cleanupFailures = new List<Exception>();
+
+        AttemptCleanup("SCRINIA_HOME restoration", () => _homeScope?.Dispose());
 
         // Remove the trap file/dir and any executable-relative model the pre-fix code may have
-        // downloaded there, leaving the test bin folder clean.
-        try
-        {
-            if (Directory.Exists(_appContextModelDir)) Directory.Delete(_appContextModelDir, recursive: true);
-            else if (File.Exists(_appContextModelDir)) File.Delete(_appContextModelDir);
-        }
-        catch { }
+        // downloaded there, leaving the test bin folder clean. Every cleanup attempt runs and any
+        // failure is reported to xUnit instead of being hidden from the next isolated repetition.
+        AttemptCleanup("executable-relative model trap", () => DeletePathAndVerify(_appContextModelDir));
+        AttemptCleanup("isolated home", () => DeletePathAndVerify(_home));
+        AttemptCleanup("process environment lock", () => _environmentLock?.Dispose());
+        AttemptCleanup("isolated workspace", () => DeletePathAndVerify(_workspace));
+        AttemptCleanup("legacy migration root", () => DeletePathAndVerify(_legacyRoot));
+        AttemptCleanup("alternate home", () => DeletePathAndVerify(_altHome));
 
-        try { Directory.Delete(_home, recursive: true); } catch { }
-        try { Directory.Delete(_workspace, recursive: true); } catch { }
-        try { Directory.Delete(_legacyRoot, recursive: true); } catch { }
-        try { Directory.Delete(_altHome, recursive: true); } catch { }
+        if (cleanupFailures.Count > 0)
+            throw new AggregateException("Model relocation test cleanup failed; isolation is not trustworthy.", cleanupFailures);
+
+        void AttemptCleanup(string description, Action cleanup)
+        {
+            try
+            {
+                cleanup();
+            }
+            catch (Exception ex)
+            {
+                cleanupFailures.Add(new IOException($"Could not clean up {description}.", ex));
+            }
+        }
+
+    }
+
+    private static void DeletePathAndVerify(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            Directory.Delete(path, recursive: true);
+        }
+        else if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+
+        if (Directory.Exists(path) || File.Exists(path))
+            throw new IOException($"Cleanup did not remove '{path}'.");
     }
 
     [Fact]
@@ -130,6 +208,56 @@ public sealed class ModelRelocationTests : IDisposable
         // or populate that executable-relative path.
         Directory.Exists(_appContextModelDir).Should().BeFalse(
             "Model2Vec must resolve under SCRINIA_HOME, never AppContext.BaseDirectory/models");
+    }
+
+    [Fact]
+    public async Task Setup_ResolvesModel2VecAcrossTenIsolatedHomes()
+    {
+        for (int repetition = 0; repetition < 10; repetition++)
+        {
+            string home = Path.Combine(Path.GetTempPath(), $"scrinia_reloc_repeat_home_{Guid.NewGuid():N}");
+            string workspace = Path.Combine(Path.GetTempPath(), $"scrinia_reloc_repeat_ws_{Guid.NewGuid():N}");
+            string modelDir = Path.Combine(home, "models", "m2v-MiniLM-L6-v2");
+            Directory.CreateDirectory(modelDir);
+            Directory.CreateDirectory(workspace);
+            File.WriteAllText(Path.Combine(modelDir, "model.safetensors"), $"isolated-model-{repetition}");
+            File.WriteAllText(Path.Combine(modelDir, "vocab.txt"), $"isolated-vocab-{repetition}");
+
+            try
+            {
+                using var homeScope = new EnvironmentVariableScope(ScriniaHomeVar, home);
+                int exit = await new ScriniaCommands().Setup(workspaceRoot: workspace, noOllama: true);
+
+                exit.Should().Be(0, $"isolated repetition {repetition + 1} should complete cleanly");
+                File.Exists(Path.Combine(modelDir, "model.safetensors")).Should().BeTrue();
+                File.Exists(Path.Combine(modelDir, "vocab.txt")).Should().BeTrue();
+                Directory.Exists(Path.Combine(home, "plugins")).Should().BeFalse(
+                    "a model-only setup must not create a plugin hierarchy");
+            }
+            finally
+            {
+                var cleanupFailures = new List<Exception>();
+                AttemptCleanup("repeated isolated home", () => DeletePathAndVerify(home));
+                AttemptCleanup("repeated isolated workspace", () => DeletePathAndVerify(workspace));
+
+                if (cleanupFailures.Count > 0)
+                    throw new AggregateException(
+                        $"Repetition {repetition + 1} cleanup failed; isolation is not trustworthy.",
+                        cleanupFailures);
+
+                void AttemptCleanup(string description, Action cleanup)
+                {
+                    try
+                    {
+                        cleanup();
+                    }
+                    catch (Exception ex)
+                    {
+                        cleanupFailures.Add(new IOException($"Could not clean up {description}.", ex));
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -398,4 +526,57 @@ public sealed class ModelRelocationTests : IDisposable
         }
     }
 
+}
+
+[Collection(GlobalWorkspaceConfigCollection.Name)]
+public sealed class ModelRelocationConstructorIsolationTests
+{
+    [Fact]
+    public void FailedConstructor_RestoresEnvironmentAndReleasesLock()
+    {
+        string? previousHome = Environment.GetEnvironmentVariable("SCRINIA_HOME");
+        var failure = Record.Exception(() => new ModelRelocationTests(injectSetupFailure: true));
+
+        failure.Should().BeOfType<InvalidOperationException>();
+        Environment.GetEnvironmentVariable("SCRINIA_HOME").Should().Be(previousHome);
+
+        Task<ProcessEnvironmentLock> lockTask = Task.Run(ProcessEnvironmentLock.Acquire);
+        lockTask.Wait(TimeSpan.FromSeconds(2)).Should().BeTrue(
+            "a failed fixture constructor must release the process-wide lock");
+        lockTask.Result.Dispose();
+    }
+
+    [Fact]
+    public void FailedConstructorAfterTrapCreation_RestoresEnvironmentReleasesLockAndCleansFilesystem()
+    {
+        string? previousHome = Environment.GetEnvironmentVariable("SCRINIA_HOME");
+        string trapPath = Path.Combine(AppContext.BaseDirectory, "models", "m2v-MiniLM-L6-v2");
+        HashSet<string> temporaryPathsBefore = CaptureRelocationTemporaryPaths();
+
+        var failure = Record.Exception(() => new ModelRelocationTests(
+            injectSetupFailure: false,
+            injectFailureAfterTrapCreation: true));
+
+        failure.Should().BeOfType<InvalidOperationException>();
+        Environment.GetEnvironmentVariable("SCRINIA_HOME").Should().Be(previousHome);
+        File.Exists(trapPath).Should().BeFalse("constructor compensation must remove the trap file");
+        Directory.Exists(trapPath).Should().BeFalse("constructor compensation must remove the trap directory");
+        CaptureRelocationTemporaryPaths().Should().BeEquivalentTo(temporaryPathsBefore,
+            "constructor compensation must remove every temporary path it created");
+
+        Task<ProcessEnvironmentLock> lockTask = Task.Run(ProcessEnvironmentLock.Acquire);
+        lockTask.Wait(TimeSpan.FromSeconds(2)).Should().BeTrue(
+            "a failed fixture constructor must release the process-wide lock");
+        lockTask.Result.Dispose();
+    }
+
+    private static HashSet<string> CaptureRelocationTemporaryPaths()
+    {
+        string temporaryRoot = Path.GetTempPath();
+        return Directory.EnumerateDirectories(temporaryRoot, "scrinia_*", SearchOption.TopDirectoryOnly)
+            .Where(path => path.Contains("reloc_", StringComparison.Ordinal)
+                || path.Contains("legacy_", StringComparison.Ordinal)
+                || path.Contains("alt_home_", StringComparison.Ordinal))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
 }

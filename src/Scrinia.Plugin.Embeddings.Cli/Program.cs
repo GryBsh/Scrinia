@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Server;
+using Scrinia.Core.Configuration;
 using Scrinia.Core.Embeddings;
 using Scrinia.Plugin.Embeddings;
 using Scrinia.Plugin.Embeddings.Cli;
@@ -31,11 +32,12 @@ for (int i = 0; i < args.Length; i++)
 // Secret config (API keys) arrives via the environment, never argv (Stream 5 S1).
 PluginConfigProtocol.ApplySecretEnvironment(configValues, Environment.GetEnvironmentVariable);
 
-dataDir ??= Path.Combine(AppContext.BaseDirectory, "..", ".scrinia");
+string scriniaHome = UserHome.Resolve();
+dataDir ??= Path.Combine(scriniaHome, "plugins", "scri-plugin-embeddings", "data");
 dataDir = Path.GetFullPath(dataDir);
 Directory.CreateDirectory(dataDir);
 
-modelsDir ??= Path.Combine(AppContext.BaseDirectory, "scri-plugin-embeddings");
+modelsDir ??= Path.Combine(scriniaHome, "models");
 Directory.CreateDirectory(modelsDir);
 
 // -- Initialize Vulkan embeddings --

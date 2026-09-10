@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using FluentAssertions;
 using Scrinia.Core.Embeddings;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
@@ -14,6 +16,71 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// </summary>
 public class EmbeddingsPluginCliTests
 {
+    [Fact]
+    public async Task NoArgumentInvocation_UsesScriniaHome_AndDoesNotWritePackageDirectory()
+    {
+        using var environmentLock = ProcessEnvironmentLock.Acquire();
+        string home = Path.Combine(Path.GetTempPath(), $"scrinia_plugin_cli_home_{Guid.NewGuid():N}");
+        string cliAssembly = RepoPaths.Combine(
+            "src", "Scrinia.Plugin.Embeddings.Cli", "bin", "Debug", "net10.0", "win-x64",
+            "scri-plugin-embeddings.dll");
+        string legacyModelDir = Path.Combine(AppContext.BaseDirectory, "scri-plugin-embeddings");
+        string legacyDataDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", ".scrinia"));
+        var legacySnapshot = SnapshotFiles(AppContext.BaseDirectory, legacyDataDir);
+
+        try
+        {
+            File.Exists(cliAssembly).Should().BeTrue("the child plugin assembly must be available to this test");
+            using var homeScope = new EnvironmentVariableScope("SCRINIA_HOME", home);
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                ArgumentList = { cliAssembly },
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            });
+
+            process.Should().NotBeNull();
+            Task<string> stderr = process!.StandardError.ReadToEndAsync();
+            Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+            await Task.WhenAny(process.WaitForExitAsync(), Task.Delay(TimeSpan.FromSeconds(10)));
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync();
+            }
+
+            (await stderr).Should().Contain("Embeddings plugin started");
+            (await stdout).Should().BeEmpty();
+            Directory.Exists(Path.Combine(home, "models")).Should().BeTrue();
+            Directory.Exists(Path.Combine(home, "plugins")).Should().BeTrue();
+            SnapshotFiles(AppContext.BaseDirectory, legacyDataDir)
+                .Should().Equal(legacySnapshot, "no-argument startup must not write the package directory");
+            Directory.Exists(legacyModelDir).Should().BeFalse(
+                "the no-argument fallback must not create the legacy package model directory");
+        }
+        finally
+        {
+            DeleteDirectoryAndVerify(home);
+        }
+    }
+
+    private static void DeleteDirectoryAndVerify(string path)
+    {
+        if (Directory.Exists(path))
+            Directory.Delete(path, recursive: true);
+
+        if (Directory.Exists(path) || File.Exists(path))
+            throw new IOException($"CLI test cleanup did not remove '{path}'.");
+    }
+
+    private static string[] SnapshotFiles(params string[] roots) => roots
+        .Where(Directory.Exists)
+        .SelectMany(root => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        .Order(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
     [Fact]
     public void EmbeddingOptions_HasExpectedDefaults()
     {

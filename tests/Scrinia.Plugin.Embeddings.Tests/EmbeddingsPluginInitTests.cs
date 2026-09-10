@@ -16,7 +16,7 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// <see cref="EmbeddingsPlugin.ComputeScoresAsync"/> entry point, which calls
 /// <c>EnsureInitialized</c> before doing anything else. They do NOT touch a GPU:
 /// the test process has no GGUF model at the plugin's expected
-/// "{BaseDirectory}/plugins/scri-plugin-embeddings" path, so
+/// "SCRINIA_HOME/models" path, so
 /// <c>VulkanModelManager.IsModelAvailable</c> returns false and
 /// <c>VulkanEmbeddingProvider.Create</c> is never invoked. Only the lock/disposed-guard
 /// logic itself is under test — this does not prove GPU-load de-duplication under a

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
+using Scrinia.Core.Configuration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
@@ -137,11 +138,11 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                 _logger = _ownedLoggerFactory.CreateLogger<EmbeddingsPlugin>();
             }
 
-            string pluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
-            string dataDir = Path.Combine(pluginsDir, "embeddings");
+            string scriniaHome = UserHome.Resolve();
+            string dataDir = Path.Combine(scriniaHome, "plugins", "scri-plugin-embeddings", "data");
             Directory.CreateDirectory(dataDir);
 
-            string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
+            string modelsDir = Path.Combine(scriniaHome, "models");
             Directory.CreateDirectory(modelsDir);
 
             // Initialize the provider FIRST so the store can be signed with its signature.

@@ -46,21 +46,30 @@ public interface IMemoryStore : IPluginStore
     Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default);
 
     /// <summary>
-    /// Appends <paramref name="write"/>'s single chunk to an existing memory and returns the entry
-    /// the store derived over the memory's full post-append content. Appending to a memory that does
-    /// not exist yet is a <see cref="StoreAsync"/>.
+    /// Appends <paramref name="write"/>'s single chunk and returns a <see cref="Task{TResult}"/>
+    /// containing an <see cref="AppendStoreResult"/> for the durable outcome. For an existing memory,
+    /// the result contains the entry derived from the full post-append content; for a missing target,
+    /// the operation creates a single-chunk memory with the same semantics as <see cref="StoreAsync"/>.
     ///
     /// <para>Same contract as <see cref="StoreAsync"/> — the store derives — plus everything the
     /// memory already carries that an append must not destroy: its curated keywords, its drift
     /// baseline, its earlier chunk entries and its curated preview. Each of those was lost by one of
     /// the four hand-rolled implementations this replaces.</para>
+    /// <para>The result distinguishes <see cref="AppendStoreOutcome.Created"/>,
+    /// <see cref="AppendStoreOutcome.Appended"/>, and
+    /// <see cref="AppendStoreOutcome.SuccessWithWarning"/>. The last means the durable write
+    /// committed but post-commit cleanup or event delivery produced a non-fatal warning. A
+    /// <see cref="AppendStoreOutcome.RecoveryRequired"/> result carries retained recovery evidence;
+    /// an append that cannot safely produce a result throws an append-specific exception. Every
+    /// result and append-specific exception carries an operation correlation ID. Existing-memory
+    /// archive and cleanup failures never silently discard retained journal evidence.</para>
     /// </summary>
     /// <exception cref="ArgumentException">Thrown when <c>write.Content</c> does not hold exactly
     /// one element. The derivation pipeline can express only one appended chunk — it reads the last
     /// element for the appended chunk's attributes and builds one chunk entry for it — so a
     /// multi-element append would silently lose every chunk between the first and the last. It is
     /// refused rather than merged.</exception>
-    Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default);
+    Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default);
 
     /// <summary>Reads a logical memory address.</summary>
     ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default);

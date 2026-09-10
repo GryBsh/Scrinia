@@ -124,12 +124,12 @@ public sealed partial class ScriniaMcpTools
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
         if (chunkCount <= 1)
-            return ResponseBuilder.Success("Already single-chunk — nothing to compact.")
+            return ResponseBuilder.Warning("Already a single chunk, nothing to compact.")
                 .WithAction("compacted")
                 .WithInfo("mutation: none");
 
         if (keepRecent > 0 && keepRecent >= chunkCount)
-            return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).")
+            return ResponseBuilder.Warning($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).")
                 .WithAction("compacted")
                 .WithInfo("mutation: none");
 

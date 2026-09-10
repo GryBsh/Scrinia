@@ -1,4 +1,6 @@
 status: warning
 action: compacted
+info:
+  - "mutation: none"
 content: |
   Already a single chunk, nothing to compact.

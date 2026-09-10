@@ -39,7 +39,7 @@ public class RememberWriteMetadataTests
             return base.StoreAsync(write, ct);
         }
 
-        public override Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+        public override Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default)
         {
             LastAppend = write;
             return base.AppendAsync(write, ct);

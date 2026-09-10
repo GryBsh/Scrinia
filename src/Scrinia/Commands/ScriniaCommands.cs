@@ -133,6 +133,12 @@ public partial class ScriniaCommands
 
         if (json)
         {
+            if (r.IsError && r.ErrorCode == ErrorCodes.RecoveryBlocked)
+            {
+                WriteJson(new CliMcpOutput(action, r.Status, r.ToYaml()), CliJsonContext.Default.CliMcpOutput);
+                return 1;
+            }
+
             if (r.IsError)
             {
                 MemoryError? writeError = action == "append" && r.ErrorCode == ErrorCodes.InvalidParameter
@@ -173,7 +179,7 @@ public partial class ScriniaCommands
         string error = exception.Failure switch
         {
             RestoreRecoveryFailure.UnsupportedVersion =>
-                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal version {ExtractUnsupportedJournalVersion(exception)} is newer than this build supports (1). The journal was left unchanged at '{exception.JournalPath}'. Upgrade scri, then retry the operation.",
+                $"Recovery is blocked for topic scope '{exception.Scope}': restore journal version {exception.UnsupportedVersion?.ToString() ?? "unknown"} is newer than this build supports (1). The journal was left unchanged at '{exception.JournalPath}'. Upgrade scri, then retry the operation.",
             RestoreRecoveryFailure.MalformedOrIntegrityFailed =>
                 $"Recovery is blocked for topic scope '{exception.Scope}': restore journal '{exception.JournalPath}' is malformed or failed integrity verification. No files were changed and the journal was retained. Inspect or restore the journal with a compatible scri build, then retry.",
             _ =>
@@ -183,6 +189,7 @@ public partial class ScriniaCommands
             error,
             ErrorCodes.RecoveryBlocked,
             "Resolve the retained restore journal for the named topic scope, then retry.");
+        response = response.WithRecovery(exception.Scope, exception.JournalPath);
         string yaml = response.ToYaml();
 
         if (json)
@@ -190,17 +197,6 @@ public partial class ScriniaCommands
         else
             Console.Write(yaml);
         return 1;
-    }
-
-    private static string ExtractUnsupportedJournalVersion(RestoreRecoveryException exception)
-    {
-        const string prefix = "Restore journal version ";
-        const string suffix = " is unsupported.";
-        string message = exception.Message;
-        if (!message.StartsWith(prefix, StringComparison.Ordinal) || !message.EndsWith(suffix, StringComparison.Ordinal))
-            return "unknown";
-
-        return message[prefix.Length..^suffix.Length];
     }
 
     /// <summary>Print the embedded agent guide.</summary>

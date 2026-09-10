@@ -51,7 +51,7 @@ public class FormatVersionTests
     {
         // Guard, not trivia: adding a durable format without registering a contract must fail
         // a test rather than pass silently. Bump this deliberately when a format is added.
-        DurableFormats.All.Should().HaveCount(9);
+        DurableFormats.All.Should().HaveCount(10);
     }
 
     // AbsentMeans is pinned here too. It was the column an adversarial pass corrected THREE
@@ -69,6 +69,7 @@ public class FormatVersionTests
     [InlineData("skill-meta", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
     [InlineData("agent-meta", 1, 1, FormatDisposition.Load, FormatDisposition.LoadReadOnly)]
     [InlineData("restore-journal", 1, null, FormatDisposition.Refuse, FormatDisposition.Refuse)]
+    [InlineData("append-journal", 1, null, FormatDisposition.Refuse, FormatDisposition.Refuse)]
     public void RegisteredContracts_MatchTheSpecTable(
         string name, int current, int? absentMeans,
         FormatDisposition onOlder, FormatDisposition onNewer)

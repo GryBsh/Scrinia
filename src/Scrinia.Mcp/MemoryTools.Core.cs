@@ -10,9 +10,11 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.Plugin.Abstractions;
 
 namespace Scrinia.Mcp;
 
@@ -1010,10 +1012,13 @@ public sealed partial class ScriniaMcpTools
                      "has no dedicated anchors parameter; a caller reaches this through its attributes " +
                      "parameter (attributes: { anchor: [...] }) in MemoryTools.cs, which documents what " +
                      "an anchor is for.")] string[]? anchors = null,
-        IReadOnlyDictionary<string, string[]>? attributes = null,
-        CancellationToken cancellationToken = default)
+         IReadOnlyDictionary<string, string[]>? attributes = null,
+         CancellationToken cancellationToken = default)
     {
+        string appendOperationId = Guid.NewGuid().ToString("N");
+        name = MemoryAddress.Parse(MemoryNaming.CanonicalizeEphemeralAlias(name.ToString()));
         var store = CurrentStore;
+        var sink = MemoryEventSinkContext.Current;
 
         // ── The STORE derives, and the store also resolves ───────────────
         //
@@ -1038,7 +1043,8 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Memory subject exceeds {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.",
                 ErrorCodes.InvalidParameter,
-                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
+                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.")
+                .WithOperationId(appendOperationId);
 
         MemoryWrite write;
         try
@@ -1050,29 +1056,237 @@ public sealed partial class ScriniaMcpTools
         }
         catch (InvalidMemoryWriteException ex)
         {
-            return InvalidMemoryWriteResponse(ex);
+            return InvalidMemoryWriteResponse(ex).WithOperationId(appendOperationId);
         }
 
-        var entry = await store.AppendAsync(write, cancellationToken);
+        IMemoryOperationHook? operationHook = sink as IMemoryOperationHook;
+        if (operationHook is not null)
+        {
+            try
+            {
+                Exception? beforeEventFailure = FileMemoryStore.InjectAppendFault(
+                    AppendFaultPoint.BeforeEvent, appendOperationId, name.ToString());
+                if (beforeEventFailure is not null)
+                    throw beforeEventFailure;
+
+                var beforeAppend = new BeforeAppendContext
+                {
+                    Store = store,
+                    Address = name,
+                    Content = content!
+                };
+                await operationHook.OnBeforeAppendAsync(beforeAppend, cancellationToken);
+                if (beforeAppend.Cancel)
+                    return ResponseBuilder.Error(
+                        beforeAppend.CancelReason ?? "Append was cancelled by an operation hook.",
+                        ErrorCodes.AppendCancelled,
+                        "retry the append when ready")
+                        .WithOperationId(appendOperationId);
+            }
+            catch (OperationCanceledException ex)
+            {
+                return ResponseBuilder.Error(ex.Message, ErrorCodes.AppendCancelled,
+                    "retry the append when ready").WithOperationId(appendOperationId);
+            }
+            catch (RestoreRecoveryException ex)
+            {
+                return RecoveryBlockedResponse(ex, appendOperationId);
+            }
+            catch (Exception ex)
+            {
+                return ResponseBuilder.Error(ex.Message, ErrorCodes.Internal,
+                    "inspect diagnostics before retrying").WithOperationId(appendOperationId);
+            }
+        }
+
+        AppendStoreResult appendResult;
+        try
+        {
+            appendResult = await store.AppendAsync(write, cancellationToken);
+        }
+        catch (InvalidMemoryWriteException ex)
+        {
+            return InvalidMemoryWriteResponse(ex).WithOperationId(
+                ex.AppendOperationId ?? appendOperationId);
+        }
+        catch (AppendOperationCanceledException ex)
+        {
+            return ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.AppendCancelled,
+                "retry the append when ready")
+                .WithOperationId(ex.OperationId);
+        }
+        catch (OperationCanceledException)
+        {
+            return ResponseBuilder.Error(
+                "Append was cancelled before its durable commit.",
+                ErrorCodes.AppendCancelled,
+                "retry the append when ready")
+                .WithOperationId(appendOperationId);
+        }
+        catch (AppendStoreException ex)
+        {
+            if (ex.Code == AppendStoreErrorCode.RecoveryRequired && ex.Recovery is not null)
+                return AppendRecoveryBlockedResponse(ex, scope);
+
+            string code = ex.Code == AppendStoreErrorCode.RecoveryRequired
+                ? ErrorCodes.RecoveryRequired
+                : ErrorCodes.Internal;
+            return ResponseBuilder.Error(
+                ex.Message,
+                code,
+                $"operationId: {ex.OperationId}",
+                ex.Code == AppendStoreErrorCode.RecoveryRequired
+                    ? "resolve the append recovery evidence before retrying"
+                    : "inspect diagnostics before retrying")
+                .WithOperationId(ex.OperationId);
+        }
+        catch (DurableWriteException ex)
+        {
+            return DurableWriteFailureResponse(ex);
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex, appendOperationId);
+        }
+        catch (ScopeReadOnlyException ex)
+        {
+            return DurableWriteFailureResponse(ex);
+        }
+        catch (Exception ex)
+        {
+            return ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.Internal,
+                "inspect diagnostics before retrying")
+                .WithOperationId(appendOperationId);
+        }
+        if (appendResult.Outcome == AppendStoreOutcome.RecoveryRequired)
+        {
+            McpResponse recoveryResponse = ResponseBuilder.Error(
+                appendResult.Recovery?.Detail ?? "Append requires recovery.",
+                ErrorCodes.RecoveryRequired,
+                $"operationId: {appendResult.OperationId}",
+                appendResult.Recovery is null
+                    ? "retry after recovery is complete"
+                    : $"action: {appendResult.Recovery.Action}")
+                .WithOperationId(appendResult.OperationId)
+                .WithInfo(
+                    appendResult.Recovery is null
+                        ? $"state: unknown"
+                        : $"journal: {appendResult.Recovery.JournalPath}",
+                    appendResult.Recovery is null
+                        ? "recovery details unavailable"
+                        : $"state: {appendResult.Recovery.State}");
+            return appendResult.Recovery is null
+                ? recoveryResponse
+                : recoveryResponse.WithRecovery(scope, appendResult.Recovery.JournalPath);
+        }
+
+        ArtifactEntry entry;
+        try
+        {
+            entry = appendResult.Entry
+                ?? throw new AppendStoreException(
+                    AppendStoreErrorCode.Internal,
+                    appendResult.OperationId,
+                    "Append completed without a derived entry.");
+        }
+        catch (AppendStoreException ex)
+        {
+            return ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.Internal,
+                $"operationId: {ex.OperationId}",
+                "inspect diagnostics before retrying")
+                .WithOperationId(ex.OperationId);
+        }
 
         string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 
-        // UpdatedAt is the create-vs-append discriminator, the same one MemoryOrchestrator.
-        // AppendAsync uses for the same decision: a real append always sets it, and it is null only
-        // for a first write. A create answers as a store — the "Remembered:" message and the
-        // OnStored sink — which is what append() has always returned for that case, when it
-        // returned Remember()'s own response.
-        bool created = entry.UpdatedAt is null;
+        bool wasCreated = appendResult.Outcome == AppendStoreOutcome.Created
+            || entry.UpdatedAt is null;
+        AppendStoreWarning? eventWarning = null;
         var address = entry.Address;
-        await FireEventSinkAsync(sink => created
-            ? sink.OnStoredAsync(address, write.RawContent, store, cancellationToken)
-            : sink.OnAppendedAsync(address, write.RawContent[0], store, cancellationToken));
+        try
+        {
+            await FireEventSinkAsync(sink => wasCreated
+                ? sink.OnStoredAsync(address, write.RawContent, store, cancellationToken)
+                : sink is IOperationAwareMemoryEventSink operationAware
+                    ? operationAware.OnAppendedAsync(address, write.RawContent[0], store,
+                        appendResult.OperationId, cancellationToken)
+                    : sink.OnAppendedAsync(address, write.RawContent[0], store, cancellationToken));
 
-        if (created)
-            return StoredResponse(entry, qualifiedName, ephemeral, "stored");
+            if (operationHook is not null)
+                await operationHook.OnAfterAppendAsync(new AfterAppendContext
+                {
+                    Store = store,
+                    Address = address,
+                    ChunkCount = entry.ChunkCount,
+                    OriginalBytes = entry.OriginalBytes,
+                    Content = write.RawContent[0]
+                }, cancellationToken);
 
-        return ResponseBuilder.Success($"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
-            .WithFileChanges().WithAction("appended");
+            Exception? afterEventFailure = FileMemoryStore.InjectAppendFault(
+                AppendFaultPoint.AfterEvent, appendResult.OperationId, qualifiedName);
+            if (afterEventFailure is not null)
+                throw afterEventFailure;
+        }
+        catch (OperationCanceledException)
+        {
+            eventWarning = new AppendStoreWarning(AppendWarningCode.EventFailed,
+                "The append committed, but post-commit event delivery was cancelled.");
+            appendResult = appendResult with
+            {
+                Outcome = AppendStoreOutcome.SuccessWithWarning,
+                Warning = appendResult.Warning ?? eventWarning
+            };
+        }
+        catch (Exception ex)
+        {
+            eventWarning = new AppendStoreWarning(AppendWarningCode.EventFailed,
+                $"The append committed, but post-commit event delivery failed: {ex.Message}");
+            appendResult = appendResult with
+            {
+                Outcome = AppendStoreOutcome.SuccessWithWarning,
+                Warning = appendResult.Warning ?? eventWarning
+            };
+        }
+
+        var response = appendResult.Outcome == AppendStoreOutcome.SuccessWithWarning
+            ? ResponseBuilder.SuccessWithWarning(wasCreated
+                ? $"Created {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)})."
+                : $"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
+                .WithFileChanges().WithAction(wasCreated ? "created" : "appended")
+            : wasCreated
+            ? StoredResponse(entry, qualifiedName, ephemeral, "created")
+            : ResponseBuilder.Success($"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
+                .WithFileChanges().WithAction("appended");
+        response = response.WithOperationId(appendResult.OperationId);
+        var responseInfo = new List<string>();
+        if (appendResult.Warning is not null)
+            responseInfo.AddRange(
+            [
+                $"warningCode: {appendResult.Warning.Code}",
+                appendResult.Warning.Message
+            ]);
+        if (eventWarning is not null && eventWarning != appendResult.Warning)
+            responseInfo.AddRange(
+            [
+                $"eventWarningCode: {eventWarning.Code}",
+                eventWarning.Message
+            ]);
+        if (appendResult.Recovery is not null)
+            responseInfo.AddRange(
+            [
+                $"journal: {appendResult.Recovery.JournalPath}",
+                $"state: {appendResult.Recovery.State}",
+                $"action: {appendResult.Recovery.Action}",
+                appendResult.Recovery.Detail
+            ]);
+        response = response.WithInfo([.. responseInfo]);
+        return response;
     }
 
     // kt removed — knowledge transfer is a learnable goal, not a fixed tool.

@@ -115,4 +115,10 @@ public class ResponseStatusIsolationTests
         ScriniaCommands.FormatCliError(ResponseBuilder.Error("boom"))
             .Should().Be("boom");
     }
+
+    [Fact]
+    public void SuccessWithWarning_IsRecognizedAsWarning()
+    {
+        ResponseBuilder.SuccessWithWarning("committed with a warning").IsWarning.Should().BeTrue();
+    }
 }

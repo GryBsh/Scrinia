@@ -50,11 +50,19 @@ public sealed class CompactNotificationTests
         await tools.Remember(["single"], MemoryAddress.Parse("/compact-noop"));
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
         sink.Stored.Clear();
+        string artifactPath = TestHelpers.Store.FindArtifactPath("compact-noop", "local");
+        byte[] before = await File.ReadAllBytesAsync(artifactPath);
 
         var response = await tools.Compact(MemoryAddress.Parse("/compact-noop"));
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+        byte[] after = await File.ReadAllBytesAsync(artifactPath);
 
-        response.Content.Should().Contain("Already a single chunk");
+        response.Status.Should().Be("warning");
+        response.Action.Should().Be("compacted");
+        response.Content.Should().Be("Already a single chunk, nothing to compact.");
+        response.Info.Should().Equal("mutation: none");
+        response.ErrorCode.Should().BeNull();
+        after.Should().Equal(before);
         sink.Stored.Should().BeEmpty();
     }
 

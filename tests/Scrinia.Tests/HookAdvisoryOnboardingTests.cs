@@ -55,6 +55,27 @@ public sealed class HookAdvisoryOnboardingTests
     }
 
     [Fact]
+    public void AddressFacingOnboarding_UsesCurrentCommandsAndCanonicalForms()
+    {
+        string readme = Read("README.md");
+        string gettingStarted = Read("docs", "getting-started.md");
+        string security = Read("docs", "security.md");
+        string guide = EmbeddedPrompts.LoadGuide()
+            ?? throw new InvalidOperationException("guide.md is not embedded in Scrinia.Mcp");
+
+        foreach (string text in new[] { readme, gettingStarted, security, guide })
+        {
+            text.Should().Contain("scri shared base add", "current shared-base registration must be discoverable");
+            text.Should().Contain("project-git", "shared bases use the fixed tracking policy");
+            text.Should().MatchRegex("/topic/(?:name|subject)", "persistent guidance uses canonical topic paths");
+            text.Should().MatchRegex("~(?:name|subject)", "ephemeral guidance uses canonical tilde names");
+            text.Should().NotContain("scri reconcile", "the retired reconcile command must not be advertised");
+            text.Should().NotContain("scri-merge", "the retired merge binary must not be advertised");
+            text.Should().NotContain("--multi-user", "the retired setup mode must not be advertised");
+        }
+    }
+
+    [Fact]
     public void OwnedDocs_ExerciseDisjointPhase4Phase5Ownership()
     {
         string readme = Read("README.md");

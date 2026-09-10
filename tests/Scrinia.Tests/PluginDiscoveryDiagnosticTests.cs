@@ -32,22 +32,24 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
     private const string PluginName = "scri-plugin-embeddings";
 
     private readonly string _home;
-    private string? _previousHome;
+    private readonly ProcessEnvironmentLock _environmentLock;
+    private EnvironmentVariableScope? _homeScope;
 
     public PluginDiscoveryDiagnosticTests()
     {
+        _environmentLock = ProcessEnvironmentLock.Acquire();
         _home = Path.Combine(Path.GetTempPath(), $"scrinia_plugin_home_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_home);
 
         // Phase 2 resolver honors an isolated, non-empty absolute SCRINIA_HOME exactly.
-        _previousHome = Environment.GetEnvironmentVariable(ScriniaHomeVar);
-        Environment.SetEnvironmentVariable(ScriniaHomeVar, _home);
+        _homeScope = new EnvironmentVariableScope(ScriniaHomeVar, _home);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(ScriniaHomeVar, _previousHome);
+        _homeScope?.Dispose();
         try { Directory.Delete(_home, recursive: true); } catch { }
+        _environmentLock.Dispose();
     }
 
     private static string CurrentRid() => RuntimeInformation.RuntimeIdentifier;
