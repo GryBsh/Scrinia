@@ -41,11 +41,18 @@ internal enum RestoreJournalTransition
 public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
     private static readonly AsyncLocal<Func<AppendFaultPoint, string, string, Exception?>?> AppendFaultInjectorContext = new();
+    private static readonly AsyncLocal<Func<WholeMemoryFaultPoint, string, Exception?>?> WholeMemoryFaultInjectorContext = new();
 
     internal static Func<AppendFaultPoint, string, string, Exception?>? AppendFaultInjector
     {
         get => AppendFaultInjectorContext.Value;
         set => AppendFaultInjectorContext.Value = value;
+    }
+
+    internal static Func<WholeMemoryFaultPoint, string, Exception?>? WholeMemoryFaultInjector
+    {
+        get => WholeMemoryFaultInjectorContext.Value;
+        set => WholeMemoryFaultInjectorContext.Value = value;
     }
 
     internal static IReadOnlyList<AppendFaultPoint> PreCommitFaultPoints { get; } =
@@ -78,12 +85,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return new IOException($"Injected append fault at {point}.");
         };
 
+    internal void FailOnceAt(WholeMemoryFaultPoint point) =>
+        WholeMemoryFaultInjector = (faultPoint, _) =>
+        {
+            if (faultPoint != point)
+                return null;
+            WholeMemoryFaultInjector = null;
+            return new IOException($"Injected whole-memory fault at {point}.");
+        };
+
     internal void FailPersistentlyAt(AppendFaultPoint point) =>
         AppendFaultInjector = (faultPoint, _, _) => faultPoint == point
             ? new IOException($"Injected append fault at {point}.")
             : null;
 
-    internal void ClearFaults() => AppendFaultInjector = null;
+    internal void ClearFaults()
+    {
+        AppendFaultInjector = null;
+        WholeMemoryFaultInjector = null;
+    }
 
     internal static Exception? InjectAppendFault(AppendFaultPoint point, string operationId, string path) =>
         AppendFaultInjector?.Invoke(point, operationId, path);
