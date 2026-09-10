@@ -40,6 +40,22 @@ internal sealed record WholeMemoryTransaction
     internal ArchivePairPlan Archive { get; }
     internal DateTimeOffset StartedAt { get; }
 
+    internal void Deconstruct(
+        out string operationId,
+        out string scope,
+        out string target,
+        out bool isEphemeral,
+        out RawMemberSnapshot oldArtifact,
+        out RawMemberSnapshot oldSidecar,
+        out RawMemberSnapshot newArtifact,
+        out RawMemberSnapshot newSidecar,
+        out ArchivePairPlan archive,
+        out DateTimeOffset startedAt) =>
+        (operationId, scope, target, isEphemeral, oldArtifact, oldSidecar, newArtifact,
+            newSidecar, archive, startedAt) =
+        (OperationId, Scope, Target, IsEphemeral, OldArtifact, OldSidecar, NewArtifact,
+            NewSidecar, Archive, StartedAt);
+
     private static string RequireText(string value, string parameterName) =>
         string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
@@ -71,6 +87,14 @@ internal sealed record ArchivePairPlan
     internal string? ArtifactPath { get; }
     internal string? SidecarPath { get; }
     internal IReadOnlyList<string> PruneCandidates { get; }
+
+    internal void Deconstruct(
+        out bool required,
+        out string? artifactPath,
+        out string? sidecarPath,
+        out IReadOnlyList<string> pruneCandidates) =>
+        (required, artifactPath, sidecarPath, pruneCandidates) =
+        (Required, ArtifactPath, SidecarPath, PruneCandidates);
 }
 
 internal enum WholeMemoryOutcome
@@ -107,6 +131,15 @@ internal sealed record WholeMemoryResult
     internal string OperationId { get; }
     internal string? Warning { get; }
     internal RecoveryInfo? Recovery { get; }
+
+    internal void Deconstruct(
+        out WholeMemoryOutcome outcome,
+        out ArtifactEntry? entry,
+        out string operationId,
+        out string? warning,
+        out RecoveryInfo? recovery) =>
+        (outcome, entry, operationId, warning, recovery) =
+        (Outcome, Entry, OperationId, Warning, Recovery);
 }
 
 internal sealed class WholeMemoryTransactionException : IOException
@@ -169,6 +202,13 @@ internal sealed record RecoveryInfo
     internal string Action { get; }
     internal string Detail { get; }
 
+    internal void Deconstruct(
+        out string evidencePath,
+        out string state,
+        out string action,
+        out string detail) =>
+        (evidencePath, state, action, detail) = (EvidencePath, State, Action, Detail);
+
     private static string RequireText(string value, string name) =>
         string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", name)
@@ -185,6 +225,9 @@ internal interface IWholeMemoryTransactionCoordinator
 
 internal sealed record FileEntityMutation
 {
+    private readonly byte[] _newBody;
+    private readonly byte[]? _newMeta;
+
     internal FileEntityMutation(
         string entityKind,
         string name,
@@ -202,8 +245,8 @@ internal sealed record FileEntityMutation
         MetaPath = RequireText(metaPath, nameof(metaPath));
         VersionsDirectory = RequireText(versionsDirectory, nameof(versionsDirectory));
         ArgumentNullException.ThrowIfNull(newBody);
-        NewBody = newBody.ToArray();
-        NewMeta = newMeta?.ToArray();
+        _newBody = newBody.ToArray();
+        _newMeta = newMeta?.ToArray();
         DeleteBody = deleteBody;
         DeleteMeta = deleteMeta;
     }
@@ -213,10 +256,23 @@ internal sealed record FileEntityMutation
     internal string BodyPath { get; }
     internal string MetaPath { get; }
     internal string VersionsDirectory { get; }
-    internal byte[] NewBody { get; }
-    internal byte[]? NewMeta { get; }
+    internal byte[] NewBody => _newBody.ToArray();
+    internal byte[]? NewMeta => _newMeta?.ToArray();
     internal bool DeleteBody { get; }
     internal bool DeleteMeta { get; }
+
+    internal void Deconstruct(
+        out string entityKind,
+        out string name,
+        out string bodyPath,
+        out string metaPath,
+        out string versionsDirectory,
+        out byte[] newBody,
+        out byte[]? newMeta,
+        out bool deleteBody,
+        out bool deleteMeta) =>
+        (entityKind, name, bodyPath, metaPath, versionsDirectory, newBody, newMeta, deleteBody, deleteMeta) =
+        (EntityKind, Name, BodyPath, MetaPath, VersionsDirectory, NewBody, NewMeta, DeleteBody, DeleteMeta);
 
     private static string RequireText(string value, string parameterName) =>
         string.IsNullOrWhiteSpace(value)

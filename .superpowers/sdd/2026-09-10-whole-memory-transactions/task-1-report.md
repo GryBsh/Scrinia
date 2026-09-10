@@ -40,3 +40,18 @@ No MCP or Core JSON source-generation context needed a registration: Task 1 cont
 
 - The worktree contains substantial pre-existing unrelated modifications and untracked reports/configuration files. They were not staged or changed by this task.
 - Repository-wide format verification is currently baseline-red; this task did not reformat unrelated files.
+
+## Review Fixes
+
+### Findings addressed
+
+- Added explicit positional-compatible `Deconstruct` methods to the manually validated transaction records, preserving their existing guards while restoring the contract's generated deconstruction API.
+- Made `FileEntityMutation` payloads immutable at the boundary: constructor inputs are copied and every `NewBody`/`NewMeta` read returns a fresh copy.
+- Expanded contract tests to cover result and archive-plan deconstruction, source-array mutation, returned-property mutation, and mutation deconstruction.
+
+### Fix verification
+
+- `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~WholeMemoryTransactionTests" --no-restore`
+  - PASS: 4 passed, 0 failed, 0 skipped.
+- `rtk dotnet build Scrinia.sln --no-restore`
+  - PASS: 13 projects, 0 errors; 344 pre-existing warnings.
