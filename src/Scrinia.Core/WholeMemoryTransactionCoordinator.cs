@@ -26,32 +26,11 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
         try
         {
             PersistEvidence(transaction, journalPath);
+            PersistState(transaction, AppendJournalState.ArchiveInProgress, journalPath);
             await stageAndPublish(cancellationToken).ConfigureAwait(false);
+            PersistState(transaction, AppendJournalState.Archived, journalPath);
             PersistState(transaction, AppendJournalState.NewPairInProgress, journalPath);
             PersistState(transaction, AppendJournalState.Committed, journalPath);
-
-                try
-                {
-                    DeleteEvidence(transaction, journalPath);
-                    TryDeleteEmptyDirectory(Path.GetDirectoryName(journalPath));
-                }
-            catch (Exception cleanupFailure)
-            {
-                PersistState(transaction, AppendJournalState.CleanupPending, journalPath);
-                return new WholeMemoryResult(
-                    WholeMemoryOutcome.SuccessWithWarning,
-                    null,
-                    transaction.OperationId,
-                    "Whole-memory commit succeeded, but recovery evidence cleanup failed.",
-                    new RecoveryInfo(journalPath, "cleanupPending", "resolve retained evidence",
-                        cleanupFailure.Message));
-            }
-
-            return new WholeMemoryResult(
-                transaction.OldArtifact.Existed || transaction.OldSidecar.Existed
-                    ? WholeMemoryOutcome.Replaced
-                    : WholeMemoryOutcome.Created,
-                null, transaction.OperationId, null, null);
         }
         catch (Exception failure)
         {
@@ -61,6 +40,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
                 {
                     PersistState(transaction, AppendJournalState.RolledBack, journalPath);
                     DeleteEvidence(transaction, journalPath);
+                    TryDeleteEmptyDirectory(Path.GetDirectoryName(journalPath));
                 }
                 catch (Exception cleanupFailure)
                 {
@@ -80,6 +60,38 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             throw RecoveryRequired(transaction, journalPath,
                 "Whole-memory publication failed and byte-for-byte rollback could not be proved.", failure);
         }
+
+        try
+        {
+            DeleteEvidence(transaction, journalPath);
+            TryDeleteEmptyDirectory(Path.GetDirectoryName(journalPath));
+        }
+        catch (Exception cleanupFailure)
+        {
+            try
+            {
+                FileMemoryStore.InjectWholeFault(WholeMemoryFaultPoint.CleanupStateWrite, journalPath);
+                PersistState(transaction, AppendJournalState.CleanupPending, journalPath);
+            }
+            catch (Exception stateFailure)
+            {
+                cleanupFailure = new AggregateException(cleanupFailure, stateFailure);
+            }
+
+            return new WholeMemoryResult(
+                WholeMemoryOutcome.SuccessWithWarning,
+                null,
+                transaction.OperationId,
+                "Whole-memory commit succeeded, but recovery evidence cleanup failed.",
+                new RecoveryInfo(journalPath, "cleanupPending", "resolve retained evidence",
+                    cleanupFailure.Message));
+        }
+
+        return new WholeMemoryResult(
+            transaction.OldArtifact.Existed || transaction.OldSidecar.Existed
+                ? WholeMemoryOutcome.Replaced
+                : WholeMemoryOutcome.Created,
+            null, transaction.OperationId, null, null);
     }
 
     private void PersistEvidence(WholeMemoryTransaction transaction, string journalPath)
@@ -91,7 +103,8 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
 
     private void PersistState(WholeMemoryTransaction transaction, AppendJournalState state, string journalPath)
     {
-        FileMemoryStore.InjectWholeFault(WholeMemoryFaultPoint.EvidenceWrite, journalPath);
+        if (state != AppendJournalState.CleanupPending)
+            FileMemoryStore.InjectWholeFault(WholeMemoryFaultPoint.EvidenceWrite, journalPath);
         DurableFile.AtomicWriteAllBytes(journalPath, SerializeJournal(transaction, state));
     }
 
@@ -166,6 +179,10 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             AppendJournalState.Prepared => journal,
             AppendJournalState.NewPairInProgress => AppendJournalCodec.WithState(
                 journal, AppendJournalState.NewPairInProgress),
+            AppendJournalState.Archived => AppendJournalCodec.WithState(
+                AppendJournalCodec.WithState(
+                    journal, AppendJournalState.ArchiveInProgress),
+                AppendJournalState.Archived),
             AppendJournalState.Committed => AppendJournalCodec.WithState(
                 AppendJournalCodec.WithState(journal, AppendJournalState.NewPairInProgress),
                 AppendJournalState.Committed),

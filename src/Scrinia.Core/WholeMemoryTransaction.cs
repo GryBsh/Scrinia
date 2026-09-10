@@ -184,7 +184,8 @@ internal enum WholeMemoryFaultPoint
     LiveSidecarWrite,
     VerificationRead,
     RollbackWrite,
-    EvidenceCleanup
+    EvidenceCleanup,
+    CleanupStateWrite
 }
 
 internal sealed record RecoveryInfo

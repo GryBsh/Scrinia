@@ -2121,6 +2121,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
         await RecoverAppendUnsafeAsync(scope, "store-recovery", cancellationToken).ConfigureAwait(false);
 
         ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope)
