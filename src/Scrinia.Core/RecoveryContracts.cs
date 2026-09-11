@@ -113,12 +113,14 @@ internal interface IRecoveryAdapter
 {
     RecoveryOperation Operation { get; }
     bool IsCandidateFile(string fileName);
-    RecoveryEnvelopeDocument ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath);
+    RecoveryEnvelopeDocument ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
+        string expectedEvidenceDirectory);
     RecoveryEnvelopeDocument ValidateForMutation(
         RecoveryEnvelopeDocument envelope,
         string expectedScope,
         string evidencePath,
-        string expectedSubject);
+        string expectedSubject,
+        string expectedEvidenceDirectory);
     RecoveryOutcome RecoverOrCleanup(
         RecoveryEnvelopeDocument envelope,
         string evidencePath,

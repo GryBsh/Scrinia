@@ -40,7 +40,7 @@ public sealed class RecoveryEnvelopeTests
         RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.FromRestore(journal);
         RecoveryEnvelopeDocument parsed = RecoveryEnvelopeCodec.Parse(
             RecoveryEnvelopeCodec.Serialize(envelope), RecoveryTestFixtures.LocalNotesScope,
-            RecoveryTestFixtures.RestoreJournalPath("scope"));
+            RecoveryTestFixtures.RestoreJournalPath("scope"), "scope");
 
         parsed.Operation.Should().Be(RecoveryOperation.Restore);
         parsed.Address.Should().BeNull();
@@ -55,9 +55,10 @@ public sealed class RecoveryEnvelopeTests
         byte[] restoreBytes = RecoveryTestFixtures.BuildLegacyRestoreJournal();
 
         RecoveryEnvelopeDocument append = new AppendRecoveryAdapter().NormalizeLegacy(
-            appendBytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"));
+            appendBytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"),
+            "scope");
         RecoveryEnvelopeDocument restore = new RestoreRecoveryAdapter().NormalizeLegacy(
-            restoreBytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.RestoreJournalPath("scope"));
+            restoreBytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.RestoreJournalPath("scope"), "scope");
 
         append.IsLegacy.Should().BeTrue();
         restore.IsLegacy.Should().BeTrue();
@@ -77,7 +78,7 @@ public sealed class RecoveryEnvelopeTests
             """;
 
         RecoveryEnvelopeException exception = FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
-                System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence"))
+                System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence", "."))
             .Should().Throw<RecoveryEnvelopeException>().Which;
 
         exception.Failure.Should().Be(RecoveryEnvelopeFailure.Malformed);
@@ -89,7 +90,7 @@ public sealed class RecoveryEnvelopeTests
         const string json = "{\"format\":\"scrinia.recovery\",\"format\":\"scrinia.recovery\"}";
 
         RecoveryEnvelopeException exception = FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
-                System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence"))
+                System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence", "."))
             .Should().Throw<RecoveryEnvelopeException>().Which;
 
         exception.Failure.Should().Be(RecoveryEnvelopeFailure.Malformed);
@@ -103,7 +104,7 @@ public sealed class RecoveryEnvelopeTests
         byte[] bytes = RecoveryEnvelopeCodec.Serialize(RecoveryEnvelopeCodec.FromRestore(restore));
 
         FluentActions.Invoking(() => ((IRecoveryAdapter)new AppendRecoveryAdapter()).ParseAndNormalize(
-                bytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope")))
+                bytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"), "scope"))
             .Should().Throw<RecoveryEnvelopeException>();
     }
 
@@ -112,7 +113,8 @@ public sealed class RecoveryEnvelopeTests
     {
         string evidencePath = Path.Combine(Path.GetTempPath(), ".file-entity-" + RecoveryTestFixtures.OperationId + ".recovery");
         RecoveryEnvelopeDocument envelope = new FileEntityRecoveryAdapter().NormalizeLegacy(
-            RecoveryTestFixtures.BuildLegacyFileEntityRecovery(), RecoveryTestFixtures.LocalNotesScope, evidencePath);
+            RecoveryTestFixtures.BuildLegacyFileEntityRecovery(), RecoveryTestFixtures.LocalNotesScope, evidencePath,
+            Path.GetDirectoryName(evidencePath)!);
 
         envelope.IsLegacy.Should().BeTrue();
         envelope.CreatedAt.Should().Be(DateTimeOffset.UnixEpoch);
@@ -128,7 +130,7 @@ public sealed class RecoveryEnvelopeTests
         RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.FromAppend(journal);
 
         FluentActions.Invoking(() => ((IRecoveryAdapter)new AppendRecoveryAdapter()).ValidateForMutation(
-                envelope, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"), "/wrong"))
+                envelope, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"), "/wrong", "scope"))
             .Should().Throw<RecoveryEnvelopeException>();
     }
 
@@ -139,7 +141,7 @@ public sealed class RecoveryEnvelopeTests
             RecoveryTestFixtures.BuildLegacyRestoreJournal(), RecoveryTestFixtures.LocalNotesScope, ".restore-journal.json");
         byte[] restoreBytes = RecoveryEnvelopeCodec.Serialize(RecoveryEnvelopeCodec.FromRestore(restore));
         FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
-                restoreBytes, RecoveryTestFixtures.LocalNotesScope, "wrong-name.json"))
+                restoreBytes, RecoveryTestFixtures.LocalNotesScope, "wrong-name.json", "."))
             .Should().Throw<RecoveryEnvelopeException>();
 
         var snapshot = new RecoveryMemberSnapshot("entity.md", true,
@@ -152,7 +154,7 @@ public sealed class RecoveryEnvelopeTests
             RecoveryLifecycleState.Prepared, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch));
 
         FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(fileBytes, RecoveryTestFixtures.LocalNotesScope,
-                ".file-entity-OTHER.recovery"))
+                ".file-entity-OTHER.recovery", "."))
             .Should().Throw<RecoveryEnvelopeException>();
     }
 
@@ -168,11 +170,41 @@ public sealed class RecoveryEnvelopeTests
 
         FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
                 Encoding.UTF8.GetBytes(appendJson.Replace("\"path\":\"notes.nmp2\"", "\"path\":null", StringComparison.Ordinal)),
-                RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope")))
+                RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"), "scope"))
             .Should().Throw<RecoveryEnvelopeException>();
         FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
                 Encoding.UTF8.GetBytes(restoreJson.Replace("\"name\":\"note\"", "\"name\":null", StringComparison.Ordinal)),
-                RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.RestoreJournalPath("scope")))
+                RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.RestoreJournalPath("scope"), "scope"))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
+    public void AdaptersRejectCorrectlyNamedEvidenceFromTheWrongDirectory()
+    {
+        string scopeDirectory = Path.Combine(Path.GetTempPath(), "recovery-scope");
+        string versionsDirectory = Path.Combine(scopeDirectory, "versions");
+        string entityDirectory = Path.Combine(Path.GetTempPath(), "skills", "entity");
+
+        byte[] appendBytes = RecoveryEnvelopeCodec.Serialize(RecoveryEnvelopeCodec.FromAppend(
+            AppendJournalCodec.ParseAndValidate(RecoveryTestFixtures.BuildLegacyAppendJournal(),
+                RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"))));
+        byte[] restoreBytes = RecoveryEnvelopeCodec.Serialize(RecoveryEnvelopeCodec.FromRestore(
+            RestoreJournalCodec.ParseAndValidate(RecoveryTestFixtures.BuildLegacyRestoreJournal(),
+                RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.RestoreJournalPath("scope"))));
+        byte[] fileEntityBytes = RecoveryTestFixtures.BuildLegacyFileEntityRecovery();
+
+        FluentActions.Invoking(() => ((IRecoveryAdapter)new AppendRecoveryAdapter()).ParseAndNormalize(
+                appendBytes, RecoveryTestFixtures.LocalNotesScope,
+                Path.Combine(scopeDirectory, AppendJournal.FileName), versionsDirectory))
+            .Should().Throw<RecoveryEnvelopeException>();
+        FluentActions.Invoking(() => ((IRecoveryAdapter)new RestoreRecoveryAdapter()).ParseAndNormalize(
+                restoreBytes, RecoveryTestFixtures.LocalNotesScope,
+                Path.Combine(versionsDirectory, ".restore-journal.json"), scopeDirectory))
+            .Should().Throw<RecoveryEnvelopeException>();
+        FluentActions.Invoking(() => ((IRecoveryAdapter)new FileEntityRecoveryAdapter()).ParseAndNormalize(
+                fileEntityBytes, RecoveryTestFixtures.LocalNotesScope,
+                Path.Combine(Path.GetDirectoryName(entityDirectory)!, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery"),
+                entityDirectory))
             .Should().Throw<RecoveryEnvelopeException>();
     }
 
