@@ -1897,8 +1897,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
         => await StoreAsyncCore(write, ct, appendOperationId: null);
 
+    internal async Task<(ArtifactEntry Entry, WholeMemoryResult? Transaction)> StoreWithTransactionResultAsync(
+        MemoryWrite write, CancellationToken ct = default)
+    {
+        WholeMemoryResult? transaction = null;
+        ArtifactEntry entry = await StoreAsyncCore(write, ct, appendOperationId: null,
+            result => transaction = result).ConfigureAwait(false);
+        return (entry, transaction);
+    }
+
     private async Task<ArtifactEntry> StoreAsyncCore(
-        MemoryWrite write, CancellationToken ct, string? appendOperationId = null)
+        MemoryWrite write, CancellationToken ct, string? appendOperationId = null,
+        Action<WholeMemoryResult>? transactionResult = null)
     {
         ArgumentNullException.ThrowIfNull(write);
         try
@@ -1937,7 +1947,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
 
         if (appendOperationId is null)
-            return await StorePersistentAsync(write, artifact, originalBytes, chunkCount, derived, ct)
+            return await StorePersistentAsync(write, artifact, originalBytes, chunkCount, derived, ct,
+                transactionResult)
                 .ConfigureAwait(false);
 
         // The typed address is the canonical identity. `MemoryWrite.Scope` is retained as the
@@ -2116,7 +2127,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private async Task<ArtifactEntry> StorePersistentAsync(
         MemoryWrite write, string artifact, long originalBytes, int chunkCount,
-        DerivedMetadata derived, CancellationToken cancellationToken)
+        DerivedMetadata derived, CancellationToken cancellationToken,
+        Action<WholeMemoryResult>? transactionResult = null)
     {
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
@@ -2161,7 +2173,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 wholePruneCandidates), startedAt);
 
         var coordinator = new WholeMemoryTransactionCoordinator(this);
-        await coordinator.ExecuteAsync(transaction, async ct =>
+        WholeMemoryResult result = await coordinator.ExecuteAsync(transaction, async ct =>
         {
             if (archive.Required)
             {
@@ -2185,6 +2197,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             VerifyWholeMember(transaction.NewArtifact);
             VerifyWholeMember(transaction.NewSidecar);
         }, cancellationToken).ConfigureAwait(false);
+        transactionResult?.Invoke(result);
 
         return entry;
     }

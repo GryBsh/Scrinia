@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Encoding;
 using Scrinia.Mcp;
 using Xunit;
 
@@ -7,6 +8,66 @@ namespace Scrinia.Tests;
 
 public sealed class WholeMemoryStoreTransactionTests
 {
+    [Fact]
+    public async Task Compact_LiveSidecarFailureMapsStructuredDurableFailureWithoutEvent()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        var sink = new RecordingSink();
+        MemoryEventSinkContext.Current = sink;
+        await tools.Remember(["old one", "old two"], MemoryAddress.Parse("/target"));
+        sink.Stored.Clear();
+        store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
+
+        McpResponse response = await tools.Compact(MemoryAddress.Parse("/target"));
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        response.OperationId.Should().NotBeNullOrWhiteSpace();
+        response.Action.Should().BeNull();
+        sink.Stored.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Compact_ArchiveCleanupWarningMapsToSuccessWithWarning()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        await tools.Remember(["old one", "old two"], MemoryAddress.Parse("/target"));
+        store.FailOnceAt(WholeMemoryFaultPoint.ArchiveCleanup);
+
+        McpResponse response = await tools.Compact(MemoryAddress.Parse("/target"));
+
+        response.Status.Should().Be("success_with_warning");
+        response.Action.Should().Be("compacted");
+        response.OperationId.Should().NotBeNullOrWhiteSpace();
+        response.Content.Should().Contain("Original archived.");
+    }
+
+    [Fact]
+    public async Task Compact_KeepRecentPreservesMetadataAndPublishesTheCommittedEvent()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        var sink = new RecordingSink();
+        MemoryEventSinkContext.Current = sink;
+        await tools.Remember(["first", "second", "third"], MemoryAddress.Parse("/target"),
+            attributes: new Dictionary<string, string[]> { ["tag"] = ["kept"] });
+        sink.Stored.Clear();
+
+        McpResponse response = await tools.Compact(MemoryAddress.Parse("/target"), keepRecent: 2);
+
+        response.Status.Should().Be("success");
+        store.LoadIndex("local").Single(entry => entry.Name == "target")
+            .Attributes!["tag"].Should().Contain("kept");
+        Nmp2ChunkedEncoder.GetChunkCount(await store.ReadArtifactAsync(MemoryAddress.Parse("/target")))
+            .Should().Be(2);
+        sink.Stored.Should().ContainSingle();
+    }
+
     [Fact]
     public async Task CompactWrite_LiveSidecarFailurePreservesPair()
     {
@@ -334,5 +395,22 @@ public sealed class WholeMemoryStoreTransactionTests
     {
         cancellation.Cancel();
         return null;
+    }
+
+    private sealed class RecordingSink : IMemoryEventSink
+    {
+        public List<MemoryAddress> Stored { get; } = [];
+
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
+        {
+            Stored.Add(address);
+            return Task.CompletedTask;
+        }
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
     }
 }

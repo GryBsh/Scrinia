@@ -265,21 +265,53 @@ public sealed partial class ScriniaMcpTools
                 $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
         }
 
-        var stored = await store.StoreAsync(write, cancellationToken);
+        ArtifactEntry stored;
+        WholeMemoryResult? transactionResult = null;
+        try
+        {
+            if (store is FileMemoryStore fileStore)
+            {
+                (stored, transactionResult) = await fileStore
+                    .StoreWithTransactionResultAsync(write, cancellationToken);
+            }
+            else
+            {
+                stored = await store.StoreAsync(write, cancellationToken);
+            }
+        }
+        catch (WholeMemoryTransactionException exception)
+        {
+            return WholeMemoryFailureResponse(exception, scope);
+        }
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
+        int dropped = chunkCount - newChunkCount;
+        string archived = hadIndexedEntry ? " Original archived." : "";
+        string summary = $"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}";
+
+        if (transactionResult?.Outcome == WholeMemoryOutcome.SuccessWithWarning)
+        {
+            var warningResponse = ResponseBuilder.SuccessWithWarning(summary)
+                .WithAction("compacted")
+                .WithOperationId(transactionResult.OperationId)
+                .WithInfo(transactionResult.Warning ?? "Whole-memory commit completed with a warning.");
+            if (!ephemeral)
+                warningResponse = warningResponse.WithFileChanges();
+            await FireEventSinkAsync(sink => sink.OnStoredAsync(
+                stored.Address, write.RawContent, store, cancellationToken));
+            return warningResponse;
+        }
+
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
             stored.Address, write.RawContent, store, cancellationToken));
-        int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no
         // index entry is a first write as far as it is concerned. Claiming an archive that did not
         // happen is the kind of report a user acts on before deleting something. An ephemeral never
         // archives — it has no versions/ directory — so hadIndexedEntry is unconditionally false
         // for that branch above.
-        string archived = hadIndexedEntry ? " Original archived." : "";
         var response = ResponseBuilder.Success(
-            $"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}");
+            summary);
         if (!ephemeral)
             response = response.WithFileChanges();
         return response.WithAction("compacted");

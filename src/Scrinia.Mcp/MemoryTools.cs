@@ -320,6 +320,28 @@ public sealed partial class ScriniaMcpTools
         return operationId is null ? response : response.WithOperationId(operationId);
     }
 
+    private static McpResponse WholeMemoryFailureResponse(
+        WholeMemoryTransactionException exception, string scope)
+    {
+        if (exception.Code == WholeMemoryErrorCode.RecoveryRequired)
+        {
+            RecoveryInfo recovery = exception.Recovery
+                ?? throw new InvalidOperationException("Whole-memory recovery response is missing structured evidence.");
+            return ResponseBuilder.Error(
+                    exception.Message,
+                    ErrorCodes.RecoveryRequired,
+                    "Resolve the retained whole-memory transaction evidence, then retry.")
+                .WithOperationId(exception.OperationId)
+                .WithRecovery(scope, recovery.EvidencePath);
+        }
+
+        return ResponseBuilder.Error(
+                exception.Message,
+                ErrorCodes.DurableWriteFailed,
+                "Check permissions, free disk space if needed, and retry.")
+            .WithOperationId(exception.OperationId);
+    }
+
     private static McpResponse RecoveryBlockedResponse(
         RestoreRecoveryException exception, string? operationId = null)
     {
