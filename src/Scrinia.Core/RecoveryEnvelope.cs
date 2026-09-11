@@ -613,41 +613,73 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
                 "File-entity recovery evidence belongs to a different entity directory.", evidencePath);
 
+        string oldBodyPath = CanonicalizeMemberPath(body.OldBody.Path, expectedEvidenceDirectory, entityName,
+            MemberRole.Body, allowVersions: false, evidencePath);
+        string bodyFileName = Path.GetFileName(oldBodyPath);
+        ValidateBodyFileName(bodyFileName, entityName, evidencePath);
+        string oldMetaPath = CanonicalizeMemberPath(body.OldMeta.Path, expectedEvidenceDirectory, entityName,
+            MemberRole.Meta, allowVersions: false, evidencePath);
+        ValidateMetaFileName(Path.GetFileName(oldMetaPath), entityName, evidencePath);
+
         body = body with
         {
-            OldBody = CanonicalizeMember(body.OldBody, expectedEvidenceDirectory, entityName, evidencePath),
-            OldMeta = CanonicalizeMember(body.OldMeta, expectedEvidenceDirectory, entityName, evidencePath),
-            CommittedBody = CanonicalizeOptionalMember(body.CommittedBody, expectedEvidenceDirectory, entityName, evidencePath),
-            CommittedMeta = CanonicalizeOptionalMember(body.CommittedMeta, expectedEvidenceDirectory, entityName, evidencePath),
-            ArchiveBodyPath = CanonicalizeOptionalArchive(body.ArchiveBodyPath, expectedEvidenceDirectory, entityName, evidencePath),
-            ArchiveMetaPath = CanonicalizeOptionalArchive(body.ArchiveMetaPath, expectedEvidenceDirectory, entityName, evidencePath)
+            OldBody = body.OldBody with { Path = oldBodyPath },
+            OldMeta = body.OldMeta with { Path = oldMetaPath },
+            CommittedBody = CanonicalizeOptionalMember(body.CommittedBody, expectedEvidenceDirectory, entityName,
+                MemberRole.Body, evidencePath),
+            CommittedMeta = CanonicalizeOptionalMember(body.CommittedMeta, expectedEvidenceDirectory, entityName,
+                MemberRole.Meta, evidencePath),
+            ArchiveBodyPath = CanonicalizeOptionalArchive(body.ArchiveBodyPath, expectedEvidenceDirectory, entityName,
+                MemberRole.Body, bodyFileName, evidencePath),
+            ArchiveMetaPath = CanonicalizeOptionalArchive(body.ArchiveMetaPath, expectedEvidenceDirectory, entityName,
+                MemberRole.Meta, body.ArchiveBodyPath, evidencePath)
         };
+
+        if (body.CommittedBody is not null &&
+            !string.Equals(Path.GetFileName(body.CommittedBody.Path), bodyFileName, StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+        if (body.CommittedMeta is not null)
+            ValidateMetaFileName(Path.GetFileName(body.CommittedMeta.Path), entityName, evidencePath);
 
         return RecoveryEnvelopeCodec.ValidateSubject(validated with { TypedBody = body }, expectedSubject, evidencePath, expectedEvidenceDirectory);
     }
 
     private static RecoveryMemberSnapshot? CanonicalizeOptionalMember(RecoveryMemberSnapshot? member, string directory,
-        string entityName, string evidencePath)
+        string entityName, MemberRole role, string evidencePath)
     {
         return member is null ? null : member with
         {
-            Path = CanonicalizeMemberPath(member.Path, directory, entityName, allowVersions: false, evidencePath)
+            Path = CanonicalizeMemberPath(member.Path, directory, entityName, role, allowVersions: false, evidencePath)
         };
     }
 
     private static string? CanonicalizeOptionalArchive(string? path, string directory,
-        string entityName, string evidencePath)
+        string entityName, MemberRole role, string? relatedPath, string evidencePath)
     {
-        return path is null ? null : CanonicalizeMemberPath(path, Path.Combine(directory, "versions"),
-            entityName, allowVersions: true, evidencePath);
+        if (path is null)
+            return null;
+        string canonicalPath = CanonicalizeMemberPath(path, Path.Combine(directory, "versions"), entityName,
+            role, allowVersions: true, evidencePath);
+        string fileName = Path.GetFileName(canonicalPath);
+        if (role == MemberRole.Body)
+        {
+            ValidateArchiveBodyFileName(fileName, entityName, relatedPath!, evidencePath);
+        }
+        else if (relatedPath is not null)
+        {
+            string relatedFileName = Path.GetFileName(relatedPath);
+            if (!string.Equals(fileName, Path.ChangeExtension(relatedFileName, ".meta.json"),
+                    StringComparison.OrdinalIgnoreCase))
+                throw UnsafeMemberPath(evidencePath);
+        }
+        else if (!fileName.StartsWith(entityName + "_", StringComparison.OrdinalIgnoreCase) ||
+                 !fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+        return canonicalPath;
     }
 
-    private static RecoveryMemberSnapshot CanonicalizeMember(RecoveryMemberSnapshot member, string directory,
-        string entityName, string evidencePath) => member with
-        { Path = CanonicalizeMemberPath(member.Path, directory, entityName, allowVersions: false, evidencePath) };
-
     private static string CanonicalizeMemberPath(string path, string directory, string entityName,
-        bool allowVersions, string evidencePath)
+        MemberRole role, bool allowVersions, string evidencePath)
     {
         if (string.IsNullOrWhiteSpace(path) || path.Contains('\0'))
             throw UnsafeMemberPath(evidencePath);
@@ -667,11 +699,42 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             throw UnsafeMemberPath(evidencePath);
 
         string fileName = Path.GetFileName(canonicalPath);
-        if (!fileName.StartsWith(entityName + ".", StringComparison.OrdinalIgnoreCase) &&
-            !(allowVersions && fileName.StartsWith(entityName + "_", StringComparison.OrdinalIgnoreCase)))
+        if (!fileName.StartsWith(entityName + (allowVersions ? "_" : "."), StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+        if (role == MemberRole.Meta && !fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+        if (role == MemberRole.Body && fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
             throw UnsafeMemberPath(evidencePath);
 
         return canonicalPath;
+    }
+
+    private static void ValidateBodyFileName(string fileName, string entityName, string evidencePath)
+    {
+        if (!fileName.StartsWith(entityName + ".", StringComparison.OrdinalIgnoreCase) ||
+            fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+    }
+
+    private static void ValidateMetaFileName(string fileName, string entityName, string evidencePath)
+    {
+        if (!string.Equals(fileName, entityName + ".meta.json", StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+    }
+
+    private static void ValidateArchiveBodyFileName(string fileName, string entityName, string bodyFileName,
+        string evidencePath)
+    {
+        if (!fileName.StartsWith(entityName + "_", StringComparison.OrdinalIgnoreCase) ||
+            fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetExtension(fileName), Path.GetExtension(bodyFileName), StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+    }
+
+    private enum MemberRole
+    {
+        Body,
+        Meta
     }
 
     private static RecoveryEnvelopeException UnsafeMemberPath(string evidencePath) =>
