@@ -128,4 +128,37 @@ public sealed class CliWholeMemoryTransactionTests
             Console.SetOut(prior);
         }
     }
+
+    [Fact]
+    public async Task CompactJsonArchiveCleanupWarningUsesCliMcpOutputEnvelope()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await new ScriniaMcpTools().MemoryRemember("/cli/warning", ["old one", "old two"]);
+        store.FailOnceAt(WholeMemoryFaultPoint.ArchiveCleanup);
+
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Compact(
+                "/cli/warning", workspaceRoot: scope.WorkspaceDir, json: true);
+
+            exit.Should().Be(1);
+            CliMcpOutput envelope = JsonSerializer.Deserialize(
+                output.ToString(), CliJsonContext.Default.CliMcpOutput)!;
+            envelope.Status.Should().Be("success_with_warning");
+            McpResponseAssert mapped = ResponseParser.Parse(envelope.Yaml);
+            mapped.Status.Should().Be("success_with_warning");
+            mapped.OperationId.Should().NotBeNullOrWhiteSpace();
+            mapped.JournalPath.Should().NotBeNullOrWhiteSpace();
+            mapped.JournalPath.Should().NotContain(scope.WorkspaceDir);
+            mapped.JournalPath.Should().Be(Path.GetFileName(mapped.JournalPath));
+        }
+        finally
+        {
+            Console.SetOut(prior);
+        }
+    }
 }
