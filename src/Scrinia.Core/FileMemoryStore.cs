@@ -840,12 +840,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (!Directory.Exists(storeDir))
             return read();
 
-        string journalPath = GetRestoreJournalPath(storeDir);
         using (FileLock.AcquireShared(GetLockPath(scope)))
         {
-            if (!File.Exists(journalPath))
+            RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
+            if (discovery.BlockingEvidence is not null)
+                throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+            if (discovery.Candidates.Count == 0)
             {
-                ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead, journalPath);
+                ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
+                    GetRestoreJournalPath(storeDir));
                 return read();
             }
         }
@@ -868,12 +871,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (!Directory.Exists(storeDir))
             return await read();
 
-        string journalPath = GetRestoreJournalPath(storeDir);
         using (FileLock.AcquireShared(GetLockPath(scope)))
         {
-            if (!File.Exists(journalPath))
+            RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
+            if (discovery.BlockingEvidence is not null)
+                throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+            if (discovery.Candidates.Count == 0)
             {
-                ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead, journalPath);
+                ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
+                    GetRestoreJournalPath(storeDir));
                 return await read();
             }
         }
@@ -4173,14 +4179,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
         if (discovery.BlockingEvidence is not null)
-        {
-            RecoveryBlock block = discovery.BlockingEvidence;
-            throw new RestoreRecoveryException(scope, block.EvidencePath,
-                block.Reason == RecoveryBlockReason.UnsupportedVersion
-                    ? RestoreRecoveryFailure.UnsupportedVersion
-                    : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
-                block.Detail);
-        }
+            throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+
+        RecoveryOutcome admission = _recoveryDiscovery.AdmitNext(scope, storeDir, discovery, CancellationToken.None);
+        if (admission.IsBlocked && admission.Block is not null)
+            throw CreateDiscoveryRecoveryException(admission.Block);
+        if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
+            throw CreateDiscoveryRecoveryException(new RecoveryBlock(scope, admission.EvidencePath,
+                discovery.Candidates[0].Operation, admission.OperationId, RecoveryBlockReason.Inconsistent,
+                "Recovery evidence is validated but its operation-specific replay boundary is not active."));
 
         string journalPath = GetRestoreJournalPath(storeDir);
         if (!File.Exists(journalPath))
@@ -4331,6 +4338,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private static RestoreRecoveryException ReplayIoFailed(string scope, string journalPath, Exception exception) =>
         new(scope, journalPath, RestoreRecoveryFailure.ReplayIoFailed,
             $"Restore replay failed for topic scope '{scope}'.", exception);
+
+    private static RestoreRecoveryException CreateDiscoveryRecoveryException(RecoveryBlock block) =>
+        new(block.Scope, block.EvidencePath,
+            block.Reason == RecoveryBlockReason.UnsupportedVersion
+                ? RestoreRecoveryFailure.UnsupportedVersion
+                : block.Reason == RecoveryBlockReason.ReplayIoFailed
+                    ? RestoreRecoveryFailure.ReplayIoFailed
+                    : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+            block.Detail, discoveryBlock: block);
 
     private List<RestoreJournalPayload> BuildRestorePayloadsUnsafe(string topicScope, List<ArtifactEntry> incoming,
         Dictionary<string, byte[]> bodies, bool overwrite)

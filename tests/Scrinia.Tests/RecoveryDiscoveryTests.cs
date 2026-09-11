@@ -10,7 +10,7 @@ public sealed class RecoveryDiscoveryTests
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
         string scopeDirectory = Path.Combine(root, "local-notes");
-        string entityDirectory = Path.Combine(scopeDirectory, "skill", "note");
+        string entityDirectory = Path.Combine(scopeDirectory, "note");
         Directory.CreateDirectory(entityDirectory);
         try
         {
@@ -29,6 +29,11 @@ public sealed class RecoveryDiscoveryTests
                 RecoveryTestFixtures.RestoreJournalPath(scopeDirectory),
                 RecoveryTestFixtures.AppendJournalPath(scopeDirectory),
                 RecoveryTestFixtures.FileEntityRecoveryPath(entityDirectory));
+
+            RecoveryOutcome admission = coordinator.AdmitNext(
+                RecoveryTestFixtures.LocalNotesScope, scopeDirectory, result, CancellationToken.None);
+            admission.IsBlocked.Should().BeFalse();
+            admission.Warning.Should().BeNull();
         }
         finally
         {
@@ -79,6 +84,35 @@ public sealed class RecoveryDiscoveryTests
             result.Candidates.Should().ContainSingle();
             result.Candidates[0].CanonicalSubject.Should().Be(RecoveryTestFixtures.CanonicalAddress);
             result.Candidates[0].IsLegacy.Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_NewVersionAndWrongScopeEvidenceRemainTypedAndScopeLocal()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string notes = Path.Combine(root, "notes");
+        Directory.CreateDirectory(notes);
+        try
+        {
+            File.WriteAllText(RecoveryTestFixtures.RestoreJournalPath(notes),
+                "{\"format\":\"scrinia.recovery\",\"version\":2}");
+            RecoveryDiscoveryCoordinator coordinator = new();
+
+            RecoveryDiscoveryResult newer = coordinator.Discover(RecoveryTestFixtures.LocalNotesScope, notes);
+            newer.BlockingEvidence!.Reason.Should().Be(RecoveryBlockReason.UnsupportedVersion);
+
+            File.WriteAllBytes(RecoveryTestFixtures.RestoreJournalPath(notes),
+                RecoveryTestFixtures.BuildLegacyRestoreJournal(RecoveryTestFixtures.LocalOtherScope));
+            RecoveryDiscoveryResult wrongScope = coordinator.Discover(RecoveryTestFixtures.LocalNotesScope, notes);
+            wrongScope.BlockingEvidence.Should().NotBeNull();
+            wrongScope.BlockingEvidence!.Scope.Should().Be(RecoveryTestFixtures.LocalNotesScope);
+            coordinator.Discover(RecoveryTestFixtures.LocalOtherScope, Path.Combine(root, "other"))
+                .Candidates.Should().BeEmpty();
         }
         finally
         {

@@ -7,7 +7,8 @@ namespace Scrinia.Core;
 internal enum RecoveryEnvelopeFailure
 {
     Malformed,
-    UnsupportedVersion
+    UnsupportedVersion,
+    WrongScope
 }
 
 internal sealed class RecoveryEnvelopeException : IOException
@@ -376,7 +377,9 @@ internal static class RecoveryEnvelopeCodec
         if (document.Version != CurrentVersion || document.BodyVersion <= 0) throw Malformed("Recovery envelope version is invalid", evidencePath);
         if (document.BodyVersion > CurrentBodyVersion) throw Unsupported("Recovery envelope body version is newer than this build", evidencePath);
         if (string.IsNullOrWhiteSpace(document.OperationId) || string.IsNullOrWhiteSpace(document.Scope) ||
-            !string.Equals(document.Scope, expectedScope, StringComparison.Ordinal)) throw Malformed("Recovery envelope identity is invalid", evidencePath);
+            !string.Equals(document.Scope, expectedScope, StringComparison.Ordinal))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.WrongScope,
+                "Recovery envelope scope does not match the selected scope.", evidencePath);
         if (document.Operation == RecoveryOperation.Append)
         {
             if (string.IsNullOrWhiteSpace(document.Address)) throw Malformed("Append recovery envelope address is required", evidencePath);
@@ -442,6 +445,8 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
         string expectedSubject, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Append, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Append replay is owned by the append operation.");
+    RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
+        new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
 
     private static void EnsureFilename(string evidencePath, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateEvidenceLocationForAdapter(RecoveryOperation.Append, evidencePath, expectedEvidenceDirectory);
@@ -484,6 +489,8 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         string expectedSubject, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Restore, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Restore replay is owned by the restore operation.");
+    RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
+        new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
 
     private static void EnsureFilename(string evidencePath, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateEvidenceLocationForAdapter(RecoveryOperation.Restore, evidencePath, expectedEvidenceDirectory);
@@ -563,6 +570,8 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             ? RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.FileEntity, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory)
             : throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence operation does not match file-entity adapter.", evidencePath);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("File-entity replay is owned by the file-entity operation.");
+    RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
+        new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
 
     private static RecoveryMemberSnapshot ReadSnapshot(BinaryReader reader)
     {

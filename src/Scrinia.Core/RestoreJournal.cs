@@ -43,19 +43,21 @@ internal enum RestoreRecoveryFailure
 internal sealed class RestoreRecoveryException : IOException
 {
     public RestoreRecoveryException(string scope, string journalPath, RestoreRecoveryFailure failure, string message,
-        Exception? innerException = null, int? unsupportedVersion = null)
+        Exception? innerException = null, int? unsupportedVersion = null, RecoveryBlock? discoveryBlock = null)
         : base(message, innerException)
     {
         Scope = scope;
         JournalPath = journalPath;
         Failure = failure;
         UnsupportedVersion = unsupportedVersion;
+        DiscoveryBlock = discoveryBlock;
     }
 
     public string Scope { get; }
     public string JournalPath { get; }
     public RestoreRecoveryFailure Failure { get; }
     public int? UnsupportedVersion { get; }
+    public RecoveryBlock? DiscoveryBlock { get; }
 }
 
 internal sealed class RestoreJournalStateJsonConverter : JsonConverter<RestoreJournalState>

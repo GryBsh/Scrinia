@@ -125,6 +125,12 @@ internal interface IRecoveryAdapter
         RecoveryEnvelopeDocument envelope,
         string evidencePath,
         CancellationToken cancellationToken);
+    RecoveryOutcome Admit(RecoveryEnvelopeDocument envelope, string evidencePath);
+}
+
+internal sealed class RecoveryUnsafePathException : IOException
+{
+    internal RecoveryUnsafePathException(string message) : base(message) { }
 }
 
 internal sealed record RecoveryOutcome

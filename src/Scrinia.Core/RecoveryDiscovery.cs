@@ -19,12 +19,32 @@ internal sealed class RecoveryDiscoveryCoordinator
 
     internal RecoveryDiscoveryResult Discover(string scope, string storeDirectory)
     {
+        try
+        {
+            return DiscoverCore(scope, storeDirectory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            string evidencePath = string.IsNullOrWhiteSpace(storeDirectory) ? "unknown" : storeDirectory;
+            string blockedScope = string.IsNullOrWhiteSpace(scope) ? "unknown" : scope;
+            var block = new RecoveryBlock(blockedScope, evidencePath, null, "unknown",
+                exception is ArgumentException or NotSupportedException or RecoveryUnsafePathException
+                    ? RecoveryBlockReason.Unsafe
+                    : RecoveryBlockReason.ReplayIoFailed,
+                "Recovery evidence discovery could not safely inspect the selected scope.");
+            return new RecoveryDiscoveryResult([], block);
+        }
+    }
+
+    private RecoveryDiscoveryResult DiscoverCore(string scope, string storeDirectory)
+    {
         if (string.IsNullOrWhiteSpace(scope))
             throw new ArgumentException("Recovery scope is required.", nameof(scope));
         if (string.IsNullOrWhiteSpace(storeDirectory))
             throw new ArgumentException("Recovery store directory is required.", nameof(storeDirectory));
 
         string root = PathContainment.ResolveCanonical(storeDirectory);
+        RejectReparsePoint(root);
         var candidates = new List<RecoveryCandidate>();
 
         RecoveryBlock? blocking = InspectFixedCandidate(RecoveryOperation.Restore,
@@ -84,15 +104,7 @@ internal sealed class RecoveryDiscoveryCoordinator
             return new RecoveryOutcome(false, false, false, scope, storeDirectory, "none", null, null);
 
         IRecoveryAdapter adapter = _adapters[candidate.Operation];
-        try
-        {
-            return adapter.RecoverOrCleanup(candidate.Envelope, candidate.EvidencePath, cancellationToken);
-        }
-        catch (NotSupportedException)
-        {
-            return new RecoveryOutcome(false, false, false, scope, candidate.EvidencePath,
-                candidate.OperationId, null, "Recovery admission is qualified; operation replay remains owned by its adapter.");
-        }
+        return adapter.Admit(candidate.Envelope, candidate.EvidencePath);
     }
 
     private RecoveryBlock? InspectFixedCandidate(RecoveryOperation operation, string evidencePath,
@@ -100,6 +112,7 @@ internal sealed class RecoveryDiscoveryCoordinator
     {
         if (!File.Exists(evidencePath))
             return null;
+        RejectReparsePoint(evidencePath);
         return InspectCandidate(operation, evidencePath, evidenceDirectory, scope, candidates);
     }
 
@@ -121,12 +134,16 @@ internal sealed class RecoveryDiscoveryCoordinator
         {
             return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(evidencePath),
                 exception.Failure == RecoveryEnvelopeFailure.UnsupportedVersion
-                    ? RecoveryBlockReason.UnsupportedVersion : RecoveryBlockReason.Malformed, exception.Message);
+                    ? RecoveryBlockReason.UnsupportedVersion
+                    : exception.Failure == RecoveryEnvelopeFailure.WrongScope
+                        ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.Malformed,
+                exception.Message);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
             return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(evidencePath),
-                RecoveryBlockReason.Unsafe, exception.Message);
+                exception is ArgumentException or RecoveryUnsafePathException
+                    ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.ReplayIoFailed, exception.Message);
         }
     }
 
@@ -142,9 +159,18 @@ internal sealed class RecoveryDiscoveryCoordinator
     {
         if (!Directory.Exists(root))
             yield break;
-        foreach (string directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
+        foreach (string directory in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)
                      .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            RejectReparsePoint(directory);
             yield return directory;
+        }
+    }
+
+    private static void RejectReparsePoint(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new RecoveryUnsafePathException($"Recovery evidence path uses a reparse point: {path}");
     }
 
     private static byte[] ReadBounded(string path)
