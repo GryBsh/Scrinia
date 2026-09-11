@@ -12,6 +12,15 @@ namespace Scrinia.Tests.Formats;
 
 public class RegisteredFormatsTests
 {
+    [Fact]
+    public void RecoveryEnvelope_IsRegisteredAtVersionOne()
+    {
+        DurableFormats.All.Should().ContainSingle(contract =>
+            contract == DurableFormats.RecoveryEnvelope &&
+            contract.Name == "recovery-envelope" &&
+            contract.Current == 1);
+    }
+
     /// <summary>
     /// facts.json rebuilds on ANY version that is not Current — older as well as newer. That
     /// asymmetry is deliberate: its version tracks the derivation RULE, not the file shape, so a
