@@ -23,6 +23,8 @@ internal enum RecoveryLifecycleState
     RolledBack
 }
 
+internal abstract record RecoveryBody;
+
 internal sealed record RecoveryEnvelopeDocument(
     string Format,
     int Version,
@@ -38,6 +40,8 @@ internal sealed record RecoveryEnvelopeDocument(
 {
     [JsonIgnore]
     internal bool IsLegacy { get; init; }
+    [JsonIgnore]
+    internal RecoveryBody? TypedBody { get; init; }
 }
 
 internal sealed record RecoveryCandidate(
