@@ -94,20 +94,6 @@ public sealed partial class ScriniaMcpTools
     // ── Shared file helpers (used by skill, agent, and other markdown-on-disk paths) ─
 
     /// <summary>
-    /// Archives an existing file into <paramref name="versionsDir"/> with a UTC
-    /// timestamp suffix before it gets overwritten. No-op if the file does not exist.
-    /// </summary>
-    internal static void ArchiveFileVersion(string filePath, string versionsDir)
-    {
-        if (!File.Exists(filePath)) return;
-        Directory.CreateDirectory(versionsDir);
-        string name = Path.GetFileNameWithoutExtension(filePath);
-        string ext = Path.GetExtension(filePath);
-        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-        File.Copy(filePath, Path.Combine(versionsDir, $"{name}_{timestamp}{ext}"));
-    }
-
-    /// <summary>
     /// Reads a JSON sidecar (.meta.json) next to <paramref name="filePath"/>. Null if missing or
     /// corrupted.
     ///
@@ -253,6 +239,62 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
+    private static async Task<FileEntityMutationResult> PublishFileEntityAsync(
+        string entityKind,
+        string name,
+        string bodyPath,
+        string metaPath,
+        string versionsDirectory,
+        byte[] body,
+        byte[]? meta,
+        bool deleteBody,
+        bool deleteMeta,
+        CancellationToken cancellationToken)
+    {
+        var mutation = new FileEntityMutation(
+            entityKind, name, bodyPath, metaPath, versionsDirectory, body, meta, deleteBody, deleteMeta);
+        return await new FileEntityTransactionCoordinator(FindWorkspaceRoot(bodyPath))
+            .ExecuteAsync(mutation, cancellationToken);
+    }
+
+    private static McpResponse FileEntityFailureResponse(
+        FileEntityMutationResult result, string entityScope)
+    {
+        if (result.Outcome == WholeMemoryOutcome.RecoveryRequired)
+        {
+            RecoveryInfo recovery = result.Recovery
+                ?? throw new InvalidOperationException("File-entity recovery response is missing evidence.");
+            return ResponseBuilder.Error(
+                    result.Warning ?? "File-entity publication requires recovery.",
+                    ErrorCodes.RecoveryRequired,
+                    "Resolve the retained file-entity recovery evidence, then retry.")
+                .WithOperationId(result.OperationId)
+                .WithRecovery(entityScope, recovery.EvidencePath);
+        }
+
+        throw new InvalidOperationException(
+            $"Unexpected file-entity outcome {result.Outcome} while publishing '{entityScope}'.");
+    }
+
+    private static McpResponse FileEntitySuccessResponse(
+        FileEntityMutationResult result,
+        string message,
+        string action,
+        string entityScope)
+    {
+        if (result.Outcome == WholeMemoryOutcome.RecoveryRequired)
+            return FileEntityFailureResponse(result, entityScope);
+
+        McpResponse response = result.Outcome == WholeMemoryOutcome.SuccessWithWarning
+            ? ResponseBuilder.SuccessWithWarning(message)
+                .WithOperationId(result.OperationId)
+                .WithInfo(result.Warning ?? "File-entity publication committed with a warning.")
+            : ResponseBuilder.Success(message);
+        if (result.Recovery is not null)
+            response = response.WithRecovery(entityScope, result.Recovery.EvidencePath);
+        return response.WithFileChanges().WithAction(action);
+    }
+
     private static string FindWorkspaceRoot(string filePath)
     {
         DirectoryInfo? directory = Directory.GetParent(Path.GetFullPath(filePath));
@@ -356,12 +398,7 @@ public sealed partial class ScriniaMcpTools
         // metadata describing content that no longer exists.
         var existingMeta = ReadSidecarMetaOrRefuse(filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
 
-        ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
-
-        // Preflight runs before any mutation. The body and sidecar are individually atomic files,
-        // but their replacement sequence is not a paired transaction.
         cancellationToken.ThrowIfCancellationRequested();
-        DurableFile.AtomicWriteAllText(filePath, promptContent);
 
         string now = DateTimeOffset.UtcNow.ToString("o");
         string[]? capabilities = string.IsNullOrWhiteSpace(tools) ? null
@@ -386,13 +423,22 @@ public sealed partial class ScriniaMcpTools
                 ? new Dictionary<string, System.Text.Json.JsonElement>(u)
                 : null
         };
-        WriteSidecarMeta(filePath, meta, ScriniaMcpJsonContext.Default.SkillFileMeta);
-
-        var response = ResponseBuilder.Success($"Stored as .scrinia/skills/{name}.md.")
-            .WithFileChanges()
-            .WithPath($"/skill/{name}")
-            .WithAction("created");
-        return response;
+        byte[] serializedMeta = Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.SkillFileMeta));
+        try
+        {
+            FileEntityMutationResult result = await PublishFileEntityAsync(
+                "skill", name, filePath, Path.ChangeExtension(filePath, ".meta.json"),
+                Path.Combine(skillsDir, "versions"), Encoding.UTF8.GetBytes(promptContent),
+                serializedMeta, false, false, cancellationToken);
+            return FileEntitySuccessResponse(
+                result, $"Stored as .scrinia/skills/{name}.md.", "created", $"skill/{name}")
+                .WithPath($"/skill/{name}");
+        }
+        catch (WholeMemoryTransactionException exception)
+        {
+            return WholeMemoryFailureResponse(exception, $"skill/{name}");
+        }
     }
 
     /// <summary>
@@ -444,19 +490,25 @@ public sealed partial class ScriniaMcpTools
         }
 
         string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
-        ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
-        File.Delete(filePath);
-
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
-        if (File.Exists(metaPath))
-            File.Delete(metaPath);
+        FileEntityMutationResult result;
+        try
+        {
+            result = PublishFileEntityAsync(
+                "skill", name, filePath, metaPath, Path.Combine(skillsDir, "versions"),
+                [], [], true, true, cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (WholeMemoryTransactionException exception)
+        {
+            return Task.FromResult(WholeMemoryFailureResponse(exception, $"skill/{name}"));
+        }
 
-        var response = ResponseBuilder.Success(
+        var response = FileEntitySuccessResponse(
+                result,
                 $"Forgot /skill/{name}. Deleted .scrinia/skills/{name}.md; the previous text is "
-                + "archived under .scrinia/skills/versions/.")
-            .WithFileChanges()
-            .WithPath($"/skill/{name}")
-            .WithAction("forgotten");
+                + "archived under .scrinia/skills/versions/.",
+                "forgotten", $"skill/{name}")
+            .WithPath($"/skill/{name}");
 
         if (isBuiltIn)
             response = response.WithInfo(

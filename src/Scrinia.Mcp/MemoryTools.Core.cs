@@ -194,13 +194,8 @@ public sealed partial class ScriniaMcpTools
             // metadata describing content that no longer exists.
             var existingMeta = ReadSidecarMetaOrRefuse(filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
 
-            ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
-
             string agentContent = string.Join("\n", content);
-            // Preflight runs before any mutation. The body and sidecar are individually atomic
-            // files, but their replacement sequence is not a paired transaction.
             cancellationToken.ThrowIfCancellationRequested();
-            DurableFile.AtomicWriteAllText(filePath, agentContent);
 
             string now = DateTimeOffset.UtcNow.ToString("o");
             var meta = new AgentFileMeta(
@@ -219,11 +214,23 @@ public sealed partial class ScriniaMcpTools
                     ? new Dictionary<string, System.Text.Json.JsonElement>(u)
                     : null
             };
-            WriteSidecarMeta(filePath, meta, ScriniaMcpJsonContext.Default.AgentFileMeta);
-
             long agentBytes = System.Text.Encoding.UTF8.GetByteCount(agentContent);
-            return ResponseBuilder.Success($"Remembered: agent:{agentSubject} ({FormatBytes(agentBytes)}).")
-                .WithFileChanges().WithAction(actionLabel);
+            byte[] serializedMeta = System.Text.Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(meta, ScriniaMcpJsonContext.Default.AgentFileMeta));
+            try
+            {
+                FileEntityMutationResult result = await PublishFileEntityAsync(
+                    "agent", agentSubject, filePath, Path.ChangeExtension(filePath, ".meta.json"),
+                    Path.Combine(agentDir, "versions"), System.Text.Encoding.UTF8.GetBytes(agentContent),
+                    serializedMeta, false, false, cancellationToken);
+                return FileEntitySuccessResponse(
+                    result, $"Remembered: agent:{agentSubject} ({FormatBytes(agentBytes)}).",
+                    actionLabel, $"agent/{agentSubject}");
+            }
+            catch (WholeMemoryTransactionException exception)
+            {
+                return WholeMemoryFailureResponse(exception, $"agent/{agentSubject}");
+            }
         }
 
         // ── Every other path: the STORE derives, this tool does not ──────

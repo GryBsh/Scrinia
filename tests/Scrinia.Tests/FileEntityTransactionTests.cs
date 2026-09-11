@@ -2,12 +2,155 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Mcp;
 using System.Text.Json;
+using Scrinia.Core.Formats;
 using Xunit;
 
 namespace Scrinia.Tests;
 
 public sealed class FileEntityTransactionTests
 {
+    [Fact]
+    public async Task SkillRewrite_PublishesBodyAndSidecarAsAnArchivedPair()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/skill/task6", content: ["old instructions"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        string oldMeta = File.ReadAllText(meta);
+
+        await tools.MemoryRemember(path: "/skill/task6", content: ["new instructions"]);
+
+        File.ReadAllText(body).Should().Contain("new instructions");
+        Directory.GetFiles(Path.Combine(Path.GetDirectoryName(body)!, "versions"))
+            .Should().HaveCount(2);
+        string archivedBody = Directory.GetFiles(
+            Path.Combine(Path.GetDirectoryName(body)!, "versions"), "*.md").Should().ContainSingle().Subject;
+        File.ReadAllText(archivedBody).Should().Contain("old instructions");
+        string archivedMeta = Directory.GetFiles(
+            Path.Combine(Path.GetDirectoryName(body)!, "versions"), "*.meta.json").Should().ContainSingle().Subject;
+        File.ReadAllText(archivedMeta).Should().Contain(oldMeta.Trim());
+    }
+
+    [Fact]
+    public async Task AgentRewrite_PreservesUnknownSidecarFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/agent/profile", content: ["old profile"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("agent", TestHelpers.Store.WorkspaceRoot), "profile.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        File.WriteAllText(meta, "{\"createdAt\":\"2026-01-01T00:00:00Z\",\"futureField\":42}");
+
+        await tools.MemoryRemember(path: "/agent/profile", content: ["new profile"]);
+
+        string rewritten = File.ReadAllText(meta);
+        rewritten.Should().Contain("futureField");
+        rewritten.Should().Contain("2026-01-01");
+        Directory.GetFiles(Path.Combine(Path.GetDirectoryName(body)!, "versions"))
+            .Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task SkillRewrite_WithNewerSidecarDoesNotCreateArchiveOrReplaceBody()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/skill/task6-newer", content: ["old instructions"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6-newer.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        File.WriteAllText(meta, "{\"v\":999}");
+
+        string response = await tools.MemoryRemember(path: "/skill/task6-newer", content: ["new instructions"]);
+
+        ResponseParser.Parse(response).ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        File.ReadAllText(body).Should().Contain("old instructions");
+        Directory.Exists(Path.Combine(Path.GetDirectoryName(body)!, "versions")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SkillDelete_ArchivesBothMembersAndRevealsBuiltInOverride()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/skill/qa", content: ["project override"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "qa.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+
+        ResponseParser.Parse(await tools.MemoryForget(path: "/skill/qa")).Status.Should().Be("success");
+        Directory.GetFiles(Path.Combine(Path.GetDirectoryName(body)!, "versions"))
+            .Should().HaveCount(2);
+        File.Exists(body).Should().BeFalse();
+        File.Exists(meta).Should().BeFalse();
+        ResponseParser.Parse(await tools.MemoryRecall(path: "/skill/qa")).Content
+            .Should().NotContain("project override");
+    }
+
+    [Fact]
+    public async Task SkillDelete_BuiltInOnlyRemainsNonDeletable()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        var response = ResponseParser.Parse(await new ScriniaMcpTools().MemoryForget(path: "/skill/qa"));
+
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+    }
+
+    [Fact]
+    public async Task SkillDeleteFailureRestoresBodyAndSidecar()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/skill/task6-delete-failure", content: ["preserve me"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6-delete-failure.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
+        int versionsBefore = Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0;
+
+        DurableFile.FailureInjector = static (phase, destination) =>
+            phase == DurableWritePhase.BeforeMove && destination.EndsWith(".meta.json", StringComparison.Ordinal)
+                ? new IOException("injected delete failure") : null;
+        try
+        {
+            var response = ResponseParser.Parse(
+                await tools.MemoryForget(path: "/skill/task6-delete-failure"));
+
+            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+            File.ReadAllText(body).Should().Contain("preserve me");
+            File.Exists(meta).Should().BeTrue();
+            (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0)
+                .Should().Be(versionsBefore);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+    }
+
+    [Fact]
+    public async Task AgentRewriteFailureReturnsDurableErrorWithoutClaimingSuccess()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/agent/failure", content: ["old profile"]);
+        DurableFile.FailureInjector = static (phase, _) =>
+            phase == DurableWritePhase.BeforeMove ? new IOException("injected") : null;
+
+        try
+        {
+            var response = ResponseParser.Parse(
+                await tools.MemoryRemember(path: "/agent/failure", content: ["new profile"]));
+
+            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+            response.Status.Should().NotBe("success");
+            response.OperationId.Should().NotBeNullOrWhiteSpace();
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+    }
+
     [Fact]
     public async Task MetadataOnly_CommitEvidenceRecoveryVerifiesTheMetadataMember()
     {
