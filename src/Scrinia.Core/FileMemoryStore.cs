@@ -441,11 +441,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 : ephemeral.ToArtifactEntry() with { Address = address });
         }
 
-        if (!File.Exists(FindArtifactPath(subject, scope)))
-            return ValueTask.FromResult<ArtifactEntry?>(null);
-
-        return ValueTask.FromResult<ArtifactEntry?>(LoadIndex(scope).FirstOrDefault(entry =>
-            entry.Address == address || entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)));
+        return ValueTask.FromResult(WithRecoveryReadBarrier(scope, () =>
+        {
+            if (!File.Exists(FindArtifactPath(subject, scope)))
+                return (ArtifactEntry?)null;
+            return LoadIndexUnderRecoveryBarrier(scope).FirstOrDefault(entry =>
+                entry.Address == address || entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        }));
     }
 
     public async ValueTask<ArtifactEntry> WriteAsync(MemoryAddress address, MemoryWrite write,

@@ -60,7 +60,8 @@ internal enum RecoveryBlockReason
     UnsupportedVersion,
     Ambiguous,
     Inconsistent,
-    ReplayIoFailed
+    ReplayIoFailed,
+    WrongScope
 }
 
 internal sealed record RecoveryBlock

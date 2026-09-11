@@ -10,7 +10,7 @@ public sealed class RecoveryDiscoveryTests
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
         string scopeDirectory = Path.Combine(root, "local-notes");
-        string entityDirectory = Path.Combine(scopeDirectory, "note");
+        string entityDirectory = Path.Combine(scopeDirectory, "skills");
         Directory.CreateDirectory(entityDirectory);
         try
         {
@@ -113,6 +113,126 @@ public sealed class RecoveryDiscoveryTests
             wrongScope.BlockingEvidence!.Scope.Should().Be(RecoveryTestFixtures.LocalNotesScope);
             coordinator.Discover(RecoveryTestFixtures.LocalOtherScope, Path.Combine(root, "other"))
                 .Candidates.Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_ExcludesReservedDirectoriesAndPreservesOrdinalOrdering()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        string versions = Path.Combine(root, "versions");
+        Directory.CreateDirectory(skills);
+        Directory.CreateDirectory(versions);
+        try
+        {
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills, operationId: "z-operation");
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(versions, operationId: "reserved-operation");
+
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator(
+                _ => [versions, skills],
+                directory => Directory.EnumerateFiles(directory, ".file-entity-*.recovery"))
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root);
+
+            result.BlockingEvidence.Should().BeNull();
+            result.Candidates.Should().ContainSingle();
+            result.Candidates[0].OperationId.Should().Be("z-operation");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_EnumerationFailureIsTypedAndDoesNotEscape()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator(
+                _ => throw new IOException("injected enumeration failure"))
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root);
+
+            result.BlockingEvidence.Should().NotBeNull();
+            result.BlockingEvidence!.Reason.Should().Be(RecoveryBlockReason.ReplayIoFailed);
+            result.BlockingEvidence.OperationId.Should().Be("unknown");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_PreservesOperationIdForMalformedAndWrongScopeJson()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string appendPath = RecoveryTestFixtures.AppendJournalPath(root);
+            Directory.CreateDirectory(Path.GetDirectoryName(appendPath)!);
+            File.WriteAllBytes(appendPath, RecoveryTestFixtures.BuildLegacyAppendJournal(
+                RecoveryTestFixtures.LocalOtherScope));
+
+            RecoveryBlock block = new RecoveryDiscoveryCoordinator()
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root).BlockingEvidence!;
+
+            block.Reason.Should().Be(RecoveryBlockReason.Malformed);
+            block.OperationId.Should().Be(RecoveryTestFixtures.OperationId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_DuplicateSubjectClaimsBlockWithDeterministicIdentity()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        try
+        {
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills, operationId: "operation-a");
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills, operationId: "operation-b");
+
+            RecoveryBlock block = new RecoveryDiscoveryCoordinator()
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root).BlockingEvidence!;
+
+            block.Reason.Should().Be(RecoveryBlockReason.Ambiguous);
+            block.Operation.Should().Be(RecoveryOperation.FileEntity);
+            block.OperationId.Should().Be("operation-a");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_FilenameOperationMismatchRetainsEnvelopeOperationId()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "versions"));
+        try
+        {
+            File.WriteAllText(RecoveryTestFixtures.AppendJournalPath(root), """
+                {"format":"scrinia.recovery","version":1,"operation":"restore","bodyVersion":1,"operationId":"mismatch-id","scope":"local:notes","address":null,"state":"prepared","createdAt":"2026-09-11T00:00:00Z","updatedAt":"2026-09-11T00:00:00Z","body":{}}
+                """);
+
+            RecoveryBlock block = new RecoveryDiscoveryCoordinator()
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root).BlockingEvidence!;
+
+            block.Reason.Should().Be(RecoveryBlockReason.Malformed);
+            block.OperationId.Should().Be("mismatch-id");
         }
         finally
         {

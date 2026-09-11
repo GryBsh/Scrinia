@@ -1,20 +1,33 @@
+using System.Text.Json;
+
 namespace Scrinia.Core;
 
 /// <summary>Discovers recovery evidence from one store scope without widening the recovery boundary.</summary>
 internal sealed class RecoveryDiscoveryCoordinator
 {
     private const string RestoreFileName = ".restore-journal.json";
+    private static readonly string[] FileEntityDirectoryNames = ["agent", "skills"];
     private readonly Dictionary<RecoveryOperation, IRecoveryAdapter> _adapters;
+    private readonly Func<string, IEnumerable<string>> _directoryEnumerator;
+    private readonly Func<string, IEnumerable<string>> _evidenceEnumerator;
 
     internal RecoveryDiscoveryCoordinator()
-        : this(new RestoreRecoveryAdapter(), new AppendRecoveryAdapter(), new FileEntityRecoveryAdapter())
+        : this(null, null, new RestoreRecoveryAdapter(), new AppendRecoveryAdapter(), new FileEntityRecoveryAdapter())
     {
     }
 
-    internal RecoveryDiscoveryCoordinator(params IRecoveryAdapter[] adapters)
+    internal RecoveryDiscoveryCoordinator(
+        Func<string, IEnumerable<string>>? directoryEnumerator = null,
+        Func<string, IEnumerable<string>>? evidenceEnumerator = null,
+        params IRecoveryAdapter[] adapters)
     {
         ArgumentNullException.ThrowIfNull(adapters);
-        _adapters = adapters.ToDictionary(adapter => adapter.Operation);
+        _adapters = (adapters.Length == 0
+                ? [new RestoreRecoveryAdapter(), new AppendRecoveryAdapter(), new FileEntityRecoveryAdapter()]
+                : adapters)
+            .ToDictionary(adapter => adapter.Operation);
+        _directoryEnumerator = directoryEnumerator ?? (root => Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly));
+        _evidenceEnumerator = evidenceEnumerator ?? (directory => Directory.EnumerateFiles(directory, ".file-entity-*.recovery", SearchOption.TopDirectoryOnly));
     }
 
     internal RecoveryDiscoveryResult Discover(string scope, string storeDirectory)
@@ -59,7 +72,7 @@ internal sealed class RecoveryDiscoveryCoordinator
 
         foreach (string entityDirectory in EnumerateEntityDirectories(root))
         {
-            foreach (string evidencePath in Directory.EnumerateFiles(entityDirectory, ".file-entity-*.recovery", SearchOption.TopDirectoryOnly)
+            foreach (string evidencePath in _evidenceEnumerator(entityDirectory)
                          .OrderBy(path => path, StringComparer.Ordinal))
             {
                 blocking = InspectCandidate(RecoveryOperation.FileEntity, evidencePath, entityDirectory, scope, candidates);
@@ -120,9 +133,11 @@ internal sealed class RecoveryDiscoveryCoordinator
         string evidenceDirectory, string scope, List<RecoveryCandidate> candidates)
     {
         IRecoveryAdapter adapter = _adapters[operation];
+        byte[]? bytes = null;
         try
         {
-            byte[] bytes = ReadBounded(evidencePath);
+            RejectReparsePoint(evidencePath);
+            bytes = ReadBounded(evidencePath);
             RecoveryEnvelopeDocument envelope = adapter.ParseAndNormalize(bytes, scope, evidencePath, evidenceDirectory);
             string subject = SubjectOf(envelope);
             envelope = adapter.ValidateForMutation(envelope, scope, evidencePath, subject, evidenceDirectory);
@@ -132,16 +147,16 @@ internal sealed class RecoveryDiscoveryCoordinator
         }
         catch (RecoveryEnvelopeException exception)
         {
-            return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(evidencePath),
+            return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(operation, evidencePath, bytes),
                 exception.Failure == RecoveryEnvelopeFailure.UnsupportedVersion
                     ? RecoveryBlockReason.UnsupportedVersion
                     : exception.Failure == RecoveryEnvelopeFailure.WrongScope
-                        ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.Malformed,
+                        ? RecoveryBlockReason.WrongScope : RecoveryBlockReason.Malformed,
                 exception.Message);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(evidencePath),
+            return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(operation, evidencePath, bytes),
                 exception is ArgumentException or RecoveryUnsafePathException
                     ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.ReplayIoFailed, exception.Message);
         }
@@ -155,11 +170,13 @@ internal sealed class RecoveryDiscoveryCoordinator
         _ => throw new InvalidDataException("Recovery evidence has no canonical subject.")
     };
 
-    private static IEnumerable<string> EnumerateEntityDirectories(string root)
+    private IEnumerable<string> EnumerateEntityDirectories(string root)
     {
         if (!Directory.Exists(root))
             yield break;
-        foreach (string directory in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)
+        foreach (string directory in _directoryEnumerator(root)
+                     .Where(path => FileEntityDirectoryNames.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))
+                     .Where(Directory.Exists)
                      .OrderBy(path => path, StringComparer.Ordinal))
         {
             RejectReparsePoint(directory);
@@ -194,12 +211,37 @@ internal sealed class RecoveryDiscoveryCoordinator
         _ => throw new ArgumentOutOfRangeException(nameof(operation))
     };
 
-    private static string TryOperationId(string evidencePath) =>
-        Path.GetFileName(evidencePath) switch
+    private static string TryOperationId(RecoveryOperation operation, string evidencePath, byte[]? bytes) =>
+        operation switch
         {
-            AppendJournal.FileName or RestoreFileName => "unknown",
-            var name when name.StartsWith(".file-entity-", StringComparison.Ordinal) =>
-                name[".file-entity-".Length..^".recovery".Length],
+            RecoveryOperation.Append or RecoveryOperation.Restore => TryJsonOperationId(bytes),
+            RecoveryOperation.FileEntity => TryFileEntityOperationId(evidencePath),
             _ => "unknown"
         };
+
+    private static string TryJsonOperationId(byte[]? bytes)
+    {
+        if (bytes is null) return "unknown";
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(bytes);
+            foreach (string name in new[] { "operationId", "transactionId" })
+                if (document.RootElement.TryGetProperty(name, out JsonElement value) &&
+                    value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString()))
+                    return value.GetString()!;
+        }
+        catch (JsonException) { }
+        return "unknown";
+    }
+
+    private static string TryFileEntityOperationId(string evidencePath)
+    {
+        string name = Path.GetFileName(evidencePath);
+        const string prefix = ".file-entity-";
+        const string suffix = ".recovery";
+        return name.StartsWith(prefix, StringComparison.Ordinal) && name.EndsWith(suffix, StringComparison.Ordinal) &&
+            name.Length > prefix.Length + suffix.Length
+            ? name[prefix.Length..^suffix.Length]
+            : "unknown";
+    }
 }

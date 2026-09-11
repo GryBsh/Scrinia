@@ -27,8 +27,8 @@ internal static class RecoveryTestFixtures
     internal static string AppendJournalPath(string scopeDirectory) =>
         Path.Combine(scopeDirectory, "versions", ".append-journal.json");
 
-    internal static string FileEntityRecoveryPath(string entityDirectory) =>
-        Path.Combine(entityDirectory, $".file-entity-{OperationId}.recovery");
+    internal static string FileEntityRecoveryPath(string entityDirectory, string operationId = OperationId) =>
+        Path.Combine(entityDirectory, $".file-entity-{operationId}.recovery");
 
     internal static string WriteLegacyRestoreJournal(string scopeDirectory, string state = "prepared") =>
         WriteBytes(RestoreJournalPath(scopeDirectory), BuildLegacyRestoreJournal(state: state));
@@ -38,8 +38,8 @@ internal static class RecoveryTestFixtures
 
     internal static string WriteLegacyFileEntityRecovery(
         string entityDirectory, string bodyPath = "entity.md", string metaPath = "entity.meta.json",
-        bool committed = false) =>
-        WriteBytes(FileEntityRecoveryPath(entityDirectory),
+        bool committed = false, string operationId = OperationId) =>
+        WriteBytes(FileEntityRecoveryPath(entityDirectory, operationId),
             BuildLegacyFileEntityRecovery(bodyPath, metaPath, committed));
 
     internal static byte[] BuildLegacyRestoreJournal(
