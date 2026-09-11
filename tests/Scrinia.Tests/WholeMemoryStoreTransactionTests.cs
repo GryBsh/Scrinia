@@ -47,6 +47,34 @@ public sealed class WholeMemoryStoreTransactionTests
     }
 
     [Fact]
+    public async Task Compact_RollbackFailureMapsRecoveryEvidenceAndSuppressesEvent()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        var sink = new RecordingSink();
+        MemoryEventSinkContext.Current = sink;
+        await tools.Remember(["old one", "old two"], MemoryAddress.Parse("/target"));
+        sink.Stored.Clear();
+        FileMemoryStore.WholeMemoryFaultInjector = (point, _) => point switch
+        {
+            WholeMemoryFaultPoint.LiveArtifactWrite or WholeMemoryFaultPoint.RollbackWrite =>
+                new IOException($"Injected whole-memory fault at {point}."),
+            _ => null
+        };
+
+        McpResponse response = await tools.Compact(MemoryAddress.Parse("/target"));
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.RecoveryRequired);
+        response.OperationId.Should().NotBeNullOrWhiteSpace();
+        response.Scope.Should().Be("local");
+        response.JournalPath.Should().NotBeNullOrWhiteSpace();
+        response.JournalPath.Should().EndWith(AppendJournal.FileName);
+        sink.Stored.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Compact_KeepRecentPreservesMetadataAndPublishesTheCommittedEvent()
     {
         using var workspace = new TestHelpers.StoreScope();

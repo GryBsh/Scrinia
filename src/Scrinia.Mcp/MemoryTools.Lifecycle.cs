@@ -295,6 +295,8 @@ public sealed partial class ScriniaMcpTools
                 .WithAction("compacted")
                 .WithOperationId(transactionResult.OperationId)
                 .WithInfo(transactionResult.Warning ?? "Whole-memory commit completed with a warning.");
+            if (transactionResult.Recovery is not null)
+                warningResponse = warningResponse.WithRecovery(scope, transactionResult.Recovery.EvidencePath);
             if (!ephemeral)
                 warningResponse = warningResponse.WithFileChanges();
             await FireEventSinkAsync(sink => sink.OnStoredAsync(
