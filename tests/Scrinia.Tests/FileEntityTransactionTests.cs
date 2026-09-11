@@ -512,6 +512,28 @@ public sealed class FileEntityTransactionTests
         (await pending).Outcome.Should().Be(WholeMemoryOutcome.Created);
     }
 
+    [Theory]
+    [InlineData("skill", "locked-skill")]
+    [InlineData("agent", "locked-agent")]
+    public async Task PublicFileEntityWrite_MapsLockTimeoutToStructuredDurableError(
+        string entityKind, string name)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string entityDirectory = PathRouter.ToFileEntityDir(entityKind, TestHelpers.Store.WorkspaceRoot);
+        Directory.CreateDirectory(entityDirectory);
+        string lockPath = Path.Combine(entityDirectory, ".lock");
+        using FileLock held = FileLock.AcquireExclusive(lockPath);
+        var tools = new ScriniaMcpTools();
+        string path = $"/{entityKind}/{name}";
+
+        string response = await tools.MemoryRemember(path, ["content"]);
+
+        var parsed = ResponseParser.Parse(response);
+        parsed.Status.Should().Be("error");
+        parsed.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        parsed.Error.Should().Contain("Failed to acquire file lock");
+    }
+
     private static FileEntityTransactionCoordinator Coordinator(TestHelpers.StoreScope scope) =>
         new(scope.WorkspaceDir);
 

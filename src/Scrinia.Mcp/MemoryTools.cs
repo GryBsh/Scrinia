@@ -264,6 +264,10 @@ public sealed partial class ScriniaMcpTools
             {
                 return DurableWriteFailureResponse(ex).ToYaml();
             }
+            catch (FileLockTimeoutException ex)
+            {
+                return DurableWriteFailureResponse(ex).ToYaml();
+            }
         }
 
         if (content is null || content.Length == 0)
@@ -296,6 +300,10 @@ public sealed partial class ScriniaMcpTools
             return DurableWriteFailureResponse(ex).ToYaml();
         }
         catch (ScopeReadOnlyException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (FileLockTimeoutException ex)
         {
             return DurableWriteFailureResponse(ex).ToYaml();
         }
@@ -418,7 +426,17 @@ public sealed partial class ScriniaMcpTools
         // Skill-path routing: '/skill/...' → SkillLoad. Handles both '/skill/{name}' (load)
         // and '/skill' or '/skill/' (list view).
         var skillRoute = TryRouteSkillRecall(path, withBuiltin, cancellationToken);
-        if (skillRoute is not null) return (await skillRoute).ToYaml();
+        if (skillRoute is not null)
+        {
+            try
+            {
+                return (await skillRoute).ToYaml();
+            }
+            catch (FileLockTimeoutException ex)
+            {
+                return DurableWriteFailureResponse(ex).ToYaml();
+            }
+        }
 
         try
         {
