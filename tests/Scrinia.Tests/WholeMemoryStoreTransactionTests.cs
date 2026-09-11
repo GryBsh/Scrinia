@@ -1,11 +1,68 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Mcp;
 using Xunit;
 
 namespace Scrinia.Tests;
 
 public sealed class WholeMemoryStoreTransactionTests
 {
+    [Fact]
+    public async Task CompactWrite_LiveSidecarFailurePreservesPair()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["old one", "old two"]));
+        byte[] oldBody = File.ReadAllBytes(store.ArtifactPath("target"));
+        byte[] oldMeta = File.ReadAllBytes(store.MetaPath("target"));
+        store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
+
+        await FluentActions.Invoking(() => store.StoreAsync(
+                MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["compacted content"])))
+            .Should().ThrowAsync<WholeMemoryTransactionException>();
+        File.ReadAllBytes(store.ArtifactPath("target")).Should().Equal(oldBody);
+        File.ReadAllBytes(store.MetaPath("target")).Should().Equal(oldMeta);
+    }
+
+    [Fact]
+    public async Task Compact_SuccessArchivesThePreviousPairExactlyOnce()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        await tools.Remember(["old one", "old two"], MemoryAddress.Parse("/target"));
+        byte[] oldBody = File.ReadAllBytes(store.ArtifactPath("target"));
+        byte[] oldMeta = File.ReadAllBytes(store.MetaPath("target"));
+
+        McpResponse response = await tools.Compact(MemoryAddress.Parse("/target"));
+
+        response.Status.Should().Be("success");
+        response.Content.Should().Contain("Original archived.");
+        string versions = Path.Combine(store.GetStoreDirForScope("local"), "versions");
+        string[] archivedBodies = Directory.GetFiles(versions, "target_*.nmp2");
+        string[] archivedSidecars = Directory.GetFiles(versions, "target_*.meta.json");
+        archivedBodies.Should().ContainSingle();
+        archivedSidecars.Should().ContainSingle();
+        File.ReadAllBytes(archivedBodies[0]).Should().Equal(oldBody);
+        File.ReadAllBytes(archivedSidecars[0]).Should().Equal(oldMeta);
+    }
+
+    [Fact]
+    public async Task Compact_EphemeralDoesNotCreatePersistentTransactionEvidence()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.Remember(["old one", "old two"], MemoryAddress.Parse("~target"));
+
+        McpResponse response = await tools.Compact(MemoryAddress.Parse("~target"));
+
+        response.Status.Should().Be("success");
+        Directory.EnumerateFiles(workspace.WorkspaceDir, AppendJournal.FileName, SearchOption.AllDirectories)
+            .Should().BeEmpty();
+        Directory.EnumerateFiles(workspace.WorkspaceDir, "*.nmp2", SearchOption.AllDirectories)
+            .Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData((int)WholeMemoryFaultPoint.RawArtifactRead)]
     [InlineData((int)WholeMemoryFaultPoint.RawSidecarRead)]
