@@ -243,12 +243,12 @@ public sealed partial class ScriniaMcpTools
         {
             throw new DurableWriteException("write sidecar", metaPath, exception);
         }
-        if (result.Outcome == WholeMemoryOutcome.RecoveryRequired)
+        if (result.Outcome is WholeMemoryOutcome.RecoveryRequired or WholeMemoryOutcome.SuccessWithWarning)
         {
             throw new WholeMemoryTransactionException(
                 WholeMemoryErrorCode.RecoveryRequired,
                 result.OperationId,
-                result.Warning ?? "Sidecar publication requires recovery.",
+                result.Warning ?? "Sidecar publication retained recovery evidence.",
                 recovery: result.Recovery);
         }
     }

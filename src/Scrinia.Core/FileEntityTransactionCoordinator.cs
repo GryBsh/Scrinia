@@ -35,6 +35,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             Path.GetFullPath(mutation.BodyPath), Path.GetFullPath(mutation.MetaPath),
             StringComparison.OrdinalIgnoreCase);
         string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
+        string bodySnapshotPath = sidecarOnly
+            ? Path.Combine(entityDirectory, ".file-entity-body-omitted")
+            : mutation.BodyPath;
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
 
         FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory);
@@ -42,7 +45,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             return recovery;
 
         RawMemberSnapshot oldBody = sidecarOnly
-            ? RawMemberSnapshot.Capture(mutation.BodyPath, false, [])
+            ? RawMemberSnapshot.Capture(bodySnapshotPath, false, [])
             : Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead);
         RawMemberSnapshot oldMeta = Capture(mutation.MetaPath, FileEntityFaultPoint.RawMetaRead);
         bool metadataMutation = mutation.DeleteMeta || mutation.NewMeta is not null;
@@ -75,7 +78,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
                 Verify(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!);
 
             RawMemberSnapshot committedBody = ExpectedSnapshot(
-                mutation.BodyPath, mutation.DeleteBody, mutation.NewBody);
+                bodySnapshotPath, sidecarOnly || mutation.DeleteBody, mutation.NewBody);
             RawMemberSnapshot committedMeta = metadataMutation
                 ? ExpectedSnapshot(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!)
                 : oldMeta;
@@ -198,10 +201,19 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             return;
         }
 
-        // Rollback deliberately does not re-enter the publication fault injector. The injected
-        // publication failure must not make the compensating write fail as a side effect; the
-        // coordinator's explicit RollbackWrite seam is the deterministic way to test that path.
-        File.WriteAllBytes(snapshot.Path, snapshot.Bytes);
+        // Rollback remains a durable atomic replacement, but publication fault injection must not
+        // turn a successful compensation into a second failure. The coordinator's explicit
+        // RollbackWrite seam is the deterministic way to test rollback failure.
+        Func<DurableWritePhase, string, Exception?>? injector = DurableFile.FailureInjector;
+        try
+        {
+            DurableFile.FailureInjector = null;
+            DurableFile.AtomicWriteAllBytes(snapshot.Path, snapshot.Bytes);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = injector;
+        }
     }
 
     private static void Delete(string? path)
