@@ -134,6 +134,79 @@ public sealed class RecoveryEnvelopeTests
             .Should().Throw<RecoveryEnvelopeException>();
     }
 
+    [Theory]
+    [InlineData("prepared")]
+    [InlineData("committed")]
+    public void FileEntityAdapterAcceptsPublisherShapedAbsolutePaths(string state)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-absolute-recovery-" + Guid.NewGuid().ToString("N"));
+        string entityDirectory = Path.Combine(root, "skill");
+        string versionsDirectory = Path.Combine(entityDirectory, "versions");
+        string evidencePath = Path.Combine(entityDirectory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery");
+        string bodyPath = Path.Combine(entityDirectory, "entity.md");
+        string metaPath = Path.Combine(entityDirectory, "entity.meta.json");
+        string archiveBodyPath = Path.Combine(versionsDirectory, "entity_20260911-000000000.md");
+        string archiveMetaPath = Path.ChangeExtension(archiveBodyPath, ".meta.json");
+
+        try
+        {
+            FileEntityRecoveryBody body = PublisherShapedBody(
+                state, bodyPath, metaPath, archiveBodyPath, archiveMetaPath);
+            RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.FromFileEntity(
+                body, RecoveryTestFixtures.LocalNotesScope, null, RecoveryTestFixtures.OperationId,
+                state == "committed" ? RecoveryLifecycleState.Committed : RecoveryLifecycleState.Prepared,
+                DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+
+            RecoveryEnvelopeDocument validated = ((IRecoveryAdapter)new FileEntityRecoveryAdapter()).ValidateForMutation(
+                envelope, RecoveryTestFixtures.LocalNotesScope, evidencePath, "entity", entityDirectory);
+
+            FileEntityRecoveryBody validatedBody = (FileEntityRecoveryBody)validated.TypedBody!;
+            validatedBody.OldBody.Path.Should().Be(Path.GetFullPath(bodyPath));
+            validatedBody.OldMeta.Path.Should().Be(Path.GetFullPath(metaPath));
+            validatedBody.ArchiveBodyPath.Should().Be(Path.GetFullPath(archiveBodyPath));
+            validatedBody.ArchiveMetaPath.Should().Be(Path.GetFullPath(archiveMetaPath));
+            validatedBody.CommittedBody?.Path.Should().Be(Path.GetFullPath(bodyPath));
+            validatedBody.CommittedMeta?.Path.Should().Be(Path.GetFullPath(metaPath));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void FileEntityAdapterRejectsAbsolutePathOutsideEntityDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-absolute-recovery-" + Guid.NewGuid().ToString("N"));
+        string entityDirectory = Path.Combine(root, "skill");
+        string evidencePath = Path.Combine(entityDirectory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery");
+        string outsidePath = Path.Combine(root, "outside.md");
+
+        FileEntityRecoveryBody body = PublisherShapedBody(
+            "prepared", outsidePath, Path.Combine(entityDirectory, "entity.meta.json"), null, null);
+        RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.FromFileEntity(
+            body, RecoveryTestFixtures.LocalNotesScope, null, RecoveryTestFixtures.OperationId,
+            RecoveryLifecycleState.Prepared, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+
+        FluentActions.Invoking(() => ((IRecoveryAdapter)new FileEntityRecoveryAdapter()).ValidateForMutation(
+                envelope, RecoveryTestFixtures.LocalNotesScope, evidencePath, "entity", entityDirectory))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    private static FileEntityRecoveryBody PublisherShapedBody(
+        string state, string bodyPath, string metaPath, string? archiveBodyPath, string? archiveMetaPath)
+    {
+        RecoveryMemberSnapshot oldBody = Snapshot(bodyPath, RecoveryTestFixtures.FileEntityBody);
+        RecoveryMemberSnapshot oldMeta = Snapshot(metaPath, RecoveryTestFixtures.FileEntityMetadata);
+        RecoveryMemberSnapshot? committedBody = state == "committed" ? oldBody : null;
+        RecoveryMemberSnapshot? committedMeta = state == "committed" ? oldMeta : null;
+        return new FileEntityRecoveryBody("skill", "entity", oldBody, oldMeta,
+            archiveBodyPath, archiveMetaPath, committedBody, committedMeta, state);
+    }
+
+    private static RecoveryMemberSnapshot Snapshot(string path, byte[] bytes) =>
+        new(path, true, Convert.ToBase64String(bytes), RecoveryTestFixtures.Sha256(bytes));
+
     [Fact]
     public void JsonEnvelopeRequiresItsPreservedFilenameAndFileEntityOperationId()
     {

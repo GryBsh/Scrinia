@@ -649,14 +649,16 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
     private static string CanonicalizeMemberPath(string path, string directory, string entityName,
         bool allowVersions, string evidencePath)
     {
-        if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path) || path.Contains('\0'))
+        if (string.IsNullOrWhiteSpace(path) || path.Contains('\0'))
             throw UnsafeMemberPath(evidencePath);
         string[] segments = path.Split(['/', '\\'], StringSplitOptions.None);
         if (segments.Any(segment => segment is "." or ".."))
             throw UnsafeMemberPath(evidencePath);
 
         string canonicalDirectory = Path.GetFullPath(directory);
-        string canonicalPath = Path.GetFullPath(Path.Combine(canonicalDirectory, path));
+        string canonicalPath = Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(canonicalDirectory, path));
         if (!PathContainment.IsWithin(canonicalDirectory, canonicalPath))
             throw UnsafeMemberPath(evidencePath);
         string? actualDirectory = Path.GetDirectoryName(canonicalPath);
