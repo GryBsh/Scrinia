@@ -2149,13 +2149,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         byte[] newSidecarBytes = System.Text.Encoding.UTF8.GetBytes(SerializeSidecar(entry));
         ArchivePlan archive = BuildArchivePlan(subject, scope, existingEntry is not null,
             oldSidecar.Existed, startedAt);
+        string[] wholePruneCandidates = archive.Required
+            ? BuildWholePruneCandidates(subject, scope)
+            : [];
         var transaction = new WholeMemoryTransaction(
             Guid.NewGuid().ToString("N"), scope, write.Address.ToString(), false,
             oldArtifact, oldSidecar,
             RawMemberSnapshot.Capture(oldArtifact.Path, true, newArtifactBytes),
             RawMemberSnapshot.Capture(oldSidecar.Path, true, newSidecarBytes),
             new ArchivePairPlan(archive.Required, archive.ArtifactArchivePath, archive.SidecarArchivePath,
-                archive.PruneCandidates), startedAt);
+                wholePruneCandidates), startedAt);
 
         var coordinator = new WholeMemoryTransactionCoordinator(this);
         await coordinator.ExecuteAsync(transaction, async ct =>
@@ -2183,32 +2186,45 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             VerifyWholeMember(transaction.NewSidecar);
         }, cancellationToken).ConfigureAwait(false);
 
-        PruneWholeArchives(subject, scope);
-
         return entry;
     }
 
-    private void PruneWholeArchives(string subject, string scope)
+    internal string[] PruneWholeArchives(IReadOnlyList<string> candidates, string operationId)
     {
-        string versionsDirectory = Path.Combine(GetStoreDirForScope(scope), "versions");
-        if (!Directory.Exists(versionsDirectory))
-            return;
+        var failures = new List<string>();
+        Exception? injected = WholeMemoryFaultInjector?.Invoke(WholeMemoryFaultPoint.ArchiveCleanup, operationId);
+        if (injected is not null)
+            return [$"archive cleanup: {injected.Message}"];
 
-        string safe = SanitizeName(subject);
-        foreach (string artifactPath in Directory.GetFiles(versionsDirectory, $"{safe}_*.nmp2")
-                     .OrderByDescending(path => path, StringComparer.Ordinal)
-                     .Skip(10))
+        foreach (string artifactPath in candidates)
         {
             try
             {
                 File.Delete(artifactPath);
-                File.Delete(Path.ChangeExtension(artifactPath, null) + ".meta.json");
+                if (artifactPath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
+                    File.Delete(Path.ChangeExtension(artifactPath, null) + ".meta.json");
             }
-            catch
+            catch (Exception exception)
             {
-                // Archive cleanup is post-commit and must not undo the live pair.
+                failures.Add($"{artifactPath}: {exception.Message}");
             }
         }
+
+        return failures.ToArray();
+    }
+
+    private string[] BuildWholePruneCandidates(string subject, string scope)
+    {
+        string versionsDirectory = Path.Combine(GetStoreDirForScope(scope), "versions");
+        if (!Directory.Exists(versionsDirectory))
+            return [];
+
+        string safe = SanitizeName(subject);
+        return Directory.GetFiles(versionsDirectory, $"{safe}_*.nmp2")
+            .OrderByDescending(path => path, StringComparer.Ordinal)
+            .Skip(9)
+            .SelectMany(path => new[] { path, Path.ChangeExtension(path, null) + ".meta.json" })
+            .ToArray();
     }
 
     private async Task<RawMemberSnapshot> CaptureWholeMemberAsync(

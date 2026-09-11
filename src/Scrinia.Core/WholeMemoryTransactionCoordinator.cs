@@ -23,6 +23,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
 
         cancellationToken.ThrowIfCancellationRequested();
         string journalPath = _store.WholeMemoryJournalPath(transaction.Scope);
+        string committedHash = ComputeCommittedHash(transaction);
         try
         {
             PersistEvidence(transaction, journalPath);
@@ -30,7 +31,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             await stageAndPublish(cancellationToken).ConfigureAwait(false);
             PersistState(transaction, AppendJournalState.Archived, journalPath);
             PersistState(transaction, AppendJournalState.NewPairInProgress, journalPath);
-            PersistState(transaction, AppendJournalState.Committed, journalPath);
+            PersistState(transaction, AppendJournalState.Committed, journalPath, committedHash);
         }
         catch (Exception failure)
         {
@@ -61,6 +62,28 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
                 "Whole-memory publication failed and byte-for-byte rollback could not be proved.", failure);
         }
 
+        string[] pruneFailures = _store.PruneWholeArchives(
+            transaction.Archive.PruneCandidates, transaction.OperationId);
+        if (pruneFailures.Length > 0)
+        {
+            string detail = $"Whole-memory archive cleanup did not complete: {string.Join("; ", pruneFailures)}";
+            try
+            {
+                PersistState(transaction, AppendJournalState.CleanupPending, journalPath, committedHash, detail);
+            }
+            catch (Exception stateFailure)
+            {
+                detail = $"{detail} Recovery state could not be persisted: {stateFailure.Message}";
+            }
+
+            return new WholeMemoryResult(
+                WholeMemoryOutcome.SuccessWithWarning,
+                null,
+                transaction.OperationId,
+                "Whole-memory commit succeeded, but archive cleanup requires attention.",
+                new RecoveryInfo(journalPath, "cleanupPending", "resolve retained evidence", detail));
+        }
+
         try
         {
             DeleteEvidence(transaction, journalPath);
@@ -71,7 +94,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             try
             {
                 FileMemoryStore.InjectWholeFault(WholeMemoryFaultPoint.CleanupStateWrite, journalPath);
-                PersistState(transaction, AppendJournalState.CleanupPending, journalPath);
+                PersistState(transaction, AppendJournalState.CleanupPending, journalPath, committedHash);
             }
             catch (Exception stateFailure)
             {
@@ -101,11 +124,12 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
         DurableFile.AtomicWriteAllBytes(journalPath, SerializeJournal(transaction, AppendJournalState.Prepared));
     }
 
-    private void PersistState(WholeMemoryTransaction transaction, AppendJournalState state, string journalPath)
+    private void PersistState(WholeMemoryTransaction transaction, AppendJournalState state, string journalPath,
+        string? committedHash = null, string? detail = null)
     {
         if (state != AppendJournalState.CleanupPending)
             FileMemoryStore.InjectWholeFault(WholeMemoryFaultPoint.EvidenceWrite, journalPath);
-        DurableFile.AtomicWriteAllBytes(journalPath, SerializeJournal(transaction, state));
+        DurableFile.AtomicWriteAllBytes(journalPath, SerializeJournal(transaction, state, committedHash, detail));
     }
 
     private void DeleteEvidence(WholeMemoryTransaction transaction, string journalPath)
@@ -156,7 +180,8 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             Directory.Delete(path);
     }
 
-    private static byte[] SerializeJournal(WholeMemoryTransaction transaction, AppendJournalState state)
+    private static byte[] SerializeJournal(WholeMemoryTransaction transaction, AppendJournalState state,
+        string? committedHash = null, string? detail = null)
     {
         var appendTransaction = new AppendTransaction(
             transaction.OperationId,
@@ -185,15 +210,20 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
                 AppendJournalState.Archived),
             AppendJournalState.Committed => AppendJournalCodec.WithState(
                 AppendJournalCodec.WithState(journal, AppendJournalState.NewPairInProgress),
-                AppendJournalState.Committed),
+                AppendJournalState.Committed, committedHash, detail),
             AppendJournalState.CleanupPending => AppendJournalCodec.WithState(
                 AppendJournalCodec.WithState(
                     AppendJournalCodec.WithState(journal, AppendJournalState.NewPairInProgress),
-                    AppendJournalState.Committed), AppendJournalState.CleanupPending),
+                    AppendJournalState.Committed, committedHash, detail),
+                AppendJournalState.CleanupPending, committedHash, detail),
             _ => AppendJournalCodec.WithState(journal, state)
         };
         return AppendJournalCodec.Serialize(journal);
     }
+
+    private static string ComputeCommittedHash(WholeMemoryTransaction transaction) =>
+        Convert.ToHexStringLower(SHA256.HashData(
+            transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
 
     private static WholeMemoryTransactionException RecoveryRequired(
         WholeMemoryTransaction transaction, string journalPath, string detail, Exception failure) =>

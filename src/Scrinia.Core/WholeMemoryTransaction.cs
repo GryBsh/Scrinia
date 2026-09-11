@@ -185,6 +185,7 @@ internal enum WholeMemoryFaultPoint
     VerificationRead,
     RollbackWrite,
     EvidenceCleanup,
+    ArchiveCleanup,
     CleanupStateWrite
 }
 
