@@ -96,4 +96,36 @@ public sealed class CliWholeMemoryTransactionTests
             Console.SetOut(prior);
         }
     }
+
+    [Fact]
+    public async Task StoreJsonTransactionErrorUsesCliMcpOutputEnvelope()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        string input = Path.Combine(scope.WorkspaceDir, "input.md");
+        await File.WriteAllTextAsync(input, "new content");
+        await new ScriniaMcpTools().MemoryRemember("/cli/store", ["old content"]);
+        store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
+
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Store(
+                "/cli/store", input, workspaceRoot: scope.WorkspaceDir, json: true);
+
+            exit.Should().Be(1);
+            CliMcpOutput envelope = JsonSerializer.Deserialize(
+                output.ToString(), CliJsonContext.Default.CliMcpOutput)!;
+            envelope.Status.Should().Be("error");
+            McpResponseAssert mapped = ResponseParser.Parse(envelope.Yaml);
+            mapped.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+            mapped.OperationId.Should().NotBeNullOrWhiteSpace();
+        }
+        finally
+        {
+            Console.SetOut(prior);
+        }
+    }
 }

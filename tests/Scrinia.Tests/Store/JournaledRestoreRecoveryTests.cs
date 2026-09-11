@@ -254,7 +254,7 @@ public class JournaledRestoreRecoveryTests
 
             allowRecovery.Set();
             (await recovery).Should().ContainSingle().Which.ContentPreview.Should().BeNull();
-            (await blockedRead).Should().ContainSingle();
+            (await blockedRead).Should().Contain(entry => entry.Name == "note");
             (await blockedWrite).Name.Should().Be("later");
         }
         finally
