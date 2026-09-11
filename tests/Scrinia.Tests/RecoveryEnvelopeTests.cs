@@ -53,9 +53,9 @@ public sealed class RecoveryEnvelopeTests
         byte[] restoreBytes = RecoveryTestFixtures.BuildLegacyRestoreJournal();
 
         RecoveryEnvelopeDocument append = new AppendRecoveryAdapter().NormalizeLegacy(
-            appendBytes, RecoveryTestFixtures.LocalNotesScope, "append");
+            appendBytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope"));
         RecoveryEnvelopeDocument restore = new RestoreRecoveryAdapter().NormalizeLegacy(
-            restoreBytes, RecoveryTestFixtures.LocalNotesScope, "restore");
+            restoreBytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.RestoreJournalPath("scope"));
 
         append.IsLegacy.Should().BeTrue();
         restore.IsLegacy.Should().BeTrue();
@@ -74,9 +74,47 @@ public sealed class RecoveryEnvelopeTests
             {"format":"scrinia.recovery","version":1,"operation":"append","bodyVersion":1,"operationId":"id","scope":"local:notes","address":"/notes/note","state":"prepared","createdAt":"2026-09-11T00:00:00Z","updatedAt":"2026-09-11T00:00:00Z","body":{ "oldArtifact": null },"{{member}}":"{{value}}"}
             """;
 
-        FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
+        RecoveryEnvelopeException exception = FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
                 System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence"))
+            .Should().Throw<RecoveryEnvelopeException>().Which;
+
+        exception.Failure.Should().Be(RecoveryEnvelopeFailure.Malformed);
+    }
+
+    [Fact]
+    public void DuplicateIdentityMemberIsClassifiedAsMalformed()
+    {
+        const string json = "{\"format\":\"scrinia.recovery\",\"format\":\"scrinia.recovery\"}";
+
+        RecoveryEnvelopeException exception = FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
+                System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence"))
+            .Should().Throw<RecoveryEnvelopeException>().Which;
+
+        exception.Failure.Should().Be(RecoveryEnvelopeFailure.Malformed);
+    }
+
+    [Fact]
+    public void AdapterRejectsAValidEnvelopeForAnotherOperation()
+    {
+        RestoreJournal restore = RestoreJournalCodec.ParseAndValidate(
+            RecoveryTestFixtures.BuildLegacyRestoreJournal(), RecoveryTestFixtures.LocalNotesScope, ".restore-journal.json");
+        byte[] bytes = RecoveryEnvelopeCodec.Serialize(RecoveryEnvelopeCodec.FromRestore(restore));
+
+        FluentActions.Invoking(() => ((IRecoveryAdapter)new AppendRecoveryAdapter()).ParseAndNormalize(
+                bytes, RecoveryTestFixtures.LocalNotesScope, RecoveryTestFixtures.AppendJournalPath("scope")))
             .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
+    public void LegacyFileEntityNormalizationDoesNotReadTheEvidenceFile()
+    {
+        string evidencePath = Path.Combine(Path.GetTempPath(), ".file-entity-" + RecoveryTestFixtures.OperationId + ".recovery");
+        RecoveryEnvelopeDocument envelope = new FileEntityRecoveryAdapter().NormalizeLegacy(
+            RecoveryTestFixtures.BuildLegacyFileEntityRecovery(), RecoveryTestFixtures.LocalNotesScope, evidencePath);
+
+        envelope.IsLegacy.Should().BeTrue();
+        envelope.CreatedAt.Should().Be(DateTimeOffset.UnixEpoch);
+        envelope.UpdatedAt.Should().Be(DateTimeOffset.UnixEpoch);
     }
 
     [Fact]

@@ -137,8 +137,15 @@ internal static class RecoveryEnvelopeCodec
     {
         if (json.IsEmpty)
             throw Malformed("Recovery envelope is empty", evidencePath);
-        if (HasDuplicateIdentityMember(json))
-            throw Malformed("Recovery envelope contains duplicate identity members", evidencePath);
+        try
+        {
+            if (HasDuplicateIdentityMember(json))
+                throw Malformed("Recovery envelope contains duplicate identity members", evidencePath);
+        }
+        catch (JsonException exception)
+        {
+            throw Malformed("Recovery envelope is malformed", evidencePath, exception);
+        }
 
         RecoveryEnvelopeDocument? document;
         try
@@ -157,16 +164,52 @@ internal static class RecoveryEnvelopeCodec
         return document;
     }
 
+    internal static RecoveryEnvelopeDocument ValidateForOperation(RecoveryEnvelopeDocument document,
+        RecoveryOperation expectedOperation, string expectedScope, string evidencePath)
+    {
+        if (document.Operation != expectedOperation)
+            throw Malformed("Evidence operation does not match its adapter", evidencePath);
+        Validate(document, expectedScope, evidencePath);
+        ValidateBody(document, evidencePath);
+        return document;
+    }
+
     private static void ValidateBody(RecoveryEnvelopeDocument document, string evidencePath)
     {
-        bool valid = document.Operation switch
+        try
         {
-            RecoveryOperation.Append => JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.AppendRecoveryBody) is not null,
-            RecoveryOperation.Restore => JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.RestoreRecoveryBody) is not null,
-            RecoveryOperation.FileEntity => JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.FileEntityRecoveryBody) is not null,
-            _ => false
-        };
-        if (!valid) throw Malformed("Recovery envelope body is invalid", evidencePath);
+            switch (document.Operation)
+            {
+                case RecoveryOperation.Append:
+                    AppendRecoveryBody append = JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.AppendRecoveryBody)
+                        ?? throw new JsonException("Append recovery body is missing.");
+                    if (append.OldArtifact is null || append.OldSidecar is null || append.NewArtifact is null ||
+                        append.NewSidecar is null || append.PruneCandidates is null || !Enum.IsDefined(append.State) ||
+                        !Enum.IsDefined(append.ArchiveArtifactStatus) || !Enum.IsDefined(append.ArchiveSidecarStatus))
+                        throw new JsonException("Append recovery body is incomplete.");
+                    break;
+                case RecoveryOperation.Restore:
+                    RestoreRecoveryBody restore = JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.RestoreRecoveryBody)
+                        ?? throw new JsonException("Restore recovery body is missing.");
+                    if (string.IsNullOrWhiteSpace(restore.TransactionId) || restore.Entries is not { Count: > 0 } || restore.Entries.Any(entry => entry is null))
+                        throw new JsonException("Restore recovery body is incomplete.");
+                    break;
+                case RecoveryOperation.FileEntity:
+                    FileEntityRecoveryBody fileEntity = JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.FileEntityRecoveryBody)
+                        ?? throw new JsonException("File-entity recovery body is missing.");
+                    if (string.IsNullOrWhiteSpace(fileEntity.EntityKind) || string.IsNullOrWhiteSpace(fileEntity.EntityName) ||
+                        fileEntity.OldBody is null || fileEntity.OldMeta is null ||
+                        (fileEntity.State is not "prepared" and not "committed"))
+                        throw new JsonException("File-entity recovery body is incomplete.");
+                    break;
+                default:
+                    throw new JsonException("Recovery envelope operation is invalid.");
+            }
+        }
+        catch (JsonException exception)
+        {
+            throw Malformed("Recovery envelope body is invalid", evidencePath, exception);
+        }
     }
 
     internal static RecoveryEnvelopeDocument FromAppend(AppendJournal journal) =>
@@ -245,11 +288,36 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
     RecoveryOperation IRecoveryAdapter.Operation => Operation;
     internal bool IsCandidateFile(string fileName) => fileName is AppendJournal.FileName or ".append-journal.json";
     bool IRecoveryAdapter.IsCandidateFile(string fileName) => IsCandidateFile(fileName);
-    internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) =>
-        RecoveryEnvelopeCodec.FromAppend(AppendJournalCodec.ParseAndValidate(bytes, expectedScope, evidencePath)) with { IsLegacy = true };
-    RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) => NormalizeLegacy(bytes, expectedScope, evidencePath);
-    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath, string expectedSubject) => RecoveryEnvelopeCodec.Parse(RecoveryEnvelopeCodec.Serialize(envelope), expectedScope, evidencePath);
+    internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath)
+    {
+        EnsureFilename(evidencePath);
+        try
+        {
+            return RecoveryEnvelopeCodec.FromAppend(AppendJournalCodec.ParseAndValidate(bytes, expectedScope, evidencePath)) with { IsLegacy = true };
+        }
+        catch (AppendJournalException exception)
+        {
+            throw new RecoveryEnvelopeException(exception.Failure == AppendJournalFailure.UnsupportedVersion
+                ? RecoveryEnvelopeFailure.UnsupportedVersion : RecoveryEnvelopeFailure.Malformed,
+                exception.Message, evidencePath, exception);
+        }
+    }
+    RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) =>
+        IsJson(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath), RecoveryOperation.Append, expectedScope, evidencePath) : NormalizeLegacy(bytes, expectedScope, evidencePath);
+    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath, string expectedSubject) =>
+        RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Append, expectedScope, evidencePath);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Append replay is owned by the append operation.");
+
+    private static void EnsureFilename(string evidencePath) { if (Path.GetFileName(evidencePath) != AppendJournal.FileName) throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence filename does not match append operation.", evidencePath); }
+    private static bool IsJson(ReadOnlySpan<byte> bytes)
+    {
+        foreach (byte value in bytes)
+        {
+            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
+            return value == (byte)'{';
+        }
+        return false;
+    }
 }
 
 internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
@@ -258,11 +326,36 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
     RecoveryOperation IRecoveryAdapter.Operation => Operation;
     internal bool IsCandidateFile(string fileName) => fileName == ".restore-journal.json";
     bool IRecoveryAdapter.IsCandidateFile(string fileName) => IsCandidateFile(fileName);
-    internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) =>
-        RecoveryEnvelopeCodec.FromRestore(RestoreJournalCodec.ParseAndValidate(bytes, expectedScope, evidencePath)) with { IsLegacy = true };
-    RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) => NormalizeLegacy(bytes, expectedScope, evidencePath);
-    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath, string expectedSubject) => RecoveryEnvelopeCodec.Parse(RecoveryEnvelopeCodec.Serialize(envelope), expectedScope, evidencePath);
+    internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath)
+    {
+        EnsureFilename(evidencePath);
+        try
+        {
+            return RecoveryEnvelopeCodec.FromRestore(RestoreJournalCodec.ParseAndValidate(bytes, expectedScope, evidencePath)) with { IsLegacy = true };
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            throw new RecoveryEnvelopeException(exception.Failure == RestoreRecoveryFailure.UnsupportedVersion
+                ? RecoveryEnvelopeFailure.UnsupportedVersion : RecoveryEnvelopeFailure.Malformed,
+                exception.Message, evidencePath, exception);
+        }
+    }
+    RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) =>
+        IsJson(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath), RecoveryOperation.Restore, expectedScope, evidencePath) : NormalizeLegacy(bytes, expectedScope, evidencePath);
+    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath, string expectedSubject) =>
+        RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Restore, expectedScope, evidencePath);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Restore replay is owned by the restore operation.");
+
+    private static void EnsureFilename(string evidencePath) { if (Path.GetFileName(evidencePath) != ".restore-journal.json") throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence filename does not match restore operation.", evidencePath); }
+    private static bool IsJson(ReadOnlySpan<byte> bytes)
+    {
+        foreach (byte value in bytes)
+        {
+            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
+            return value == (byte)'{';
+        }
+        return false;
+    }
 }
 
 internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
@@ -274,8 +367,16 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
 
     internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath)
     {
-        if (bytes.Length == 0 || bytes[0] == (byte)'{')
-            return RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath);
+        EnsureFilename(evidencePath);
+        if (bytes.Length == 0)
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "File-entity recovery evidence is empty.", evidencePath);
+        if (IsJson(bytes))
+        {
+            RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath);
+            return envelope.Operation == RecoveryOperation.FileEntity
+                ? envelope
+                : throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence operation does not match file-entity adapter.", evidencePath);
+        }
 
         try
         {
@@ -304,7 +405,7 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             string operationId = ExtractOperationId(evidencePath);
             return RecoveryEnvelopeCodec.FromFileEntity(body, expectedScope, null, operationId,
                 committed ? RecoveryLifecycleState.Committed : RecoveryLifecycleState.Prepared,
-                File.GetLastWriteTimeUtc(evidencePath), File.GetLastWriteTimeUtc(evidencePath)) with { IsLegacy = true };
+                DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch) with { IsLegacy = true };
         }
         catch (Exception exception) when (exception is not RecoveryEnvelopeException)
         {
@@ -314,7 +415,10 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
     }
 
     RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath) => NormalizeLegacy(bytes, expectedScope, evidencePath);
-    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath, string expectedSubject) => RecoveryEnvelopeCodec.Parse(RecoveryEnvelopeCodec.Serialize(envelope), expectedScope, evidencePath);
+    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath, string expectedSubject) =>
+        envelope.Operation == RecoveryOperation.FileEntity
+            ? RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.FileEntity, expectedScope, evidencePath)
+            : throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence operation does not match file-entity adapter.", evidencePath);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("File-entity replay is owned by the file-entity operation.");
 
     private static RecoveryMemberSnapshot ReadSnapshot(BinaryReader reader)
@@ -335,5 +439,21 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         string name = Path.GetFileName(evidencePath);
         const string prefix = ".file-entity-";
         return name[prefix.Length..^".recovery".Length];
+    }
+    private static void EnsureFilename(string evidencePath)
+    {
+        string fileName = Path.GetFileName(evidencePath);
+        if (!fileName.StartsWith(".file-entity-", StringComparison.Ordinal) || !fileName.EndsWith(".recovery", StringComparison.Ordinal))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence filename does not match file-entity operation.", evidencePath);
+    }
+
+    private static bool IsJson(ReadOnlySpan<byte> bytes)
+    {
+        foreach (byte value in bytes)
+        {
+            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
+            return value == (byte)'{';
+        }
+        return false;
     }
 }
