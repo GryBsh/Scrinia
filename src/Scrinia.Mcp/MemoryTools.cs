@@ -615,8 +615,15 @@ public sealed partial class ScriniaMcpTools
 
         // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and
         // remember, so the three tools agree about who owns the namespace.
-        var skillRoute = TryRouteSkillForget(path, cancellationToken);
-        if (skillRoute is not null) return (await skillRoute).ToYaml();
+        try
+        {
+            var skillRoute = TryRouteSkillForget(path, cancellationToken);
+            if (skillRoute is not null) return (await skillRoute).ToYaml();
+        }
+        catch (FileLockTimeoutException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
         try
         {
             return (await Forget(parsedPath, cancellationToken)).ToYaml();

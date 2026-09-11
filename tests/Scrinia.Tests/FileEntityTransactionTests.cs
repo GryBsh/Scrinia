@@ -534,6 +534,24 @@ public sealed class FileEntityTransactionTests
         parsed.Error.Should().Contain("Failed to acquire file lock");
     }
 
+    [Fact]
+    public async Task SkillForget_MapsLockTimeoutToStructuredDurableError()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember("/skill/locked-forget", ["content"]);
+
+        string skillsDirectory = PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot);
+        using FileLock held = FileLock.AcquireExclusive(Path.Combine(skillsDirectory, ".lock"));
+
+        string response = await tools.MemoryForget("/skill/locked-forget");
+
+        var parsed = ResponseParser.Parse(response);
+        parsed.Status.Should().Be("error");
+        parsed.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        parsed.Error.Should().Contain("Failed to acquire file lock");
+    }
+
     private static FileEntityTransactionCoordinator Coordinator(TestHelpers.StoreScope scope) =>
         new(scope.WorkspaceDir);
 
