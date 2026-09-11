@@ -96,9 +96,15 @@ public static class DurableFormats
         new("append-journal", Current: 1, AbsentMeans: null,
             FormatDisposition.Refuse, FormatDisposition.Refuse);
 
+    /// <summary>The versioned common recovery envelope. It is introduced as a read/write
+    /// contract now; operation adapters are responsible for its future use.</summary>
+    public static readonly FormatContract RecoveryEnvelope =
+        new("recovery-envelope", Current: 1, AbsentMeans: null,
+            FormatDisposition.Refuse, FormatDisposition.Refuse);
+
     public static IReadOnlyList<FormatContract> All { get; } =
     [
         ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta,
-        RestoreJournal, AppendJournal
+        RestoreJournal, AppendJournal, RecoveryEnvelope
     ];
 }

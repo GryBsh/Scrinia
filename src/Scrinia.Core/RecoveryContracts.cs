@@ -1,0 +1,155 @@
+using System.Text.Json;
+
+namespace Scrinia.Core;
+
+internal enum RecoveryOperation
+{
+    Restore,
+    Append,
+    FileEntity
+}
+
+internal enum RecoveryLifecycleState
+{
+    Prepared,
+    Applying,
+    Committed,
+    CleanupPending,
+    Cleaned,
+    RecoveryRequired,
+    RolledBack
+}
+
+internal sealed record RecoveryEnvelopeDocument(
+    string Format,
+    int Version,
+    RecoveryOperation Operation,
+    int BodyVersion,
+    string OperationId,
+    string Scope,
+    string? Address,
+    RecoveryLifecycleState State,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    JsonElement Body);
+
+internal sealed record RecoveryCandidate(
+    RecoveryOperation Operation,
+    string EvidencePath,
+    string Scope,
+    string CanonicalSubject,
+    string OperationId,
+    RecoveryEnvelopeDocument Envelope,
+    bool IsLegacy);
+
+internal enum RecoveryBlockReason
+{
+    Malformed,
+    Unsafe,
+    UnsupportedVersion,
+    Ambiguous,
+    Inconsistent,
+    ReplayIoFailed
+}
+
+internal sealed record RecoveryBlock
+{
+    internal RecoveryBlock(
+        string scope,
+        string evidencePath,
+        RecoveryOperation? operation,
+        string operationId,
+        RecoveryBlockReason reason,
+        string detail)
+    {
+        Scope = RequireText(scope, nameof(scope));
+        EvidencePath = RequireText(evidencePath, nameof(evidencePath));
+        OperationId = RequireText(operationId, nameof(operationId));
+        Detail = RequireText(detail, nameof(detail));
+        Operation = operation;
+        Reason = reason;
+    }
+
+    internal string Scope { get; }
+    internal string EvidencePath { get; }
+    internal RecoveryOperation? Operation { get; }
+    internal string OperationId { get; }
+    internal RecoveryBlockReason Reason { get; }
+    internal string Detail { get; }
+
+    private static string RequireText(string value, string parameterName) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
+            : value;
+}
+
+internal sealed record RecoveryDiscoveryResult
+{
+    internal RecoveryDiscoveryResult(
+        IReadOnlyList<RecoveryCandidate> candidates,
+        RecoveryBlock? blockingEvidence)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        Candidates = Array.AsReadOnly(candidates.ToArray());
+        BlockingEvidence = blockingEvidence;
+    }
+
+    internal IReadOnlyList<RecoveryCandidate> Candidates { get; }
+    internal RecoveryBlock? BlockingEvidence { get; }
+}
+
+internal interface IRecoveryAdapter
+{
+    RecoveryOperation Operation { get; }
+    bool IsCandidateFile(string fileName);
+    RecoveryEnvelopeDocument ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath);
+    RecoveryEnvelopeDocument ValidateForMutation(
+        RecoveryEnvelopeDocument envelope,
+        string expectedScope,
+        string evidencePath,
+        string expectedSubject);
+    RecoveryOutcome RecoverOrCleanup(
+        RecoveryEnvelopeDocument envelope,
+        string evidencePath,
+        CancellationToken cancellationToken);
+}
+
+internal sealed record RecoveryOutcome
+{
+    internal RecoveryOutcome(
+        bool isBlocked,
+        bool isCommitted,
+        bool cleanupPending,
+        string scope,
+        string evidencePath,
+        string operationId,
+        RecoveryBlock? block,
+        string? warning)
+    {
+        Scope = RequireText(scope, nameof(scope));
+        EvidencePath = RequireText(evidencePath, nameof(evidencePath));
+        OperationId = RequireText(operationId, nameof(operationId));
+        if (isBlocked && block is null)
+            throw new ArgumentException("A blocked recovery outcome requires blocking evidence.", nameof(block));
+
+        IsBlocked = isBlocked;
+        IsCommitted = isCommitted;
+        CleanupPending = cleanupPending;
+        Block = block;
+        Warning = warning;
+    }
+
+    internal bool IsBlocked { get; }
+    internal bool IsCommitted { get; }
+    internal bool CleanupPending { get; }
+    internal string Scope { get; }
+    internal string EvidencePath { get; }
+    internal string OperationId { get; }
+    internal RecoveryBlock? Block { get; }
+    internal string? Warning { get; }
+
+    private static string RequireText(string value, string parameterName) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
+            : value;
+}
