@@ -25,7 +25,7 @@ public sealed class RecoveryEnvelopeTests
             "createdAt", "updatedAt", "body");
         root.GetProperty("format").GetString().Should().Be("scrinia.recovery");
         root.GetProperty("operation").GetString().Should().Be("append");
-        root.GetProperty("state").GetString().Should().Be("applying");
+        root.GetProperty("state").GetString().Should().Be("prepared");
         root.GetProperty("bodyVersion").GetInt32().Should().BePositive();
         root.GetProperty("updatedAt").GetDateTimeOffset().Should().BeOnOrAfter(root.GetProperty("createdAt").GetDateTimeOffset());
     }

@@ -152,7 +152,7 @@ internal sealed class RecoveryDiscoveryCoordinator
                     ? RecoveryBlockReason.UnsupportedVersion
                     : exception.Failure == RecoveryEnvelopeFailure.WrongScope
                         ? RecoveryBlockReason.WrongScope : RecoveryBlockReason.Malformed,
-                exception.Message);
+                exception.Message, exception.UnsupportedVersion);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {

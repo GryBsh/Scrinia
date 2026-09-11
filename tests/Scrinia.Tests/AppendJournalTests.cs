@@ -24,6 +24,50 @@ public sealed class AppendJournalTests
     }
 
     [Fact]
+    public void AppendAdapter_RoundTripsCommonEnvelopeWithoutDroppingAppendState()
+    {
+        AppendJournal journal = AppendJournalCodec.CreatePrepared(CreateTransaction());
+        var adapter = new AppendRecoveryAdapter();
+
+        RecoveryEnvelopeDocument envelope = adapter.ToEnvelope(journal);
+        AppendJournal restored = adapter.FromEnvelope(envelope, "versions/.append-journal.json");
+
+        restored.Should().BeEquivalentTo(journal);
+    }
+
+    [Fact]
+    public void AppendAdapter_NormalizesLegacyEvidenceWithoutRewritingItsLocation()
+    {
+        AppendJournal journal = AppendJournalCodec.CreatePrepared(CreateTransaction());
+        var adapter = new AppendRecoveryAdapter();
+
+        RecoveryEnvelopeDocument envelope = adapter.NormalizeLegacy(
+            AppendJournalCodec.Serialize(journal), "local", "versions/.append-journal.json", ".");
+
+        envelope.IsLegacy.Should().BeTrue();
+        adapter.FromEnvelope(envelope, "versions/.append-journal.json").Should().BeEquivalentTo(journal);
+    }
+
+    [Theory]
+    [InlineData(AppendJournalState.Prepared)]
+    [InlineData(AppendJournalState.ArchiveInProgress)]
+    [InlineData(AppendJournalState.Archived)]
+    [InlineData(AppendJournalState.NewPairInProgress)]
+    [InlineData(AppendJournalState.Committed)]
+    [InlineData(AppendJournalState.CleanupPending)]
+    [InlineData(AppendJournalState.RecoveryRequired)]
+    [InlineData(AppendJournalState.RolledBack)]
+    public void AppendAdapter_PreservesEveryOperationState(AppendJournalState state)
+    {
+        AppendJournal journal = AppendJournalCodec.CreatePrepared(CreateTransaction()) with { State = state };
+
+        AppendJournal restored = new AppendRecoveryAdapter().FromEnvelope(
+            AppendJournalCodec.ToEnvelope(journal), "versions/.append-journal.json");
+
+        restored.State.Should().Be(state);
+    }
+
+    [Fact]
     public void JournalWithChangedPayload_IsRejectedAsRecoveryRequired()
     {
         var transaction = CreateTransaction();

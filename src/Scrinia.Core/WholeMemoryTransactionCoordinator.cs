@@ -220,7 +220,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
                 AppendJournalState.CleanupPending, committedHash, detail),
             _ => AppendJournalCodec.WithState(journal, state)
         };
-        return AppendJournalCodec.Serialize(journal);
+        return RecoveryEnvelopeCodec.Serialize(AppendJournalCodec.ToEnvelope(journal));
     }
 
     private static string ComputeCommittedHash(WholeMemoryTransaction transaction) =>

@@ -45,6 +45,38 @@ public sealed class AppendRecoveryTests
         }
     }
 
+    [Fact]
+    public async Task WholeMemoryRecoveryEvidenceUsesTheCommonEnvelopeAtTheLegacyAppendLocation()
+    {
+        using var workspace = new TempWorkspace();
+        await workspace.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["old"]));
+        FileMemoryStore.WholeMemoryFaultInjector = (point, _) => point switch
+        {
+            WholeMemoryFaultPoint.ArchiveArtifactWrite or WholeMemoryFaultPoint.RollbackWrite =>
+                new IOException("Injected whole-memory recovery fault."),
+            _ => null
+        };
+
+        try
+        {
+            await FluentActions.Invoking(() => workspace.Store.StoreAsync(
+                    MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new"])))
+                .Should().ThrowAsync<WholeMemoryTransactionException>();
+        }
+        finally
+        {
+            workspace.Store.ClearFaults();
+        }
+
+        string journalPath = Path.Combine(workspace.Store.GetStoreDirForScope("local"), "versions",
+            AppendJournal.FileName);
+        JsonObject journal = JsonNode.Parse(await File.ReadAllTextAsync(journalPath))!.AsObject();
+
+        journal["format"]!.GetValue<string>().Should().Be(RecoveryEnvelopeCodec.Format);
+        journal["operation"]!.GetValue<string>().Should().Be("append");
+        journal["state"]!.GetValue<string>().Should().Be("applying");
+    }
+
     [Theory]
     [InlineData((int)AppendFaultPoint.RawArtifactRead, AppendStoreErrorCode.Internal)]
     [InlineData((int)AppendFaultPoint.RawSidecarRead, AppendStoreErrorCode.Internal)]
@@ -293,7 +325,7 @@ public sealed class AppendRecoveryTests
             AppendJournal.FileName);
         JsonObject journal = JsonNode.Parse(await File.ReadAllTextAsync(journalPath))!.AsObject();
         string operationId = journal["operationId"]!.GetValue<string>();
-        JsonObject target = field is "address" ? journal : journal["oldArtifact"]!.AsObject();
+        JsonObject target = field is "address" ? journal : journal["body"]!["oldArtifact"]!.AsObject();
         target[field] = value is null ? null : JsonValue.Create(value);
         await File.WriteAllTextAsync(journalPath, journal.ToJsonString());
 
@@ -367,7 +399,7 @@ public sealed class AppendRecoveryTests
             AppendJournal.FileName);
         JsonObject journal = JsonNode.Parse(await File.ReadAllTextAsync(journalPath))!.AsObject();
         string operationId = journal["operationId"]!.GetValue<string>();
-        byte[] newArtifact = Convert.FromBase64String(journal["newArtifact"]!["payload"]!.GetValue<string>());
+        byte[] newArtifact = Convert.FromBase64String(journal["body"]!["newArtifact"]!["payload"]!.GetValue<string>());
         await File.WriteAllBytesAsync(workspace.Store.ArtifactPath("target"), newArtifact);
         workspace.Store.FailPersistentlyAt(AppendFaultPoint.RollbackWrite);
 

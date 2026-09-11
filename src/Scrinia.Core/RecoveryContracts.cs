@@ -72,12 +72,14 @@ internal sealed record RecoveryBlock
         RecoveryOperation? operation,
         string operationId,
         RecoveryBlockReason reason,
-        string detail)
+        string detail,
+        int? unsupportedVersion = null)
     {
         Scope = RequireText(scope, nameof(scope));
         EvidencePath = RequireText(evidencePath, nameof(evidencePath));
         OperationId = RequireText(operationId, nameof(operationId));
         Detail = RequireText(detail, nameof(detail));
+        UnsupportedVersion = unsupportedVersion;
         Operation = operation;
         Reason = reason;
     }
@@ -88,6 +90,7 @@ internal sealed record RecoveryBlock
     internal string OperationId { get; }
     internal RecoveryBlockReason Reason { get; }
     internal string Detail { get; }
+    internal int? UnsupportedVersion { get; }
 
     private static string RequireText(string value, string parameterName) =>
         string.IsNullOrWhiteSpace(value)

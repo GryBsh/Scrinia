@@ -847,6 +847,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
             if (discovery.BlockingEvidence is not null)
                 throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
+                return read();
             if (discovery.Candidates.Count == 0)
             {
                 ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
@@ -878,6 +880,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
             if (discovery.BlockingEvidence is not null)
                 throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
+                return await read();
             if (discovery.Candidates.Count == 0)
             {
                 ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
@@ -2951,13 +2955,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             Exception? parseFailure = InjectAppendFault(AppendFaultPoint.JournalParse, operationId, journalPath);
             if (parseFailure is not null)
                 throw parseFailure;
-            journal = AppendJournalCodec.ParseAndValidate(journalBytes, scope, journalPath, storeDirectory);
+            var adapter = new AppendRecoveryAdapter();
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+                journalBytes, scope, journalPath, storeDirectory);
+            journal = adapter.FromEnvelope(envelope, journalPath);
         }
-        catch (Exception exception) when (exception is AppendJournalException or IOException)
+        catch (Exception exception) when (exception is AppendJournalException or RecoveryEnvelopeException or IOException)
         {
             string recoveryOperationId = exception is AppendJournalException journalException
                 ? journalException.OperationId ?? operationId
-                : operationId;
+                : exception is RecoveryEnvelopeException
+                    ? TryReadOperationId(journalPath) ?? operationId
+                    : operationId;
             throw RecoveryRequired(journalPath, "The append journal failed integrity verification.", exception,
                 recoveryOperationId);
         }
@@ -3087,9 +3096,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDirectory = GetStoreDirForScope(transaction.Scope);
         Directory.CreateDirectory(Path.Combine(storeDirectory, "versions"));
         string path = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
+        var adapter = new AppendRecoveryAdapter();
         AppendJournal current = File.Exists(path)
-            ? AppendJournalCodec.ParseAndValidate(
-                File.ReadAllBytes(path), transaction.Scope, path, storeDirectory)
+            ? adapter.FromEnvelope(((IRecoveryAdapter)adapter).ParseAndNormalize(
+                File.ReadAllBytes(path), transaction.Scope, path, storeDirectory), path)
             : AppendJournalCodec.CreatePrepared(transaction);
         current = current with
         {
@@ -3097,7 +3107,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             ArchiveSidecarStatus = transaction.Archive.SidecarStatus
         };
         AppendJournal journal = AppendJournalCodec.WithState(current, state, committedHash, detail);
-        byte[] bytes = AppendJournalCodec.Serialize(journal);
+        byte[] bytes = RecoveryEnvelopeCodec.Serialize(adapter.ToEnvelope(journal));
         DurableFile.AtomicWriteAllBytesForAppend(path, bytes, transaction.OperationId,
             AppendFaultPoint.JournalWrite, AppendFaultPoint.JournalFlush);
     }
@@ -3174,12 +3184,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         try
         {
-            return AppendJournalCodec.ParseAndValidate(
-                    File.ReadAllBytes(journalPath), scope, journalPath,
-                    Path.GetDirectoryName(Path.GetDirectoryName(journalPath))!)
-                .ToTransaction();
+            var adapter = new AppendRecoveryAdapter();
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+                File.ReadAllBytes(journalPath), scope, journalPath,
+                Path.GetDirectoryName(Path.GetDirectoryName(journalPath))!);
+            return adapter.FromEnvelope(envelope, journalPath).ToTransaction();
         }
         catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryReadOperationId(string journalPath)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(journalPath));
+            return document.RootElement.TryGetProperty("operationId", out JsonElement operationId) &&
+                operationId.ValueKind == JsonValueKind.String ? operationId.GetString() : null;
+        }
+        catch (JsonException)
         {
             return null;
         }
@@ -4186,6 +4211,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         RecoveryOutcome admission = _recoveryDiscovery.AdmitNext(scope, storeDir, discovery, CancellationToken.None);
         if (admission.IsBlocked && admission.Block is not null)
             throw CreateDiscoveryRecoveryException(admission.Block);
+        if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
+            return false;
         if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
             throw CreateDiscoveryRecoveryException(new RecoveryBlock(scope, admission.EvidencePath,
                 discovery.Candidates[0].Operation, admission.OperationId, RecoveryBlockReason.Inconsistent,
@@ -4341,14 +4368,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         new(scope, journalPath, RestoreRecoveryFailure.ReplayIoFailed,
             $"Restore replay failed for topic scope '{scope}'.", exception);
 
-    private static RestoreRecoveryException CreateDiscoveryRecoveryException(RecoveryBlock block) =>
-        new(block.Scope, block.EvidencePath,
+    private static Exception CreateDiscoveryRecoveryException(RecoveryBlock block)
+    {
+        if (block.Operation == RecoveryOperation.Append)
+            return new AppendStoreException(
+                AppendStoreErrorCode.RecoveryRequired,
+                block.OperationId,
+                block.Detail,
+                recovery: new AppendRecoveryInfo(
+                    block.EvidencePath,
+                    "recoveryRequired",
+                    "resolve retained evidence",
+                    block.Detail));
+
+        return new RestoreRecoveryException(block.Scope, block.EvidencePath,
             block.Reason == RecoveryBlockReason.UnsupportedVersion
                 ? RestoreRecoveryFailure.UnsupportedVersion
                 : block.Reason == RecoveryBlockReason.ReplayIoFailed
                     ? RestoreRecoveryFailure.ReplayIoFailed
                     : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
-            block.Detail, discoveryBlock: block);
+            block.Detail, unsupportedVersion: block.UnsupportedVersion, discoveryBlock: block);
+    }
 
     private List<RestoreJournalPayload> BuildRestorePayloadsUnsafe(string topicScope, List<ArtifactEntry> incoming,
         Dictionary<string, byte[]> bodies, bool overwrite)

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Core;
@@ -14,14 +15,16 @@ internal enum RecoveryEnvelopeFailure
 internal sealed class RecoveryEnvelopeException : IOException
 {
     internal RecoveryEnvelopeException(RecoveryEnvelopeFailure failure, string message, string evidencePath,
-        Exception? inner = null) : base(message, inner)
+        Exception? inner = null, int? unsupportedVersion = null) : base(message, inner)
     {
         Failure = failure;
         EvidencePath = evidencePath;
+        UnsupportedVersion = unsupportedVersion;
     }
 
     internal RecoveryEnvelopeFailure Failure { get; }
     internal string EvidencePath { get; }
+    internal int? UnsupportedVersion { get; }
 }
 
 internal sealed record AppendRecoveryBody(
@@ -230,7 +233,7 @@ internal static class RecoveryEnvelopeCodec
     private static void ValidateAppendMember(AppendRecoveryBody body)
     {
         AppendJournalMember[] members = [body.OldArtifact, body.OldSidecar, body.NewArtifact, body.NewSidecar];
-        if (members.Any(member => string.IsNullOrWhiteSpace(member.Path) || string.IsNullOrWhiteSpace(member.Payload) ||
+        if (members.Any(member => string.IsNullOrWhiteSpace(member.Path) || member.Payload is null ||
             string.IsNullOrWhiteSpace(member.Sha256)))
             throw new JsonException("Append recovery member is incomplete.");
     }
@@ -392,7 +395,8 @@ internal static class RecoveryEnvelopeCodec
 
     private static RecoveryLifecycleState Map(AppendJournalState state) => state switch
     {
-        AppendJournalState.Prepared or AppendJournalState.ArchiveInProgress or AppendJournalState.Archived or AppendJournalState.NewPairInProgress => RecoveryLifecycleState.Applying,
+        AppendJournalState.Prepared => RecoveryLifecycleState.Prepared,
+        AppendJournalState.ArchiveInProgress or AppendJournalState.Archived or AppendJournalState.NewPairInProgress => RecoveryLifecycleState.Applying,
         AppendJournalState.Committed => RecoveryLifecycleState.Committed,
         AppendJournalState.CleanupPending => RecoveryLifecycleState.CleanupPending,
         AppendJournalState.RecoveryRequired => RecoveryLifecycleState.RecoveryRequired,
@@ -423,6 +427,51 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
     RecoveryOperation IRecoveryAdapter.Operation => Operation;
     internal bool IsCandidateFile(string fileName) => fileName is AppendJournal.FileName or ".append-journal.json";
     bool IRecoveryAdapter.IsCandidateFile(string fileName) => IsCandidateFile(fileName);
+
+    internal RecoveryEnvelopeDocument ToEnvelope(AppendJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        return RecoveryEnvelopeCodec.FromAppend(journal);
+    }
+
+    internal AppendJournal FromEnvelope(RecoveryEnvelopeDocument document, string evidencePath)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        if (document.Operation != Operation)
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Evidence operation does not match the append adapter.", evidencePath);
+        AppendRecoveryBody body = document.TypedBody as AppendRecoveryBody
+            ?? throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Append recovery body is missing.", evidencePath);
+        AppendJournal journal = new(
+            "scrinia.append-journal", DurableFormats.AppendJournal.Current,
+            document.OperationId, document.Address!, document.Scope, body.State, body.IsCreate,
+            body.OldArtifact, body.OldSidecar, body.NewArtifact, body.NewSidecar,
+            body.ArchiveArtifactPath, body.ArchiveSidecarPath, body.ArchiveArtifactStatus,
+            body.ArchiveSidecarStatus, body.PruneCandidates, document.CreatedAt,
+            body.CommittedHash, body.Detail);
+        try
+        {
+            AppendJournalCodec.ValidateForRecovery(journal, evidencePath);
+        }
+        catch (AppendJournalException exception)
+        {
+            throw exception.WithOperationId(journal.OperationId);
+        }
+        return journal;
+    }
+
+    internal RecoveryOutcome RecoverAppend(RecoveryEnvelopeDocument document, string evidencePath,
+        string expectedScope, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _ = FromEnvelope(document, evidencePath);
+        if (!string.Equals(document.Scope, expectedScope, StringComparison.Ordinal))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.WrongScope,
+                "Append recovery evidence belongs to another scope.", evidencePath);
+        return new RecoveryOutcome(false, false, false, expectedScope, evidencePath,
+            document.OperationId, null, null);
+    }
     internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
         string expectedEvidenceDirectory)
     {
@@ -479,7 +528,7 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         {
             throw new RecoveryEnvelopeException(exception.Failure == RestoreRecoveryFailure.UnsupportedVersion
                 ? RecoveryEnvelopeFailure.UnsupportedVersion : RecoveryEnvelopeFailure.Malformed,
-                exception.Message, evidencePath, exception);
+                exception.Message, evidencePath, exception, exception.UnsupportedVersion);
         }
     }
     RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
