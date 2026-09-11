@@ -128,6 +128,37 @@ public sealed class WholeMemoryStoreTransactionTests
     }
 
     [Fact]
+    public async Task StoreAsync_WhenCleanupStatePersistenceFailsFreshRecoveryRetriesCommittedCleanup()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["old"]));
+        FileMemoryStore.WholeMemoryFaultInjector = (point, _) => point switch
+        {
+            WholeMemoryFaultPoint.ArchiveCleanup or WholeMemoryFaultPoint.CleanupStateWrite =>
+                new IOException($"Injected whole-memory fault at {point}."),
+            _ => null
+        };
+
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new"]));
+        string journalPath = Path.Combine(store.GetStoreDirForScope("local"), "versions", AppendJournal.FileName);
+        File.Exists(journalPath).Should().BeTrue();
+        FileMemoryStore.WholeMemoryFaultInjector = null;
+
+        using var freshStore = new FileMemoryStore(workspace.WorkspaceDir);
+        freshStore.FailOnceAt(AppendFaultPoint.ArchiveCleanup);
+        await FluentActions.Invoking(() => freshStore.RecoverAppendAsync("local"))
+            .Should().ThrowAsync<AppendStoreException>();
+        File.Exists(journalPath).Should().BeTrue();
+
+        freshStore.ClearFaults();
+        await freshStore.RecoverAppendAsync("local");
+        File.Exists(journalPath).Should().BeFalse();
+        File.Exists(freshStore.ArtifactPath("target")).Should().BeTrue();
+        File.Exists(freshStore.MetaPath("target")).Should().BeTrue();
+    }
+
+    [Fact]
     public void PruneWholeArchives_UsesOnlyTheFrozenCandidateList()
     {
         using var workspace = new TestHelpers.StoreScope();

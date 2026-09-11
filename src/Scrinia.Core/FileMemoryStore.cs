@@ -2938,14 +2938,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             if (currentMembers)
             {
-                if (journal.State == AppendJournalState.CleanupPending)
-                {
-                    ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, CancellationToken.None);
-                    if (cleanup.Failed)
-                        throw RecoveryRequired(journalPath,
-                            cleanup.Detail,
-                            operationId: transaction.OperationId);
-                }
+                ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, CancellationToken.None);
+                if (cleanup.Failed)
+                    throw RecoveryRequired(journalPath,
+                        cleanup.Detail,
+                        operationId: transaction.OperationId);
 
                 try
                 {

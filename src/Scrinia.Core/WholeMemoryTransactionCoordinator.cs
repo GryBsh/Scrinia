@@ -69,6 +69,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             string detail = $"Whole-memory archive cleanup did not complete: {string.Join("; ", pruneFailures)}";
             try
             {
+                FileMemoryStore.InjectWholeFault(WholeMemoryFaultPoint.CleanupStateWrite, journalPath);
                 PersistState(transaction, AppendJournalState.CleanupPending, journalPath, committedHash, detail);
             }
             catch (Exception stateFailure)
