@@ -169,7 +169,8 @@ of whatever directory the client launches it from.
 
 To share memories across a team, commit `.scrinia/` like any other source file and, when the same
 memories should be shared between repositories, register a shared base with `scri shared base add`
-— see [Sharing Memory Across a Team](docs/multi-user-setup.md).
+— shared bases always use the `project-git` tracking policy. See
+[Sharing Memory Across a Team](docs/multi-user-setup.md).
 
 ## CLI quick reference
 
@@ -184,7 +185,6 @@ scri config                                 # list/get/set workspace settings
 # Cold-start / lifecycle
 scri guide                                  # print the agent guide (run once per session)
 scri restore                                # resume agent context (profile, patterns, session log)
-scri reconcile                              # scan .scrinia/ for merge conflicts
 scri consolidate                            # mechanical session compaction + stale-entry report (run manually as needed)
 scri reindex                                # force rebuild of every vector file (rarely needed; auto-runs on model switch)
 
@@ -232,12 +232,11 @@ All commands accept `--workspace-root` to override the workspace directory and `
 | `compact` | Merge a multi-chunk memory; archives the original (except an ephemeral, or one with no prior index entry). |
 | `link` | Bidirectional link between two memories. |
 | `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
-| `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
 | `facts` | Aggregate/relational entity queries (`entities`, `profile`, `intersect`). |
 
 ### Built-in skills
 
-Eight skills ship with scrinia and load via `recall({ path: '/skill/{name}' })`:
+Seven skills ship with scrinia and load via `recall({ path: '/skill/{name}' })`:
 
 | Skill | Purpose |
 |-------|---------|
@@ -246,7 +245,6 @@ Eight skills ship with scrinia and load via `recall({ path: '/skill/{name}' })`:
 | `debugger` | Scientific-method debugging: observe, hypothesize, isolate, verify |
 | `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
 | `onboarder` | Build a codebase mental model for new agents and developers |
-| `merge-safety` | Multi-user `.scrinia/` merge conflict prevention and resolution |
 | `evolutionary` | Prune stale memories, surface drift, keep skills aligned with practice |
 | `self-reflector` | Compare plan vs reality after a unit of work, persist durable lessons |
 
@@ -276,7 +274,6 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 ```bash
 dotnet test Scrinia.sln                                 # everything
 dotnet test tests/Scrinia.Tests                         # CLI + MCP + storage + embeddings + reindex
-dotnet test tests/Scrinia.Merge.Tests                   # merge driver, including the parity suites
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests       # Vulkan embeddings plugin
 dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests    # retrieval harness and judge
 ```

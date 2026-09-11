@@ -23,9 +23,9 @@ that forward-fills older entries onto the attributes model.
 ### Exit status
 
 Commands exit 0 only when the requested operation succeeds. They exit 1 for an error and for a
-warning: a completed command that found no matches, had no memories to list, or could not compact
-because no chunks would be removed. Warning output remains structured as `status: warning`, not an
-error.
+warning: a completed command that found no matches, had no memories to list, could not compact
+because no chunks would be removed, or committed an append with a non-fatal warning. Warning
+output remains structured as `status: warning` or `status: success_with_warning`, not an error.
 
 ### scri serve
 
@@ -172,7 +172,8 @@ MCP envelope (`{ action, status, yaml }`) for tooling consumption.
 ### scri append
 
 Append a new chunk to an existing memory. The previous version is archived to
-`{scope}/versions/{name}_{timestamp}.nmp2` so the append is undoable.
+`{scope}/versions/{name}_{timestamp}.nmp2` so the append is undoable. Create-via-append has no
+prior version and therefore creates no archive.
 
 ```bash
 scri append <name> [<file>] [--workspace-root <path>] [--json]
@@ -188,6 +189,12 @@ echo "another paragraph" | scri append session-notes
 
 If the target memory doesn't exist, `append` falls back to creating it as a
 single-chunk memory (equivalent to `store`).
+
+Append responses include an `operationId` for correlating the request with durable journal and
+event records. A committed append with non-fatal cleanup or event-delivery trouble returns the
+structured `success_with_warning` status and warning fields; callers should preserve the committed
+result while treating the command as a warning outcome (exit status 1). Recovery-required results
+retain journal evidence and identify the recovery action instead of claiming success.
 
 Persistent memory subjects may be at most 182 characters after filename sanitization. The limit
 applies to the sanitized persistent subject, not the whole scoped display path.

@@ -25,7 +25,6 @@ src/
   Scrinia.Core/                  storage, encoding, search, embeddings
   Scrinia.Mcp/                   MCP memory tools and response envelopes
   Scrinia/                       CLI executable (AssemblyName: scri)
-  Scrinia.Merge/                 standalone Git merge driver
   Scrinia.Plugin.Abstractions/  published plugin contracts
   Scrinia.Plugin.Embeddings/    Vulkan provider and plugin implementation
   Scrinia.Plugin.Embeddings.Cli/standalone embeddings MCP executable
@@ -79,7 +78,7 @@ is the exit gate that Phase 4 reads.
 The CLI reads and writes a local `.scrinia/` workspace. Built-in semantic search uses Model2Vec or
 one of the Core HTTP providers in-process. The optional Vulkan plugin keeps native GPU/model
 dependencies in a child process and communicates through MCP stdio. Workspace sharing is handled by
-Git and the Scrinia merge driver.
+Git-backed workspaces use ordinary source-control workflows; Scrinia does not install or run a merge driver.
 
 ## Core abstractions
 

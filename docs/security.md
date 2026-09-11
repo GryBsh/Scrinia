@@ -47,10 +47,12 @@ write reach the decoder.
 constrained to the workspace root before any file I/O. A memory name cannot address a file outside
 `.scrinia/`.
 
-Memory addresses are logical and validated before they reach storage. `file://` and other URI
-forms, drive-letter paths, query/fragment syntax, and physical filesystem paths are rejected rather
-than resolved. Persisted `ArtifactKey` values are opaque store-relative keys; callers must not use
-them as URIs or bypass the store's path validation.
+Memory addresses are logical and validated before they reach storage. Persistent addresses use
+`/topic/subject`, while ephemeral addresses use `~name` (`/temp/name` is its accepted alias).
+`file://` and other URI forms, drive-letter paths, query/fragment syntax, and physical filesystem
+paths are rejected rather than resolved. Persisted `ArtifactKey` values are opaque store-relative
+keys; callers must not use them as URIs or bypass the store's path validation. Shared roots are
+registered with `scri shared base add <name> <absolute-root>` and always use `project-git` tracking.
 
 ### Response injection
 

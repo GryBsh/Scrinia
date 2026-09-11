@@ -31,7 +31,7 @@ scrinia/
     Scrinia.Mcp/                  <- MCP tools library
       MemoryTools.cs              <- guide() + the per-verb memory tools (sealed partial)
       MemoryTools.Core.cs         <- store/show + agent-config write
-      MemoryTools.Lifecycle.cs    <- bundle, reconcile, compact, restore
+      MemoryTools.Lifecycle.cs    <- bundle, compact, restore
       MemoryTools.Bundling.cs     <- export/import bundle helpers
       MemoryTools.Skills.cs       <- SkillCreate/SkillLoad + shared sidecar helpers
       EmbeddedPrompts.cs          <- loads embedded skills, scaffolds, guide.md
@@ -43,7 +43,6 @@ scrinia/
     Scrinia.Plugin.Abstractions/  <- IScriniaPlugin + extension hooks
     Scrinia.Plugin.Embeddings/    <- optional Vulkan GPU plugin (LLamaSharp, GGUF model)
     Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport)
-    Scrinia.Merge/                <- merge driver for .scrinia .meta.json conflicts
   tests/
     Scrinia.Tests/                <- core + MCP unit tests
     Scrinia.TestDoubles/           <- shared test doubles
@@ -79,7 +78,6 @@ Twelve tools are exposed — `guide()`, one per memory operation, and `facts`:
 | `compact` | Merge a multi-chunk memory; archives the original (except an ephemeral, or one with no prior index entry). |
 | `link` | Bidirectional link between two memories. |
 | `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
-| `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
 | `facts` | Aggregate/relational entity queries over stored attributes (`entities`, `profile`, `intersect`). |
 
 Skill paths are routed transparently through `recall` and `remember`:
