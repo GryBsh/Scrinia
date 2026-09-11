@@ -323,6 +323,23 @@ internal static class RecoveryEnvelopeCodec
         return document with { TypedBody = body };
     }
 
+    internal static bool IsCommonEnvelope(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.IsEmpty)
+            return false;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(bytes.ToArray());
+            return document.RootElement.TryGetProperty("format", out JsonElement format)
+                && format.ValueKind == JsonValueKind.String
+                && format.GetString() == Format;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     internal static RecoveryEnvelopeDocument FromAppend(AppendJournal journal)
     {
         var body = new AppendRecoveryBody(journal.State, journal.IsCreate,
@@ -420,7 +437,7 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
     }
     RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
         string expectedEvidenceDirectory) =>
-        IsJson(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath, expectedEvidenceDirectory), RecoveryOperation.Append, expectedScope, evidencePath, expectedEvidenceDirectory) : NormalizeLegacy(bytes, expectedScope, evidencePath, expectedEvidenceDirectory);
+        RecoveryEnvelopeCodec.IsCommonEnvelope(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath, expectedEvidenceDirectory), RecoveryOperation.Append, expectedScope, evidencePath, expectedEvidenceDirectory) : NormalizeLegacy(bytes, expectedScope, evidencePath, expectedEvidenceDirectory);
     RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
         string expectedSubject, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Append, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
@@ -462,7 +479,7 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
     }
     RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
         string expectedEvidenceDirectory) =>
-        IsJson(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath, expectedEvidenceDirectory), RecoveryOperation.Restore, expectedScope, evidencePath, expectedEvidenceDirectory) : NormalizeLegacy(bytes, expectedScope, evidencePath, expectedEvidenceDirectory);
+        RecoveryEnvelopeCodec.IsCommonEnvelope(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath, expectedEvidenceDirectory), RecoveryOperation.Restore, expectedScope, evidencePath, expectedEvidenceDirectory) : NormalizeLegacy(bytes, expectedScope, evidencePath, expectedEvidenceDirectory);
     RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
         string expectedSubject, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Restore, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
@@ -494,7 +511,7 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         EnsureFilename(evidencePath, expectedEvidenceDirectory);
         if (bytes.Length == 0)
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "File-entity recovery evidence is empty.", evidencePath);
-        if (IsJson(bytes))
+        if (RecoveryEnvelopeCodec.IsCommonEnvelope(bytes))
         {
             RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath, expectedEvidenceDirectory);
             return envelope.Operation == RecoveryOperation.FileEntity
@@ -580,4 +597,5 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         }
         return false;
     }
+
 }

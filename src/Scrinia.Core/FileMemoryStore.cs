@@ -140,6 +140,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly string _workspaceRoot;
     private readonly WholeMemoryTransactionCoordinator _wholeMemoryTransactions;
     private readonly FileEntityTransactionCoordinator _fileEntityTransactions;
+    private readonly RecoveryDiscoveryCoordinator _recoveryDiscovery = new();
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -4170,6 +4171,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     private bool RecoverScopeUnsafe(string scope, string storeDir)
     {
+        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
+        if (discovery.BlockingEvidence is not null)
+        {
+            RecoveryBlock block = discovery.BlockingEvidence;
+            throw new RestoreRecoveryException(scope, block.EvidencePath,
+                block.Reason == RecoveryBlockReason.UnsupportedVersion
+                    ? RestoreRecoveryFailure.UnsupportedVersion
+                    : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+                block.Detail);
+        }
+
         string journalPath = GetRestoreJournalPath(storeDir);
         if (!File.Exists(journalPath))
             return false;
