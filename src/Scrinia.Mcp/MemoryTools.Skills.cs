@@ -218,7 +218,52 @@ public sealed partial class ScriniaMcpTools
 
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
         string json = JsonSerializer.Serialize(meta, typeInfo);
-        DurableFile.AtomicWriteAllText(metaPath, json);
+        byte[] serializedMeta = Encoding.UTF8.GetBytes(json);
+        string workspaceRoot = FindWorkspaceRoot(filePath);
+        var mutation = new FileEntityMutation(
+            "sidecar",
+            Path.GetFileNameWithoutExtension(filePath),
+            metaPath,
+            metaPath,
+            Path.Combine(Path.GetDirectoryName(metaPath)!, "versions"),
+            [],
+            serializedMeta,
+            deleteBody: false,
+            deleteMeta: false);
+        FileEntityMutationResult result;
+        try
+        {
+            result = new FileEntityTransactionCoordinator(workspaceRoot)
+                .ExecuteAsync(mutation)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (WholeMemoryTransactionException exception)
+            when (exception.Code != WholeMemoryErrorCode.RecoveryRequired)
+        {
+            throw new DurableWriteException("write sidecar", metaPath, exception);
+        }
+        if (result.Outcome == WholeMemoryOutcome.RecoveryRequired)
+        {
+            throw new WholeMemoryTransactionException(
+                WholeMemoryErrorCode.RecoveryRequired,
+                result.OperationId,
+                result.Warning ?? "Sidecar publication requires recovery.",
+                recovery: result.Recovery);
+        }
+    }
+
+    private static string FindWorkspaceRoot(string filePath)
+    {
+        DirectoryInfo? directory = Directory.GetParent(Path.GetFullPath(filePath));
+        while (directory is not null)
+        {
+            if (directory.Name.Equals(".scrinia", StringComparison.OrdinalIgnoreCase))
+                return directory.Parent?.FullName ?? directory.FullName;
+            directory = directory.Parent;
+        }
+
+        return Path.GetDirectoryName(Path.GetFullPath(filePath))!;
     }
 
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>

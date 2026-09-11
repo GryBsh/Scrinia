@@ -31,6 +31,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         cancellationToken.ThrowIfCancellationRequested();
 
         string operationId = Guid.NewGuid().ToString("N");
+        bool sidecarOnly = string.Equals(
+            Path.GetFullPath(mutation.BodyPath), Path.GetFullPath(mutation.MetaPath),
+            StringComparison.OrdinalIgnoreCase);
         string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
 
@@ -38,7 +41,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         if (recovery is not null)
             return recovery;
 
-        RawMemberSnapshot oldBody = Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead);
+        RawMemberSnapshot oldBody = sidecarOnly
+            ? RawMemberSnapshot.Capture(mutation.BodyPath, false, [])
+            : Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead);
         RawMemberSnapshot oldMeta = Capture(mutation.MetaPath, FileEntityFaultPoint.RawMetaRead);
         bool metadataMutation = mutation.DeleteMeta || mutation.NewMeta is not null;
         string? evidencePath = null;
@@ -53,16 +58,19 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             WriteEvidence(evidencePath, oldBody, oldMeta, archiveBody, archiveMeta,
                 RecoveryEvidenceState.Prepared, null, null);
 
-            Archive(oldBody, archiveBody, FileEntityFaultPoint.ArchiveBodyWrite);
+            if (!sidecarOnly)
+                Archive(oldBody, archiveBody, FileEntityFaultPoint.ArchiveBodyWrite);
             Archive(oldMeta, archiveMeta, FileEntityFaultPoint.ArchiveMetaWrite);
-            Publish(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, FileEntityFaultPoint.BodyWrite);
+            if (!sidecarOnly)
+                Publish(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, FileEntityFaultPoint.BodyWrite);
             ThrowIfFault(FileEntityFaultPoint.AfterBodyDelete);
 
             if (metadataMutation)
                 Publish(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta ?? [], FileEntityFaultPoint.MetaWrite);
 
             ThrowIfFault(FileEntityFaultPoint.VerificationRead);
-            Verify(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody);
+            if (!sidecarOnly)
+                Verify(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody);
             if (metadataMutation)
                 Verify(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!);
 
@@ -190,7 +198,10 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             return;
         }
 
-        DurableFile.AtomicWriteAllBytes(snapshot.Path, snapshot.Bytes);
+        // Rollback deliberately does not re-enter the publication fault injector. The injected
+        // publication failure must not make the compensating write fail as a side effect; the
+        // coordinator's explicit RollbackWrite seam is the deterministic way to test that path.
+        File.WriteAllBytes(snapshot.Path, snapshot.Bytes);
     }
 
     private static void Delete(string? path)
@@ -204,17 +215,24 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         RawMemberSnapshot oldBody,
         RawMemberSnapshot oldMeta)
     {
+        bool sidecarOnly = string.Equals(
+            Path.GetFullPath(mutation.BodyPath), Path.GetFullPath(mutation.MetaPath),
+            StringComparison.OrdinalIgnoreCase);
         if (!oldBody.Existed && !oldMeta.Existed)
             return (null, null);
 
         Directory.CreateDirectory(mutation.VersionsDirectory);
-        string stem = Path.GetFileNameWithoutExtension(mutation.BodyPath);
-        string extension = Path.GetExtension(mutation.BodyPath);
+        string stem = sidecarOnly
+            ? Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(mutation.MetaPath))
+            : Path.GetFileNameWithoutExtension(mutation.BodyPath);
+        string extension = sidecarOnly ? ".meta.json" : Path.GetExtension(mutation.BodyPath);
         string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff");
         string body = Path.Combine(mutation.VersionsDirectory, $"{stem}_{timestamp}{extension}");
         int suffix = 1;
-        while (File.Exists(body) || File.Exists(Path.ChangeExtension(body, ".meta.json")))
+        while (File.Exists(body) || (!sidecarOnly && File.Exists(Path.ChangeExtension(body, ".meta.json"))))
             body = Path.Combine(mutation.VersionsDirectory, $"{stem}_{timestamp}-{suffix++}{extension}");
+        if (sidecarOnly)
+            return (null, oldMeta.Existed ? body : null);
         return (oldBody.Existed ? body : null, oldMeta.Existed ? Path.ChangeExtension(body, ".meta.json") : null);
     }
 

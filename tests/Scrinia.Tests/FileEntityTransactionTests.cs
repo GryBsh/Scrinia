@@ -1,11 +1,46 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Mcp;
+using System.Text.Json;
 using Xunit;
 
 namespace Scrinia.Tests;
 
 public sealed class FileEntityTransactionTests
 {
+    [Fact]
+    public void WriteSidecarMeta_UsesTheCoordinatorAndPreservesUnknownFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var paths = EntityPaths(scope);
+        File.WriteAllText(paths.Body, "body remains unchanged");
+        const string oldMeta = "{\"role\":\"reviewer\",\"futureThing\":42}";
+        File.WriteAllText(paths.Meta, oldMeta);
+        var metadata = JsonSerializer.Deserialize(oldMeta, ScriniaMcpJsonContext.Default.SkillFileMeta)!;
+        metadata = metadata with { Role = "researcher" };
+
+        ScriniaMcpTools.WriteSidecarMeta(
+            paths.Body, metadata, ScriniaMcpJsonContext.Default.SkillFileMeta);
+
+        File.ReadAllText(paths.Body).Should().Be("body remains unchanged");
+        File.ReadAllText(paths.Meta).Should().Contain("futureThing");
+        Directory.GetFiles(paths.Versions).Should().ContainSingle();
+        File.ReadAllText(Directory.GetFiles(paths.Versions)[0]).Should().Be(oldMeta);
+    }
+
+    [Fact]
+    public void ReadSidecarMeta_ReturnsNullForMalformedJson()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var paths = EntityPaths(scope);
+        File.WriteAllText(paths.Meta, "not-json");
+
+        var metadata = ScriniaMcpTools.ReadSidecarMeta(
+            paths.Body, ScriniaMcpJsonContext.Default.SkillFileMeta);
+
+        metadata.Should().BeNull();
+    }
+
     [Fact]
     public async Task Publication_ReplacesBodyAndMetadataAsAPair()
     {
