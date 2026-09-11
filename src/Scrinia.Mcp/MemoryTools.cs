@@ -307,6 +307,11 @@ public sealed partial class ScriniaMcpTools
         {
             return DurableWriteFailureResponse(ex).ToYaml();
         }
+        catch (WholeMemoryTransactionException ex)
+        {
+            var (scope, _) = CurrentStore.ResolveAddress(parsedPath);
+            return WholeMemoryFailureResponse(ex, scope).ToYaml();
+        }
 
         // Was InjectInfoHint doing string surgery on rendered YAML. The no-op-on-error rule is
         // preserved deliberately: errors carry recovery text on actionNeeded, not info.
@@ -331,6 +336,9 @@ public sealed partial class ScriniaMcpTools
     private static McpResponse WholeMemoryFailureResponse(
         WholeMemoryTransactionException exception, string scope)
     {
+        ArgumentNullException.ThrowIfNull(exception);
+        string SafeEvidencePath() => Path.GetFileName(exception.Recovery?.EvidencePath ?? "evidence");
+
         if (exception.Code == WholeMemoryErrorCode.RecoveryRequired)
         {
             RecoveryInfo recovery = exception.Recovery
@@ -338,9 +346,10 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                     exception.Message,
                     ErrorCodes.RecoveryRequired,
+                    recovery.Action,
                     "Resolve the retained whole-memory transaction evidence, then retry.")
                 .WithOperationId(exception.OperationId)
-                .WithRecovery(scope, recovery.EvidencePath);
+                .WithRecovery(scope, SafeEvidencePath());
         }
 
         return ResponseBuilder.Error(
@@ -661,6 +670,11 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (WholeMemoryTransactionException ex)
+        {
+            var (scope, _) = CurrentStore.ResolveAddress(parsedPath);
+            return WholeMemoryFailureResponse(ex, scope).ToYaml();
         }
     }
 

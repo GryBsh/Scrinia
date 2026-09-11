@@ -86,12 +86,25 @@ public partial class ScriniaCommands
         if (error is not null)
             message = FormatCliError(error);
         if (r.ActionNeeded is not { Length: > 0 })
-            return message;
+        {
+            return AddTransactionDetails(r, message);
+        }
 
         var sb = new System.Text.StringBuilder(message);
         foreach (string hint in r.ActionNeeded)
             sb.Append("\n  - ").Append(hint);
-        return sb.ToString();
+        return AddTransactionDetails(r, sb.ToString());
+    }
+
+    private static string AddTransactionDetails(McpResponse response, string message)
+    {
+        if (response.ErrorCode is not (ErrorCodes.DurableWriteFailed or ErrorCodes.RecoveryRequired))
+            return message;
+        var details = new System.Text.StringBuilder(message);
+        if (response.OperationId is not null) details.Append("\n  operationId=").Append(response.OperationId);
+        if (response.Scope is not null) details.Append(" scope=").Append(response.Scope);
+        if (response.JournalPath is not null) details.Append(" journalPath=").Append(response.JournalPath);
+        return details.ToString();
     }
 
     internal static string FormatCliError(MemoryError error)
@@ -141,6 +154,12 @@ public partial class ScriniaCommands
 
             if (r.IsError)
             {
+                if (r.ErrorCode is ErrorCodes.DurableWriteFailed or ErrorCodes.RecoveryRequired)
+                {
+                    WriteJson(new CliMcpOutput(action, r.Status, r.ToYaml()),
+                        CliJsonContext.Default.CliMcpOutput);
+                    return 1;
+                }
                 MemoryError? writeError = action == "append" && r.ErrorCode == ErrorCodes.InvalidParameter
                     ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
                         r.Error ?? "invalid write content")

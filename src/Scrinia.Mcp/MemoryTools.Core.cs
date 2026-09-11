@@ -257,15 +257,41 @@ public sealed partial class ScriniaMcpTools
                     WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen)
                         ?? new Dictionary<string, string[]>()), keywords ?? [], description: description);
 
-            var entry = await store.StoreAsync(write, cancellationToken);
+            ArtifactEntry entry;
+            WholeMemoryResult? transactionResult = null;
+            if (store is FileMemoryStore fileStore)
+            {
+                (entry, transactionResult) = await fileStore.StoreWithTransactionResultAsync(
+                    write, cancellationToken);
+            }
+            else
+            {
+                entry = await store.StoreAsync(write, cancellationToken);
+            }
             string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
             await FireEventSinkAsync(sink => sink.OnStoredAsync(
                 entry.Address, write.RawContent, store, cancellationToken));
-            return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
+            McpResponse response = StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
+            if (transactionResult?.Outcome == WholeMemoryOutcome.SuccessWithWarning)
+            {
+                response = response with
+                {
+                    Status = "success_with_warning",
+                    OperationId = transactionResult.OperationId,
+                    Info = [transactionResult.Warning ?? "Whole-memory commit completed with a warning."]
+                };
+                if (transactionResult.Recovery is not null)
+                    response = response.WithRecovery(scope, Path.GetFileName(transactionResult.Recovery.EvidencePath));
+            }
+            return response;
         }
         catch (InvalidMemoryWriteException ex)
         {
             return InvalidMemoryWriteResponse(ex);
+        }
+        catch (WholeMemoryTransactionException ex)
+        {
+            return WholeMemoryFailureResponse(ex, scope);
         }
     }
 

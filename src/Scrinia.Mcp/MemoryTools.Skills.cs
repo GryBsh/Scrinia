@@ -303,9 +303,10 @@ public sealed partial class ScriniaMcpTools
 
         McpResponse response = result.Outcome == WholeMemoryOutcome.SuccessWithWarning
             ? ResponseBuilder.SuccessWithWarning(message)
-                .WithOperationId(result.OperationId)
                 .WithInfo(result.Warning ?? "File-entity publication committed with a warning.")
             : ResponseBuilder.Success(message);
+        if (result.Outcome == WholeMemoryOutcome.SuccessWithWarning)
+            response = response.WithOperationId(result.OperationId);
         if (result.Recovery is not null)
             response = response.WithRecovery(entityScope, result.Recovery.EvidencePath);
         return response.WithFileChanges().WithAction(action);

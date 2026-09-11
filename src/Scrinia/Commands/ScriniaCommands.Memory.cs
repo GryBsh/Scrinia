@@ -426,6 +426,12 @@ public partial class ScriniaCommands
         {
             if (json)
             {
+                if (response.ErrorCode is ErrorCodes.DurableWriteFailed or ErrorCodes.RecoveryRequired)
+                {
+                    WriteJson(new CliMcpOutput("store", response.Status, response.ToYaml()),
+                        CliJsonContext.Default.CliMcpOutput);
+                    return 1;
+                }
                 MemoryError? writeError = response.ErrorCode == ErrorCodes.InvalidParameter
                     ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
                         response.Error ?? "invalid write content")
