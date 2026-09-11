@@ -119,6 +119,63 @@ public sealed class FileEntityTransactionTests
     }
 
     [Fact]
+    public async Task RetainedPostCommitEvidencePreservesTheCommittedPairDuringRecovery()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var paths = EntityPaths(scope);
+        File.WriteAllText(paths.Body, "old body");
+        File.WriteAllText(paths.Meta, "old meta");
+        var coordinator = Coordinator(scope);
+        coordinator.FailOnceAt(FileEntityFaultPoint.EvidenceCleanup);
+
+        FileEntityMutationResult committed = await coordinator.ExecuteAsync(
+            Mutation(paths, "committed body", "committed meta"));
+
+        committed.Outcome.Should().Be(WholeMemoryOutcome.SuccessWithWarning);
+        committed.Recovery.Should().NotBeNull();
+        File.ReadAllText(paths.Body).Should().Be("committed body");
+        File.ReadAllText(paths.Meta).Should().Be("committed meta");
+
+        var retry = Coordinator(scope);
+        retry.FailOnceAt(FileEntityFaultPoint.RawBodyRead);
+        await FluentActions.Invoking(() => retry.ExecuteAsync(
+                Mutation(paths, "next body", "next meta")))
+            .Should().ThrowAsync<IOException>();
+
+        File.ReadAllText(paths.Body).Should().Be("committed body");
+        File.ReadAllText(paths.Meta).Should().Be("committed meta");
+        File.Exists(committed.Recovery.EvidencePath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RecoveryEvidenceWithTraversalPathsIsRetainedWithoutMutatingOutsideEntityDirectory()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var paths = EntityPaths(scope);
+        File.WriteAllText(paths.Body, "old body");
+        File.WriteAllText(paths.Meta, "old meta");
+        var coordinator = Coordinator(scope);
+        coordinator.FailOnceAt(FileEntityFaultPoint.VerificationRead);
+        coordinator.FailOnceAt(FileEntityFaultPoint.RollbackWrite);
+
+        FileEntityMutationResult failed = await coordinator.ExecuteAsync(
+            Mutation(paths, "new body", "new meta"));
+        string evidencePath = failed.Recovery!.EvidencePath;
+        string outsidePath = Path.Combine(Path.GetDirectoryName(paths.Body)!, "..", "outside.md");
+        string canonicalOutsidePath = Path.GetFullPath(outsidePath);
+        File.WriteAllText(canonicalOutsidePath, "outside original");
+        OverwriteEvidenceWithTraversalPath(evidencePath, canonicalOutsidePath, paths.Meta);
+
+        FileEntityMutationResult retry = await Coordinator(scope).ExecuteAsync(
+            Mutation(paths, "next body", "next meta"));
+
+        retry.Outcome.Should().Be(WholeMemoryOutcome.RecoveryRequired);
+        retry.Recovery.Should().NotBeNull();
+        File.ReadAllText(canonicalOutsidePath).Should().Be("outside original");
+        File.Exists(evidencePath).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task CancellationBeforePublicationLeavesBothMembersUntouched()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -173,6 +230,33 @@ public sealed class FileEntityTransactionTests
             Path.Combine(directory, "qa.md"),
             Path.Combine(directory, "qa.meta.json"),
             Path.Combine(directory, "versions"));
+    }
+
+    private static void OverwriteEvidenceWithTraversalPath(string evidencePath, string outsidePath, string metaPath)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write("SCRINIA-FILE-ENTITY-RECOVERY-1");
+            writer.Write((byte)0);
+            WriteSnapshot(writer, outsidePath, false, []);
+            WriteSnapshot(writer, metaPath, true, System.Text.Encoding.UTF8.GetBytes("old meta"));
+            writer.Write(false);
+            writer.Write(false);
+            writer.Write(false);
+            writer.Write(false);
+        }
+
+        File.WriteAllBytes(evidencePath, stream.ToArray());
+    }
+
+    private static void WriteSnapshot(BinaryWriter writer, string path, bool existed, byte[] bytes)
+    {
+        writer.Write(path);
+        writer.Write(existed);
+        writer.Write(bytes.Length);
+        writer.Write(bytes);
+        writer.Write(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes)));
     }
 
     private sealed record EntityFilePaths(string Body, string Meta, string Versions);

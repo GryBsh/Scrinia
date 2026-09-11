@@ -138,6 +138,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private const int MaxEphemeralEntries = 1000;
     private readonly string _workspaceRoot;
+    private readonly WholeMemoryTransactionCoordinator _wholeMemoryTransactions;
+    private readonly FileEntityTransactionCoordinator _fileEntityTransactions;
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -300,6 +302,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
+        _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
+        _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
@@ -2185,7 +2189,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             new ArchivePairPlan(archive.Required, archive.ArtifactArchivePath, archive.SidecarArchivePath,
                 wholePruneCandidates), startedAt);
 
-        var coordinator = new WholeMemoryTransactionCoordinator(this);
+#pragma warning disable CA1859 // Keep the production transaction boundary interface-typed.
+        IWholeMemoryTransactionCoordinator coordinator = _wholeMemoryTransactions;
+#pragma warning restore CA1859
         WholeMemoryResult result = await coordinator.ExecuteAsync(transaction, async ct =>
         {
             if (archive.Required)
@@ -2213,6 +2219,24 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         transactionResult?.Invoke(result);
 
         return entry;
+    }
+
+    /// <summary>
+    /// Executes a file-entity publication through the shared coordinator seam. Artifact writes use
+    /// <see cref="IWholeMemoryTransactionCoordinator"/> above; file entities are kept as a separate
+    /// pair boundary for the skill/agent publishers that own their sidecar policy.
+    /// </summary>
+    internal Task<FileEntityMutationResult> ExecuteFileEntityTransactionAsync(
+        FileEntityMutation mutation, CancellationToken cancellationToken = default) =>
+        ExecuteFileEntityTransactionThroughBoundary(mutation, cancellationToken);
+
+    private Task<FileEntityMutationResult> ExecuteFileEntityTransactionThroughBoundary(
+        FileEntityMutation mutation, CancellationToken cancellationToken)
+    {
+#pragma warning disable CA1859 // Keep the production transaction boundary interface-typed.
+        IFileEntityTransactionCoordinator coordinator = _fileEntityTransactions;
+#pragma warning restore CA1859
+        return coordinator.ExecuteAsync(mutation, cancellationToken);
     }
 
     internal string[] PruneWholeArchives(IReadOnlyList<string> candidates, string operationId)
