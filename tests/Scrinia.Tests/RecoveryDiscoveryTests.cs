@@ -239,4 +239,49 @@ public sealed class RecoveryDiscoveryTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public void Discover_RejectsTraversalInFileEntityMemberPath()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string agent = Path.Combine(root, "agent");
+        Directory.CreateDirectory(agent);
+        try
+        {
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(agent, bodyPath: "../escape.md");
+
+            RecoveryBlock block = new RecoveryDiscoveryCoordinator()
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root).BlockingEvidence!;
+
+            block.Reason.Should().Be(RecoveryBlockReason.Malformed);
+            block.OperationId.Should().Be(RecoveryTestFixtures.OperationId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_AdmitsEvidenceInTheQualifiedAgentDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string agent = Path.Combine(root, "agent");
+        Directory.CreateDirectory(agent);
+        try
+        {
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(agent);
+
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator()
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root);
+
+            result.BlockingEvidence.Should().BeNull();
+            result.Candidates.Should().ContainSingle(candidate => candidate.Operation == RecoveryOperation.FileEntity);
+            result.Candidates[0].CanonicalSubject.Should().Be("agent/entity");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

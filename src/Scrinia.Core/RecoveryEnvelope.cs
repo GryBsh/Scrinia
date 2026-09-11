@@ -567,7 +567,7 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
     RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
         string expectedSubject, string expectedEvidenceDirectory) =>
         envelope.Operation == RecoveryOperation.FileEntity
-            ? RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.FileEntity, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory)
+            ? ValidateFileEntityMutation(envelope, expectedScope, evidencePath, expectedSubject, expectedEvidenceDirectory)
             : throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed, "Evidence operation does not match file-entity adapter.", evidencePath);
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("File-entity replay is owned by the file-entity operation.");
     RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
@@ -596,6 +596,84 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
     {
         RecoveryEnvelopeCodec.ValidateEvidenceLocationForAdapter(RecoveryOperation.FileEntity, evidencePath, expectedEvidenceDirectory);
     }
+
+    private static RecoveryEnvelopeDocument ValidateFileEntityMutation(
+        RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
+        string expectedSubject, string expectedEvidenceDirectory)
+    {
+        RecoveryEnvelopeDocument validated = RecoveryEnvelopeCodec.ValidateForOperation(
+            envelope, RecoveryOperation.FileEntity, expectedScope, evidencePath, expectedEvidenceDirectory);
+        FileEntityRecoveryBody body = (FileEntityRecoveryBody)(validated.TypedBody
+            ?? throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "File-entity recovery body is missing.", evidencePath));
+
+        string entityName = body.EntityName;
+        string entityDirectoryName = Path.GetFileName(Path.GetFullPath(expectedEvidenceDirectory));
+        if (!string.Equals(body.EntityKind, entityDirectoryName, StringComparison.OrdinalIgnoreCase))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "File-entity recovery evidence belongs to a different entity directory.", evidencePath);
+
+        body = body with
+        {
+            OldBody = CanonicalizeMember(body.OldBody, expectedEvidenceDirectory, entityName, evidencePath),
+            OldMeta = CanonicalizeMember(body.OldMeta, expectedEvidenceDirectory, entityName, evidencePath),
+            CommittedBody = CanonicalizeOptionalMember(body.CommittedBody, expectedEvidenceDirectory, entityName, evidencePath),
+            CommittedMeta = CanonicalizeOptionalMember(body.CommittedMeta, expectedEvidenceDirectory, entityName, evidencePath),
+            ArchiveBodyPath = CanonicalizeOptionalArchive(body.ArchiveBodyPath, expectedEvidenceDirectory, entityName, evidencePath),
+            ArchiveMetaPath = CanonicalizeOptionalArchive(body.ArchiveMetaPath, expectedEvidenceDirectory, entityName, evidencePath)
+        };
+
+        return RecoveryEnvelopeCodec.ValidateSubject(validated with { TypedBody = body }, expectedSubject, evidencePath, expectedEvidenceDirectory);
+    }
+
+    private static RecoveryMemberSnapshot? CanonicalizeOptionalMember(RecoveryMemberSnapshot? member, string directory,
+        string entityName, string evidencePath)
+    {
+        return member is null ? null : member with
+        {
+            Path = CanonicalizeMemberPath(member.Path, directory, entityName, allowVersions: false, evidencePath)
+        };
+    }
+
+    private static string? CanonicalizeOptionalArchive(string? path, string directory,
+        string entityName, string evidencePath)
+    {
+        return path is null ? null : CanonicalizeMemberPath(path, Path.Combine(directory, "versions"),
+            entityName, allowVersions: true, evidencePath);
+    }
+
+    private static RecoveryMemberSnapshot CanonicalizeMember(RecoveryMemberSnapshot member, string directory,
+        string entityName, string evidencePath) => member with
+        { Path = CanonicalizeMemberPath(member.Path, directory, entityName, allowVersions: false, evidencePath) };
+
+    private static string CanonicalizeMemberPath(string path, string directory, string entityName,
+        bool allowVersions, string evidencePath)
+    {
+        if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path) || path.Contains('\0'))
+            throw UnsafeMemberPath(evidencePath);
+        string[] segments = path.Split(['/', '\\'], StringSplitOptions.None);
+        if (segments.Any(segment => segment is "." or ".."))
+            throw UnsafeMemberPath(evidencePath);
+
+        string canonicalDirectory = Path.GetFullPath(directory);
+        string canonicalPath = Path.GetFullPath(Path.Combine(canonicalDirectory, path));
+        if (!PathContainment.IsWithin(canonicalDirectory, canonicalPath))
+            throw UnsafeMemberPath(evidencePath);
+        string? actualDirectory = Path.GetDirectoryName(canonicalPath);
+        if (actualDirectory is null || !string.Equals(actualDirectory, canonicalDirectory,
+                OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase))
+            throw UnsafeMemberPath(evidencePath);
+
+        string fileName = Path.GetFileName(canonicalPath);
+        if (!fileName.StartsWith(entityName + ".", StringComparison.OrdinalIgnoreCase) &&
+            !(allowVersions && fileName.StartsWith(entityName + "_", StringComparison.OrdinalIgnoreCase)))
+            throw UnsafeMemberPath(evidencePath);
+
+        return canonicalPath;
+    }
+
+    private static RecoveryEnvelopeException UnsafeMemberPath(string evidencePath) =>
+        new(RecoveryEnvelopeFailure.Malformed, "File-entity recovery member path is unsafe.", evidencePath);
 
     private static bool IsJson(ReadOnlySpan<byte> bytes)
     {
