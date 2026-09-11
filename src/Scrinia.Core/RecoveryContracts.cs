@@ -1,7 +1,9 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Scrinia.Core;
 
+[JsonConverter(typeof(RecoveryOperationJsonConverter))]
 internal enum RecoveryOperation
 {
     Restore,
@@ -9,6 +11,7 @@ internal enum RecoveryOperation
     FileEntity
 }
 
+[JsonConverter(typeof(RecoveryLifecycleStateJsonConverter))]
 internal enum RecoveryLifecycleState
 {
     Prepared,
@@ -31,7 +34,11 @@ internal sealed record RecoveryEnvelopeDocument(
     RecoveryLifecycleState State,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    JsonElement Body);
+    JsonElement Body)
+{
+    [JsonIgnore]
+    internal bool IsLegacy { get; init; }
+}
 
 internal sealed record RecoveryCandidate(
     RecoveryOperation Operation,

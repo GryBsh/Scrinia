@@ -212,6 +212,9 @@ internal static class AppendJournalCodec
             null);
     }
 
+    internal static RecoveryEnvelopeDocument ToEnvelope(AppendJournal journal) =>
+        RecoveryEnvelopeCodec.FromAppend(journal);
+
     internal static byte[] Serialize(AppendJournal journal)
     {
         Validate(journal, journal.Scope, "<new append journal>");

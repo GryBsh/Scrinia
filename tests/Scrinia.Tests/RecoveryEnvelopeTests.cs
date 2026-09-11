@@ -10,6 +10,76 @@ namespace Scrinia.Tests;
 public sealed class RecoveryEnvelopeTests
 {
     [Fact]
+    public void AppendEnvelope_UsesTheCommonWireShapeAndLowercaseState()
+    {
+        AppendJournal journal = AppendJournalCodec.ParseAndValidate(
+            RecoveryTestFixtures.BuildLegacyAppendJournal(), RecoveryTestFixtures.LocalNotesScope, "append");
+
+        byte[] bytes = RecoveryEnvelopeCodec.Serialize(RecoveryEnvelopeCodec.FromAppend(journal));
+        using JsonDocument document = JsonDocument.Parse(bytes);
+        JsonElement root = document.RootElement;
+
+        root.EnumerateObject().Select(property => property.Name).Should().Equal(
+            "format", "version", "operation", "bodyVersion", "operationId", "scope", "address", "state",
+            "createdAt", "updatedAt", "body");
+        root.GetProperty("format").GetString().Should().Be("scrinia.recovery");
+        root.GetProperty("operation").GetString().Should().Be("append");
+        root.GetProperty("state").GetString().Should().Be("applying");
+        root.GetProperty("bodyVersion").GetInt32().Should().BePositive();
+        root.GetProperty("updatedAt").GetDateTimeOffset().Should().BeOnOrAfter(root.GetProperty("createdAt").GetDateTimeOffset());
+    }
+
+    [Fact]
+    public void RestoreEnvelope_OmitsAddressAndRoundTripsThroughGeneratedMetadata()
+    {
+        RestoreJournal journal = RestoreJournalCodec.ParseAndValidate(
+            RecoveryTestFixtures.BuildLegacyRestoreJournal("local:notes", "completed"),
+            RecoveryTestFixtures.LocalNotesScope, "restore");
+
+        RecoveryEnvelopeDocument envelope = RecoveryEnvelopeCodec.FromRestore(journal);
+        RecoveryEnvelopeDocument parsed = RecoveryEnvelopeCodec.Parse(
+            RecoveryEnvelopeCodec.Serialize(envelope), RecoveryTestFixtures.LocalNotesScope, "restore");
+
+        parsed.Operation.Should().Be(RecoveryOperation.Restore);
+        parsed.Address.Should().BeNull();
+        parsed.State.Should().Be(RecoveryLifecycleState.Committed);
+        parsed.Body.GetProperty("entries").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public void LegacyAdaptersNormalizeInMemoryWithoutChangingTheLegacyPayload()
+    {
+        byte[] appendBytes = RecoveryTestFixtures.BuildLegacyAppendJournal();
+        byte[] restoreBytes = RecoveryTestFixtures.BuildLegacyRestoreJournal();
+
+        RecoveryEnvelopeDocument append = new AppendRecoveryAdapter().NormalizeLegacy(
+            appendBytes, RecoveryTestFixtures.LocalNotesScope, "append");
+        RecoveryEnvelopeDocument restore = new RestoreRecoveryAdapter().NormalizeLegacy(
+            restoreBytes, RecoveryTestFixtures.LocalNotesScope, "restore");
+
+        append.IsLegacy.Should().BeTrue();
+        restore.IsLegacy.Should().BeTrue();
+        append.Operation.Should().Be(RecoveryOperation.Append);
+        restore.Operation.Should().Be(RecoveryOperation.Restore);
+        appendBytes.Should().Equal(RecoveryTestFixtures.BuildLegacyAppendJournal());
+        restoreBytes.Should().Equal(RecoveryTestFixtures.BuildLegacyRestoreJournal());
+    }
+
+    [Theory]
+    [InlineData("operation", "bogus")]
+    [InlineData("state", "COMMITTED")]
+    public void InvalidEnvelopeDiscriminatorsAreRejectedBeforeBodyUse(string member, string value)
+    {
+        string json = $$"""
+            {"format":"scrinia.recovery","version":1,"operation":"append","bodyVersion":1,"operationId":"id","scope":"local:notes","address":"/notes/note","state":"prepared","createdAt":"2026-09-11T00:00:00Z","updatedAt":"2026-09-11T00:00:00Z","body":{ "oldArtifact": null },"{{member}}":"{{value}}"}
+            """;
+
+        FluentActions.Invoking(() => RecoveryEnvelopeCodec.Parse(
+                System.Text.Encoding.UTF8.GetBytes(json), RecoveryTestFixtures.LocalNotesScope, "evidence"))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
     public void RecoveryOperation_HasExactlyTheSupportedOperations() =>
         Enum.GetValues<RecoveryOperation>().Should().Equal(
             RecoveryOperation.Restore,

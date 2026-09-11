@@ -159,6 +159,9 @@ internal static class RestoreJournalCodec
         return journal;
     }
 
+    internal static RecoveryEnvelopeDocument ToEnvelope(RestoreJournal journal) =>
+        RecoveryEnvelopeCodec.FromRestore(journal);
+
     internal static RestoreJournal ParseAndValidate(ReadOnlySpan<byte> json, string expectedScope, string journalPath)
     {
         if (!IsJournalDocumentLengthAdmitted(json.Length))
