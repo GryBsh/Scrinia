@@ -69,6 +69,66 @@ public sealed class FileEntityTransactionTests
     }
 
     [Fact]
+    public async Task SkillRewrite_WithMalformedSidecarRefusesBeforeChangingAnyMember()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/skill/task6-malformed", content: ["old instructions"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6-malformed.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        File.WriteAllText(meta, "not-json");
+        string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
+
+        var response = ResponseParser.Parse(
+            await tools.MemoryRemember(path: "/skill/task6-malformed", content: ["new instructions"]));
+
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        File.ReadAllText(body).Should().Contain("old instructions");
+        File.ReadAllText(meta).Should().Be("not-json");
+        (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AgentRewrite_WithMalformedSidecarRefusesBeforeChangingAnyMember()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/agent/task6-malformed", content: ["old profile"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("agent", TestHelpers.Store.WorkspaceRoot), "task6-malformed.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        File.WriteAllText(meta, "not-json");
+        string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
+
+        var response = ResponseParser.Parse(
+            await tools.MemoryRemember(path: "/agent/task6-malformed", content: ["new profile"]));
+
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        File.ReadAllText(body).Should().Be("old profile");
+        File.ReadAllText(meta).Should().Be("not-json");
+        (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AgentRewrite_WithNewerSidecarRefusesBeforeChangingAnyMember()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = new ScriniaMcpTools();
+        await tools.MemoryRemember(path: "/agent/task6-newer", content: ["old profile"]);
+        string body = Path.Combine(PathRouter.ToFileEntityDir("agent", TestHelpers.Store.WorkspaceRoot), "task6-newer.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        File.WriteAllText(meta, "{\"v\":999}");
+        string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
+
+        var response = ResponseParser.Parse(
+            await tools.MemoryRemember(path: "/agent/task6-newer", content: ["new profile"]));
+
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        File.ReadAllText(body).Should().Be("old profile");
+        File.ReadAllText(meta).Should().Contain("999");
+        (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0).Should().Be(0);
+    }
+
+    [Fact]
     public async Task SkillDelete_ArchivesBothMembersAndRevealsBuiltInOverride()
     {
         using var scope = new TestHelpers.StoreScope();

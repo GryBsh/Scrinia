@@ -349,7 +349,7 @@ public class RegisteredFormatsTests
     }
 
     [Fact]
-    public async Task ReCreatingASkill_WhenTheSidecarMoveFails_ReportsDurableWriteFailureAndLeavesTheAcceptedPrefix()
+    public async Task ReCreatingASkill_WhenTheSidecarMoveFails_ReportsDurableWriteFailureAndRestoresThePair()
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
@@ -383,16 +383,15 @@ public class RegisteredFormatsTests
             DurableFile.FailureInjector = null;
         }
 
-        // A skill body and sidecar are individually atomic files, not a paired transaction: a
-        // sidecar failure may leave this complete new body with the previous sidecar.
+        // The file-entity coordinator restores both members when metadata publication fails.
         _ = new FileMemoryStore(scope.WorkspaceDir);
-        File.ReadAllText(skillPath).Should().Contain("failed sidecar replacement");
+        File.ReadAllText(skillPath).Should().Contain("original instructions");
         File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore);
-        Directory.GetFiles(versionsDir).Length.Should().Be(versionsBefore + 1);
+        Directory.GetFiles(versionsDir).Length.Should().Be(versionsBefore);
     }
 
     [Fact]
-    public async Task ReWritingAnAgent_WhenTheSidecarMoveFails_ReportsDurableWriteFailureAndLeavesTheAcceptedPrefix()
+    public async Task ReWritingAnAgent_WhenTheSidecarMoveFails_ReportsDurableWriteFailureAndRestoresThePair()
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
@@ -426,12 +425,11 @@ public class RegisteredFormatsTests
             DurableFile.FailureInjector = null;
         }
 
-        // A config body and sidecar are individually atomic files, not a paired transaction: a
-        // sidecar failure may leave this complete new body with the previous sidecar.
+        // The file-entity coordinator restores both members when metadata publication fails.
         _ = new FileMemoryStore(scope.WorkspaceDir);
-        File.ReadAllText(agentPath).Should().Be("failed sidecar replacement");
+        File.ReadAllText(agentPath).Should().Be("original agent");
         File.ReadAllBytes(sidecarPath).Should().Equal(sidecarBefore);
-        Directory.GetFiles(versionsDir).Length.Should().Be(versionsBefore + 1);
+        Directory.GetFiles(versionsDir).Length.Should().Be(versionsBefore);
     }
 
     /// <summary>Stamps a "v" onto an existing sidecar by hand. The typed record cannot express a

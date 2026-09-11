@@ -160,8 +160,24 @@ public sealed partial class ScriniaMcpTools
     internal static T? ReadSidecarMetaOrRefuse<T>(string filePath, JsonTypeInfo<T> typeInfo)
         where T : class
     {
-        var existing = ReadSidecarMeta(filePath, typeInfo);
-        if (existing is null) return null;
+        string metaPath = Path.ChangeExtension(filePath, ".meta.json");
+        if (!File.Exists(metaPath)) return null;
+
+        T? existing;
+        try
+        {
+            string json = File.ReadAllText(metaPath);
+            existing = JsonSerializer.Deserialize(json, typeInfo);
+        }
+        catch (JsonException exception)
+        {
+            throw new DurableWriteException("read sidecar", metaPath, exception);
+        }
+
+        if (existing is null)
+            throw new DurableWriteException(
+                "read sidecar", metaPath,
+                new InvalidDataException("The sidecar must contain a JSON object."));
 
         var (contract, declared) = ContractAndVersion(existing);
         if (FormatVersion.Evaluate(contract, declared) == FormatDisposition.LoadReadOnly)
