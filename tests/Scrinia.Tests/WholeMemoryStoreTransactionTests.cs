@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Xunit;
 
@@ -111,6 +112,33 @@ public sealed class WholeMemoryStoreTransactionTests
             .Should().ThrowAsync<WholeMemoryTransactionException>();
         File.ReadAllBytes(store.ArtifactPath("target")).Should().Equal(oldBody);
         File.ReadAllBytes(store.MetaPath("target")).Should().Equal(oldMeta);
+    }
+
+    [Fact]
+    public async Task StoreAsync_VerificationFailureRestoresSameInstanceReadSearchAndListViews()
+    {
+        using var workspace = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["old marker"]));
+
+        // Warm every read surface before the failed publication so each assertion exercises the
+        // same instance's cache invalidation rather than a cold read from disk.
+        store.LoadIndex("local").Should().ContainSingle(entry => entry.Name == "target");
+        store.ListScoped(["local"]).Should().ContainSingle(item => item.Entry.Name == "target");
+        store.SearchAll(new SearchQuery("old marker")).OfType<EntryResult>()
+            .Should().ContainSingle(result => result.Item.Entry.Name == "target");
+
+        store.FailOnceAt(WholeMemoryFaultPoint.VerificationRead);
+
+        await FluentActions.Invoking(() => store.StoreAsync(
+                MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new marker"])))
+            .Should().ThrowAsync<WholeMemoryTransactionException>();
+
+        store.LoadIndex("local").Should().ContainSingle(entry => entry.Name == "target");
+        store.ListScoped(["local"]).Should().ContainSingle(item => item.Entry.Name == "target");
+        store.SearchAll(new SearchQuery("old marker")).OfType<EntryResult>()
+            .Should().ContainSingle(result => result.Item.Entry.Name == "target");
+        store.SearchAll(new SearchQuery("newercontent")).Should().BeEmpty();
     }
 
     [Fact]

@@ -148,6 +148,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             Restore(transaction.OldSidecar);
             DeleteIfCreated(transaction.Archive.ArtifactPath);
             DeleteIfCreated(transaction.Archive.SidecarPath);
+            _store.InvalidateScopeCacheAfterRollback(transaction.Scope);
             return true;
         }
         catch

@@ -1502,6 +1502,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         InvalidateEntityFacts();
     }
 
+    /// <summary>
+    /// Invalidates the in-process view for a scope after an out-of-band rollback restored its
+    /// files. The next read must rebuild from the restored bytes rather than serving the entry
+    /// that the failed publication installed before verification failed.
+    /// </summary>
+    internal void InvalidateScopeCacheAfterRollback(string scope)
+    {
+        _indexCache.TryRemove(scope, out _);
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            _cachedTopics = null;
+        InvalidateEntityFacts();
+    }
+
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         WithExclusiveLock(scope, () => SaveIndexUnsafe(entries, scope));
