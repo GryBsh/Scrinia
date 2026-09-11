@@ -333,11 +333,13 @@ public sealed partial class ScriniaMcpTools
         return operationId is null ? response : response.WithOperationId(operationId);
     }
 
+    private static string SafeRecoveryEvidencePath(string path) => Path.GetFileName(path);
+
     private static McpResponse WholeMemoryFailureResponse(
         WholeMemoryTransactionException exception, string scope)
     {
         ArgumentNullException.ThrowIfNull(exception);
-        string SafeEvidencePath() => Path.GetFileName(exception.Recovery?.EvidencePath ?? "evidence");
+        string SafeEvidencePath() => SafeRecoveryEvidencePath(exception.Recovery?.EvidencePath ?? "evidence");
 
         if (exception.Code == WholeMemoryErrorCode.RecoveryRequired)
         {

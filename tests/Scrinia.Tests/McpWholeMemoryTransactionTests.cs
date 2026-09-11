@@ -70,4 +70,46 @@ public sealed class McpWholeMemoryTransactionTests
         response.OperationId.Should().NotBeNullOrWhiteSpace();
         response.Path.Should().BeNull();
     }
+
+    [Fact]
+    public async Task Compact_ScopeLockTimeoutReturnsDurableWriteError()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await new ScriniaMcpTools().MemoryRemember("/transaction/locked", ["one", "two"]);
+        using FileLock held = FileLock.AcquireExclusive(
+            Path.Combine(store.GetStoreDirForScope("local:transaction"), ".lock"));
+
+        McpResponseAssert response = ResponseParser.Parse(
+            await new ScriniaMcpTools().MemoryCompact("/transaction/locked"));
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        response.Error.Should().Contain("Failed to acquire file lock");
+    }
+
+    [Fact]
+    public async Task SkillRecoveryResponseOmitsAbsoluteEvidencePath()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string skills = PathRouter.ToFileEntityDir("skill", scope.WorkspaceDir);
+        string body = Path.Combine(skills, "privacy-probe.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        Directory.CreateDirectory(skills);
+        File.WriteAllText(body, "old");
+        var coordinator = new FileEntityTransactionCoordinator(scope.WorkspaceDir);
+        coordinator.FailOnceAt(FileEntityFaultPoint.BodyWrite);
+        coordinator.FailOnceAt(FileEntityFaultPoint.RollbackWrite);
+        await coordinator.ExecuteAsync(new FileEntityMutation(
+            "skill", "privacy-probe", body, meta, Path.Combine(skills, "versions"),
+            "new"u8.ToArray(), null, false, false));
+        string evidence = Directory.EnumerateFiles(skills, ".file-entity-*.recovery").Single();
+        File.WriteAllBytes(evidence, [0]);
+
+        McpResponseAssert response = ResponseParser.Parse(
+            await new ScriniaMcpTools().MemoryRemember("/skill/privacy-probe", ["replacement"]));
+
+        response.ErrorCode.Should().Be(ErrorCodes.RecoveryRequired);
+        response.JournalPath.Should().NotContain(scope.WorkspaceDir);
+    }
 }

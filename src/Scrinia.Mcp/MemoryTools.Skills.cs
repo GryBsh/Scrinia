@@ -283,9 +283,9 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                     result.Warning ?? "File-entity publication requires recovery.",
                     ErrorCodes.RecoveryRequired,
-                    "Resolve the retained file-entity recovery evidence, then retry.")
+                "Resolve the retained file-entity recovery evidence, then retry.")
                 .WithOperationId(result.OperationId)
-                .WithRecovery(entityScope, recovery.EvidencePath);
+                .WithRecovery(entityScope, SafeRecoveryEvidencePath(recovery.EvidencePath));
         }
 
         throw new InvalidOperationException(
@@ -308,7 +308,8 @@ public sealed partial class ScriniaMcpTools
         if (result.Outcome == WholeMemoryOutcome.SuccessWithWarning)
             response = response.WithOperationId(result.OperationId);
         if (result.Recovery is not null)
-            response = response.WithRecovery(entityScope, result.Recovery.EvidencePath);
+            response = response.WithRecovery(
+                entityScope, SafeRecoveryEvidencePath(result.Recovery.EvidencePath));
         return response.WithFileChanges().WithAction(action);
     }
 

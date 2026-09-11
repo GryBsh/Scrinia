@@ -120,6 +120,10 @@ public sealed partial class ScriniaMcpTools
                     "list() to see available memories",
                     "remember({ path: '...', content: [...] }) to create it");
             }
+            catch (FileLockTimeoutException exception)
+            {
+                return DurableWriteFailureResponse(exception);
+            }
         }
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -283,6 +287,10 @@ public sealed partial class ScriniaMcpTools
         {
             return WholeMemoryFailureResponse(exception, scope);
         }
+        catch (FileLockTimeoutException exception)
+        {
+            return DurableWriteFailureResponse(exception);
+        }
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         int dropped = chunkCount - newChunkCount;
@@ -296,7 +304,8 @@ public sealed partial class ScriniaMcpTools
                 .WithOperationId(transactionResult.OperationId)
                 .WithInfo(transactionResult.Warning ?? "Whole-memory commit completed with a warning.");
             if (transactionResult.Recovery is not null)
-                warningResponse = warningResponse.WithRecovery(scope, transactionResult.Recovery.EvidencePath);
+                warningResponse = warningResponse.WithRecovery(
+                    scope, SafeRecoveryEvidencePath(transactionResult.Recovery.EvidencePath));
             if (!ephemeral)
                 warningResponse = warningResponse.WithFileChanges();
             await FireEventSinkAsync(sink => sink.OnStoredAsync(

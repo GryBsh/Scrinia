@@ -68,4 +68,32 @@ public sealed class CliWholeMemoryTransactionTests
             Console.SetOut(prior);
         }
     }
+
+    [Fact]
+    public async Task CompactLockTimeoutUsesDurableErrorEnvelopeAndExitOne()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await new ScriniaMcpTools().MemoryRemember("/cli/locked", ["one", "two"]);
+        using FileLock held = FileLock.AcquireExclusive(
+            Path.Combine(store.GetStoreDirForScope("local:cli"), ".lock"));
+
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Compact(
+                "/cli/locked", workspaceRoot: scope.WorkspaceDir, json: true);
+
+            exit.Should().Be(1);
+            CliMcpOutput envelope = JsonSerializer.Deserialize(
+                output.ToString(), CliJsonContext.Default.CliMcpOutput)!;
+            ResponseParser.Parse(envelope.Yaml).ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        }
+        finally
+        {
+            Console.SetOut(prior);
+        }
+    }
 }
