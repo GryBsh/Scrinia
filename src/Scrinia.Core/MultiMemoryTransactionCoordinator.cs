@@ -94,17 +94,26 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                             !participant.OperationId.Equals(adapter.OperationId, StringComparison.Ordinal) ||
                             !participant.Kind.Equals(adapter.Kind, StringComparison.Ordinal))
                         {
-                            DisposeAdapters([adapter]);
+                            adapters.Add(adapter);
                             throw AdmissionFailure(MultiMemoryFailure.Inconsistent,
                                 "The participant adapter identity does not match the request.");
                         }
                         adapters.Add(adapter);
                     }
                 }
-                catch
+                catch (Exception failure)
                 {
-                    DisposeAdapters(adapters);
-                    throw;
+                    bool cleanupFailed = DisposeAdapters(adapters);
+                    if (failure is OperationCanceledException)
+                        throw;
+                    if (failure is MultiMemoryAdmissionException admissionFailure)
+                    {
+                        admissionFailure.CleanupFailed = cleanupFailed;
+                        throw admissionFailure;
+                    }
+                    throw new MultiMemoryAdmissionException(
+                        "A participant could not be admitted safely.", MultiMemoryFailure.Admission,
+                        cleanupFailed: cleanupFailed);
                 }
 
                 return new MultiMemoryAdmissionResult(adapters.AsReadOnly());
@@ -117,7 +126,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         }
         catch (MultiMemoryAdmissionException exception)
         {
-            return new MultiMemoryAdmissionResult(exception.Failure, exception.Message, exception.EvidencePath);
+            return new MultiMemoryAdmissionResult(exception.Failure, exception.Message, exception.EvidencePath,
+                exception.CleanupFailed);
         }
         catch (RestoreRecoveryException exception) when (exception.DiscoveryBlock is not null)
         {
@@ -149,9 +159,10 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             MultiMemoryAdmissionResult admission = await AdmitAsync(
                 request, admitParticipant, cancellationToken).ConfigureAwait(false);
             if (!admission.IsAdmitted)
-                return Rejected(transactionId, request.Scope, admission.Failure!.Value, admission.Warning!,
+                return Rejected(transactionId, request.Scope, admission.Failure!.Value,
+                    AddCleanupWarning(admission.Warning!, admission.CleanupFailed),
                     admission.EvidencePath);
-            DisposeAdapters(admission.Participants);
+            _ = DisposeAdapters(admission.Participants);
             throw new NotSupportedException("Multi-memory execution begins in the lifecycle task.");
         }
         catch (FileLockTimeoutException)
@@ -198,10 +209,27 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         MultiMemoryFailure failure, string warning, string? evidencePath = null) =>
         new(transactionId, scope, MultiMemoryOutcome.Rejected, [], failure, warning, evidencePath);
 
-    private static void DisposeAdapters(IEnumerable<IMultiMemoryParticipantAdapter> adapters)
+    private static string AddCleanupWarning(string warning, bool cleanupFailed) =>
+        cleanupFailed ? $"{warning} Admission cleanup was incomplete." : warning;
+
+    private static bool DisposeAdapters(IEnumerable<IMultiMemoryParticipantAdapter> adapters)
     {
+        bool cleanupFailed = false;
+        var disposed = new HashSet<IMultiMemoryParticipantAdapter>(ReferenceEqualityComparer.Instance);
         foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
-            (adapter as IDisposable)?.Dispose();
+        {
+            if (!disposed.Add(adapter) || adapter is not IDisposable disposable)
+                continue;
+            try
+            {
+                disposable.Dispose();
+            }
+            catch
+            {
+                cleanupFailed = true;
+            }
+        }
+        return cleanupFailed;
     }
 }
 
@@ -214,11 +242,13 @@ internal sealed record MultiMemoryAdmissionResult
         IsAdmitted = true;
     }
 
-    internal MultiMemoryAdmissionResult(MultiMemoryFailure failure, string warning, string? evidencePath = null)
+    internal MultiMemoryAdmissionResult(MultiMemoryFailure failure, string warning, string? evidencePath = null,
+        bool cleanupFailed = false)
     {
         Failure = failure;
         Warning = warning;
         EvidencePath = evidencePath;
+        CleanupFailed = cleanupFailed;
         Participants = [];
     }
 
@@ -227,17 +257,21 @@ internal sealed record MultiMemoryAdmissionResult
     internal MultiMemoryFailure? Failure { get; }
     internal string? Warning { get; }
     internal string? EvidencePath { get; }
+    internal bool CleanupFailed { get; }
 }
 
 internal sealed class MultiMemoryAdmissionException : Exception
 {
-    internal MultiMemoryAdmissionException(string message, MultiMemoryFailure failure, string? evidencePath = null)
+    internal MultiMemoryAdmissionException(string message, MultiMemoryFailure failure, string? evidencePath = null,
+        bool cleanupFailed = false)
         : base(message)
     {
         Failure = failure;
         EvidencePath = evidencePath;
+        CleanupFailed = cleanupFailed;
     }
 
     internal MultiMemoryFailure Failure { get; }
     internal string? EvidencePath { get; }
+    internal bool CleanupFailed { get; set; }
 }

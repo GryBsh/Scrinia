@@ -145,6 +145,57 @@ public sealed class MultiMemoryTransactionAdmissionTests
     }
 
     [Fact]
+    public async Task AdmitAsync_DisposesARepeatedAdapterReferenceOnlyOnce()
+    {
+        using FileMemoryStore store = CreateStore();
+        var request = new MultiMemoryTransactionRequest("local:notes", [
+            Participant("/notes/a", "op-a"), Participant("/notes/b", "op-b")]);
+        var shared = new TestAdapter("a", "op-a");
+
+        MultiMemoryAdmissionResult result = await new MultiMemoryTransactionCoordinator(store).AdmitAsync(
+            request, (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(shared));
+
+        result.IsAdmitted.Should().BeFalse();
+        shared.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AdmitAsync_ContinuesCleanupWhenOneAdapterDisposeThrows()
+    {
+        using FileMemoryStore store = CreateStore();
+        var request = new MultiMemoryTransactionRequest("local:notes", [
+            Participant("/notes/a", "op-a"), Participant("/notes/b", "op-b"), Participant("/notes/c", "op-c")]);
+        var first = new TestAdapter("a", "op-a") { ThrowsOnDispose = true };
+        var second = new TestAdapter("b", "op-b");
+
+        MultiMemoryAdmissionResult result = await new MultiMemoryTransactionCoordinator(store).AdmitAsync(
+            request, (participant, _) => participant.Address.Value.EndsWith("/a", StringComparison.Ordinal)
+                ? Task.FromResult<IMultiMemoryParticipantAdapter>(first)
+                : participant.Address.Value.EndsWith("/b", StringComparison.Ordinal)
+                    ? Task.FromResult<IMultiMemoryParticipantAdapter>(second)
+                    : throw new InvalidOperationException("factory failure"));
+
+        result.IsAdmitted.Should().BeFalse();
+        result.Failure.Should().Be(MultiMemoryFailure.Admission);
+        result.CleanupFailed.Should().BeTrue();
+        first.DisposeCount.Should().Be(1);
+        second.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AdmitAsync_RejectsBlankAdapterIdentity()
+    {
+        using FileMemoryStore store = CreateStore();
+        var request = new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-a")]);
+
+        MultiMemoryAdmissionResult result = await new MultiMemoryTransactionCoordinator(store).AdmitAsync(
+            request, (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("", "op-a")));
+
+        result.IsAdmitted.Should().BeFalse();
+        result.Failure.Should().Be(MultiMemoryFailure.Inconsistent);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_MapsLockTimeoutToTypedRejection()
     {
         using FileMemoryStore store = CreateStore();
@@ -228,6 +279,37 @@ public sealed class MultiMemoryTransactionAdmissionTests
         timer.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
     }
 
+    [Fact]
+    public async Task AdmitAsync_SerializesOneScopeWhileAnotherTopicProgresses()
+    {
+        using FileMemoryStore store = CreateStore();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRequest = new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-a")]);
+
+        Task<MultiMemoryAdmissionResult> first = new MultiMemoryTransactionCoordinator(store,
+            TimeSpan.FromSeconds(2)).AdmitAsync(firstRequest, async (_, _) =>
+        {
+            entered.SetResult();
+            await release.Task;
+            return new TestAdapter("a", "op-a");
+        });
+        await entered.Task;
+
+        MultiMemoryAdmissionResult sameScope = await new MultiMemoryTransactionCoordinator(store,
+            TimeSpan.FromMilliseconds(30)).AdmitAsync(firstRequest, (_, _) =>
+            Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-a-2")));
+        MultiMemoryAdmissionResult otherScope = await new MultiMemoryTransactionCoordinator(store,
+            TimeSpan.FromMilliseconds(30)).AdmitAsync(
+                new MultiMemoryTransactionRequest("local:other", [Participant("/other/a", "op-a")]), (_, _) =>
+                    Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-a")));
+
+        sameScope.Failure.Should().Be(MultiMemoryFailure.LockTimeout);
+        otherScope.IsAdmitted.Should().BeTrue();
+        release.SetResult();
+        await first;
+    }
+
     private static MultiMemoryParticipantRequest Participant(string address, string operationId) =>
         new(MemoryAddress.Parse(address), operationId, "memory");
 
@@ -259,6 +341,14 @@ public sealed class MultiMemoryTransactionAdmissionTests
         public Task RollbackAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task CleanupAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public bool IsDisposed { get; private set; }
-        public void Dispose() => IsDisposed = true;
+        public int DisposeCount { get; private set; }
+        public bool ThrowsOnDispose { get; init; }
+        public void Dispose()
+        {
+            DisposeCount++;
+            IsDisposed = true;
+            if (ThrowsOnDispose)
+                throw new InvalidOperationException("dispose failure");
+        }
     }
 }
