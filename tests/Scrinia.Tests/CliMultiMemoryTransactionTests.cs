@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
@@ -11,14 +12,23 @@ public sealed class CliMultiMemoryTransactionTests
     [Fact]
     public void MapsCommittedAggregateToPlainMcpEnvelopeWithExitZero()
     {
-        McpResponse response = ScriniaCommands.MapMultiMemoryResult(
-            Aggregate(MultiMemoryOutcome.Committed), "multi-memory");
+        TextWriter original = Console.Out;
+        using var output = new StringWriter(new StringBuilder());
+        Console.SetOut(output);
+        try
+        {
+            int exitCode = ScriniaCommands.EmitMultiMemoryResult(
+                Aggregate(MultiMemoryOutcome.Committed), json: false, "multi-memory");
 
-        int exitCode = ScriniaCommands.EmitMcpResult(response, json: false, "multi-memory");
-
-        exitCode.Should().Be(0);
-        response.ToYaml().Should().Contain("status: success");
-        response.ToYaml().Should().Contain("operationId: tx-1");
+            exitCode.Should().Be(0);
+            output.ToString().Should().Contain("status: success");
+            output.ToString().Should().Contain("operationId: tx-1");
+            output.ToString().Should().Contain("participant: note-a");
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
     }
 
     [Theory]
@@ -29,11 +39,9 @@ public sealed class CliMultiMemoryTransactionTests
     public void MapsNonSuccessAggregateToNonZeroExit(string outcomeName, int expectedExitCode)
     {
         MultiMemoryOutcome outcome = Enum.Parse<MultiMemoryOutcome>(outcomeName);
-        McpResponse response = ScriniaCommands.MapMultiMemoryResult(
+        int exitCode = ScriniaCommands.EmitMultiMemoryResult(
             Aggregate(outcome, outcome == MultiMemoryOutcome.RecoveryRequired
-                ? MultiMemoryFailure.Ambiguous : MultiMemoryFailure.Admission), "multi-memory");
-
-        int exitCode = ScriniaCommands.EmitMcpResult(response, json: false, "multi-memory");
+                ? MultiMemoryFailure.Ambiguous : MultiMemoryFailure.Admission), false, "multi-memory");
 
         exitCode.Should().Be(expectedExitCode);
     }
@@ -57,6 +65,32 @@ public sealed class CliMultiMemoryTransactionTests
     }
 
     [Fact]
+    public void RejectedAggregateJsonRetainsCorrelationAndUsesExistingWrapper()
+    {
+        TextWriter original = Console.Out;
+        using var output = new StringWriter(new StringBuilder());
+        Console.SetOut(output);
+        try
+        {
+            int exitCode = ScriniaCommands.EmitMultiMemoryResult(
+                Aggregate(MultiMemoryOutcome.Rejected, MultiMemoryFailure.Inconsistent), true, "multi-memory");
+
+            exitCode.Should().Be(1);
+            CliMcpOutput? envelope = JsonSerializer.Deserialize(
+                output.ToString(), CliJsonContext.Default.CliMcpOutput);
+            envelope.Should().NotBeNull();
+            envelope!.Yaml.Should().Contain("operationId: tx-1");
+            envelope.Yaml.Should().Contain("participant: note-a");
+            envelope.Yaml.Should().Contain("evidence: evidence.json");
+            envelope.Yaml.Should().NotContain("C:\\secret");
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+    }
+
+    [Fact]
     public void CliAndMcpMappingsHaveIdenticalTypedSemantics()
     {
         MultiMemoryAggregateResult result = Aggregate(
@@ -74,7 +108,7 @@ public sealed class CliMultiMemoryTransactionTests
             "tx-1", "local:notes", outcome,
             [new MultiMemoryParticipantOutcome(
                 "note-a", "op-a", "memory", "evidence.json", outcome == MultiMemoryOutcome.Committed, false,
-                failure?.ToString())],
-            failure, "internal detail must not be rendered", outcome == MultiMemoryOutcome.RecoveryRequired
+                "participant-specific")],
+            failure, "typed aggregate detail", outcome == MultiMemoryOutcome.RecoveryRequired
                 ? "nested/.multi-memory-transaction.json" : null);
 }

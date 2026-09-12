@@ -30,16 +30,22 @@ public partial class ScriniaCommands
         {
             MultiMemoryOutcome.Committed => ResponseBuilder.Success("Multi-memory transaction committed."),
             MultiMemoryOutcome.CommittedCleanupPending => ResponseBuilder.SuccessWithWarning(
-                "Multi-memory transaction committed; cleanup remains pending."),
-            MultiMemoryOutcome.RolledBack => ResponseBuilder.Warning("Multi-memory transaction rolled back."),
+                SafeMultiMemoryDetail(result.Warning) ?? "Multi-memory transaction committed; cleanup remains pending."),
+            MultiMemoryOutcome.RolledBack => ResponseBuilder.Warning(
+                SafeMultiMemoryDetail(result.Warning) ?? "Multi-memory transaction rolled back."),
             MultiMemoryOutcome.RecoveryRequired => BuildMultiMemoryRecoveryResponse(result),
             MultiMemoryOutcome.Rejected => BuildMultiMemoryRejectedResponse(result),
             _ => throw new ArgumentOutOfRangeException(nameof(result), result.Outcome,
                 "The multi-memory outcome is not supported by this facade.")
         };
 
-        return response.WithAction(action).WithOperationId(result.TransactionId)
+        response = response.WithAction(action).WithOperationId(result.TransactionId)
             .WithInfo(BuildParticipantSummaries(result));
+        string? safeWarning = SafeMultiMemoryDetail(result.Warning);
+        if (safeWarning is not null && result.Outcome is not
+            (MultiMemoryOutcome.CommittedCleanupPending or MultiMemoryOutcome.RolledBack))
+            response = response.WithInfo([.. response.Info ?? [], $"detail: {safeWarning}"]);
+        return response;
     }
 
     private static McpResponse BuildMultiMemoryRecoveryResponse(MultiMemoryAggregateResult result)
@@ -78,7 +84,11 @@ public partial class ScriniaCommands
         {
             string state = participant.Committed ? "committed" : participant.RolledBack ? "rolledBack" : "incomplete";
             string evidence = SafeMultiMemoryEvidenceFilename(participant.EvidencePath) ?? "none";
-            string reason = result.Failure is { } failure ? $", reason: {FormatMultiMemoryReason(failure)}" : string.Empty;
+            string reason = SafeMultiMemoryDetail(participant.Reason) is { } participantReason
+                ? $", reason: {participantReason}"
+                : result.Failure is { } failure
+                    ? $", reason: {FormatMultiMemoryReason(failure)}"
+                    : string.Empty;
             return $"participant: {participant.Subject}, operationId: {participant.OperationId}, kind: {participant.Kind}, state: {state}, evidence: {evidence}{reason}";
         }).ToArray();
 
@@ -108,6 +118,25 @@ public partial class ScriniaCommands
             return null;
         return Path.GetFileName(evidencePath);
     }
+
+    private static string? SafeMultiMemoryDetail(string? detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 || detail.Contains('\n') ||
+            detail.Contains('\r') || detail.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("payload", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("sidecar", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains(":\\", StringComparison.Ordinal) || detail.Contains("../", StringComparison.Ordinal) ||
+            detail.Contains("..\\", StringComparison.Ordinal))
+            return null;
+        return detail;
+    }
+
+    /// <summary>Maps and emits the existing CLI MCP envelope for an internal aggregate caller.</summary>
+    internal static int EmitMultiMemoryResult(
+        MultiMemoryAggregateResult result, bool json, string action) =>
+        EmitMcpResult(MapMultiMemoryResult(result, action), json, action);
 
     /// <summary>List stored memories.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>

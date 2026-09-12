@@ -24,7 +24,8 @@ public sealed class MultiMemoryTransactionFacadeTests
         response.OperationId.Should().Be("tx-1");
         response.Info.Should().Contain(item => item.Contains("note-a", StringComparison.Ordinal));
         response.Info.Should().Contain(item => item.Contains("op-a", StringComparison.Ordinal));
-        response.ToYaml().Should().NotContain("typed cleanup warning");
+        response.ToYaml().Should().Contain("typed cleanup warning");
+        response.ToYaml().Should().Contain("participant-specific");
     }
 
     [Theory]
@@ -40,7 +41,7 @@ public sealed class MultiMemoryTransactionFacadeTests
         MultiMemoryFailure failure = Enum.Parse<MultiMemoryFailure>(failureName);
         const string sensitiveDetail = "raw payload and absolute path must not escape";
         MultiMemoryAggregateResult result = Aggregate(MultiMemoryOutcome.RecoveryRequired, failure,
-            warning: sensitiveDetail, evidencePath: "nested/.multi-memory-transaction.json");
+            warning: "typed aggregate detail", evidencePath: "nested/.multi-memory-transaction.json");
 
         McpResponse response = ScriniaMcpTools.MapMultiMemoryResult(result, "multi-memory");
 
@@ -59,6 +60,7 @@ public sealed class MultiMemoryTransactionFacadeTests
         response.ToYaml().Should().Contain("note-a");
         response.ToYaml().Should().Contain("op-a");
         response.ToYaml().Should().Contain("evidence.json");
+        response.ToYaml().Should().Contain("detail: typed aggregate detail");
     }
 
     [Fact]
@@ -73,6 +75,19 @@ public sealed class MultiMemoryTransactionFacadeTests
         response.Error.Should().NotBeNullOrWhiteSpace();
     }
 
+    [Fact]
+    public void MCPEntrypointEmitsTheMappedAggregateEnvelope()
+    {
+        string yaml = ScriniaMcpTools.EmitMultiMemoryResult(
+            Aggregate(MultiMemoryOutcome.CommittedCleanupPending, MultiMemoryFailure.Cleanup,
+                warning: "typed cleanup warning"), "multi-memory");
+
+        yaml.Should().Contain("status: success_with_warning");
+        yaml.Should().Contain("operationId: tx-1");
+        yaml.Should().Contain("typed cleanup warning");
+        yaml.Should().Contain("participant-specific");
+    }
+
     private static MultiMemoryAggregateResult Aggregate(
         MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null,
         string? warning = null, string? evidencePath = "evidence.json") =>
@@ -80,6 +95,6 @@ public sealed class MultiMemoryTransactionFacadeTests
             "tx-1", "local:notes", outcome,
             [new MultiMemoryParticipantOutcome(
                 "note-a", "op-a", "memory", "evidence.json", outcome == MultiMemoryOutcome.Committed, false,
-                failure?.ToString())],
+                "participant-specific")],
             failure, warning, outcome == MultiMemoryOutcome.RecoveryRequired ? evidencePath : null);
 }

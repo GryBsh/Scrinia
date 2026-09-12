@@ -154,7 +154,8 @@ public partial class ScriniaCommands
 
             if (r.IsError)
             {
-                if (r.ErrorCode is ErrorCodes.DurableWriteFailed or ErrorCodes.RecoveryRequired)
+                if (r.ErrorCode is ErrorCodes.DurableWriteFailed or ErrorCodes.RecoveryRequired ||
+                    action == "multi-memory")
                 {
                     WriteJson(new CliMcpOutput(action, r.Status, r.ToYaml()),
                         CliJsonContext.Default.CliMcpOutput);
