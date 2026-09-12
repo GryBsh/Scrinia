@@ -302,23 +302,29 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                     adapter.EvidencePath, false, false, FailureDetail(failure.Value)));
             }
         }
+        IReadOnlyList<MultiMemoryParticipantOutcome> orderedOutcomes = outcomes
+            .OrderBy(outcome => outcome.Subject, StringComparer.Ordinal)
+            .ThenBy(outcome => outcome.OperationId, StringComparer.Ordinal)
+            .ToArray();
         if (stateChanged)
             _store.InvalidateScopeCacheAfterRollback(record.Scope);
         if (failure is not null)
-            return RecoveryRequired(record, adapters, failure.Value,
-                "Prepared decision could not be safely aborted; evidence is retained.", directory);
+            return new MultiMemoryAggregateResult(record.TransactionId, record.Scope,
+                MultiMemoryOutcome.RecoveryRequired, orderedOutcomes, failure.Value,
+                "Prepared decision could not be safely aborted; evidence is retained.", SafeRecordPath(directory));
         if (stateChangeUnknown)
-            return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous,
-                "Rollback completed but its observable state change could not be proven.", directory);
+            return new MultiMemoryAggregateResult(record.TransactionId, record.Scope,
+                MultiMemoryOutcome.RecoveryRequired, orderedOutcomes, MultiMemoryFailure.Ambiguous,
+                "Rollback completed but its observable state change could not be proven.", SafeRecordPath(directory));
         try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return new MultiMemoryAggregateResult(record.TransactionId, record.Scope,
-                MultiMemoryOutcome.RecoveryRequired, outcomes, MultiMemoryFailure.Cleanup,
+                MultiMemoryOutcome.RecoveryRequired, orderedOutcomes, MultiMemoryFailure.Cleanup,
                 "Prepared decision was aborted but its evidence could not be removed.", SafeRecordPath(directory));
         }
         return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, MultiMemoryOutcome.RolledBack,
-            outcomes, null, null, null);
+            orderedOutcomes, null, null, null);
     }
 
     private async Task<MultiMemoryAdmissionResult> AdmitUnderLockAsync(
