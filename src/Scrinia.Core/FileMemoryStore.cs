@@ -1632,6 +1632,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     internal void InvalidateScopeCacheAfterRollback(string scope)
     {
         _indexCache.TryRemove(scope, out _);
+        _artifactCache.Invalidate($"{scope}|");
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
         InvalidateEntityFacts();

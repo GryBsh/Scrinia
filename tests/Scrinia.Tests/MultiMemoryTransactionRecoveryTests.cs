@@ -216,7 +216,6 @@ public sealed class MultiMemoryTransactionRecoveryTests
         public string Subject { get; }
         public string OperationId { get; }
         public string EvidencePath => "notes/evidence";
-        public bool? ObservableStateChanged => true;
         internal int CommitCalls { get; private set; }
         public Task PrepareAsync(CancellationToken _) => Task.CompletedTask;
         public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken _) =>

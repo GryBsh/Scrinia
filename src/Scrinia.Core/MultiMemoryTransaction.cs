@@ -253,7 +253,7 @@ internal interface IMultiMemoryParticipantAdapter
     string Subject { get; }
     string OperationId { get; }
     string EvidencePath { get; }
-    bool? ObservableStateChanged { get; }
+    bool? ObservableStateChanged => true;
     Task PrepareAsync(CancellationToken cancellationToken);
     Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken);
     Task CommitAsync(CancellationToken cancellationToken);

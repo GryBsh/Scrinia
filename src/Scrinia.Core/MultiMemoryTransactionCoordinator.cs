@@ -282,6 +282,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         var outcomes = new List<MultiMemoryParticipantOutcome>();
         bool stateChanged = false;
         bool stateChangeUnknown = false;
+        MultiMemoryFailure? failure = null;
         foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
         {
             try
@@ -294,15 +295,21 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                return RecoveryRequired(record, adapters, Classify(exception),
-                    "Prepared decision could not be safely aborted; evidence is retained.", directory);
+                failure ??= Classify(exception);
+                stateChanged |= adapter.ObservableStateChanged is true;
+                stateChangeUnknown |= adapter.ObservableStateChanged is null;
+                outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
+                    adapter.EvidencePath, false, false, FailureDetail(failure.Value)));
             }
         }
+        if (stateChanged)
+            _store.InvalidateScopeCacheAfterRollback(record.Scope);
+        if (failure is not null)
+            return RecoveryRequired(record, adapters, failure.Value,
+                "Prepared decision could not be safely aborted; evidence is retained.", directory);
         if (stateChangeUnknown)
             return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous,
                 "Rollback completed but its observable state change could not be proven.", directory);
-        if (stateChanged)
-            _store.InvalidateScopeCacheAfterRollback(record.Scope);
         try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -482,18 +489,23 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 stateChanged |= adapter.ObservableStateChanged is true;
                 stateChangeUnknown |= adapter.ObservableStateChanged is null;
             }
-            catch (Exception exception) { failure ??= Classify(exception); }
+            catch (Exception exception)
+            {
+                failure ??= Classify(exception);
+                stateChanged |= adapter.ObservableStateChanged is true;
+                stateChangeUnknown |= adapter.ObservableStateChanged is null;
+            }
             outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
                 adapter.EvidencePath, false, rolledBack, rolledBack ? null : failure?.ToString()));
         }
+        if (stateChanged)
+            _store.InvalidateScopeCacheAfterRollback(scope);
         if (failure is null)
         {
             if (stateChangeUnknown)
                 return new MultiMemoryAggregateResult(id, scope, MultiMemoryOutcome.RecoveryRequired,
                     outcomes.OrderBy(o => o.Subject, StringComparer.Ordinal).ToArray(), MultiMemoryFailure.Ambiguous,
                     "Pre-decision rollback completed but its observable state change could not be proven.", SafeRecordPath(directory));
-            if (stateChanged)
-                _store.InvalidateScopeCacheAfterRollback(scope);
             try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
             catch (Exception) { failure = MultiMemoryFailure.Cleanup; }
         }
