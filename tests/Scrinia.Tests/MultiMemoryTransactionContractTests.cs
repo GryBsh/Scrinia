@@ -182,4 +182,77 @@ public sealed class MultiMemoryTransactionContractTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Theory]
+    [InlineData("version", "0", 8)]
+    [InlineData("format", "wrong", 7)]
+    [InlineData("scope", "local-topic:other", 10)]
+    [InlineData("unknown", "true", 7)]
+    public void CoordinatorRecord_RejectsInvalidWireMembers(string member, string value, int failure)
+    {
+        string json = RecordJson();
+        json = member switch
+        {
+            "version" => json.Replace("\"version\":1", "\"version\":0", StringComparison.Ordinal),
+            "format" => json.Replace(MultiMemoryTransactionRecordCodec.FormatName, value, StringComparison.Ordinal),
+            "scope" => json.Replace("local-topic:notes", value, StringComparison.Ordinal),
+            _ => json.Replace("\"kind\":\"memory\"", "\"kind\":\"memory\",\"unknown\":true", StringComparison.Ordinal)
+        };
+
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(json), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be((MultiMemoryFailure)failure);
+    }
+
+    [Fact]
+    public void CoordinatorRecord_RejectsDuplicateBlankOversizedAndInvalidTimestampClaims()
+    {
+        string duplicate = RecordJson().Replace("\"op-1\"", "\"op-1\",\"operationId\":\"op-1\"", StringComparison.Ordinal);
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(duplicate), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>();
+
+        string blank = RecordJson().Replace("\"tx-1\"", "\" \"", StringComparison.Ordinal);
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(blank), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>();
+
+        string oversized = RecordJson().Replace("\"tx-1\"", $"\"{new string('x', 513)}\"", StringComparison.Ordinal);
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(oversized), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>();
+
+        string invalidTimestamp = RecordJson().Replace("2026-09-12T00:00:00Z", "2026-09-12T00:00:01Z", StringComparison.Ordinal);
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(invalidTimestamp), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>();
+    }
+
+    [Fact]
+    public void CoordinatorRecord_RejectsTraversalAndOutOfScopeRecordPaths()
+    {
+        string json = RecordJson();
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/../.multi-memory-transaction.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
+
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-containment", Guid.NewGuid().ToString("N"));
+        string foreign = Path.Combine(Path.GetTempPath(), "scrinia-b3-foreign", Guid.NewGuid().ToString("N"),
+            MultiMemoryTransactionRecordCodec.FileName);
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(json), "local-topic:notes", foreign, root))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
+    }
+
+    private static string RecordJson()
+    {
+        var timestamp = new DateTimeOffset(2026, 9, 12, 0, 0, 0, TimeSpan.Zero);
+        return Encoding.UTF8.GetString(MultiMemoryTransactionRecordCodec.Serialize(new MultiMemoryTransactionRecord(
+            MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-1", "local-topic:notes",
+            MultiMemoryTransactionState.Prepared,
+            [new MultiMemoryParticipantManifest("notes/a", "op-1", "memory")], timestamp, timestamp)));
+    }
 }

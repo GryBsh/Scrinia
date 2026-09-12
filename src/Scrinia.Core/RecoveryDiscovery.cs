@@ -6,6 +6,7 @@ namespace Scrinia.Core;
 internal sealed class RecoveryDiscoveryCoordinator
 {
     private const string RestoreFileName = ".restore-journal.json";
+    private const string CoordinatorFileName = MultiMemoryTransactionRecordCodec.FileName;
     private static readonly string[] FileEntityDirectoryNames = ["agent", "skills"];
     private readonly Dictionary<RecoveryOperation, IRecoveryAdapter> _adapters;
     private readonly Func<string, IEnumerable<string>> _directoryEnumerator;
@@ -60,6 +61,10 @@ internal sealed class RecoveryDiscoveryCoordinator
         RejectReparsePoint(root);
         var candidates = new List<RecoveryCandidate>();
 
+        RecoveryDiscoveryResult? coordinator = InspectCoordinator(root, scope);
+        if (coordinator is not null)
+            return coordinator;
+
         RecoveryBlock? blocking = InspectFixedCandidate(RecoveryOperation.Restore,
             Path.Combine(root, RestoreFileName), root, scope, candidates);
         if (blocking is not null)
@@ -96,6 +101,41 @@ internal sealed class RecoveryDiscoveryCoordinator
             .FirstOrDefault();
 
         return new RecoveryDiscoveryResult(ordered, duplicate);
+    }
+
+    private static RecoveryDiscoveryResult? InspectCoordinator(string root, string scope)
+    {
+        string path = Path.Combine(root, CoordinatorFileName);
+        if (!File.Exists(path))
+            return null;
+
+        try
+        {
+            RejectReparsePoint(path);
+            byte[] bytes = ReadBounded(path);
+            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                bytes, scope, path, root);
+            return new RecoveryDiscoveryResult([], null, record);
+        }
+        catch (MultiMemoryTransactionRecordException exception)
+        {
+            RecoveryBlockReason reason = exception.Failure switch
+            {
+                MultiMemoryFailure.UnsupportedVersion => RecoveryBlockReason.UnsupportedVersion,
+                MultiMemoryFailure.Unsafe => RecoveryBlockReason.Unsafe,
+                MultiMemoryFailure.Inconsistent => RecoveryBlockReason.Inconsistent,
+                MultiMemoryFailure.ReplayIoFailed => RecoveryBlockReason.ReplayIoFailed,
+                _ => RecoveryBlockReason.Malformed
+            };
+            return new RecoveryDiscoveryResult([], new RecoveryBlock(scope, path, null, "unknown", reason,
+                exception.Message));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return new RecoveryDiscoveryResult([], new RecoveryBlock(scope, path, null, "unknown",
+                exception is ArgumentException ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.ReplayIoFailed,
+                "Coordinator record could not safely be inspected."));
+        }
     }
 
     internal RecoveryOutcome AdmitNext(string scope, string storeDirectory,

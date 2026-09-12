@@ -102,15 +102,18 @@ internal sealed record RecoveryDiscoveryResult
 {
     internal RecoveryDiscoveryResult(
         IReadOnlyList<RecoveryCandidate> candidates,
-        RecoveryBlock? blockingEvidence)
+        RecoveryBlock? blockingEvidence,
+        MultiMemoryTransactionRecord? coordinatorRecord = null)
     {
         ArgumentNullException.ThrowIfNull(candidates);
         Candidates = Array.AsReadOnly(candidates.ToArray());
         BlockingEvidence = blockingEvidence;
+        CoordinatorRecord = coordinatorRecord;
     }
 
     internal IReadOnlyList<RecoveryCandidate> Candidates { get; }
     internal RecoveryBlock? BlockingEvidence { get; }
+    internal MultiMemoryTransactionRecord? CoordinatorRecord { get; }
 }
 
 internal interface IRecoveryAdapter

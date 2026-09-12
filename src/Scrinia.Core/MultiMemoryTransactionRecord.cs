@@ -133,9 +133,9 @@ internal static class MultiMemoryTransactionRecordCodec
         {
             Validate(record, expectedScope, recordPath, expectedStoreDirectory);
         }
-        catch (MultiMemoryTransactionRecordException)
+        catch (MultiMemoryTransactionRecordException exception)
         {
-            throw;
+            throw exception.Scope is null ? exception.WithScope(expectedScope) : exception;
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidDataException)
         {
@@ -168,8 +168,36 @@ internal static class MultiMemoryTransactionRecordCodec
 
     internal static MultiMemoryTransactionRecord Read(string scopeDirectory, string expectedScope)
     {
-        string path = GetPath(scopeDirectory);
-        return ParseAndValidate(ReadBounded(path), expectedScope, path, scopeDirectory);
+        string path;
+        try
+        {
+            path = GetPath(scopeDirectory);
+            return ParseAndValidate(ReadBounded(path), expectedScope, path, scopeDirectory);
+        }
+        catch (MultiMemoryTransactionRecordException)
+        {
+            throw;
+        }
+        catch (FileNotFoundException exception)
+        {
+            throw new MultiMemoryTransactionRecordException("Coordinator record is missing.",
+                MultiMemoryFailure.ReplayIoFailed, exception, expectedScope: expectedScope);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new MultiMemoryTransactionRecordException("Coordinator record cannot be accessed safely.",
+                MultiMemoryFailure.Unsafe, exception, expectedScope: expectedScope);
+        }
+        catch (IOException exception)
+        {
+            throw new MultiMemoryTransactionRecordException("Coordinator record could not be read.",
+                MultiMemoryFailure.ReplayIoFailed, exception, expectedScope: expectedScope);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new MultiMemoryTransactionRecordException("Coordinator record path is unsafe.",
+                MultiMemoryFailure.Unsafe, exception, expectedScope: expectedScope);
+        }
     }
 
     internal static void Delete(string scopeDirectory)
@@ -192,8 +220,11 @@ internal static class MultiMemoryTransactionRecordCodec
             throw new MultiMemoryTransactionRecordException("Coordinator participant count is outside its bounds.", MultiMemoryFailure.Malformed);
         if (record.UpdatedAt < record.CreatedAt)
             throw new MultiMemoryTransactionRecordException("Coordinator timestamps are inconsistent.", MultiMemoryFailure.Inconsistent);
+        RequireBounded(record.TransactionId, nameof(record.TransactionId));
+        RequireBounded(record.Scope, nameof(record.Scope));
         if (recordPath is not null &&
-            (Path.IsPathRooted(recordPath) && expectedStoreDirectory is null ||
+            (HasTraversalSegment(recordPath) ||
+             Path.IsPathRooted(recordPath) && expectedStoreDirectory is null ||
              !string.Equals(Path.GetFileName(recordPath), FileName, StringComparison.Ordinal)))
             throw new MultiMemoryTransactionRecordException("Coordinator record path is unsafe.", MultiMemoryFailure.Unsafe);
 
@@ -234,21 +265,41 @@ internal static class MultiMemoryTransactionRecordCodec
         !Path.IsPathRooted(subject) && !subject.Contains('\\') && !subject.Contains(':') &&
         subject.Split('/', StringSplitOptions.None).All(segment => segment is not ("." or ".."));
 
+    private static bool HasTraversalSegment(string path) =>
+        path.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.None).Any(segment => segment is "." or "..");
+
     private static byte[] ReadBounded(string path)
     {
         using var stream = File.OpenRead(path);
-        if (stream.Length > MaximumDocumentBytes)
-            throw new MultiMemoryTransactionRecordException("Coordinator record exceeds its size bound.", MultiMemoryFailure.Malformed);
         using var bytes = new MemoryStream();
-        stream.CopyTo(bytes);
+        byte[] buffer = new byte[16 * 1024];
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            if (bytes.Length + read > MaximumDocumentBytes)
+                throw new MultiMemoryTransactionRecordException("Coordinator record exceeds its size bound.", MultiMemoryFailure.Malformed);
+            bytes.Write(buffer, 0, read);
+        }
         return bytes.ToArray();
     }
 }
 
 internal sealed class MultiMemoryTransactionRecordException : Exception
 {
-    internal MultiMemoryTransactionRecordException(string message, MultiMemoryFailure failure, Exception? inner = null)
-        : base(message, inner) => Failure = failure;
+    internal MultiMemoryTransactionRecordException(string message, MultiMemoryFailure failure, Exception? inner = null,
+        string? transactionId = null, string? expectedScope = null)
+        : base(message, inner)
+    {
+        Failure = failure;
+        TransactionId = transactionId;
+        Scope = expectedScope;
+    }
 
     internal MultiMemoryFailure Failure { get; }
+    internal string? TransactionId { get; }
+    internal string? Scope { get; }
+
+    internal MultiMemoryTransactionRecordException WithScope(string scope) =>
+        new(Message, Failure, InnerException, TransactionId, scope);
 }
