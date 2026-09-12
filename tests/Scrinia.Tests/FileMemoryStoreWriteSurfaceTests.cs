@@ -313,6 +313,8 @@ public class FileMemoryStoreWriteSurfaceTests
         tmp.Store.LoadIndex("local").Should().ContainSingle();
 
         string storeDir = tmp.Store.GetStoreDirForScope("local");
+        string artifact = Path.Combine(storeDir, "target.nmp2");
+        byte[] originalArtifact = await File.ReadAllBytesAsync(artifact);
         string sidecar = Path.Combine(storeDir, "target.meta.json");
         File.Delete(sidecar);
         Directory.CreateDirectory(sidecar);
@@ -326,9 +328,16 @@ public class FileMemoryStoreWriteSurfaceTests
         Directory.GetFiles(Path.Combine(storeDir, "versions"), "target_*.nmp2").Should().ContainSingle(
             because: "the existing entry resolved and its version was archived — without that this " +
                      "test would be asserting the brand-new-memory path instead");
-        (await DecodeAsync(tmp.Store, "target")).Should().Be("the original body",
-            because: "the failed re-store must leave the memory exactly as it was, not holding new " +
-                     "content its index entry does not describe");
+        (await File.ReadAllBytesAsync(artifact)).Should().Equal(originalArtifact,
+            because: "the failed re-store must preserve the previous raw artifact bytes");
+
+        string journalPath = Path.Combine(storeDir, "versions", AppendJournal.FileName);
+        File.Exists(journalPath).Should().BeTrue(
+            because: "unresolved pre-commit evidence must remain available for recovery");
+        var read = async () => await tmp.Store.ReadAsync(MemoryAddress.Parse("/target"));
+        await read.Should().ThrowAsync<AppendStoreException>()
+            .Where(exception => exception.Code == AppendStoreErrorCode.RecoveryRequired,
+                because: "the fail-closed read barrier must block reads while consistency is unprovable");
 
         Directory.Delete(sidecar);
     }
