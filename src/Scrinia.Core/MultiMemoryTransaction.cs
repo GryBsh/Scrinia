@@ -99,16 +99,16 @@ internal sealed record MultiMemoryTransactionRequest
 
 internal sealed record MultiMemoryParticipantManifest
 {
-    internal MultiMemoryParticipantManifest(string subject, string operationId, string kind)
+    public MultiMemoryParticipantManifest(string subject, string operationId, string kind)
     {
         Subject = RequireText(subject, nameof(subject));
         OperationId = RequireText(operationId, nameof(operationId));
         Kind = RequireText(kind, nameof(kind));
     }
 
-    internal string Subject { get; }
-    internal string OperationId { get; }
-    internal string Kind { get; }
+    public string Subject { get; }
+    public string OperationId { get; }
+    public string Kind { get; }
 
     internal void Deconstruct(out string subject, out string operationId, out string kind) =>
         (subject, operationId, kind) = (Subject, OperationId, Kind);

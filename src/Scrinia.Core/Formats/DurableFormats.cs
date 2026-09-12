@@ -102,9 +102,14 @@ public static class DurableFormats
         new("recovery-envelope", Current: 1, AbsentMeans: null,
             FormatDisposition.Refuse, FormatDisposition.Refuse);
 
+    /// <summary>The private scope-local multi-memory decision record. Unknown versions are retained.</summary>
+    public static readonly FormatContract MultiMemoryTransaction =
+        new("multi-memory-transaction", Current: 1, AbsentMeans: null,
+            FormatDisposition.Refuse, FormatDisposition.Refuse);
+
     public static IReadOnlyList<FormatContract> All { get; } =
     [
         ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta,
-        RestoreJournal, AppendJournal, RecoveryEnvelope
+        RestoreJournal, AppendJournal, RecoveryEnvelope, MultiMemoryTransaction
     ];
 }

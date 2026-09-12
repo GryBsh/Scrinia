@@ -1,4 +1,6 @@
 using FluentAssertions;
+using System.Text;
+using System.Text.Json;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Xunit;
@@ -90,5 +92,94 @@ public sealed class MultiMemoryTransactionContractTests
             MultiMemoryFailure.Rollback, null, "notes/.recovery");
 
         result.EvidencePath.Should().Be("notes/.recovery");
+    }
+
+    [Fact]
+    public void CoordinatorRecord_SerializesExactVersionOneShapeAndRoundTrips()
+    {
+        var created = new DateTimeOffset(2026, 9, 12, 0, 0, 0, TimeSpan.Zero);
+        var record = new MultiMemoryTransactionRecord(
+            MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-1", "local-topic:notes",
+            MultiMemoryTransactionState.Prepared,
+            [new MultiMemoryParticipantManifest("notes/a", "op-1", "memory")], created, created);
+
+        string json = Encoding.UTF8.GetString(MultiMemoryTransactionRecordCodec.Serialize(record));
+        using JsonDocument document = JsonDocument.Parse(json);
+        document.RootElement.EnumerateObject().Select(property => property.Name)
+            .Should().Equal("format", "version", "transactionId", "scope", "state", "participants", "createdAt", "updatedAt");
+        document.RootElement.GetProperty("state").GetString().Should().Be("prepared");
+        document.RootElement.GetProperty("participants")[0].EnumerateObject().Select(property => property.Name)
+            .Should().Equal("subject", "operationId", "kind");
+        json.Should().NotContain("payload").And.NotContain("artifact").And.NotContain("sidecar").And.NotContain("hash");
+
+        MultiMemoryTransactionRecord parsed = MultiMemoryTransactionRecordCodec.ParseAndValidate(
+            Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/.multi-memory-transaction.json");
+        parsed.Should().BeEquivalentTo(record);
+    }
+
+    [Fact]
+    public void CoordinatorRecord_RejectsMalformedIdentityOrderingAndScope()
+    {
+        var created = new DateTimeOffset(2026, 9, 12, 0, 0, 0, TimeSpan.Zero);
+        var record = new MultiMemoryTransactionRecord(
+            MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-1", "local-topic:notes",
+            MultiMemoryTransactionState.Prepared,
+            [new MultiMemoryParticipantManifest("notes/b", "op-1", "memory"),
+             new MultiMemoryParticipantManifest("notes/a", "op-2", "memory")], created, created);
+
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.Serialize(record))
+            .Should().Throw<MultiMemoryTransactionRecordException>();
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes("{}"), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>();
+    }
+
+    [Fact]
+    public void CoordinatorRecord_NewerVersionIsRejectedWithoutRewrite()
+    {
+        const string json = "{\"format\":\"scrinia.multi-memory-transaction\",\"version\":2,\"transactionId\":\"tx-1\",\"scope\":\"local-topic:notes\",\"state\":\"prepared\",\"participants\":[{\"subject\":\"notes/a\",\"operationId\":\"op-1\",\"kind\":\"memory\"}],\"createdAt\":\"2026-09-12T00:00:00Z\",\"updatedAt\":\"2026-09-12T00:00:00Z\"}";
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(json), "local-topic:notes", "record.json"))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be(MultiMemoryFailure.UnsupportedVersion);
+        json.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void CoordinatorRecord_PathIsContainedAndHasPrivateScopeName()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-record-tests", Guid.NewGuid().ToString("N"));
+        MultiMemoryTransactionRecordCodec.GetPath(root).Should().Be(Path.Combine(root, ".multi-memory-transaction.json"));
+    }
+
+    [Fact]
+    public void CoordinatorRecord_AtomicWriteRetainsPreviousCompleteBytesWhenReplacementFails()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-atomic-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var timestamp = new DateTimeOffset(2026, 9, 12, 0, 0, 0, TimeSpan.Zero);
+            var first = new MultiMemoryTransactionRecord(
+                MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-1", "local-topic:notes",
+                MultiMemoryTransactionState.Prepared,
+                [new MultiMemoryParticipantManifest("notes/a", "op-1", "memory")], timestamp, timestamp);
+            var second = MultiMemoryTransactionRecordCodec.WithState(first,
+                MultiMemoryTransactionState.Committed, timestamp.AddSeconds(1));
+            MultiMemoryTransactionRecordCodec.Write(root, first);
+            byte[] original = File.ReadAllBytes(MultiMemoryTransactionRecordCodec.GetPath(root));
+
+            DurableFile.FailureInjector = (_, _) => new IOException("injected replacement failure");
+            FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.Write(root, second))
+                .Should().Throw<DurableWriteException>();
+            DurableFile.FailureInjector = null;
+
+            File.ReadAllBytes(MultiMemoryTransactionRecordCodec.GetPath(root)).Should().Equal(original);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+            Directory.Delete(root, recursive: true);
+        }
     }
 }
