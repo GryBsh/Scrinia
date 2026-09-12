@@ -231,7 +231,7 @@ public sealed class RecoveryDiscoveryTests
             RecoveryBlock block = new RecoveryDiscoveryCoordinator()
                 .Discover(RecoveryTestFixtures.LocalNotesScope, root).BlockingEvidence!;
 
-            block.Reason.Should().Be(RecoveryBlockReason.Malformed);
+            block.Reason.Should().Be(RecoveryBlockReason.Inconsistent);
             block.OperationId.Should().Be("mismatch-id");
         }
         finally
@@ -253,7 +253,7 @@ public sealed class RecoveryDiscoveryTests
             RecoveryBlock block = new RecoveryDiscoveryCoordinator()
                 .Discover(RecoveryTestFixtures.LocalNotesScope, root).BlockingEvidence!;
 
-            block.Reason.Should().Be(RecoveryBlockReason.Malformed);
+            block.Reason.Should().Be(RecoveryBlockReason.Unsafe);
             block.OperationId.Should().Be(RecoveryTestFixtures.OperationId);
         }
         finally

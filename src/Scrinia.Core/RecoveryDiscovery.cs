@@ -148,10 +148,7 @@ internal sealed class RecoveryDiscoveryCoordinator
         catch (RecoveryEnvelopeException exception)
         {
             return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(operation, evidencePath, bytes),
-                exception.Failure == RecoveryEnvelopeFailure.UnsupportedVersion
-                    ? RecoveryBlockReason.UnsupportedVersion
-                    : exception.Failure == RecoveryEnvelopeFailure.WrongScope
-                        ? RecoveryBlockReason.WrongScope : RecoveryBlockReason.Malformed,
+                Classify(exception.Failure),
                 exception.Message, exception.UnsupportedVersion);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
@@ -218,6 +215,15 @@ internal sealed class RecoveryDiscoveryCoordinator
             RecoveryOperation.FileEntity => TryFileEntityOperationId(evidencePath),
             _ => "unknown"
         };
+
+    private static RecoveryBlockReason Classify(RecoveryEnvelopeFailure failure) => failure switch
+    {
+        RecoveryEnvelopeFailure.UnsupportedVersion => RecoveryBlockReason.UnsupportedVersion,
+        RecoveryEnvelopeFailure.WrongScope => RecoveryBlockReason.WrongScope,
+        RecoveryEnvelopeFailure.Unsafe => RecoveryBlockReason.Unsafe,
+        RecoveryEnvelopeFailure.Inconsistent => RecoveryBlockReason.Inconsistent,
+        _ => RecoveryBlockReason.Malformed
+    };
 
     private static string TryJsonOperationId(byte[]? bytes)
     {
