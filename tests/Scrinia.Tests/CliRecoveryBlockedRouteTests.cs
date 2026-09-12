@@ -185,6 +185,49 @@ public sealed class CliRecoveryBlockedRouteTests
         }
     }
 
+    [Theory]
+    [InlineData("malformed", "malformed")]
+    [InlineData("unsupportedVersion", "unsupportedVersion")]
+    [InlineData("replayIoFailed", "replayIoFailed")]
+    public async Task CliFallbackRestoreExceptions_RenderTypedEnvelopeWithoutDiscoveryBlock(
+        string failureName, string expectedReason)
+    {
+        const string sensitiveDetail = "raw fallback exception detail must not escape";
+        string journalPath = Path.Combine(Path.GetTempPath(), "scrinia", ".restore-journal.json");
+        RestoreRecoveryFailure failure = failureName switch
+        {
+            "malformed" => RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+            "unsupportedVersion" => RestoreRecoveryFailure.UnsupportedVersion,
+            "replayIoFailed" => RestoreRecoveryFailure.ReplayIoFailed,
+            _ => throw new ArgumentOutOfRangeException(nameof(failureName), failureName)
+        };
+        var exception = new RestoreRecoveryException(
+            "local:notes", journalPath, failure, sensitiveDetail, unsupportedVersion: 7);
+
+        var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        Console.SetOut(output);
+        try
+        {
+            int exit = ScriniaCommands.EmitRecoveryBlocked(exception, json: true, "restore");
+
+            exit.Should().Be(1);
+            using var document = JsonDocument.Parse(output.ToString());
+            string yaml = document.RootElement.GetProperty("yaml").GetString()!;
+            McpResponseAssert response = ResponseParser.Parse(yaml);
+            response.Status.Should().Be("error");
+            response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+            response.Reason.Should().Be(expectedReason);
+            response.Scope.Should().Be("local:notes");
+            response.JournalPath.Should().Be(journalPath);
+            response.Error.Should().NotContain(sensitiveDetail);
+        }
+        finally
+        {
+            Console.SetOut(prior);
+        }
+    }
+
     private static string WriteMalformedJournal(FileMemoryStore store)
     {
         string directory = store.GetStoreDirForScope("local:notes");

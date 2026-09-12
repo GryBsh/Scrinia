@@ -1,11 +1,45 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Mcp;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 
 public sealed class RecoveryFacadeMappingTests
 {
+    [Theory]
+    [InlineData("malformed", "malformed")]
+    [InlineData("unsupportedVersion", "unsupportedVersion")]
+    [InlineData("replayIoFailed", "replayIoFailed")]
+    public async Task McpFallbackRestoreExceptions_MapTypedReasonWithoutDiscoveryBlock(
+        string failureName, string expectedReason)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        const string sensitiveDetail = "raw fallback exception detail must not escape";
+        string journalPath = Path.Combine(scope.WorkspaceDir, ".restore-journal.json");
+        RestoreRecoveryFailure failure = failureName switch
+        {
+            "malformed" => RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+            "unsupportedVersion" => RestoreRecoveryFailure.UnsupportedVersion,
+            "replayIoFailed" => RestoreRecoveryFailure.ReplayIoFailed,
+            _ => throw new ArgumentOutOfRangeException(nameof(failureName), failureName)
+        };
+        var exception = new RestoreRecoveryException(
+            "local:notes", journalPath, failure, sensitiveDetail, unsupportedVersion: 7);
+        MemoryStoreContext.Current = new FallbackRestoreStore(exception);
+
+        McpResponseAssert response = ResponseParser.Parse(
+            await new ScriniaMcpTools().MemoryRecall("/notes/note"));
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+        response.Reason.Should().Be(expectedReason);
+        response.Scope.Should().Be("local:notes");
+        response.JournalPath.Should().Be(journalPath);
+        response.Error.Should().NotContain(sensitiveDetail);
+    }
+
     [Fact]
     public async Task McpRecoveryBlockedResponse_UsesTypedReasonAndDoesNotLeakRawDetail()
     {
@@ -82,5 +116,16 @@ public sealed class RecoveryFacadeMappingTests
             response.ActionNeeded.Should().ContainSingle()
                 .Which.Should().Contain("Resolve the retained restore journal");
         }
+    }
+
+    private sealed class FallbackRestoreStore(Exception failure) : FakeMemoryStore
+    {
+        public override ValueTask<ArtifactEntry?> ReadAsync(
+            MemoryAddress address, CancellationToken ct = default) =>
+            ValueTask.FromException<ArtifactEntry?>(failure);
+
+        public override Task<string> ReadArtifactAsync(
+            MemoryAddress address, CancellationToken ct = default) =>
+            Task.FromException<string>(failure);
     }
 }

@@ -193,7 +193,7 @@ public partial class ScriniaCommands
 
     /// <summary>Renders the recovery-blocked envelope without changing the command's ordinary
     /// error classification or JSON contract.</summary>
-    private static int EmitRecoveryBlocked(RestoreRecoveryException exception, bool json, string action)
+    internal static int EmitRecoveryBlocked(RestoreRecoveryException exception, bool json, string action)
     {
         ArgumentNullException.ThrowIfNull(exception);
         if (exception.DiscoveryBlock is { } block)
