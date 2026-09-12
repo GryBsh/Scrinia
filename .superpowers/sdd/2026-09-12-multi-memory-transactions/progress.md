@@ -189,6 +189,7 @@ src/Scrinia.Core/RecoveryDiscovery.cs
 src/Scrinia.Mcp/MemoryTools.Core.cs
 src/Scrinia/Commands/ScriniaCommands.cs
 src/Scrinia/Commands/ScriniaCommands.Memory.cs
+tests/Scrinia.Tests/CliMultiMemoryTransactionTests.cs
 tests/Scrinia.Tests/Formats/FormatVersionTests.cs
 tests/Scrinia.Tests/MultiMemoryTransactionAdmissionTests.cs
 tests/Scrinia.Tests/MultiMemoryTransactionContractTests.cs
