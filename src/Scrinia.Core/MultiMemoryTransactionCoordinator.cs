@@ -187,6 +187,13 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             return Rejected(transactionId, request.Scope, MultiMemoryFailure.Admission,
                 "Transaction participants could not be resolved safely.");
         }
+        catch (RestoreRecoveryException exception) when (exception.DiscoveryBlock is not null)
+        {
+            RecoveryBlock block = exception.DiscoveryBlock;
+            return new MultiMemoryAggregateResult(transactionId, request.Scope, MultiMemoryOutcome.RecoveryRequired, [],
+                MapRecoveryFailure(block.Reason), block.Detail,
+                ToSafeEvidencePath(_store.GetStoreDirForScope(request.Scope), block.EvidencePath));
+        }
         catch (IOException)
         {
             return Rejected(transactionId, request.Scope, MultiMemoryFailure.ReplayIoFailed,
@@ -202,7 +209,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         try
         {
             return await _store.WithExclusiveScopeAdmissionAsync(scope, _lockTimeout,
-                () => RecoverUnderLockAsync(scope, cancellationToken), cancellationToken).ConfigureAwait(false);
+                () => RecoverUnderLockAsync(scope, cancellationToken), cancellationToken, recoverCoordinator: false).ConfigureAwait(false);
         }
         catch (FileLockTimeoutException)
         {
@@ -235,6 +242,9 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 adapters.Add(await _recoveryAdapter(manifest, cancellationToken).ConfigureAwait(false));
             if (record.State == MultiMemoryTransactionState.Prepared)
                 return await AbortPreparedAsync(record, adapters, directory, cancellationToken).ConfigureAwait(false);
+            if (record.State == MultiMemoryTransactionState.RecoveryRequired)
+                return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous,
+                    "The coordinator record requires explicit recovery before participant replay.", directory);
             return await FinishDecisionAsync(record, adapters, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
@@ -327,8 +337,19 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             }
             Publish(directory, record, MultiMemoryTransactionTransition.PreparedPublished);
             record = MultiMemoryTransactionRecordCodec.WithState(record, MultiMemoryTransactionState.Committed, DateTimeOffset.UtcNow);
-            Publish(directory, record, MultiMemoryTransactionTransition.CommittedPublished);
-            decisionPublished = true;
+            try
+            {
+                Publish(directory, record, MultiMemoryTransactionTransition.CommittedPublished);
+                decisionPublished = true;
+            }
+            catch (Exception)
+            {
+                // Atomic replacement may have succeeded before reporting an I/O failure. The
+                // durable decision is therefore treated as possibly published and never rolled back.
+                decisionPublished = true;
+                return RecoveryRequired(record, adapters, MultiMemoryFailure.DecisionPublication,
+                    "The committed decision could not be proven absent; evidence is retained.", directory);
+            }
             return await FinishDecisionAsync(record, adapters, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -353,8 +374,22 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             foreach (IMultiMemoryParticipantAdapter adapter in adapters)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await adapter.CommitAsync(cancellationToken).ConfigureAwait(false);
-                await adapter.VerifyCommittedAsync(cancellationToken).ConfigureAwait(false);
+                MultiMemoryCommitStatus status = await adapter.GetCommitStatusAsync(cancellationToken).ConfigureAwait(false);
+                if (status != MultiMemoryCommitStatus.Committed)
+                {
+                    try { await adapter.CommitAsync(cancellationToken).ConfigureAwait(false); }
+                    catch (Exception exception) { throw new MultiMemoryCommitException(exception); }
+                }
+                try
+                {
+                    await adapter.VerifyCommittedAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
+                        adapter.EvidencePath, false, false, exception.Message));
+                    throw new MultiMemoryVerificationException(exception);
+                }
                 outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
                     adapter.EvidencePath, true, false, null));
             }
@@ -438,10 +473,22 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
 
     private static MultiMemoryFailure Classify(Exception exception) => exception switch
     {
+        MultiMemoryCommitException => MultiMemoryFailure.ParticipantCommit,
+        MultiMemoryVerificationException => MultiMemoryFailure.Verification,
         OperationCanceledException => MultiMemoryFailure.Ambiguous,
         IOException => MultiMemoryFailure.ReplayIoFailed,
         _ => MultiMemoryFailure.ParticipantCommit
     };
+
+    private sealed class MultiMemoryCommitException : Exception
+    {
+        internal MultiMemoryCommitException(Exception inner) : base("Participant commit failed.", inner) { }
+    }
+
+    private sealed class MultiMemoryVerificationException : Exception
+    {
+        internal MultiMemoryVerificationException(Exception inner) : base("Participant commit verification failed.", inner) { }
+    }
 
     private string? SafeRecordPath(string directory) => MultiMemoryParticipantOutcome.IsSafeEvidencePath(
         Path.GetFileName(MultiMemoryTransactionRecordCodec.GetPath(directory))) ? MultiMemoryTransactionRecordCodec.FileName : null;

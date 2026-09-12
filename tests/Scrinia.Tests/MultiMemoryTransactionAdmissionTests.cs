@@ -335,6 +335,8 @@ public sealed class MultiMemoryTransactionAdmissionTests
         public string Subject { get; }
         public string OperationId { get; }
         public string EvidencePath => "notes/evidence";
+        public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken _) =>
+            Task.FromResult(MultiMemoryCommitStatus.Unknown);
         public Task PrepareAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task CommitAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task VerifyCommittedAsync(CancellationToken cancellationToken) => Task.CompletedTask;

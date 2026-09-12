@@ -56,6 +56,80 @@ public sealed class MultiMemoryTransactionLifecycleTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_VerificationFailureIsTypedSeparatelyFromCommitFailure()
+    {
+        using var store = CreateStore();
+        var adapter = new TestAdapter("a", "op-a", []) { FailVerify = true };
+
+        MultiMemoryAggregateResult result = await CreateCoordinator(store).ExecuteAsync(
+            new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-a")]),
+            (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter));
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.RecoveryRequired);
+        result.Failure.Should().Be(MultiMemoryFailure.Verification);
+        result.Participants.Single().Subject.Should().Be("a");
+    }
+
+    [Fact]
+    public async Task RecoverAsync_SkipsCommitWhenAdapterProvesCommitted()
+    {
+        using var store = CreateStore();
+        string directory = store.GetStoreDirForScope("local:notes");
+        Directory.CreateDirectory(directory);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
+            "tx-1", "local:notes", MultiMemoryTransactionState.Committed,
+            [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
+        MultiMemoryTransactionRecordCodec.Write(directory, record);
+        var adapter = new TestAdapter("a", "op-a", []) { Status = MultiMemoryCommitStatus.Committed };
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store,
+            (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter)).RecoverAsync("local:notes");
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.Committed);
+        adapter.Calls.Should().NotContain("commit:a");
+    }
+
+    [Fact]
+    public async Task RecoverAsync_RecoveryRequiredRecordFailsClosedWithoutCommit()
+    {
+        using var store = CreateStore();
+        string directory = store.GetStoreDirForScope("local:notes");
+        Directory.CreateDirectory(directory);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
+            "tx-2", "local:notes", MultiMemoryTransactionState.RecoveryRequired,
+            [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
+        MultiMemoryTransactionRecordCodec.Write(directory, record);
+        var adapter = new TestAdapter("a", "op-a", []);
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store,
+            (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter)).RecoverAsync("local:notes");
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.RecoveryRequired);
+        result.Failure.Should().Be(MultiMemoryFailure.Ambiguous);
+        adapter.Calls.Should().NotContain("commit:a");
+        File.Exists(MultiMemoryTransactionRecordCodec.GetPath(directory)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void FileMemoryStoreRead_DoesNotBypassAValidCoordinatorRecord()
+    {
+        using var store = CreateStore();
+        string directory = store.GetStoreDirForScope("local:notes");
+        Directory.CreateDirectory(directory);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        MultiMemoryTransactionRecordCodec.Write(directory, new MultiMemoryTransactionRecord(
+            MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-3", "local:notes",
+            MultiMemoryTransactionState.RecoveryRequired,
+            [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now));
+
+        FluentActions.Invoking(() => store.LoadIndex("local:notes"))
+            .Should().Throw<RestoreRecoveryException>();
+        File.Exists(MultiMemoryTransactionRecordCodec.GetPath(directory)).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ExecuteAsync_CommittedPublicationFailureRollsBackBeforeDecision()
     {
         using var store = CreateStore();
@@ -68,8 +142,8 @@ public sealed class MultiMemoryTransactionLifecycleTests
                 new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-a")]),
                 (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter));
 
-            result.Outcome.Should().Be(MultiMemoryOutcome.RolledBack);
-            adapter.Calls.Should().Contain("rollback:a");
+            result.Outcome.Should().Be(MultiMemoryOutcome.RecoveryRequired);
+            adapter.Calls.Should().NotContain("rollback:a");
         }
         finally { MultiMemoryTransactionCoordinator.FailureInjector.Value = null; }
     }
@@ -100,9 +174,13 @@ public sealed class MultiMemoryTransactionLifecycleTests
         internal List<string> Calls { get; }
         internal bool FailPrepare { get; init; }
         internal bool FailCommit { get; init; }
+        internal bool FailVerify { get; init; }
+        internal MultiMemoryCommitStatus Status { get; init; }
         public Task PrepareAsync(CancellationToken _) => Invoke("prepare", FailPrepare);
+        public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken _) =>
+            Task.FromResult(Status);
         public Task CommitAsync(CancellationToken _) => Invoke("commit", FailCommit);
-        public Task VerifyCommittedAsync(CancellationToken _) => Invoke("verify", false);
+        public Task VerifyCommittedAsync(CancellationToken _) => Invoke("verify", FailVerify);
         public Task RollbackAsync(CancellationToken _) => Invoke("rollback", false);
         public Task CleanupAsync(CancellationToken _) => Invoke("cleanup", false);
 

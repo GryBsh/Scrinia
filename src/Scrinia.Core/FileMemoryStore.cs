@@ -784,7 +784,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         Path.Combine(GetStoreDirForScope(scope), ".lock");
 
     internal async Task<T> WithExclusiveScopeAdmissionAsync<T>(string scope, TimeSpan timeout,
-        Func<Task<T>> body, CancellationToken cancellationToken)
+        Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true)
     {
         ArgumentNullException.ThrowIfNull(body);
         EnsureMaterialized(scope);
@@ -793,7 +793,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         indexLock.EnterWriteLock();
         try
         {
-            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
+            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), recoverCoordinator);
             return await body().ConfigureAwait(false);
         }
         finally
@@ -885,7 +885,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     "Append recovery evidence must be resolved before reading the affected scope."));
             if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
                 return read();
-            if (discovery.Candidates.Count == 0)
+            if (discovery.CoordinatorRecord is null && discovery.Candidates.Count == 0)
             {
                 ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
                     GetRestoreJournalPath(storeDir));
@@ -924,7 +924,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     "Append recovery evidence must be resolved before reading the affected scope."));
             if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
                 return await read();
-            if (discovery.Candidates.Count == 0)
+            if (discovery.CoordinatorRecord is null && discovery.Candidates.Count == 0)
             {
                 ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
                     GetRestoreJournalPath(storeDir));
@@ -4249,11 +4249,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// <para>completed | none | hash every destination | invalidate, delete</para>
     /// <para>invalid/newer | none | none | retain and throw recovery-blocked</para>
     /// </summary>
-    private bool RecoverScopeUnsafe(string scope, string storeDir)
+    private bool RecoverScopeUnsafe(string scope, string storeDir, bool recoverCoordinator = true)
     {
         RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
         if (discovery.BlockingEvidence is not null)
             throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+
+        if (recoverCoordinator && discovery.CoordinatorRecord is not null)
+        {
+            MultiMemoryAggregateResult coordinatorRecovery = _multiMemoryTransactions
+                .RecoverUnderLockAsync(scope, CancellationToken.None).GetAwaiter().GetResult();
+            if (coordinatorRecovery.Outcome == MultiMemoryOutcome.RecoveryRequired)
+                throw CreateCoordinatorRecoveryException(scope, storeDir, coordinatorRecovery);
+            if (coordinatorRecovery.Outcome == MultiMemoryOutcome.CommittedCleanupPending)
+                return true;
+        }
 
         RecoveryOutcome admission;
         try
@@ -4454,6 +4464,28 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     ? RestoreRecoveryFailure.ReplayIoFailed
                     : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
             block.Detail, unsupportedVersion: block.UnsupportedVersion, discoveryBlock: block);
+    }
+
+    private static RestoreRecoveryException CreateCoordinatorRecoveryException(
+        string scope, string storeDir, MultiMemoryAggregateResult result)
+    {
+        string evidencePath = MultiMemoryTransactionRecordCodec.GetPath(storeDir);
+        RecoveryBlockReason reason = result.Failure switch
+        {
+            MultiMemoryFailure.UnsupportedVersion => RecoveryBlockReason.UnsupportedVersion,
+            MultiMemoryFailure.Malformed => RecoveryBlockReason.Malformed,
+            MultiMemoryFailure.Unsafe => RecoveryBlockReason.Unsafe,
+            MultiMemoryFailure.Inconsistent => RecoveryBlockReason.Inconsistent,
+            MultiMemoryFailure.ReplayIoFailed => RecoveryBlockReason.ReplayIoFailed,
+            _ => RecoveryBlockReason.Ambiguous
+        };
+        var block = new RecoveryBlock(scope, evidencePath, null, result.TransactionId, reason,
+            result.Warning ?? "Multi-memory coordinator recovery is required.");
+        return new RestoreRecoveryException(scope, evidencePath,
+            reason == RecoveryBlockReason.UnsupportedVersion
+                ? RestoreRecoveryFailure.UnsupportedVersion
+                : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+            block.Detail, discoveryBlock: block);
     }
 
     private static RestoreRecoveryException CreateRestoreRecoveryException(

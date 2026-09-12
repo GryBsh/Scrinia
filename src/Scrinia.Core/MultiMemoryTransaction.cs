@@ -43,6 +43,13 @@ internal enum MultiMemoryTransactionTransition
     RecordDeleted
 }
 
+internal enum MultiMemoryCommitStatus
+{
+    Unknown,
+    Prepared,
+    Committed
+}
+
 internal sealed record MultiMemoryParticipantRequest
 {
     internal MultiMemoryParticipantRequest(MemoryAddress address, string operationId, string kind)
@@ -243,6 +250,7 @@ internal interface IMultiMemoryParticipantAdapter
     string OperationId { get; }
     string EvidencePath { get; }
     Task PrepareAsync(CancellationToken cancellationToken);
+    Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken);
     Task CommitAsync(CancellationToken cancellationToken);
     Task VerifyCommittedAsync(CancellationToken cancellationToken);
     Task RollbackAsync(CancellationToken cancellationToken);
