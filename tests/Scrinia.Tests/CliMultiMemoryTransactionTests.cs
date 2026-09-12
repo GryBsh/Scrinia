@@ -102,6 +102,34 @@ public sealed class CliMultiMemoryTransactionTests
         cli.Should().BeEquivalentTo(mcp);
     }
 
+    [Fact]
+    public void NoPublicAggregateEntrypointExistsUntilSeparatelyApproved()
+    {
+        var publicMcpNames = typeof(ScriniaMcpTools).GetMethods(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Select(method => method.Name)
+            .Where(name => name.Contains("Multi", StringComparison.OrdinalIgnoreCase) ||
+                           name.Contains("Transaction", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var publicCliNames = typeof(ScriniaCommands).GetMethods(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Select(method => method.Name)
+            .Where(name => name.Contains("Multi", StringComparison.OrdinalIgnoreCase) ||
+                           name.Contains("Transaction", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var coordinatorSeam = typeof(FileMemoryStore).GetMethod(
+            "ExecuteMultiMemoryAsync", System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.Instance);
+
+        publicMcpNames.Should().BeEmpty();
+        publicCliNames.Should().BeEmpty();
+        coordinatorSeam.Should().NotBeNull();
+        coordinatorSeam!.IsPublic.Should().BeFalse();
+        ScriniaMcpTools.EmitMultiMemoryResult(
+            Aggregate(MultiMemoryOutcome.Committed), "multi-memory")
+            .Should().Contain("operationId: tx-1");
+    }
+
     private static MultiMemoryAggregateResult Aggregate(
         MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null) =>
         new(

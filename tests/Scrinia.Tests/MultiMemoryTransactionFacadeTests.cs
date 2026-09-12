@@ -88,6 +88,26 @@ public sealed class MultiMemoryTransactionFacadeTests
         yaml.Should().Contain("participant-specific");
     }
 
+    [Theory]
+    [InlineData("/var/lib/scrinia/secret.json")]
+    [InlineData("C:/foreign/root/recovery.json")]
+    [InlineData("C:\\foreign\\root\\recovery.json")]
+    [InlineData("../outside/evidence.json")]
+    [InlineData("file:///foreign/root")]
+    public void PathLikeAggregateDetailsAreRedacted(string pathLikeDetail)
+    {
+        MultiMemoryAggregateResult result = Aggregate(
+            MultiMemoryOutcome.RecoveryRequired, MultiMemoryFailure.Ambiguous,
+            warning: pathLikeDetail);
+
+        McpResponse response = ScriniaMcpTools.MapMultiMemoryResult(result, "multi-memory");
+
+        response.ToYaml().Should().NotContain(pathLikeDetail);
+        response.ToYaml().Should().NotContain("foreign");
+        response.ToYaml().Should().NotContain("outside");
+        response.ToYaml().Should().Contain("reason: ambiguous");
+    }
+
     private static MultiMemoryAggregateResult Aggregate(
         MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null,
         string? warning = null, string? evidencePath = "evidence.json") =>

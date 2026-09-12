@@ -172,7 +172,6 @@ public sealed class MultiMemoryTransactionLifecycleTests
         public string Subject { get; }
         public string OperationId { get; }
         public string EvidencePath => "notes/evidence";
-        public bool? ObservableStateChanged => true;
         internal List<string> Calls { get; }
         internal bool FailPrepare { get; init; }
         internal bool FailCommit { get; init; }

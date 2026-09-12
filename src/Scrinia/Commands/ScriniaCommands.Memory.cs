@@ -121,17 +121,22 @@ public partial class ScriniaCommands
 
     private static string? SafeMultiMemoryDetail(string? detail)
     {
-        if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 || detail.Contains('\n') ||
-            detail.Contains('\r') || detail.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
+        if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 ||
+            !detail.All(IsStableDetailCharacter) || Path.IsPathRooted(detail) ||
+            detail.StartsWith('~') || detail.Contains("//", StringComparison.Ordinal) ||
+            detail.Contains('\\') ||
+            detail.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("payload", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("sidecar", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains(":\\", StringComparison.Ordinal) || detail.Contains("../", StringComparison.Ordinal) ||
-            detail.Contains("..\\", StringComparison.Ordinal))
+            detail.Contains("secret", StringComparison.OrdinalIgnoreCase))
             return null;
         return detail;
     }
+
+    private static bool IsStableDetailCharacter(char character) =>
+        char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) ||
+        ".,:;_()-".Contains(character, StringComparison.Ordinal);
 
     /// <summary>Maps and emits the existing CLI MCP envelope for an internal aggregate caller.</summary>
     internal static int EmitMultiMemoryResult(
