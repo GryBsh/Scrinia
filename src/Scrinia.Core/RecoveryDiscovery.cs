@@ -112,9 +112,7 @@ internal sealed class RecoveryDiscoveryCoordinator
         try
         {
             RejectReparsePoint(path);
-            byte[] bytes = ReadBounded(path);
-            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.ParseAndValidate(
-                bytes, scope, path, root);
+            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(root, scope);
             return new RecoveryDiscoveryResult([], null, record);
         }
         catch (MultiMemoryTransactionRecordException exception)
@@ -233,13 +231,18 @@ internal sealed class RecoveryDiscoveryCoordinator
     private static byte[] ReadBounded(string path)
     {
         using var stream = File.OpenRead(path);
-        const long maximumBytes = 128L * 1024 * 1024;
+        const int maximumBytes = 128 * 1024 * 1024;
         if (stream.Length > maximumBytes)
             throw new IOException("Recovery evidence exceeds the maximum document size.");
         using var bytes = new MemoryStream();
-        stream.CopyTo(bytes, 81_920);
-        if (bytes.Length > maximumBytes)
-            throw new IOException("Recovery evidence exceeds the maximum document size.");
+        byte[] buffer = new byte[81_920];
+        int read;
+        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            bytes.Write(buffer, 0, read);
+            if (bytes.Length > maximumBytes)
+                throw new IOException("Recovery evidence exceeds the maximum document size.");
+        }
         return bytes.ToArray();
     }
 

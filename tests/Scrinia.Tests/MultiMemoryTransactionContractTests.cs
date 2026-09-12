@@ -208,7 +208,10 @@ public sealed class MultiMemoryTransactionContractTests
     [Fact]
     public void CoordinatorRecord_RejectsDuplicateBlankOversizedAndInvalidTimestampClaims()
     {
-        string duplicate = RecordJson().Replace("\"op-1\"", "\"op-1\",\"operationId\":\"op-1\"", StringComparison.Ordinal);
+        string duplicate = RecordJson().Replace(
+            "{\"subject\":\"notes/a\",\"operationId\":\"op-1\",\"kind\":\"memory\"}",
+            "{\"subject\":\"notes/a\",\"operationId\":\"op-1\",\"kind\":\"memory\"},{\"subject\":\"notes/b\",\"operationId\":\"op-1\",\"kind\":\"memory\"}",
+            StringComparison.Ordinal);
         FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
                 Encoding.UTF8.GetBytes(duplicate), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
@@ -245,6 +248,77 @@ public sealed class MultiMemoryTransactionContractTests
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", foreign, root))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
+
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(json), "local-topic:notes",
+                Path.Combine(Path.GetTempPath(), MultiMemoryTransactionRecordCodec.FileName)))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
+
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+                Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/not-the-coordinator.json", root))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
+    }
+
+    [Fact]
+    public void CoordinatorDiscovery_UsesOneMiBBoundAndClassifiesOversizedRecordAsMalformed()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-discovery-bound", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            byte[] oversized = new byte[1024 * 1024 + 1];
+            File.WriteAllBytes(MultiMemoryTransactionRecordCodec.GetPath(root), oversized);
+
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator().Discover("local-topic:notes", root);
+            result.BlockingEvidence.Should().NotBeNull();
+            result.BlockingEvidence!.Reason.Should().Be(RecoveryBlockReason.Malformed);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CoordinatorRead_MissingRecordIsTypedReplayIoFailureWithScope()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-read-io", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.Read(root, "local-topic:notes"))
+                .Should().Throw<MultiMemoryTransactionRecordException>()
+                .Which.Should().Match<MultiMemoryTransactionRecordException>(exception =>
+                    exception.Failure == MultiMemoryFailure.ReplayIoFailed &&
+                    exception.Scope == "local-topic:notes");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CoordinatorDiscovery_ClassifiesReadIoFailureAsReplayIoFailed()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-discovery-io", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllBytes(MultiMemoryTransactionRecordCodec.GetPath(root), Encoding.UTF8.GetBytes(RecordJson()));
+            using FileStream exclusive = new(MultiMemoryTransactionRecordCodec.GetPath(root), FileMode.Open,
+                FileAccess.Read, FileShare.None);
+
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator().Discover("local-topic:notes", root);
+            result.BlockingEvidence.Should().NotBeNull();
+            result.BlockingEvidence!.Reason.Should().Be(RecoveryBlockReason.ReplayIoFailed);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static string RecordJson()
