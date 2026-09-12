@@ -50,6 +50,8 @@ internal enum MultiMemoryCommitStatus
     Committed
 }
 
+internal sealed class MultiMemoryParticipantMismatchException : Exception;
+
 internal sealed record MultiMemoryParticipantRequest
 {
     internal MultiMemoryParticipantRequest(MemoryAddress address, string operationId, string kind)
@@ -246,6 +248,7 @@ internal sealed record MultiMemoryAggregateResult
 internal interface IMultiMemoryParticipantAdapter
 {
     string Kind { get; }
+    string Scope { get; }
     string Subject { get; }
     string OperationId { get; }
     string EvidencePath { get; }

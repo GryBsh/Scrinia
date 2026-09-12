@@ -8,6 +8,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
     private readonly FileMemoryStore _store;
     private readonly TimeSpan _lockTimeout;
     private readonly Func<MultiMemoryParticipantManifest, CancellationToken, Task<IMultiMemoryParticipantAdapter>>? _recoveryAdapter;
+    private readonly Func<string, MultiMemoryParticipantManifest, CancellationToken, Task<IMultiMemoryParticipantAdapter>>? _scopedRecoveryAdapter;
 
     internal static AsyncLocal<Func<MultiMemoryTransactionTransition, string, Exception?>?> FailureInjector { get; } = new();
 
@@ -23,6 +24,11 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         Func<MultiMemoryParticipantManifest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> recoveryAdapter,
         TimeSpan? lockTimeout = null)
         : this(store, lockTimeout) => _recoveryAdapter = recoveryAdapter ?? throw new ArgumentNullException(nameof(recoveryAdapter));
+
+    internal MultiMemoryTransactionCoordinator(FileMemoryStore store,
+        Func<string, MultiMemoryParticipantManifest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> recoveryAdapter,
+        TimeSpan? lockTimeout = null)
+        : this(store, lockTimeout) => _scopedRecoveryAdapter = recoveryAdapter ?? throw new ArgumentNullException(nameof(recoveryAdapter));
 
     internal static IReadOnlyList<MultiMemoryParticipantRequest> NormalizeAndOrder(
         FileMemoryStore store, MultiMemoryTransactionRequest request)
@@ -215,6 +221,13 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         {
             return Rejected(transactionId, scope, MultiMemoryFailure.LockTimeout, "The transaction scope lock could not be acquired.");
         }
+        catch (RestoreRecoveryException exception) when (exception.DiscoveryBlock is not null)
+        {
+            RecoveryBlock block = exception.DiscoveryBlock;
+            return new MultiMemoryAggregateResult(transactionId, scope, MultiMemoryOutcome.RecoveryRequired, [],
+                MapRecoveryFailure(block.Reason), FailureDetail(MapRecoveryFailure(block.Reason)),
+                ToSafeEvidencePath(_store.GetStoreDirForScope(scope), block.EvidencePath));
+        }
     }
 
     internal async Task<MultiMemoryAggregateResult> RecoverUnderLockAsync(string scope, CancellationToken cancellationToken)
@@ -228,10 +241,10 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         catch (MultiMemoryTransactionRecordException exception)
         {
             return new MultiMemoryAggregateResult(exception.TransactionId ?? "unknown", scope,
-                MultiMemoryOutcome.RecoveryRequired, [], exception.Failure, exception.Message,
+                MultiMemoryOutcome.RecoveryRequired, [], exception.Failure, FailureDetail(exception.Failure),
                 SafeRecordPath(directory));
         }
-        if (_recoveryAdapter is null)
+        if (_recoveryAdapter is null && _scopedRecoveryAdapter is null)
             return new MultiMemoryAggregateResult(record.TransactionId, scope, MultiMemoryOutcome.RecoveryRequired, [],
                 MultiMemoryFailure.Ambiguous, "Participant adapter resolution is unavailable; evidence is retained.", SafeRecordPath(directory));
 
@@ -239,7 +252,14 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         try
         {
             foreach (MultiMemoryParticipantManifest manifest in record.Participants)
-                adapters.Add(await _recoveryAdapter(manifest, cancellationToken).ConfigureAwait(false));
+            {
+                IMultiMemoryParticipantAdapter adapter = await (_scopedRecoveryAdapter is not null
+                    ? _scopedRecoveryAdapter(record.Scope, manifest, cancellationToken)
+                    : _recoveryAdapter!(manifest, cancellationToken)).ConfigureAwait(false)
+                    ?? throw new MultiMemoryParticipantMismatchException();
+                ValidateRecoveryAdapter(record.Scope, manifest, adapter);
+                adapters.Add(adapter);
+            }
             if (record.State == MultiMemoryTransactionState.Prepared)
                 return await AbortPreparedAsync(record, adapters, directory, cancellationToken).ConfigureAwait(false);
             if (record.State == MultiMemoryTransactionState.RecoveryRequired)
@@ -250,7 +270,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         catch (OperationCanceledException) { throw; }
         catch (Exception exception)
         {
-            return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous, exception.Message, directory);
+            return RecoveryRequired(record, adapters, Classify(exception),
+                "Participant recovery could not be proven safe.", directory);
         }
         finally { DisposeAdapters(adapters); }
     }
@@ -298,7 +319,9 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 IMultiMemoryParticipantAdapter adapter = await admitParticipant(participant, cancellationToken).ConfigureAwait(false)
                     ?? throw AdmissionFailure(MultiMemoryFailure.Inconsistent, "The participant adapter was not supplied.");
                 (string scope, string subject) = _store.ResolveAddress(participant.Address);
-                if (scope != request.Scope || subject != adapter.Subject || participant.OperationId != adapter.OperationId || participant.Kind != adapter.Kind)
+                if (scope != request.Scope || adapter.Scope != request.Scope || subject != adapter.Subject ||
+                    participant.OperationId != adapter.OperationId || participant.Kind != adapter.Kind ||
+                    !MultiMemoryParticipantOutcome.IsSafeEvidencePath(adapter.EvidencePath))
                     throw AdmissionFailure(MultiMemoryFailure.Inconsistent, "The participant adapter identity does not match the request.");
                 adapters.Add(adapter);
             }
@@ -359,7 +382,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         }
         catch (Exception exception)
         {
-            if (decisionPublished) return RecoveryRequired(record, adapters, Classify(exception), exception.Message, directory);
+            if (decisionPublished) return RecoveryRequired(record, adapters, Classify(exception),
+                FailureDetail(Classify(exception)), directory);
             return await RollbackBeforeDecisionAsync(transactionId, request.Scope, adapters, directory, CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -387,7 +411,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 catch (Exception exception)
                 {
                     outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
-                        adapter.EvidencePath, false, false, exception.Message));
+                        adapter.EvidencePath, false, false, FailureDetail(MultiMemoryFailure.Verification)));
                     throw new MultiMemoryVerificationException(exception);
                 }
                 outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
@@ -411,7 +435,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             MultiMemoryOutcome outcome = allParticipantsVerified
                 ? MultiMemoryOutcome.CommittedCleanupPending : MultiMemoryOutcome.RecoveryRequired;
             return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, outcome, outcomes, failure,
-                exception.Message, SafeRecordPath(_store.GetStoreDirForScope(record.Scope)));
+                FailureDetail(failure), SafeRecordPath(_store.GetStoreDirForScope(record.Scope)));
         }
     }
 
@@ -468,17 +492,44 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
     private MultiMemoryAggregateResult RecoveryRequired(MultiMemoryTransactionRecord record,
         IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, MultiMemoryFailure failure, string warning, string directory) =>
         new(record.TransactionId, record.Scope, MultiMemoryOutcome.RecoveryRequired,
-            adapters.Select(a => new MultiMemoryParticipantOutcome(a.Subject, a.OperationId, a.Kind, a.EvidencePath, false, false, warning)).ToArray(),
+            adapters.Select(a => new MultiMemoryParticipantOutcome(a.Subject, a.OperationId, a.Kind, a.EvidencePath, false, false, FailureDetail(failure))).ToArray(),
             failure, warning, SafeRecordPath(directory));
+
+    private static string FailureDetail(MultiMemoryFailure failure) => failure switch
+    {
+        MultiMemoryFailure.ParticipantCommit => "Participant commit failed.",
+        MultiMemoryFailure.Verification => "Participant verification failed.",
+        MultiMemoryFailure.Cleanup => "Coordinator cleanup remains pending.",
+        MultiMemoryFailure.DecisionPublication => "Coordinator decision publication is ambiguous.",
+        MultiMemoryFailure.Ambiguous => "Participant recovery is ambiguous.",
+        MultiMemoryFailure.UnsupportedVersion => "Coordinator record version is unsupported.",
+        MultiMemoryFailure.Malformed => "Coordinator record is malformed.",
+        MultiMemoryFailure.Unsafe => "Coordinator evidence is unsafe.",
+        MultiMemoryFailure.Inconsistent => "Coordinator evidence is inconsistent.",
+        MultiMemoryFailure.ReplayIoFailed => "Coordinator evidence could not be read safely.",
+        _ => "Multi-memory recovery requires intervention."
+    };
 
     private static MultiMemoryFailure Classify(Exception exception) => exception switch
     {
+        MultiMemoryParticipantMismatchException => MultiMemoryFailure.Ambiguous,
         MultiMemoryCommitException => MultiMemoryFailure.ParticipantCommit,
         MultiMemoryVerificationException => MultiMemoryFailure.Verification,
         OperationCanceledException => MultiMemoryFailure.Ambiguous,
         IOException => MultiMemoryFailure.ReplayIoFailed,
         _ => MultiMemoryFailure.ParticipantCommit
     };
+
+    private static void ValidateRecoveryAdapter(string scope, MultiMemoryParticipantManifest manifest,
+        IMultiMemoryParticipantAdapter adapter)
+    {
+        if (adapter.Scope != scope || adapter.Subject != manifest.Subject ||
+            adapter.OperationId != manifest.OperationId || adapter.Kind != manifest.Kind ||
+            !MultiMemoryParticipantOutcome.IsSafeEvidencePath(adapter.EvidencePath))
+            throw new MultiMemoryParticipantMismatchException();
+    }
+
+    private sealed class MultiMemoryParticipantMismatchException : Exception;
 
     private sealed class MultiMemoryCommitException : Exception
     {
@@ -539,6 +590,88 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         }
         return cleanupFailed;
     }
+}
+
+internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdapter
+{
+    private readonly FileMemoryStore _store;
+    private readonly RecoveryCandidate _candidate;
+    private bool _verified;
+
+    internal FileMemoryParticipantAdapter(FileMemoryStore store, MultiMemoryParticipantManifest manifest,
+        RecoveryCandidate candidate)
+    {
+        _store = store;
+        _candidate = candidate;
+        Scope = candidate.Scope;
+        Subject = manifest.Subject;
+        OperationId = manifest.OperationId;
+        Kind = manifest.Kind;
+        EvidencePath = Path.GetRelativePath(store.GetStoreDirForScope(candidate.Scope), candidate.EvidencePath).Replace('\\', '/');
+    }
+
+    public string Kind { get; }
+    public string Scope { get; }
+    public string Subject { get; }
+    public string OperationId { get; }
+    public string EvidencePath { get; }
+
+    public Task PrepareAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
+
+    public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_candidate.Envelope.State is not (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending))
+            return Task.FromResult(MultiMemoryCommitStatus.Prepared);
+
+        RecoveryOutcome outcome = GetRecoveryAdapter().RecoverOrCleanup(_candidate.Envelope,
+            _candidate.EvidencePath, cancellationToken);
+        if (outcome.IsBlocked)
+            throw new MultiMemoryParticipantMismatchException();
+        _verified = outcome.IsCommitted;
+        return Task.FromResult(_verified ? MultiMemoryCommitStatus.Committed : MultiMemoryCommitStatus.Unknown);
+    }
+
+    public Task CommitAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_candidate.Envelope.State is not (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending))
+            throw new MultiMemoryParticipantMismatchException();
+        return Task.CompletedTask;
+    }
+
+    public Task VerifyCommittedAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!_verified)
+            throw new MultiMemoryParticipantMismatchException();
+        return Task.CompletedTask;
+    }
+
+    public async Task RollbackAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_candidate.Operation != RecoveryOperation.Append)
+            throw new MultiMemoryParticipantMismatchException();
+        await _store.RecoverAppendParticipantForCoordinatorAsync(Scope, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task CleanupAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
+
+    private IRecoveryAdapter GetRecoveryAdapter() => _candidate.Operation switch
+    {
+        RecoveryOperation.Append => new AppendRecoveryAdapter(),
+        RecoveryOperation.Restore => new RestoreRecoveryAdapter(),
+        _ => throw new MultiMemoryParticipantMismatchException()
+    };
 }
 
 internal sealed record MultiMemoryAdmissionResult

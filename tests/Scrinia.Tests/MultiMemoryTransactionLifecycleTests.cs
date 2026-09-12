@@ -168,6 +168,7 @@ public sealed class MultiMemoryTransactionLifecycleTests
             (Subject, OperationId, Calls) = (subject, operationId, calls);
 
         public string Kind => "memory";
+        public string Scope => "local:notes";
         public string Subject { get; }
         public string OperationId { get; }
         public string EvidencePath => "notes/evidence";

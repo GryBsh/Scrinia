@@ -332,6 +332,7 @@ public sealed class MultiMemoryTransactionAdmissionTests
             (Subject, OperationId, Kind) = (subject, operationId, kind);
 
         public string Kind { get; }
+        public string Scope => "local:notes";
         public string Subject { get; }
         public string OperationId { get; }
         public string EvidencePath => "notes/evidence";

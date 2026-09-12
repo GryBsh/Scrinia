@@ -31,11 +31,11 @@ internal sealed class RecoveryDiscoveryCoordinator
         _evidenceEnumerator = evidenceEnumerator ?? (directory => Directory.EnumerateFiles(directory, ".file-entity-*.recovery", SearchOption.TopDirectoryOnly));
     }
 
-    internal RecoveryDiscoveryResult Discover(string scope, string storeDirectory)
+    internal RecoveryDiscoveryResult Discover(string scope, string storeDirectory, bool includeCoordinator = true)
     {
         try
         {
-            return DiscoverCore(scope, storeDirectory);
+            return DiscoverCore(scope, storeDirectory, includeCoordinator);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -50,7 +50,7 @@ internal sealed class RecoveryDiscoveryCoordinator
         }
     }
 
-    private RecoveryDiscoveryResult DiscoverCore(string scope, string storeDirectory)
+    private RecoveryDiscoveryResult DiscoverCore(string scope, string storeDirectory, bool includeCoordinator)
     {
         if (string.IsNullOrWhiteSpace(scope))
             throw new ArgumentException("Recovery scope is required.", nameof(scope));
@@ -61,7 +61,7 @@ internal sealed class RecoveryDiscoveryCoordinator
         RejectReparsePoint(root);
         var candidates = new List<RecoveryCandidate>();
 
-        RecoveryDiscoveryResult? coordinator = InspectCoordinator(root, scope);
+        RecoveryDiscoveryResult? coordinator = includeCoordinator ? InspectCoordinator(root, scope) : null;
         if (coordinator is not null)
             return coordinator;
 

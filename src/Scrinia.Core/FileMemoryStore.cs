@@ -306,7 +306,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
         _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
-        _multiMemoryTransactions = new MultiMemoryTransactionCoordinator(this);
+        _multiMemoryTransactions = new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
@@ -804,6 +804,32 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     internal RecoveryDiscoveryResult DiscoverRecoveryForScope(string scope, string storeDirectory) =>
         _recoveryDiscovery.Discover(scope, storeDirectory);
+
+    private Task<IMultiMemoryParticipantAdapter> ResolveMultiMemoryParticipantAsync(
+        string scope, MultiMemoryParticipantManifest manifest, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string storeDirectory = GetStoreDirForScope(scope);
+        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDirectory,
+            includeCoordinator: false);
+        RecoveryCandidate? candidate = discovery.Candidates
+            .Where(candidate => candidate.Operation is RecoveryOperation.Append or RecoveryOperation.Restore)
+            .FirstOrDefault(candidate => CandidateMatchesSubject(candidate, manifest.Subject));
+        if (candidate is null || discovery.BlockingEvidence is not null)
+            throw new MultiMemoryParticipantMismatchException();
+        return Task.FromResult<IMultiMemoryParticipantAdapter>(
+            new FileMemoryParticipantAdapter(this, manifest, candidate));
+    }
+
+    private bool CandidateMatchesSubject(RecoveryCandidate candidate, string subject)
+    {
+        if (candidate.Operation == RecoveryOperation.Append && candidate.Envelope.Address is not null)
+        {
+            (string scope, string canonicalSubject) = ResolveAddress(MemoryAddress.Parse(candidate.Envelope.Address));
+            return scope == candidate.Scope && canonicalSubject == subject;
+        }
+        return candidate.CanonicalSubject.EndsWith('/' + subject, StringComparison.Ordinal);
+    }
 
     internal Task<MultiMemoryAggregateResult> ExecuteMultiMemoryAsync(
         MultiMemoryTransactionRequest request,
@@ -2972,6 +2998,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         await RecoverAppendUnsafeAsync(scope, "recovery", cancellationToken);
     }
+
+    internal Task RecoverAppendParticipantForCoordinatorAsync(string scope, CancellationToken cancellationToken) =>
+        RecoverAppendUnsafeAsync(scope, "coordinator-recovery", cancellationToken);
 
     internal void WriteAppendRecoveryRequiredJournalForTest(string operationId)
     {
