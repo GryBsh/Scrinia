@@ -7,6 +7,9 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
 {
     private readonly FileMemoryStore _store;
     private readonly TimeSpan _lockTimeout;
+    private readonly Func<MultiMemoryParticipantManifest, CancellationToken, Task<IMultiMemoryParticipantAdapter>>? _recoveryAdapter;
+
+    internal static AsyncLocal<Func<MultiMemoryTransactionTransition, string, Exception?>?> FailureInjector { get; } = new();
 
     internal MultiMemoryTransactionCoordinator(FileMemoryStore store, TimeSpan? lockTimeout = null)
     {
@@ -15,6 +18,11 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         if (_lockTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(lockTimeout), "The lock timeout must be positive.");
     }
+
+    internal MultiMemoryTransactionCoordinator(FileMemoryStore store,
+        Func<MultiMemoryParticipantManifest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> recoveryAdapter,
+        TimeSpan? lockTimeout = null)
+        : this(store, lockTimeout) => _recoveryAdapter = recoveryAdapter ?? throw new ArgumentNullException(nameof(recoveryAdapter));
 
     internal static IReadOnlyList<MultiMemoryParticipantRequest> NormalizeAndOrder(
         FileMemoryStore store, MultiMemoryTransactionRequest request)
@@ -153,17 +161,21 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         Func<MultiMemoryParticipantRequest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> admitParticipant,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(admitParticipant);
         string transactionId = Guid.NewGuid().ToString("N");
         try
         {
-            MultiMemoryAdmissionResult admission = await AdmitAsync(
-                request, admitParticipant, cancellationToken).ConfigureAwait(false);
-            if (!admission.IsAdmitted)
-                return Rejected(transactionId, request.Scope, admission.Failure!.Value,
-                    AddCleanupWarning(admission.Warning!, admission.CleanupFailed),
-                    admission.EvidencePath);
-            _ = DisposeAdapters(admission.Participants);
-            throw new NotSupportedException("Multi-memory execution begins in the lifecycle task.");
+            return await _store.WithExclusiveScopeAdmissionAsync(request.Scope, _lockTimeout, async () =>
+            {
+                IReadOnlyList<MultiMemoryParticipantRequest> ordered = NormalizeAndOrder(_store, request);
+                MultiMemoryAdmissionResult admission = await AdmitUnderLockAsync(request, ordered, admitParticipant, cancellationToken).ConfigureAwait(false);
+                if (!admission.IsAdmitted)
+                    return Rejected(transactionId, request.Scope, admission.Failure!.Value,
+                        AddCleanupWarning(admission.Warning!, admission.CleanupFailed), admission.EvidencePath);
+
+                return await ExecuteUnderLockAsync(transactionId, request, admission.Participants, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
         }
         catch (FileLockTimeoutException)
         {
@@ -182,8 +194,257 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         }
     }
 
-    public Task<MultiMemoryAggregateResult> RecoverAsync(string scope, CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException("Multi-memory recovery is outside the admission boundary.");
+    public async Task<MultiMemoryAggregateResult> RecoverAsync(string scope, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+            throw new ArgumentException("A recovery scope is required.", nameof(scope));
+        string transactionId = "recovery";
+        try
+        {
+            return await _store.WithExclusiveScopeAdmissionAsync(scope, _lockTimeout,
+                () => RecoverUnderLockAsync(scope, cancellationToken), cancellationToken).ConfigureAwait(false);
+        }
+        catch (FileLockTimeoutException)
+        {
+            return Rejected(transactionId, scope, MultiMemoryFailure.LockTimeout, "The transaction scope lock could not be acquired.");
+        }
+    }
+
+    internal async Task<MultiMemoryAggregateResult> RecoverUnderLockAsync(string scope, CancellationToken cancellationToken)
+    {
+        string directory = _store.GetStoreDirForScope(scope);
+        if (!File.Exists(MultiMemoryTransactionRecordCodec.GetPath(directory)))
+            return Rejected("recovery", scope, MultiMemoryFailure.ReplayIoFailed, "No coordinator decision record exists.");
+
+        MultiMemoryTransactionRecord record;
+        try { record = MultiMemoryTransactionRecordCodec.Read(directory, scope); }
+        catch (MultiMemoryTransactionRecordException exception)
+        {
+            return new MultiMemoryAggregateResult(exception.TransactionId ?? "unknown", scope,
+                MultiMemoryOutcome.RecoveryRequired, [], exception.Failure, exception.Message,
+                SafeRecordPath(directory));
+        }
+        if (_recoveryAdapter is null)
+            return new MultiMemoryAggregateResult(record.TransactionId, scope, MultiMemoryOutcome.RecoveryRequired, [],
+                MultiMemoryFailure.Ambiguous, "Participant adapter resolution is unavailable; evidence is retained.", SafeRecordPath(directory));
+
+        var adapters = new List<IMultiMemoryParticipantAdapter>();
+        try
+        {
+            foreach (MultiMemoryParticipantManifest manifest in record.Participants)
+                adapters.Add(await _recoveryAdapter(manifest, cancellationToken).ConfigureAwait(false));
+            if (record.State == MultiMemoryTransactionState.Prepared)
+                return await AbortPreparedAsync(record, adapters, directory, cancellationToken).ConfigureAwait(false);
+            return await FinishDecisionAsync(record, adapters, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception exception)
+        {
+            return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous, exception.Message, directory);
+        }
+        finally { DisposeAdapters(adapters); }
+    }
+
+    private async Task<MultiMemoryAggregateResult> AbortPreparedAsync(MultiMemoryTransactionRecord record,
+        IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, string directory, CancellationToken cancellationToken)
+    {
+        var outcomes = new List<MultiMemoryParticipantOutcome>();
+        foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
+        {
+            try
+            {
+                await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
+                    adapter.EvidencePath, false, true, null));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return RecoveryRequired(record, adapters, Classify(exception),
+                    "Prepared decision could not be safely aborted; evidence is retained.", directory);
+            }
+        }
+        try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return new MultiMemoryAggregateResult(record.TransactionId, record.Scope,
+                MultiMemoryOutcome.RecoveryRequired, outcomes, MultiMemoryFailure.Cleanup,
+                "Prepared decision was aborted but its evidence could not be removed.", SafeRecordPath(directory));
+        }
+        return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, MultiMemoryOutcome.RolledBack,
+            outcomes, null, null, null);
+    }
+
+    private async Task<MultiMemoryAdmissionResult> AdmitUnderLockAsync(
+        MultiMemoryTransactionRequest request, IReadOnlyList<MultiMemoryParticipantRequest> ordered,
+        Func<MultiMemoryParticipantRequest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> admitParticipant,
+        CancellationToken cancellationToken)
+    {
+        var adapters = new List<IMultiMemoryParticipantAdapter>(ordered.Count);
+        try
+        {
+            foreach (MultiMemoryParticipantRequest participant in ordered)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                IMultiMemoryParticipantAdapter adapter = await admitParticipant(participant, cancellationToken).ConfigureAwait(false)
+                    ?? throw AdmissionFailure(MultiMemoryFailure.Inconsistent, "The participant adapter was not supplied.");
+                (string scope, string subject) = _store.ResolveAddress(participant.Address);
+                if (scope != request.Scope || subject != adapter.Subject || participant.OperationId != adapter.OperationId || participant.Kind != adapter.Kind)
+                    throw AdmissionFailure(MultiMemoryFailure.Inconsistent, "The participant adapter identity does not match the request.");
+                adapters.Add(adapter);
+            }
+            return new MultiMemoryAdmissionResult(adapters.AsReadOnly());
+        }
+        catch (MultiMemoryAdmissionException exception)
+        {
+            bool cleanupFailed = DisposeAdapters(adapters);
+            exception.CleanupFailed = cleanupFailed;
+            return new MultiMemoryAdmissionResult(exception.Failure, exception.Message, exception.EvidencePath, cleanupFailed);
+        }
+        catch (OperationCanceledException) { DisposeAdapters(adapters); throw; }
+        catch (Exception exception)
+        {
+            bool cleanupFailed = DisposeAdapters(adapters);
+            return new MultiMemoryAdmissionResult(MultiMemoryFailure.Admission, exception.Message, cleanupFailed: cleanupFailed);
+        }
+    }
+
+    private async Task<MultiMemoryAggregateResult> ExecuteUnderLockAsync(string transactionId,
+        MultiMemoryTransactionRequest request, IReadOnlyList<IMultiMemoryParticipantAdapter> adapters,
+        CancellationToken cancellationToken)
+    {
+        string directory = _store.GetStoreDirForScope(request.Scope);
+        var manifests = adapters.Select(a => new MultiMemoryParticipantManifest(a.Subject, a.OperationId, a.Kind)).ToArray();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
+            transactionId, request.Scope, MultiMemoryTransactionState.Prepared, manifests, now, now);
+        bool decisionPublished = false;
+        try
+        {
+            foreach (IMultiMemoryParticipantAdapter adapter in adapters)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await adapter.PrepareAsync(cancellationToken).ConfigureAwait(false);
+            }
+            Publish(directory, record, MultiMemoryTransactionTransition.PreparedPublished);
+            record = MultiMemoryTransactionRecordCodec.WithState(record, MultiMemoryTransactionState.Committed, DateTimeOffset.UtcNow);
+            Publish(directory, record, MultiMemoryTransactionTransition.CommittedPublished);
+            decisionPublished = true;
+            return await FinishDecisionAsync(record, adapters, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (decisionPublished) return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous, "Commit was cancelled after the durable decision.", directory);
+            return await RollbackBeforeDecisionAsync(transactionId, request.Scope, adapters, directory, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            if (decisionPublished) return RecoveryRequired(record, adapters, Classify(exception), exception.Message, directory);
+            return await RollbackBeforeDecisionAsync(transactionId, request.Scope, adapters, directory, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<MultiMemoryAggregateResult> FinishDecisionAsync(MultiMemoryTransactionRecord record,
+        IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, CancellationToken cancellationToken)
+    {
+        var outcomes = new List<MultiMemoryParticipantOutcome>();
+        bool allParticipantsVerified = false;
+        try
+        {
+            foreach (IMultiMemoryParticipantAdapter adapter in adapters)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await adapter.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await adapter.VerifyCommittedAsync(cancellationToken).ConfigureAwait(false);
+                outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
+                    adapter.EvidencePath, true, false, null));
+            }
+            allParticipantsVerified = true;
+            foreach (IMultiMemoryParticipantAdapter adapter in adapters)
+                await adapter.CleanupAsync(cancellationToken).ConfigureAwait(false);
+            Delete(record, MultiMemoryTransactionTransition.RecordDeleted);
+            return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, MultiMemoryOutcome.Committed,
+                outcomes, null, null, null);
+        }
+        catch (OperationCanceledException)
+        {
+            return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, MultiMemoryOutcome.RecoveryRequired,
+                outcomes, MultiMemoryFailure.Ambiguous, "Decision completion was cancelled; evidence is retained.", SafeRecordPath(_store.GetStoreDirForScope(record.Scope)));
+        }
+        catch (Exception exception)
+        {
+            MultiMemoryFailure failure = allParticipantsVerified ? MultiMemoryFailure.Cleanup : Classify(exception);
+            MultiMemoryOutcome outcome = allParticipantsVerified
+                ? MultiMemoryOutcome.CommittedCleanupPending : MultiMemoryOutcome.RecoveryRequired;
+            return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, outcome, outcomes, failure,
+                exception.Message, SafeRecordPath(_store.GetStoreDirForScope(record.Scope)));
+        }
+    }
+
+    private async Task<MultiMemoryAggregateResult> RollbackBeforeDecisionAsync(string id, string scope,
+        IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, string directory, CancellationToken cancellationToken)
+    {
+        var outcomes = new List<MultiMemoryParticipantOutcome>();
+        MultiMemoryFailure? failure = null;
+        foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
+        {
+            bool rolledBack = false;
+            try
+            {
+                await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                rolledBack = true;
+            }
+            catch (Exception exception) { failure ??= Classify(exception); }
+            outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
+                adapter.EvidencePath, false, rolledBack, rolledBack ? null : failure?.ToString()));
+        }
+        if (failure is null)
+        {
+            try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
+            catch (Exception) { failure = MultiMemoryFailure.Cleanup; }
+        }
+        return new MultiMemoryAggregateResult(id, scope, failure is null ? MultiMemoryOutcome.RolledBack : MultiMemoryOutcome.RecoveryRequired,
+            outcomes.OrderBy(o => o.Subject, StringComparer.Ordinal).ToArray(), failure,
+            failure is null ? null : "Pre-decision rollback could not be proven complete.", failure is null ? null : SafeRecordPath(directory));
+    }
+
+    private void Publish(string directory, MultiMemoryTransactionRecord record, MultiMemoryTransactionTransition transition)
+    {
+        ThrowIfInjected(transition, MultiMemoryTransactionRecordCodec.GetPath(directory));
+        MultiMemoryTransactionRecordCodec.Write(directory, record);
+    }
+
+    private void Delete(MultiMemoryTransactionRecord record, MultiMemoryTransactionTransition transition) =>
+        DeleteIfPresent(_store.GetStoreDirForScope(record.Scope), transition);
+
+    private static void DeleteIfPresent(string directory, MultiMemoryTransactionTransition transition)
+    {
+        string path = MultiMemoryTransactionRecordCodec.GetPath(directory);
+        ThrowIfInjected(transition, path);
+        File.Delete(path);
+    }
+
+    private static void ThrowIfInjected(MultiMemoryTransactionTransition transition, string path)
+    {
+        Exception? failure = FailureInjector.Value?.Invoke(transition, path);
+        if (failure is not null)
+            throw failure;
+    }
+
+    private MultiMemoryAggregateResult RecoveryRequired(MultiMemoryTransactionRecord record,
+        IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, MultiMemoryFailure failure, string warning, string directory) =>
+        new(record.TransactionId, record.Scope, MultiMemoryOutcome.RecoveryRequired,
+            adapters.Select(a => new MultiMemoryParticipantOutcome(a.Subject, a.OperationId, a.Kind, a.EvidencePath, false, false, warning)).ToArray(),
+            failure, warning, SafeRecordPath(directory));
+
+    private static MultiMemoryFailure Classify(Exception exception) => exception switch
+    {
+        OperationCanceledException => MultiMemoryFailure.Ambiguous,
+        IOException => MultiMemoryFailure.ReplayIoFailed,
+        _ => MultiMemoryFailure.ParticipantCommit
+    };
+
+    private string? SafeRecordPath(string directory) => MultiMemoryParticipantOutcome.IsSafeEvidencePath(
+        Path.GetFileName(MultiMemoryTransactionRecordCodec.GetPath(directory))) ? MultiMemoryTransactionRecordCodec.FileName : null;
 
     private static MultiMemoryFailure MapRecoveryFailure(RecoveryBlockReason reason) => reason switch
     {

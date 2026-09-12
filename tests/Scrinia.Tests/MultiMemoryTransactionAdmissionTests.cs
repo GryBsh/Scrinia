@@ -248,15 +248,15 @@ public sealed class MultiMemoryTransactionAdmissionTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_DoesNotClaimCompletionBeforeLifecycleTask()
+    public async Task ExecuteAsync_CompletesTheLifecycleAfterAdmission()
     {
         using FileMemoryStore store = CreateStore();
         var request = new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-1")]);
 
-        Func<Task> action = () => new MultiMemoryTransactionCoordinator(store).ExecuteAsync(request, (_, _) =>
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store).ExecuteAsync(request, (_, _) =>
             Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-1")));
 
-        await action.Should().ThrowAsync<NotSupportedException>();
+        result.Outcome.Should().Be(MultiMemoryOutcome.Committed);
         File.Exists(Path.Combine(store.GetStoreDirForScope("local:notes"),
             MultiMemoryTransactionRecordCodec.FileName)).Should().BeFalse();
     }

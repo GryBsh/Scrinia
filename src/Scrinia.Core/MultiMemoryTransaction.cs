@@ -36,6 +36,13 @@ internal enum MultiMemoryFailure
     LockTimeout
 }
 
+internal enum MultiMemoryTransactionTransition
+{
+    PreparedPublished,
+    CommittedPublished,
+    RecordDeleted
+}
+
 internal sealed record MultiMemoryParticipantRequest
 {
     internal MultiMemoryParticipantRequest(MemoryAddress address, string operationId, string kind)
