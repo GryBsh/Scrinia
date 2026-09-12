@@ -51,7 +51,7 @@ internal sealed record RestoreRecoveryBody(
 internal sealed record RecoveryMemberSnapshot(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("existed")] bool Existed,
-    [property: JsonPropertyName("payload")] string Payload,
+    [property: JsonPropertyName("payload")] string? Payload,
     [property: JsonPropertyName("sha256")] string Sha256);
 
 internal sealed record FileEntityRecoveryBody(
@@ -222,6 +222,7 @@ internal static class RecoveryEnvelopeCodec
                     ValidateOptionalFileEntityMember(fileEntity.CommittedMeta);
                     if ((document.State == RecoveryLifecycleState.Committed) != (fileEntity.State == "committed"))
                         throw new JsonException("File-entity envelope and body lifecycle states are inconsistent.");
+                    ValidateFileEntitySnapshotShape(fileEntity, document.State);
                     return fileEntity;
                 default:
                     throw new JsonException("Recovery envelope operation is invalid.");
@@ -229,7 +230,7 @@ internal static class RecoveryEnvelopeCodec
         }
         catch (JsonException exception)
         {
-            throw Malformed("Recovery envelope body is invalid", evidencePath, exception);
+            throw Malformed($"Recovery envelope body is invalid ({exception.Message})", evidencePath, exception);
         }
     }
 
@@ -243,13 +244,13 @@ internal static class RecoveryEnvelopeCodec
 
     private static void ValidateFileEntityMember(RecoveryMemberSnapshot member)
     {
-        if (string.IsNullOrWhiteSpace(member.Path) ||
-            (member.Existed && string.IsNullOrWhiteSpace(member.Payload)) ||
-            string.IsNullOrWhiteSpace(member.Sha256))
+        if (string.IsNullOrWhiteSpace(member.Path) || string.IsNullOrWhiteSpace(member.Sha256) ||
+            (!member.Existed && member.Payload is not null) ||
+            (member.Existed && string.IsNullOrWhiteSpace(member.Payload)))
             throw new JsonException("File-entity recovery member is incomplete.");
         try
         {
-            byte[] payload = Convert.FromBase64String(member.Payload);
+            byte[] payload = Convert.FromBase64String(member.Payload ?? string.Empty);
             if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(payload)), member.Sha256,
                     StringComparison.OrdinalIgnoreCase))
                 throw new JsonException("File-entity recovery member hash is invalid.");
@@ -263,6 +264,39 @@ internal static class RecoveryEnvelopeCodec
     private static void ValidateOptionalFileEntityMember(RecoveryMemberSnapshot? member)
     {
         if (member is not null) ValidateFileEntityMember(member);
+    }
+
+    private static void ValidateFileEntitySnapshotShape(FileEntityRecoveryBody body,
+        RecoveryLifecycleState envelopeState)
+    {
+        bool metadataOnly = CanonicalPathEquals(body.OldBody.Path, body.OldMeta.Path);
+        if (metadataOnly)
+        {
+            if (!string.Equals(body.EntityKind, "sidecar", StringComparison.OrdinalIgnoreCase) ||
+                body.CommittedBody is not null)
+                throw new JsonException("Metadata-only recovery evidence has an invalid snapshot shape.");
+            return;
+        }
+
+        if (envelopeState == RecoveryLifecycleState.Prepared &&
+            (body.CommittedBody is not null || body.CommittedMeta is not null))
+            throw new JsonException("Prepared recovery evidence contains committed snapshots.");
+        if (envelopeState == RecoveryLifecycleState.Committed &&
+            (body.CommittedBody is null || body.CommittedMeta is null))
+            throw new JsonException("Committed recovery evidence is missing a member snapshot.");
+    }
+
+    private static bool CanonicalPathEquals(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right),
+                OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static void ValidateEvidenceLocation(RecoveryEnvelopeDocument document, string evidencePath,
@@ -781,6 +815,8 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
                 MemberRole.Meta, body.ArchiveBodyPath, evidencePath)
         };
 
+        ValidateFileEntitySnapshotShape(body, validated.State, evidencePath);
+
         if (!metadataOnly && body.CommittedBody is not null &&
             !string.Equals(Path.GetFileName(body.CommittedBody.Path), bodyFileName, StringComparison.OrdinalIgnoreCase))
             throw UnsafeMemberPath(evidencePath);
@@ -788,6 +824,29 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             ValidateMetaFileName(Path.GetFileName(body.CommittedMeta.Path), entityName, evidencePath);
 
         return RecoveryEnvelopeCodec.ValidateSubject(validated with { TypedBody = body }, expectedSubject, evidencePath, expectedEvidenceDirectory);
+    }
+
+    private static void ValidateFileEntitySnapshotShape(FileEntityRecoveryBody body,
+        RecoveryLifecycleState envelopeState, string evidencePath)
+    {
+        bool metadataOnly = string.Equals(body.EntityKind, "sidecar", StringComparison.OrdinalIgnoreCase);
+        if (metadataOnly)
+        {
+            if (body.CommittedBody is not null ||
+                (envelopeState == RecoveryLifecycleState.Committed && body.CommittedMeta is null))
+                throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                    "Metadata-only recovery evidence has an invalid snapshot shape.", evidencePath);
+            return;
+        }
+
+        if (envelopeState == RecoveryLifecycleState.Prepared &&
+            (body.CommittedBody is not null || body.CommittedMeta is not null))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Prepared recovery evidence contains committed snapshots.", evidencePath);
+        if (envelopeState == RecoveryLifecycleState.Committed &&
+            (body.CommittedBody is null || body.CommittedMeta is null))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Committed recovery evidence is missing a member snapshot.", evidencePath);
     }
 
     private static RecoveryMemberSnapshot? CanonicalizeOptionalMember(RecoveryMemberSnapshot? member, string directory,

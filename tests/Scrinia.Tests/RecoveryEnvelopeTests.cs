@@ -238,6 +238,60 @@ public sealed class RecoveryEnvelopeTests
             .Should().Throw<RecoveryEnvelopeException>();
     }
 
+    [Fact]
+    public void MetadataOnlyEvidenceRequiresOneCanonicalSidecarPathAndNoBodySnapshot()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-metadata-shape-" + Guid.NewGuid().ToString("N"));
+        string directory = Path.Combine(root, "skills");
+        string evidence = Path.Combine(directory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery");
+        string meta = Path.Combine(directory, "entity.meta.json");
+        RecoveryMemberSnapshot old = Snapshot(meta, true, RecoveryTestFixtures.FileEntityMetadata);
+        RecoveryMemberSnapshot committed = Snapshot(meta, true, RecoveryTestFixtures.NewSidecar);
+        FileEntityRecoveryBody validBody = new("sidecar", "entity", old, old, null, null,
+            null, committed, "committed");
+
+        ValidateFileEntity(validBody, evidence, directory, "sidecar/entity").TypedBody.Should().NotBeNull();
+
+        FileEntityRecoveryBody invalidBody = validBody with
+        {
+            OldMeta = Snapshot(Path.Combine(directory, "other.meta.json"), true, RecoveryTestFixtures.FileEntityMetadata)
+        };
+        FluentActions.Invoking(() => ValidateFileEntity(invalidBody, evidence, directory, "sidecar/entity"))
+            .Should().Throw<RecoveryEnvelopeException>();
+
+        invalidBody = validBody with { CommittedBody = committed };
+        FluentActions.Invoking(() => ValidateFileEntity(invalidBody, evidence, directory, "sidecar/entity"))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
+    public void OrdinaryCommittedEvidenceRequiresBothMembers()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "scrinia-committed-shape-" + Guid.NewGuid().ToString("N"), "skill");
+        string evidence = Path.Combine(directory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery");
+        RecoveryMemberSnapshot oldBody = Snapshot(Path.Combine(directory, "entity.md"), true, RecoveryTestFixtures.FileEntityBody);
+        RecoveryMemberSnapshot oldMeta = Snapshot(Path.Combine(directory, "entity.meta.json"), true, RecoveryTestFixtures.FileEntityMetadata);
+        FileEntityRecoveryBody body = new("skill", "entity", oldBody, oldMeta, null, null, oldBody, null, "committed");
+
+        FluentActions.Invoking(() => ValidateFileEntity(body, evidence, directory, "skill/entity"))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
+    public void MissingPayloadOnAbsentMemberNormalizesToEmptyBytes()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "scrinia-absent-member-" + Guid.NewGuid().ToString("N"), "skill");
+        string evidence = Path.Combine(directory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery");
+        string emptyHash = RecoveryTestFixtures.Sha256([]);
+        var absent = new RecoveryMemberSnapshot(Path.Combine(directory, "entity.md"), false, null!, emptyHash);
+        var meta = Snapshot(Path.Combine(directory, "entity.meta.json"), true, RecoveryTestFixtures.FileEntityMetadata);
+        var body = new FileEntityRecoveryBody("skill", "entity", absent, meta, null, null, null, null, "prepared");
+
+        FileEntityRecoveryBody validated = (FileEntityRecoveryBody)ValidateFileEntity(body, evidence, directory, "skill/entity").TypedBody!;
+        RecoveryMemberSnapshot normalized = validated.OldBody;
+        normalized.Payload.Should().BeNull();
+    }
+
     private static RecoveryEnvelopeDocument ValidateFileEntity(FileEntityRecoveryBody body, string evidencePath,
         string entityDirectory, string subject) =>
         ((IRecoveryAdapter)new FileEntityRecoveryAdapter()).ValidateForMutation(
@@ -260,6 +314,9 @@ public sealed class RecoveryEnvelopeTests
 
     private static RecoveryMemberSnapshot Snapshot(string path, byte[] bytes) =>
         new(path, true, Convert.ToBase64String(bytes), RecoveryTestFixtures.Sha256(bytes));
+
+    private static RecoveryMemberSnapshot Snapshot(string path, bool existed, byte[] bytes) =>
+        new(path, existed, Convert.ToBase64String(bytes), RecoveryTestFixtures.Sha256(bytes));
 
     [Fact]
     public void JsonEnvelopeRequiresItsPreservedFilenameAndFileEntityOperationId()

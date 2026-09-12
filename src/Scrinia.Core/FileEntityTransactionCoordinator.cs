@@ -259,8 +259,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             ?? throw new ArgumentException("Evidence path must have a directory.", nameof(evidencePath)));
         bool metadataOnly = string.Equals(mutation.BodyPath, mutation.MetaPath,
             StringComparison.OrdinalIgnoreCase);
+        RecoveryMemberSnapshot oldBodySnapshot = ToRecoverySnapshot(metadataOnly ? oldMeta : oldBody);
         var body = new FileEntityRecoveryBody(mutation.EntityKind, mutation.Name,
-            ToRecoverySnapshot(oldBody), ToRecoverySnapshot(oldMeta), archiveBody, archiveMeta,
+            oldBodySnapshot, ToRecoverySnapshot(oldMeta), archiveBody, archiveMeta,
             metadataOnly ? null : committedBody is null ? null : ToRecoverySnapshot(committedBody),
             committedMeta is null ? null : ToRecoverySnapshot(committedMeta),
             state == RecoveryLifecycleState.Committed ? "committed" : "prepared");
@@ -366,7 +367,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     private static RawMemberSnapshot ToRawSnapshot(RecoveryMemberSnapshot snapshot)
     {
         byte[] bytes;
-        try { bytes = Convert.FromBase64String(snapshot.Payload); }
+        try { bytes = Convert.FromBase64String(snapshot.Payload ?? string.Empty); }
         catch (FormatException exception) { throw new InvalidDataException("Recovery snapshot payload is invalid.", exception); }
         return new RawMemberSnapshot(snapshot.Path, snapshot.Existed, bytes, snapshot.Sha256);
     }
