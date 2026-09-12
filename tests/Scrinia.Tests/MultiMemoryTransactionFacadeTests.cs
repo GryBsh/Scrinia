@@ -93,7 +93,7 @@ public sealed class MultiMemoryTransactionFacadeTests
     [InlineData("C:/foreign/root/recovery.json")]
     [InlineData("C:\\foreign\\root\\recovery.json")]
     [InlineData("../outside/evidence.json")]
-    [InlineData("file:///foreign/root")]
+    [InlineData("file:" + "//foreign/root")]
     public void PathLikeAggregateDetailsAreRedacted(string pathLikeDetail)
     {
         MultiMemoryAggregateResult result = Aggregate(

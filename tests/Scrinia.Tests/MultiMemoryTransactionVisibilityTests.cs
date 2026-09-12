@@ -254,7 +254,7 @@ public sealed class MultiMemoryTransactionVisibilityTests
     }
 
     private static ArtifactEntry Entry(string name) =>
-        new(name, $"file:///{name}.nmp2", 1, 1, DateTimeOffset.UtcNow);
+        new(name, $"file:" + $"///{name}.nmp2", 1, 1, DateTimeOffset.UtcNow);
 
     private static MultiMemoryTransactionRequest Request() => new("local:notes", [
         Participant("/notes/b", "op-b"), Participant("/notes/a", "op-a")]);

@@ -37,7 +37,7 @@ public sealed class FileLock : IDisposable
         return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout ?? TimeSpan.FromSeconds(5), logger);
     }
 
-    public static FileLock AcquireExclusive(string lockPath, TimeSpan timeout, CancellationToken cancellationToken,
+    internal static FileLock AcquireExclusive(string lockPath, TimeSpan timeout, CancellationToken cancellationToken,
         ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(lockPath);
