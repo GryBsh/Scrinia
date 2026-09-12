@@ -67,12 +67,27 @@ public sealed class AppendStoreException : Exception
         Recovery = recovery;
     }
 
+    internal AppendStoreException(
+        AppendStoreErrorCode code,
+        string operationId,
+        string message,
+        RecoveryBlock discoveryBlock)
+        : this(code, operationId, message, recovery: new AppendRecoveryInfo(
+            discoveryBlock.EvidencePath,
+            "recoveryRequired",
+            "resolve retained evidence",
+            discoveryBlock.Detail))
+    {
+        DiscoveryBlock = discoveryBlock;
+    }
+
     /// <summary>Stable category describing why the exception escaped the normal result contract.</summary>
     public AppendStoreErrorCode Code { get; }
     /// <summary>The correlation identifier for the failed append attempt.</summary>
     public string OperationId { get; }
     /// <summary>Structured retained-journal evidence for recovery admission failures.</summary>
     public AppendRecoveryInfo? Recovery { get; }
+    internal RecoveryBlock? DiscoveryBlock { get; }
 }
 
 internal sealed class AppendPostCommitCleanupException : Exception

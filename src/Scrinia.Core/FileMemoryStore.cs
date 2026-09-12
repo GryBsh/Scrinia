@@ -4411,11 +4411,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 AppendStoreErrorCode.RecoveryRequired,
                 block.OperationId,
                 block.Detail,
-                recovery: new AppendRecoveryInfo(
-                    block.EvidencePath,
-                    "recoveryRequired",
-                    "resolve retained evidence",
-                    block.Detail));
+                block);
 
         return new RestoreRecoveryException(block.Scope, block.EvidencePath,
             block.Reason == RecoveryBlockReason.UnsupportedVersion

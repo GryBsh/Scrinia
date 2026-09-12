@@ -131,10 +131,17 @@ public sealed partial class ScriniaMcpTools
         // Fold the workspace-restore context into the guide response so the agent gets warnings,
         // available skills, and followUp pointers without a separate restore call —
         // closes the most common utilization failure mode (read guide, forget to restore).
-        var ctx = await BuildRestoreContextAsync(cancellationToken);
-        return ApplyRestoreContext(
-            ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide"),
-            ctx).ToYaml();
+        try
+        {
+            var ctx = await BuildRestoreContextAsync(cancellationToken);
+            return ApplyRestoreContext(
+                ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide"),
+                ctx).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     // ── Per-verb memory tools ────────────────────────────────────────────────
@@ -792,7 +799,14 @@ public sealed partial class ScriniaMcpTools
         "call this mid-session to refresh after a long gap.")]
     public async Task<string> MemoryRestore(CancellationToken cancellationToken = default)
     {
-        return (await Restore(cancellationToken)).ToYaml();
+        try
+        {
+            return (await Restore(cancellationToken)).ToYaml();
+        }
+        catch (RestoreRecoveryException ex)
+        {
+            return RecoveryBlockedResponse(ex).ToYaml();
+        }
     }
 
     // ── Skill-path routing ────────────────────────────────────────────────────

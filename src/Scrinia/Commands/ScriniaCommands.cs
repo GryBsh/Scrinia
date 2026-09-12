@@ -275,7 +275,15 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Guide(cancellationToken);
+        string yaml;
+        try
+        {
+            yaml = await tools.Guide(cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "guide");
+        }
 
         if (json)
         {
@@ -307,7 +315,15 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        McpResponse response = await tools.Restore(cancellationToken);
+        McpResponse response;
+        try
+        {
+            response = await tools.Restore(cancellationToken);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return EmitRecoveryBlocked(exception, json, "restore");
+        }
 
         if (hook)
         {
