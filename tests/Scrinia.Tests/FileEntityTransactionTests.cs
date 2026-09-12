@@ -2,6 +2,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Mcp;
 using System.Text.Json;
+using System.Text;
 using Scrinia.Core.Formats;
 using Xunit;
 
@@ -236,6 +237,37 @@ public sealed class FileEntityTransactionTests
         recovered.Outcome.Should().Be(WholeMemoryOutcome.Replaced);
         File.ReadAllText(paths.Body).Should().Be("body remains unchanged");
         File.ReadAllText(paths.Meta).Should().Be("next metadata");
+    }
+
+    [Fact]
+    public async Task PendingRecoveryForAnotherEntityIsLeftIntact()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills");
+        Directory.CreateDirectory(directory);
+        string otherBody = Path.Combine(directory, "other.md");
+        string otherMeta = Path.Combine(directory, "other.meta.json");
+        string otherVersions = Path.Combine(directory, "versions");
+        File.WriteAllText(otherBody, "old other");
+        File.WriteAllText(otherMeta, "old other metadata");
+
+        var coordinator = Coordinator(scope);
+        coordinator.FailOnceAt(FileEntityFaultPoint.EvidenceCleanup);
+        FileEntityMutationResult other = await coordinator.ExecuteAsync(new FileEntityMutation(
+            "skill", "other", otherBody, otherMeta, otherVersions,
+            Encoding.UTF8.GetBytes("new other"), Encoding.UTF8.GetBytes("new other metadata"), false, false));
+        other.Recovery.Should().NotBeNull();
+        string retainedEvidence = other.Recovery!.EvidencePath;
+
+        string qaBody = Path.Combine(directory, "qa.md");
+        string qaMeta = Path.Combine(directory, "qa.meta.json");
+        FileEntityMutationResult qa = await Coordinator(scope).ExecuteAsync(new FileEntityMutation(
+            "skill", "qa", qaBody, qaMeta, Path.Combine(directory, "versions"),
+            Encoding.UTF8.GetBytes("qa body"), Encoding.UTF8.GetBytes("qa metadata"), false, false));
+
+        qa.Recovery.Should().BeNull();
+        File.Exists(retainedEvidence).Should().BeTrue();
+        File.ReadAllText(otherBody).Should().Be("new other");
     }
 
     [Theory]

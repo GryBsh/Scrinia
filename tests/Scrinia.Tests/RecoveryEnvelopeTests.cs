@@ -265,6 +265,50 @@ public sealed class RecoveryEnvelopeTests
     }
 
     [Fact]
+    public void PreparedEvidenceRejectsCommittedMetadataForMetadataOnlyTransactions()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "scrinia-prepared-sidecar-" + Guid.NewGuid().ToString("N"), "skills");
+        string meta = Path.Combine(directory, "entity.meta.json");
+        FileEntityRecoveryBody body = new("sidecar", "entity", Snapshot(meta, true, RecoveryTestFixtures.FileEntityMetadata),
+            Snapshot(meta, true, RecoveryTestFixtures.FileEntityMetadata), null, null, null,
+            Snapshot(meta, true, RecoveryTestFixtures.NewSidecar), "prepared");
+
+        FluentActions.Invoking(() => ValidateFileEntity(body,
+                Path.Combine(directory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery"), directory, "sidecar/entity"))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
+    public void LegacyFileEntityNormalizationRejectsCorruptedExistingSnapshotHash()
+    {
+        byte[] bytes = RecoveryTestFixtures.BuildLegacyFileEntityRecovery();
+        bytes[^1] ^= 0x01;
+
+        FluentActions.Invoking(() => new FileEntityRecoveryAdapter().NormalizeLegacy(
+                bytes, RecoveryTestFixtures.LocalNotesScope,
+                Path.Combine(Path.GetTempPath(), $".file-entity-{RecoveryTestFixtures.OperationId}.recovery"),
+                Path.GetTempPath()))
+            .Should().Throw<RecoveryEnvelopeException>();
+    }
+
+    [Fact]
+    public void MetadataOnlyValidationResolvesRelativeAndAbsoluteEquivalentPaths()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "scrinia-relative-sidecar-" + Guid.NewGuid().ToString("N"), "skills");
+        string meta = Path.Combine(directory, "entity.meta.json");
+        FileEntityRecoveryBody body = new("sidecar", "entity",
+            Snapshot("entity.meta.json", true, RecoveryTestFixtures.FileEntityMetadata),
+            Snapshot(meta, true, RecoveryTestFixtures.FileEntityMetadata), null, null, null,
+            Snapshot("entity.meta.json", true, RecoveryTestFixtures.NewSidecar), "committed");
+
+        FileEntityRecoveryBody validated = (FileEntityRecoveryBody)ValidateFileEntity(body,
+            Path.Combine(directory, $".file-entity-{RecoveryTestFixtures.OperationId}.recovery"), directory,
+            "sidecar/entity").TypedBody!;
+        validated.OldBody.Path.Should().Be(Path.GetFullPath(meta));
+        validated.CommittedMeta!.Path.Should().Be(Path.GetFullPath(meta));
+    }
+
+    [Fact]
     public void OrdinaryCommittedEvidenceRequiresBothMembers()
     {
         string directory = Path.Combine(Path.GetTempPath(), "scrinia-committed-shape-" + Guid.NewGuid().ToString("N"), "skill");

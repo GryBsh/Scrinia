@@ -273,7 +273,10 @@ internal static class RecoveryEnvelopeCodec
         if (metadataOnly)
         {
             if (!string.Equals(body.EntityKind, "sidecar", StringComparison.OrdinalIgnoreCase) ||
-                body.CommittedBody is not null)
+                body.CommittedBody is not null ||
+                (envelopeState == RecoveryLifecycleState.Committed && body.CommittedMeta is null) ||
+                (envelopeState == RecoveryLifecycleState.Prepared &&
+                    (body.CommittedBody is not null || body.CommittedMeta is not null)))
                 throw new JsonException("Metadata-only recovery evidence has an invalid snapshot shape.");
             return;
         }
@@ -706,15 +709,19 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             string? archiveMeta = ReadOptionalPath(reader);
             RecoveryMemberSnapshot? committedBody = ReadOptionalSnapshot(reader);
             RecoveryMemberSnapshot? committedMeta = ReadOptionalSnapshot(reader);
+            ValidateFileEntityMember(oldBody);
+            ValidateFileEntityMember(oldMeta);
+            ValidateOptionalFileEntityMember(committedBody);
+            ValidateOptionalFileEntityMember(committedMeta);
             if (stream.Position != stream.Length)
                 throw new InvalidDataException("File-entity recovery evidence has trailing data.");
-            string entityName = Path.GetFileNameWithoutExtension(oldBody.Path);
-            bool metadataOnly = entityName.StartsWith(".file-entity-body-omitted", StringComparison.OrdinalIgnoreCase);
+            string entityName = Path.GetFileNameWithoutExtension(oldMeta.Path);
+            if (entityName.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                entityName = entityName[..^".meta".Length];
+            bool metadataOnly = Path.GetFileNameWithoutExtension(oldBody.Path)
+                .StartsWith(".file-entity-body-omitted", StringComparison.OrdinalIgnoreCase);
             if (metadataOnly)
             {
-                string metaName = Path.GetFileNameWithoutExtension(oldMeta.Path);
-                entityName = metaName.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
-                    ? metaName[..^".meta".Length] : metaName;
                 oldBody = oldBody with { Path = oldMeta.Path };
                 if (committedBody is not null)
                     committedBody = null;
@@ -755,11 +762,31 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         if (length < 0 || length > 128 * 1024 * 1024) throw new InvalidDataException("Invalid file-entity recovery member length.");
         byte[] bytes = reader.ReadBytes(length);
         if (bytes.Length != length) throw new EndOfStreamException();
-        return new RecoveryMemberSnapshot(path, existed, Convert.ToBase64String(bytes), reader.ReadString());
+        string hash = reader.ReadString();
+        return new RecoveryMemberSnapshot(path, existed, existed ? Convert.ToBase64String(bytes) : null, hash);
     }
 
     private static RecoveryMemberSnapshot? ReadOptionalSnapshot(BinaryReader reader) => reader.ReadBoolean() ? ReadSnapshot(reader) : null;
     private static string? ReadOptionalPath(BinaryReader reader) => reader.ReadBoolean() ? reader.ReadString() : null;
+
+    private static void ValidateFileEntityMember(RecoveryMemberSnapshot member)
+    {
+        if (string.IsNullOrWhiteSpace(member.Path) || string.IsNullOrWhiteSpace(member.Sha256) ||
+            (!member.Existed && member.Payload is not null) ||
+            (member.Existed && string.IsNullOrWhiteSpace(member.Payload)))
+            throw new InvalidDataException("File-entity recovery member is incomplete.");
+        byte[] payload = Convert.FromBase64String(member.Payload ?? string.Empty);
+        if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(payload)), member.Sha256,
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("File-entity recovery member hash is invalid.");
+    }
+
+    private static void ValidateOptionalFileEntityMember(RecoveryMemberSnapshot? member)
+    {
+        if (member is not null)
+            ValidateFileEntityMember(member);
+    }
+
     private static string ExtractOperationId(string evidencePath)
     {
         string name = Path.GetFileName(evidencePath);
@@ -833,6 +860,7 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         if (metadataOnly)
         {
             if (body.CommittedBody is not null ||
+                (envelopeState == RecoveryLifecycleState.Prepared && body.CommittedMeta is not null) ||
                 (envelopeState == RecoveryLifecycleState.Committed && body.CommittedMeta is null))
                 throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
                     "Metadata-only recovery evidence has an invalid snapshot shape.", evidencePath);

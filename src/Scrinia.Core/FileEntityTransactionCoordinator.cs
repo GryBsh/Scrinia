@@ -30,14 +30,14 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         cancellationToken.ThrowIfCancellationRequested();
 
         string operationId = Guid.NewGuid().ToString("N");
-        bool sidecarOnly = string.Equals(
-            Path.GetFullPath(mutation.BodyPath), Path.GetFullPath(mutation.MetaPath),
-            StringComparison.OrdinalIgnoreCase);
+        bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
+            Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
         string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
         string bodySnapshotPath = mutation.BodyPath;
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
 
-        FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory);
+        FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory,
+            mutation.EntityKind, mutation.Name);
         if (recovery is not null)
             return recovery;
 
@@ -224,9 +224,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         RawMemberSnapshot oldBody,
         RawMemberSnapshot oldMeta)
     {
-        bool sidecarOnly = string.Equals(
-            Path.GetFullPath(mutation.BodyPath), Path.GetFullPath(mutation.MetaPath),
-            StringComparison.OrdinalIgnoreCase);
+        bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
+            Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
         if (!oldBody.Existed && !oldMeta.Existed)
             return (null, null);
 
@@ -257,8 +256,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         ArgumentNullException.ThrowIfNull(mutation);
         string entityDirectory = Path.GetFullPath(Path.GetDirectoryName(evidencePath)
             ?? throw new ArgumentException("Evidence path must have a directory.", nameof(evidencePath)));
-        bool metadataOnly = string.Equals(mutation.BodyPath, mutation.MetaPath,
-            StringComparison.OrdinalIgnoreCase);
+        bool metadataOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath, entityDirectory);
         RecoveryMemberSnapshot oldBodySnapshot = ToRecoverySnapshot(metadataOnly ? oldMeta : oldBody);
         var body = new FileEntityRecoveryBody(mutation.EntityKind, mutation.Name,
             oldBodySnapshot, ToRecoverySnapshot(oldMeta), archiveBody, archiveMeta,
@@ -291,34 +289,66 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         DurableFile.AtomicWriteAllBytes(path, RecoveryEnvelopeCodec.Serialize(envelope));
     }
 
-    private FileEntityMutationResult? RecoverPendingEvidence(string directory)
+    private FileEntityMutationResult? RecoverPendingEvidence(string directory, string entityKind, string entityName)
     {
-        string? evidencePath = Directory.EnumerateFiles(directory, ".file-entity-*.recovery")
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .FirstOrDefault();
-        if (evidencePath is null)
+        string[] evidencePaths = Directory.EnumerateFiles(directory, ".file-entity-*.recovery")
+            .OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        if (evidencePaths.Length == 0)
             return null;
+
+        var matches = new List<(string Path, RecoveryEnvelopeDocument Envelope)>();
+        foreach (string evidencePath in evidencePaths)
+        {
+            try
+            {
+                var adapter = new FileEntityRecoveryAdapter();
+                RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+                    File.ReadAllBytes(evidencePath), ScopeForEntity(directory), evidencePath, directory);
+                if (envelope.TypedBody is not FileEntityRecoveryBody body)
+                    throw new InvalidDataException("File-entity recovery body is missing.");
+                bool kindMatches = envelope.IsLegacy ||
+                    string.Equals(body.EntityKind, entityKind, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(body.EntityKind, "skill", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(entityKind, "skills", StringComparison.OrdinalIgnoreCase);
+                if (kindMatches &&
+                    string.Equals(body.EntityName, entityName, StringComparison.OrdinalIgnoreCase))
+                    matches.Add((evidencePath, envelope));
+            }
+            catch (Exception failure)
+            {
+                string operationId = ExtractOperationId(evidencePath);
+                return new FileEntityMutationResult(WholeMemoryOutcome.RecoveryRequired, operationId,
+                    "File-entity recovery evidence could not be applied.",
+                    new RecoveryInfo(evidencePath, "recoveryRequired", "resolve retained evidence", failure.Message));
+            }
+        }
+
+        if (matches.Count == 0)
+            return null;
+        if (matches.Count > 1)
+            return new FileEntityMutationResult(WholeMemoryOutcome.RecoveryRequired, "ambiguous",
+                "Multiple file-entity recovery records claim the requested entity.",
+                new RecoveryInfo(matches[0].Path, "recoveryRequired", "resolve retained evidence", "Ambiguous recovery evidence."));
 
         try
         {
-            byte[] bytes = File.ReadAllBytes(evidencePath);
-            var adapter = new FileEntityRecoveryAdapter();
-            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
-                bytes, ScopeForEntity(directory), evidencePath, directory);
-            RecoverFileEntity(envelope, evidencePath,
-                ScopeForEntity(directory), directory, CancellationToken.None);
+            RecoverFileEntity(matches[0].Envelope, matches[0].Path, ScopeForEntity(directory), directory,
+                CancellationToken.None);
             return null;
         }
         catch (Exception failure)
         {
-            string operationId = ExtractOperationId(evidencePath);
-            return new FileEntityMutationResult(
-                WholeMemoryOutcome.RecoveryRequired,
-                operationId,
+            string operationId = ExtractOperationId(matches[0].Path);
+            return new FileEntityMutationResult(WholeMemoryOutcome.RecoveryRequired, operationId,
                 "File-entity recovery evidence could not be applied.",
-                new RecoveryInfo(evidencePath, "recoveryRequired", "resolve retained evidence", failure.Message));
+                new RecoveryInfo(matches[0].Path, "recoveryRequired", "resolve retained evidence", failure.Message));
         }
     }
+
+    private static bool AreSamePath(string left, string right, string baseDirectory) =>
+        string.Equals(Path.GetFullPath(Path.IsPathRooted(left) ? left : Path.Combine(baseDirectory, left)),
+            Path.GetFullPath(Path.IsPathRooted(right) ? right : Path.Combine(baseDirectory, right)),
+            OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
 
     internal RecoveryOutcome RecoverFileEntity(RecoveryEnvelopeDocument document, string evidencePath,
         string expectedScope, string expectedEntityDirectory, CancellationToken cancellationToken)
