@@ -140,6 +140,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly string _workspaceRoot;
     private readonly WholeMemoryTransactionCoordinator _wholeMemoryTransactions;
     private readonly FileEntityTransactionCoordinator _fileEntityTransactions;
+    private readonly MultiMemoryTransactionCoordinator _multiMemoryTransactions;
     private readonly RecoveryDiscoveryCoordinator _recoveryDiscovery = new();
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
@@ -305,6 +306,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
         _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
+        _multiMemoryTransactions = new MultiMemoryTransactionCoordinator(this);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
@@ -780,6 +782,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private string GetLockPath(string scope) =>
         Path.Combine(GetStoreDirForScope(scope), ".lock");
+
+    internal FileLock AcquireExclusiveScopeLock(string scope, TimeSpan timeout) =>
+        FileLock.AcquireExclusive(GetLockPath(scope), timeout);
+
+    internal RecoveryDiscoveryResult DiscoverRecoveryForScope(string scope, string storeDirectory) =>
+        _recoveryDiscovery.Discover(scope, storeDirectory);
+
+    internal Task<MultiMemoryAggregateResult> ExecuteMultiMemoryAsync(
+        MultiMemoryTransactionRequest request,
+        Func<MultiMemoryParticipantRequest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> admitParticipant,
+        CancellationToken cancellationToken = default) =>
+        _multiMemoryTransactions.ExecuteAsync(request, admitParticipant, cancellationToken);
 
     /// <summary>
     /// Creates the workspace store and the scope's directory. Called only from write paths, so
