@@ -33,6 +33,10 @@ internal sealed record RestoreJournalEntry(
 
 internal sealed record RestoreJournalPayload(ArtifactEntry Entry, byte[] BodyBytes, byte[] SidecarBytes);
 
+internal sealed record RestoreEnvelopeAdapterResult(
+    RestoreRecoveryAdapter Adapter,
+    RecoveryEnvelopeDocument Envelope);
+
 internal enum RestoreRecoveryFailure
 {
     UnsupportedVersion,

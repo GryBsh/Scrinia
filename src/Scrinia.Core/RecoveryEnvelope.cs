@@ -520,6 +520,45 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
     RecoveryOperation IRecoveryAdapter.Operation => Operation;
     internal bool IsCandidateFile(string fileName) => fileName == ".restore-journal.json";
     bool IRecoveryAdapter.IsCandidateFile(string fileName) => IsCandidateFile(fileName);
+
+    internal RecoveryEnvelopeDocument ToEnvelope(RestoreJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        return RecoveryEnvelopeCodec.FromRestore(journal);
+    }
+
+    internal RestoreJournal FromEnvelope(RecoveryEnvelopeDocument document, string evidencePath)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        RecoveryEnvelopeDocument validated = RecoveryEnvelopeCodec.ValidateForOperation(
+            document, Operation, document.Scope, evidencePath,
+            Path.GetDirectoryName(evidencePath) ?? throw new ArgumentException(
+                "Restore evidence path must have a directory.", nameof(evidencePath)));
+        RestoreRecoveryBody body = validated.TypedBody as RestoreRecoveryBody
+            ?? throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Restore recovery body is missing.", evidencePath);
+        if (!string.Equals(validated.OperationId, body.TransactionId, StringComparison.Ordinal))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Restore transaction identity is inconsistent.", evidencePath);
+
+        RestoreJournal journal = new(
+            "scrinia.restore-journal", DurableFormats.RestoreJournal.Current, body.State,
+            body.TransactionId, validated.Scope, body.Entries);
+        try
+        {
+            RestoreJournalCodec.ParseAndValidate(
+                RestoreJournalCodec.Serialize(journal), validated.Scope, evidencePath);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            throw new RecoveryEnvelopeException(
+                exception.Failure == RestoreRecoveryFailure.UnsupportedVersion
+                    ? RecoveryEnvelopeFailure.UnsupportedVersion
+                    : RecoveryEnvelopeFailure.Malformed,
+                exception.Message, evidencePath, exception, exception.UnsupportedVersion);
+        }
+        return journal;
+    }
     internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
         string expectedEvidenceDirectory)
     {
@@ -538,9 +577,18 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
     RecoveryEnvelopeDocument IRecoveryAdapter.ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
         string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.IsCommonEnvelope(bytes) ? RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope, evidencePath, expectedEvidenceDirectory), RecoveryOperation.Restore, expectedScope, evidencePath, expectedEvidenceDirectory) : NormalizeLegacy(bytes, expectedScope, evidencePath, expectedEvidenceDirectory);
-    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
-        string expectedSubject, string expectedEvidenceDirectory) =>
-        RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Restore, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
+    RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope,
+        string evidencePath, string expectedSubject, string expectedEvidenceDirectory)
+    {
+        RecoveryEnvelopeDocument validated = RecoveryEnvelopeCodec.ValidateSubject(
+            RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Restore, expectedScope,
+                evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
+        RestoreJournal journal = FromEnvelope(validated, evidencePath);
+        return validated with
+        {
+            TypedBody = new RestoreRecoveryBody(journal.TransactionId, journal.State, journal.Entries)
+        };
+    }
     RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Restore replay is owned by the restore operation.");
     RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
         new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);

@@ -4197,13 +4197,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     DurableFormats.ArtifactSidecar.Current);
 
             RestoreJournal journal = RestoreJournalCodec.CreatePrepared(topicScope, payloads);
-            byte[] journalBytes = RestoreJournalCodec.Serialize(journal);
+            byte[] journalBytes = RecoveryEnvelopeCodec.Serialize(new RestoreRecoveryAdapter().ToEnvelope(journal));
             ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforePreparedWrite,
                 GetRestoreJournalPath(storeDir));
             DurableFile.AtomicWriteAllBytes(GetRestoreJournalPath(storeDir), journalBytes);
             ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterPreparedWrite,
                 GetRestoreJournalPath(storeDir));
-            ApplyPreparedJournalUnsafe(journal, storeDir);
+            var restoreAdapter = new RestoreRecoveryAdapter();
+            ApplyPreparedJournalUnsafe(journal, storeDir,
+                new RestoreEnvelopeAdapterResult(restoreAdapter, restoreAdapter.ToEnvelope(journal)));
             InvalidateRecoveredScopeUnsafe(topicScope);
             TryDeleteCompletedJournalUnsafe(GetRestoreJournalPath(storeDir));
         }, ImportLockTimeout);
@@ -4239,9 +4241,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return false;
 
         RestoreJournal journal;
+        RestoreEnvelopeAdapterResult parsed;
         try
         {
-            journal = RestoreJournalCodec.ParseAndValidate(ReadJournalBytesUnsafe(journalPath, scope), scope, journalPath);
+            var adapter = new RestoreRecoveryAdapter();
+            byte[] journalBytes = ReadJournalBytesUnsafe(journalPath, scope);
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+                journalBytes, scope, journalPath, storeDir);
+            journal = adapter.FromEnvelope(envelope, journalPath);
+            parsed = new RestoreEnvelopeAdapterResult(adapter, envelope);
         }
         catch (RestoreRecoveryException)
         {
@@ -4255,7 +4263,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try
         {
             if (journal.State == RestoreJournalState.Prepared)
-                ApplyPreparedJournalUnsafe(journal, storeDir);
+                ApplyPreparedJournalUnsafe(journal, storeDir, parsed);
             else
                 VerifyJournalDestinationsUnsafe(journal, storeDir);
         }
@@ -4272,7 +4280,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return !TryDeleteCompletedJournalUnsafe(journalPath);
     }
 
-    private void ApplyPreparedJournalUnsafe(RestoreJournal journal, string storeDir)
+    private void ApplyPreparedJournalUnsafe(RestoreJournal journal, string storeDir,
+        RestoreEnvelopeAdapterResult parsed)
     {
         string journalPath = GetRestoreJournalPath(storeDir);
         var payloads = journal.Entries.Select(entry => (Entry: entry,
@@ -4292,7 +4301,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterReplayDestinations, journalPath);
         VerifyJournalDestinationsUnsafe(journal, storeDir);
         ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeCompletedWrite, journalPath);
-        DurableFile.AtomicWriteAllBytes(journalPath, RestoreJournalCodec.Serialize(RestoreJournalCodec.WithCompleted(journal)));
+        RestoreJournal completed = RestoreJournalCodec.WithCompleted(journal);
+        byte[] completedBytes = parsed.Envelope.IsLegacy
+            ? RestoreJournalCodec.Serialize(completed)
+            : RecoveryEnvelopeCodec.Serialize(parsed.Adapter.ToEnvelope(completed));
+        DurableFile.AtomicWriteAllBytes(journalPath, completedBytes);
         ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterCompletedWrite, journalPath);
     }
 

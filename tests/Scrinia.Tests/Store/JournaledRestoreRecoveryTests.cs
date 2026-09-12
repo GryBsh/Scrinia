@@ -396,7 +396,7 @@ public class JournaledRestoreRecoveryTests
 
         string storeDirectory = store.GetStoreDirForScope(Scope);
         string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
-        RestoreJournal prepared = RestoreJournalCodec.ParseAndValidate(File.ReadAllBytes(journalPath), Scope, journalPath);
+        RestoreJournal prepared = ReadRestoreEvidence(journalPath);
         File.WriteAllBytes(journalPath, RestoreJournalCodec.Serialize(RestoreJournalCodec.WithCompleted(prepared)));
         File.WriteAllBytes(Path.Combine(storeDirectory, "note.nmp2"), [9, 9, 9]);
 
@@ -452,7 +452,7 @@ public class JournaledRestoreRecoveryTests
 
         observedPreparedJournalBeforeFirstLiveWrite.Should().BeTrue();
         byte[] journalBytes = File.ReadAllBytes(journalPath);
-        RestoreJournal journal = RestoreJournalCodec.ParseAndValidate(journalBytes, Scope, JournalPath);
+        RestoreJournal journal = ReadRestoreEvidence(journalPath);
         RestoreJournalEntry journalEntry = journal.Entries.Should().ContainSingle().Subject;
         journalEntry.Name.Should().Be("replace");
         Convert.FromBase64String(journalEntry.BodyBase64).Should().Equal(replacementBody);
@@ -533,6 +533,59 @@ public class JournaledRestoreRecoveryTests
         entry.SidecarSha256.Should().MatchRegex("^[0-9a-f]{64}$");
         parsed.State.Should().Be(RestoreJournalState.Prepared);
         Encoding.UTF8.GetString(json).Should().Contain("\"state\":\"prepared\"");
+    }
+
+    [Fact]
+    public async Task ImportTopicEntries_PublishesTheCommonEnvelopeAtTheScopeRoot()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var entry = CreateEntry("enveloped");
+
+        FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, _) =>
+            transition == RestoreJournalTransition.AfterPreparedWrite
+                ? new IOException("Stop after prepared evidence.")
+                : null;
+        try
+        {
+            Action import = () => store.ImportTopicEntries(Scope, [entry], new Dictionary<string, byte[]>
+            {
+                [entry.Name] = [1, 2, 3]
+            }, overwrite: true);
+            import.Should().Throw<IOException>();
+        }
+        finally
+        {
+            FileMemoryStore.RestoreJournalFailureInjector.Value = null;
+        }
+
+        string journalPath = Path.Combine(store.GetStoreDirForScope(Scope), ".restore-journal.json");
+        RecoveryEnvelopeCodec.IsCommonEnvelope(File.ReadAllBytes(journalPath)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void RestoreAdapter_RoundTripsCommonAndLegacyDocumentsWithoutRewritingLegacyBytes()
+    {
+        var entry = CreateEntry("adapter");
+        RestoreJournal journal = RestoreJournalCodec.CreatePrepared(Scope,
+            [new RestoreJournalPayload(entry, [7, 8], [9, 10])]);
+        string evidencePath = JournalPath;
+        var adapter = new RestoreRecoveryAdapter();
+        byte[] legacyBytes = RestoreJournalCodec.Serialize(journal);
+
+        RecoveryEnvelopeDocument legacy = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+            legacyBytes, Scope, evidencePath, Path.GetDirectoryName(evidencePath)!);
+        RecoveryEnvelopeDocument common = RestoreJournalCodec.ToEnvelope(journal);
+        byte[] commonBytes = RecoveryEnvelopeCodec.Serialize(common);
+        RecoveryEnvelopeDocument parsedCommon = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+            commonBytes, Scope, evidencePath, Path.GetDirectoryName(evidencePath)!);
+
+        legacy.IsLegacy.Should().BeTrue();
+        parsedCommon.IsLegacy.Should().BeFalse();
+        RestoreJournal restored = adapter.FromEnvelope(parsedCommon, evidencePath);
+        restored.TransactionId.Should().Be(journal.TransactionId);
+        restored.Entries.Should().Equal(journal.Entries);
+        RestoreJournalCodec.Serialize(adapter.FromEnvelope(legacy, evidencePath)).Should().Equal(legacyBytes);
     }
 
     [Theory]
@@ -899,7 +952,7 @@ public class JournaledRestoreRecoveryTests
             return;
         }
 
-        RestoreJournal journal = RestoreJournalCodec.ParseAndValidate(File.ReadAllBytes(journalPath), Scope, JournalPath);
+        RestoreJournal journal = ReadRestoreEvidence(journalPath);
         var expectedPairs = journal.Entries.ToDictionary(
             entry => entry.Name,
             entry => (Body: Convert.FromBase64String(entry.BodyBase64), Sidecar: Convert.FromBase64String(entry.SidecarBase64)));
@@ -952,6 +1005,14 @@ public class JournaledRestoreRecoveryTests
             [new RestoreJournalPayload(entry, body, sidecar)]);
         File.WriteAllBytes(Path.Combine(storeDirectory, ".restore-journal.json"),
             RestoreJournalCodec.Serialize(journal));
+    }
+
+    private static RestoreJournal ReadRestoreEvidence(string journalPath)
+    {
+        var adapter = new RestoreRecoveryAdapter();
+        RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+            File.ReadAllBytes(journalPath), Scope, journalPath, Path.GetDirectoryName(journalPath)!);
+        return adapter.FromEnvelope(envelope, journalPath);
     }
 
     private static void WriteBinarySourceZip(string path, IReadOnlyList<ArtifactEntry> entries,
