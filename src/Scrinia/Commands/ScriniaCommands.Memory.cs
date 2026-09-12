@@ -124,6 +124,7 @@ public partial class ScriniaCommands
         if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 ||
             !detail.All(IsStableDetailCharacter) || Path.IsPathRooted(detail) ||
             detail.StartsWith('~') || detail.Contains("//", StringComparison.Ordinal) ||
+            detail.Contains('/', StringComparison.Ordinal) ||
             detail.Contains('\\') ||
             detail.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
@@ -135,7 +136,7 @@ public partial class ScriniaCommands
     }
 
     private static bool IsStableDetailCharacter(char character) =>
-        char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) ||
+        char.IsLetterOrDigit(character) || character == ' ' ||
         ".,:;_()-".Contains(character, StringComparison.Ordinal);
 
     /// <summary>Maps and emits the existing CLI MCP envelope for an internal aggregate caller.</summary>

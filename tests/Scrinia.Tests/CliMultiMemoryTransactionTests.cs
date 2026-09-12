@@ -130,13 +130,32 @@ public sealed class CliMultiMemoryTransactionTests
             .Should().Contain("operationId: tx-1");
     }
 
+    [Theory]
+    [InlineData("warning\rtext")]
+    [InlineData("warning\ntext")]
+    [InlineData("warning\ttext")]
+    [InlineData("warning\u000Btext")]
+    [InlineData("warning\u0085text")]
+    [InlineData("warning\u00A0text")]
+    [InlineData("warning\u2007text")]
+    public void CLIControlWhitespaceIsRedactedFromPlainAndJsonEnvelopes(string unsafeDetail)
+    {
+        McpResponse response = ScriniaCommands.MapMultiMemoryResult(
+            Aggregate(MultiMemoryOutcome.CommittedCleanupPending, MultiMemoryFailure.Cleanup, unsafeDetail),
+            "multi-memory");
+
+        response.ToYaml().Should().NotContain(unsafeDetail);
+        response.ToYaml().Should().Contain("reason: participant-specific");
+        response.ToYaml().Should().Contain("Multi-memory transaction committed; cleanup remains pending.");
+    }
+
     private static MultiMemoryAggregateResult Aggregate(
-        MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null) =>
+        MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null, string? warning = null) =>
         new(
             "tx-1", "local:notes", outcome,
             [new MultiMemoryParticipantOutcome(
                 "note-a", "op-a", "memory", "evidence.json", outcome == MultiMemoryOutcome.Committed, false,
                 "participant-specific")],
-            failure, "typed aggregate detail", outcome == MultiMemoryOutcome.RecoveryRequired
+            failure, warning ?? "typed aggregate detail", outcome == MultiMemoryOutcome.RecoveryRequired
                 ? "nested/.multi-memory-transaction.json" : null);
 }

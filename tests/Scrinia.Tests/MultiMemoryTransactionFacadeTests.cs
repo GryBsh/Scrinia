@@ -108,13 +108,34 @@ public sealed class MultiMemoryTransactionFacadeTests
         response.ToYaml().Should().Contain("reason: ambiguous");
     }
 
+    [Theory]
+    [InlineData("warning\rtext")]
+    [InlineData("warning\ntext")]
+    [InlineData("warning\ttext")]
+    [InlineData("warning\u000Btext")]
+    [InlineData("warning\u0085text")]
+    [InlineData("warning\u00A0text")]
+    [InlineData("warning\u2007text")]
+    public void MCPControlWhitespaceIsRedactedFromWarningsAndParticipantReasons(string unsafeDetail)
+    {
+        MultiMemoryAggregateResult result = Aggregate(
+            MultiMemoryOutcome.CommittedCleanupPending, MultiMemoryFailure.Cleanup,
+            warning: unsafeDetail, participantReason: unsafeDetail);
+
+        string yaml = ScriniaMcpTools.EmitMultiMemoryResult(result, "multi-memory");
+
+        yaml.Should().NotContain(unsafeDetail);
+        yaml.Should().Contain("reason: cleanup");
+        yaml.Should().Contain("Multi-memory transaction committed; cleanup remains pending.");
+    }
+
     private static MultiMemoryAggregateResult Aggregate(
         MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null,
-        string? warning = null, string? evidencePath = "evidence.json") =>
+        string? warning = null, string? evidencePath = "evidence.json", string? participantReason = null) =>
         new(
             "tx-1", "local:notes", outcome,
             [new MultiMemoryParticipantOutcome(
                 "note-a", "op-a", "memory", "evidence.json", outcome == MultiMemoryOutcome.Committed, false,
-                "participant-specific")],
+                participantReason ?? "participant-specific")],
             failure, warning, outcome == MultiMemoryOutcome.RecoveryRequired ? evidencePath : null);
 }

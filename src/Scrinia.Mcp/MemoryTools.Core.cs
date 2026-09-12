@@ -129,6 +129,7 @@ public sealed partial class ScriniaMcpTools
         if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 ||
             !detail.All(IsStableDetailCharacter) || Path.IsPathRooted(detail) ||
             detail.StartsWith('~') || detail.Contains("//", StringComparison.Ordinal) ||
+            detail.Contains('/', StringComparison.Ordinal) ||
             detail.Contains('\\') ||
             detail.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
@@ -140,7 +141,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     private static bool IsStableDetailCharacter(char character) =>
-        char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) ||
+        char.IsLetterOrDigit(character) || character == ' ' ||
         ".,:;_()-".Contains(character, StringComparison.Ordinal);
 
     /// <summary>Emits an aggregate result through the existing MCP YAML response boundary.</summary>
