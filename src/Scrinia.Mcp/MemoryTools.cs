@@ -411,6 +411,13 @@ public sealed partial class ScriniaMcpTools
             return safeOperationId is null ? typedResponse : typedResponse.WithOperationId(safeOperationId);
         }
 
+        string fallbackReason = exception.Failure switch
+        {
+            RestoreRecoveryFailure.UnsupportedVersion => "unsupportedVersion",
+            RestoreRecoveryFailure.MalformedOrIntegrityFailed => "malformed",
+            RestoreRecoveryFailure.ReplayIoFailed => "replayIoFailed",
+            _ => "unknown"
+        };
         string error = exception.Failure switch
         {
             RestoreRecoveryFailure.UnsupportedVersion =>
@@ -425,7 +432,9 @@ public sealed partial class ScriniaMcpTools
             error,
             ErrorCodes.RecoveryBlocked,
             "Resolve the retained restore journal for the named topic scope, then retry.");
-        response = response.WithRecovery(exception.Scope, exception.JournalPath);
+        response = response
+            .WithRecovery(exception.Scope, exception.JournalPath)
+            .WithReason(fallbackReason);
         return operationId is null ? response : response.WithOperationId(operationId);
     }
 
@@ -470,7 +479,8 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.RecoveryBlocked,
                 "Resolve the retained append journal for the named topic scope, then retry.")
             .WithOperationId(exception.OperationId)
-            .WithRecovery(scope, journalPath);
+            .WithRecovery(scope, journalPath)
+            .WithReason("replayIoFailed");
     }
 
     private static McpResponse AppendRecoveryBlockedResponse(

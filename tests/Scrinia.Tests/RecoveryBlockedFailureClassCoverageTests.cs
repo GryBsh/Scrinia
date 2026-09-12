@@ -41,6 +41,7 @@ public sealed class RecoveryBlockedFailureClassCoverageTests
 
             McpResponseAssert recall = ResponseParser.Parse(await tools.MemoryRecall("/notes/note"));
             recall.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+            recall.Reason.Should().Be(ToWireReason(failureClass));
             AssertRecoveryGuidance(recall.Error, failureClass, journalPath);
             AssertJournalUnchanged(journalPath, originalJournal, "MCP recall route");
 
@@ -55,6 +56,7 @@ public sealed class RecoveryBlockedFailureClassCoverageTests
             cli.Status.Should().Be(mcpImport.Status);
             cli.ActionNeeded.Should().BeEquivalentTo(mcpImport.ActionNeeded);
             cli.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+            cli.Reason.Should().Be(ToWireReason(failureClass));
             AssertRecoveryGuidance(cli.Error, failureClass, journalPath);
             AssertJournalUnchanged(journalPath, originalJournal, "JSON CLI import");
         }
@@ -86,8 +88,17 @@ public sealed class RecoveryBlockedFailureClassCoverageTests
     private static void AssertRecoveryBlocked(McpResponse response, string failureClass, string journalPath)
     {
         response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+        response.Reason.Should().Be(ToWireReason(failureClass));
         AssertRecoveryGuidance(response.Error, failureClass, journalPath);
     }
+
+    private static string ToWireReason(string failureClass) => failureClass switch
+    {
+        "malformed" => "malformed",
+        "unsupported" => "unsupportedVersion",
+        "replay-io" => "replayIoFailed",
+        _ => throw new ArgumentOutOfRangeException(nameof(failureClass), failureClass, "Unknown recovery failure class.")
+    };
 
     private static void AssertRecoveryGuidance(string? error, string failureClass, string journalPath)
     {

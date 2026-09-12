@@ -47,6 +47,31 @@ public sealed class AppendFacadeMappingTests
     }
 
     [Fact]
+    public async Task AppendFacade_MapsRecoveryExceptionWithoutDiscoveryBlockToReplayIoReason()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        MemoryStoreContext.Current = new FakeMemoryStore
+        {
+            AppendFailure = new AppendStoreException(
+                AppendStoreErrorCode.RecoveryRequired,
+                "op-replay",
+                "append recovery required",
+                recovery: new AppendRecoveryInfo(
+                    "/workspace/versions/.append-journal.json",
+                    "recoveryRequired",
+                    "resolve retained evidence",
+                    "replay failed"))
+        };
+
+        McpResponse response = await new ScriniaMcpTools().Append(
+            "body", MemoryAddress.Parse("/notes/new"));
+
+        response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+        response.Reason.Should().Be("replayIoFailed");
+        response.OperationId.Should().Be("op-replay");
+    }
+
+    [Fact]
     public async Task AppendFacade_BeforeEventFailureOccursBeforeJournalOrLiveMutation()
     {
         using var scope = new TestHelpers.StoreScope();

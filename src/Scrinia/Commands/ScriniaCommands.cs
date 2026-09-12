@@ -233,6 +233,13 @@ public partial class ScriniaCommands
             return EmitMcpResult(typedResponse, json, action);
         }
 
+        string fallbackReason = exception.Failure switch
+        {
+            RestoreRecoveryFailure.UnsupportedVersion => "unsupportedVersion",
+            RestoreRecoveryFailure.MalformedOrIntegrityFailed => "malformed",
+            RestoreRecoveryFailure.ReplayIoFailed => "replayIoFailed",
+            _ => "unknown"
+        };
         string error = exception.Failure switch
         {
             RestoreRecoveryFailure.UnsupportedVersion =>
@@ -246,7 +253,9 @@ public partial class ScriniaCommands
             error,
             ErrorCodes.RecoveryBlocked,
             "Resolve the retained restore journal for the named topic scope, then retry.");
-        response = response.WithRecovery(exception.Scope, exception.JournalPath);
+        response = response
+            .WithRecovery(exception.Scope, exception.JournalPath)
+            .WithReason(fallbackReason);
         string yaml = response.ToYaml();
 
         if (json)

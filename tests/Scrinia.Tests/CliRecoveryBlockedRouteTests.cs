@@ -48,6 +48,7 @@ public sealed class CliRecoveryBlockedRouteTests
             response.Status.Should().Be("error", route.Name);
             response.Scope.Should().Be("local:notes", route.Name);
             response.JournalPath.Should().Be(journalPath, route.Name);
+            response.Reason.Should().Be("malformed", route.Name);
             response.ActionNeeded.Should().ContainSingle()
                 .Which.Should().Contain("Resolve the retained restore journal", route.Name);
             if (route.Name == "append")
@@ -103,6 +104,13 @@ public sealed class CliRecoveryBlockedRouteTests
                 response.Status.Should().Be("error", route.Name);
                 response.Scope.Should().Be("local:notes", route.Name);
                 response.JournalPath.Should().Be(journalPath, route.Name);
+                response.Reason.Should().Be(failureClass switch
+                {
+                    "malformed" => "malformed",
+                    "unsupported" => "unsupportedVersion",
+                    "replay-io" => "replayIoFailed",
+                    _ => throw new ArgumentOutOfRangeException(nameof(failureClass), failureClass)
+                }, route.Name);
                 response.ActionNeeded.Should().ContainSingle()
                     .Which.Should().Contain("Resolve the retained restore journal", route.Name);
                 response.Error.Should().Be(expected.Error, $"{route.Name} must preserve the MCP recovery envelope");
@@ -145,6 +153,36 @@ public sealed class CliRecoveryBlockedRouteTests
         document.RootElement.GetProperty("error").GetString()
             .Should().Be("Append failed after establishing its operation boundary.");
         document.RootElement.TryGetProperty("yaml", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Append_ReplayIoRecoveryWithoutDiscoveryBlock_PreservesTypedReason()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await new ScriniaMcpTools().MemoryRemember("/notes/note", ["existing content"]);
+        string contentPath = Path.Combine(scope.WorkspaceDir, "append-content.txt");
+        await File.WriteAllTextAsync(contentPath, "new content");
+        FileMemoryStore.AppendFaultInjector = (point, _, _) =>
+            point == AppendFaultPoint.ArchiveArtifactWrite
+                ? new IOException("Injected archive replay I/O failure.")
+                : null;
+
+        try
+        {
+            var (exit, output) = await CaptureJsonAsync(() =>
+                new ScriniaCommands().Append("/notes/note", contentPath, scope.WorkspaceDir, json: true));
+
+            exit.Should().Be(1);
+            using var document = JsonDocument.Parse(output);
+            McpResponseAssert response = ResponseParser.Parse(document.RootElement.GetProperty("yaml").GetString()!);
+            response.ErrorCode.Should().Be(ErrorCodes.RecoveryBlocked);
+            response.Reason.Should().Be("replayIoFailed");
+            response.OperationId.Should().NotBeNullOrWhiteSpace();
+        }
+        finally
+        {
+            FileMemoryStore.AppendFaultInjector = null;
+        }
     }
 
     private static string WriteMalformedJournal(FileMemoryStore store)
