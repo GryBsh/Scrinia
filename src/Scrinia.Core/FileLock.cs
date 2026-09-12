@@ -37,6 +37,17 @@ public sealed class FileLock : IDisposable
         return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout ?? TimeSpan.FromSeconds(5), logger);
     }
 
+    public static FileLock AcquireExclusive(string lockPath, TimeSpan timeout, CancellationToken cancellationToken,
+        ILogger? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(lockPath);
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "The lock timeout must be positive.");
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout, logger, cancellationToken);
+    }
+
     /// <summary>
     /// Acquires a shared lock for read operations. Multiple shared locks can coexist.
     ///
@@ -59,6 +70,10 @@ public sealed class FileLock : IDisposable
     }
 
     private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, TimeSpan timeout, ILogger? logger)
+        => Acquire(lockPath, access, share, timeout, logger, CancellationToken.None);
+
+    private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, TimeSpan timeout,
+        ILogger? logger, CancellationToken cancellationToken)
     {
         ILogger log = logger ?? DefaultLogger;
         var sw = Stopwatch.StartNew();
@@ -67,6 +82,7 @@ public sealed class FileLock : IDisposable
 
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var stream = new FileStream(lockPath, FileMode.OpenOrCreate, access, share);
@@ -79,7 +95,8 @@ public sealed class FileLock : IDisposable
                     contended = true;
                     LockContended(log, lockPath, sw.ElapsedMilliseconds, null);
                 }
-                Thread.Sleep(delayMs);
+                if (cancellationToken.WaitHandle.WaitOne(delayMs))
+                    cancellationToken.ThrowIfCancellationRequested();
                 delayMs = Math.Min(delayMs * 2, 500);
             }
             catch (UnauthorizedAccessException)

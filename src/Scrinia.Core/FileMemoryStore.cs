@@ -783,8 +783,24 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private string GetLockPath(string scope) =>
         Path.Combine(GetStoreDirForScope(scope), ".lock");
 
-    internal FileLock AcquireExclusiveScopeLock(string scope, TimeSpan timeout) =>
-        FileLock.AcquireExclusive(GetLockPath(scope), timeout);
+    internal async Task<T> WithExclusiveScopeAdmissionAsync<T>(string scope, TimeSpan timeout,
+        Func<Task<T>> body, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        EnsureMaterialized(scope);
+        using FileLock fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout, cancellationToken);
+        ReaderWriterLockSlim indexLock = GetIndexLock(scope);
+        indexLock.EnterWriteLock();
+        try
+        {
+            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
+            return await body().ConfigureAwait(false);
+        }
+        finally
+        {
+            indexLock.ExitWriteLock();
+        }
+    }
 
     internal RecoveryDiscoveryResult DiscoverRecoveryForScope(string scope, string storeDirectory) =>
         _recoveryDiscovery.Discover(scope, storeDirectory);
