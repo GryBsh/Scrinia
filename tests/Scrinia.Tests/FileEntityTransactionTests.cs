@@ -270,6 +270,37 @@ public sealed class FileEntityTransactionTests
         File.ReadAllText(otherBody).Should().Be("new other");
     }
 
+    [Fact]
+    public async Task LegacyMetadataOnlySidecarEvidenceDoesNotBlockSkillEntity()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills");
+        Directory.CreateDirectory(directory);
+        string evidence = Path.Combine(directory, ".file-entity-sidecar.recovery");
+        string meta = Path.Combine(directory, "qa.meta.json");
+        using (var stream = new MemoryStream())
+        {
+            using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+            writer.Write("SCRINIA-FILE-ENTITY-RECOVERY-1");
+            writer.Write((byte)0);
+            WriteSnapshot(writer, ".file-entity-body-omitted.md", false, []);
+            WriteSnapshot(writer, meta, true, Encoding.UTF8.GetBytes("old sidecar"));
+            writer.Write(false);
+            writer.Write(false);
+            writer.Write(false);
+            writer.Write(false);
+            File.WriteAllBytes(evidence, stream.ToArray());
+        }
+
+        FileEntityMutationResult result = await Coordinator(scope).ExecuteAsync(new FileEntityMutation(
+            "skill", "qa", Path.Combine(directory, "qa.md"), meta, Path.Combine(directory, "versions"),
+            Encoding.UTF8.GetBytes("skill body"), Encoding.UTF8.GetBytes("skill metadata"), false, false));
+
+        result.Recovery.Should().BeNull();
+        File.Exists(evidence).Should().BeTrue();
+        File.ReadAllText(Path.Combine(directory, "qa.md")).Should().Be("skill body");
+    }
+
     [Theory]
     [InlineData((int)FileEntityFaultPoint.MetaWrite)]
     [InlineData((int)FileEntityFaultPoint.VerificationRead)]

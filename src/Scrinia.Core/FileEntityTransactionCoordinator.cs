@@ -306,10 +306,11 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
                     File.ReadAllBytes(evidencePath), ScopeForEntity(directory), evidencePath, directory);
                 if (envelope.TypedBody is not FileEntityRecoveryBody body)
                     throw new InvalidDataException("File-entity recovery body is missing.");
-                bool kindMatches = envelope.IsLegacy ||
-                    string.Equals(body.EntityKind, entityKind, StringComparison.OrdinalIgnoreCase) ||
+                bool kindMatches = string.Equals(body.EntityKind, entityKind, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(body.EntityKind, "skill", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(entityKind, "skills", StringComparison.OrdinalIgnoreCase);
+                    string.Equals(entityKind, "skills", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(body.EntityKind, "skills", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(entityKind, "skill", StringComparison.OrdinalIgnoreCase);
                 if (kindMatches &&
                     string.Equals(body.EntityName, entityName, StringComparison.OrdinalIgnoreCase))
                     matches.Add((evidencePath, envelope));

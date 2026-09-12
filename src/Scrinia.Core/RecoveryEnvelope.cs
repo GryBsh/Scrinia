@@ -727,6 +727,10 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
                     committedBody = null;
             }
             string entityKind = Path.GetFileName(Path.GetDirectoryName(evidencePath) ?? string.Empty);
+            if (entityKind.Equals("skills", StringComparison.OrdinalIgnoreCase))
+                entityKind = "skill";
+            else if (entityKind.Equals("agents", StringComparison.OrdinalIgnoreCase))
+                entityKind = "agent";
             if (metadataOnly)
                 entityKind = "sidecar";
             var body = new FileEntityRecoveryBody(entityKind, entityName, oldBody, oldMeta, archiveBody, archiveMeta,

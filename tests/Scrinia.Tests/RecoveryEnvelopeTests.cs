@@ -553,7 +553,7 @@ public sealed class RecoveryEnvelopeTests
     public async Task LegacyFileEntityFixtures_AreReadByTheProductionCoordinator(bool committed)
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-fixture-" + Guid.NewGuid().ToString("N"));
-        string entityDirectory = Path.Combine(root, "entity");
+        string entityDirectory = Path.Combine(root, "skills");
         string bodyPath = Path.Combine(entityDirectory, "entity.md");
         string metaPath = Path.Combine(entityDirectory, "entity.meta.json");
         string versionsDirectory = Path.Combine(entityDirectory, "versions");
