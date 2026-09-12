@@ -540,6 +540,9 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         if (!string.Equals(validated.OperationId, body.TransactionId, StringComparison.Ordinal))
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
                 "Restore transaction identity is inconsistent.", evidencePath);
+        if (!IsLifecycleConsistent(validated.State, body.State))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "Restore envelope and body lifecycle states are inconsistent.", evidencePath);
 
         RestoreJournal journal = new(
             "scrinia.restore-journal", DurableFormats.RestoreJournal.Current, body.State,
@@ -559,6 +562,14 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         }
         return journal;
     }
+
+    private static bool IsLifecycleConsistent(RecoveryLifecycleState envelopeState, RestoreJournalState bodyState) =>
+        (envelopeState, bodyState) switch
+        {
+            (RecoveryLifecycleState.Prepared, RestoreJournalState.Prepared) => true,
+            (RecoveryLifecycleState.Committed, RestoreJournalState.Completed) => true,
+            _ => false
+        };
     internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
         string expectedEvidenceDirectory)
     {

@@ -589,6 +589,49 @@ public class JournaledRestoreRecoveryTests
     }
 
     [Theory]
+    [InlineData("committed", "prepared")]
+    [InlineData("prepared", "completed")]
+    public async Task RestoreLifecycleMismatch_BlocksOnlyTheSelectedScopeWithoutMutatingLivePair(
+        string envelopeStateName, string bodyStateName)
+    {
+        RecoveryLifecycleState envelopeState = envelopeStateName == "committed"
+            ? RecoveryLifecycleState.Committed
+            : RecoveryLifecycleState.Prepared;
+        RestoreJournalState bodyState = bodyStateName == "completed"
+            ? RestoreJournalState.Completed
+            : RestoreJournalState.Prepared;
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/notes/mismatch"), Scope, ["original"]));
+        string storeDirectory = store.GetStoreDirForScope(Scope);
+        string bodyPath = Path.Combine(storeDirectory, "mismatch.nmp2");
+        string sidecarPath = Path.Combine(storeDirectory, "mismatch.meta.json");
+        byte[] originalBody = File.ReadAllBytes(bodyPath);
+        byte[] originalSidecar = File.ReadAllBytes(sidecarPath);
+        var entry = CreateEntry("mismatch");
+        RestoreJournal journal = RestoreJournalCodec.CreatePrepared(Scope,
+            [new RestoreJournalPayload(entry, Encoding.UTF8.GetBytes("replacement"), [1, 2, 3])]);
+        if (bodyState == RestoreJournalState.Completed)
+            journal = RestoreJournalCodec.WithCompleted(journal);
+
+        string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
+        RecoveryEnvelopeDocument envelope = RestoreJournalCodec.ToEnvelope(journal) with
+        {
+            State = envelopeState
+        };
+        File.WriteAllBytes(journalPath, RecoveryEnvelopeCodec.Serialize(envelope));
+
+        RestoreRecoveryException failure = Record.Exception(() => store.LoadIndex(Scope))
+            .Should().BeOfType<RestoreRecoveryException>().Subject;
+        failure.DiscoveryBlock.Should().NotBeNull();
+        failure.DiscoveryBlock!.Reason.Should().Be(RecoveryBlockReason.Malformed);
+        failure.DiscoveryBlock.OperationId.Should().Be(journal.TransactionId);
+        File.ReadAllBytes(bodyPath).Should().Equal(originalBody);
+        File.ReadAllBytes(sidecarPath).Should().Equal(originalSidecar);
+        File.Exists(journalPath).Should().BeTrue();
+    }
+
+    [Theory]
     [InlineData("Prepared")]
     [InlineData("Completed")]
     [InlineData("PREPARED")]
