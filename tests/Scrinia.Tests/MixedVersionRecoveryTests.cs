@@ -35,6 +35,28 @@ public sealed class MixedVersionRecoveryTests
         }
     }
 
+    [Theory]
+    [InlineData("applying")]
+    [InlineData("recoveryRequired")]
+    [InlineData("rolledBack")]
+    public async Task ReadBarrier_BlocksUnsafeAppendStatesAndRetainsEvidence(string state)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/notes"), "local", ["original"]));
+
+        string storeDirectory = store.GetStoreDirForScope("local");
+        string journalPath = RecoveryTestFixtures.AppendJournalPath(storeDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(journalPath)!);
+        byte[] journal = RecoveryTestFixtures.BuildLegacyAppendJournal(
+            scope: "local", state: state);
+        File.WriteAllBytes(journalPath, journal);
+
+        Func<Task> read = async () => await store.ReadArtifactAsync(MemoryAddress.Parse("/notes"));
+        await read.Should().ThrowAsync<AppendStoreException>();
+        File.ReadAllBytes(journalPath).Should().Equal(journal);
+    }
+
     [Fact]
     public void Discover_NewBodyVersionBlocksAndRetainsTheOriginalBytes()
     {

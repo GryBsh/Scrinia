@@ -853,8 +853,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     discovery.Candidates[0].EvidencePath, RecoveryOperation.Append,
                     discovery.Candidates[0].OperationId, RecoveryBlockReason.Inconsistent,
                     "Append recovery evidence must be resolved before reading the affected scope."));
-            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
-                return read();
             if (discovery.Candidates.Count == 0)
             {
                 ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
@@ -892,8 +890,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     discovery.Candidates[0].EvidencePath, RecoveryOperation.Append,
                     discovery.Candidates[0].OperationId, RecoveryBlockReason.Inconsistent,
                     "Append recovery evidence must be resolved before reading the affected scope."));
-            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
-                return await read();
             if (discovery.Candidates.Count == 0)
             {
                 ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeRecoveryBarrierRead,
@@ -913,7 +909,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     private static bool IsAppendReadBlocked(RecoveryCandidate candidate) =>
-        candidate.Envelope.State is RecoveryLifecycleState.Prepared;
+        candidate.Envelope.State is not (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending);
 
     /// <summary>
     /// Test-only seam for <see cref="WithExclusiveLock(string, Action, TimeSpan?)"/>, which is

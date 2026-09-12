@@ -1036,10 +1036,13 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
                     RecoveryBlockReason.Inconsistent, "File-entity recovery evidence is not committed cleanup evidence."), null);
 
         FileEntityRecoveryBody body = (FileEntityRecoveryBody)validated.TypedBody!;
-        VerifyCommittedSnapshot(body.CommittedBody, evidencePath);
+        bool metadataOnly = string.Equals(body.EntityKind, "sidecar", StringComparison.OrdinalIgnoreCase);
+        if (!metadataOnly)
+            VerifyCommittedSnapshot(body.CommittedBody, evidencePath);
         VerifyCommittedSnapshot(body.CommittedMeta, evidencePath);
         List<string> failures = [];
-        TryDelete(body.ArchiveBodyPath, failures);
+        if (!metadataOnly)
+            TryDelete(body.ArchiveBodyPath, failures);
         TryDelete(body.ArchiveMetaPath, failures);
         TryDelete(evidencePath, failures);
         return failures.Count == 0
