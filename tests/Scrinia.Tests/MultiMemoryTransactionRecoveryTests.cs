@@ -66,24 +66,31 @@ public sealed class MultiMemoryTransactionRecoveryTests
     public void FreshFileMemoryStore_UsesPersistedCompletionProofForCleanupOnlyRecovery(string evidencePath)
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-proof-" + Guid.NewGuid().ToString("N"));
-        string recordPath;
-        using (var initial = CreateStore(root))
+        try
         {
-            string directory = initial.GetStoreDirForScope("local:notes");
-            Directory.CreateDirectory(directory);
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
-                "tx-proof", "local:notes", MultiMemoryTransactionState.Committed,
-                [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
-            record = MultiMemoryTransactionRecordCodec.WithCompletionProof(record,
-                [new MultiMemoryParticipantCompletion("a", "op-a", "memory", evidencePath)], now);
-            MultiMemoryTransactionRecordCodec.Write(directory, record);
-            recordPath = MultiMemoryTransactionRecordCodec.GetPath(directory);
-        }
+            string recordPath;
+            using (var initial = CreateStore(root))
+            {
+                string directory = initial.GetStoreDirForScope("local:notes");
+                Directory.CreateDirectory(directory);
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+                var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
+                    "tx-proof", "local:notes", MultiMemoryTransactionState.Committed,
+                    [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
+                record = MultiMemoryTransactionRecordCodec.WithCompletionProof(record,
+                    [new MultiMemoryParticipantCompletion("a", "op-a", "memory", evidencePath)], now);
+                MultiMemoryTransactionRecordCodec.Write(directory, record);
+                recordPath = MultiMemoryTransactionRecordCodec.GetPath(directory);
+            }
 
-        using var restarted = CreateStore(root);
-        restarted.LoadIndex("local:notes").Should().BeEmpty();
-        File.Exists(recordPath).Should().BeFalse();
+            using var restarted = CreateStore(root);
+            restarted.LoadIndex("local:notes").Should().BeEmpty();
+            File.Exists(recordPath).Should().BeFalse();
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
     }
 
     [Fact]
