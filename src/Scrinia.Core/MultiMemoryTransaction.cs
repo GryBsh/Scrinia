@@ -40,6 +40,7 @@ internal enum MultiMemoryTransactionTransition
 {
     PreparedPublished,
     CommittedPublished,
+    CompletionProofPublished,
     RecordDeleted
 }
 

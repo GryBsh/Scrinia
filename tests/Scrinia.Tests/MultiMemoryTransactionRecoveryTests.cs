@@ -59,8 +59,34 @@ public sealed class MultiMemoryTransactionRecoveryTests
         store.LoadIndex("local:other").Should().BeEmpty();
     }
 
+    [Fact]
+    public void FreshFileMemoryStore_UsesPersistedCompletionProofForCleanupOnlyRecovery()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-proof-" + Guid.NewGuid().ToString("N"));
+        string recordPath;
+        using (var initial = CreateStore(root))
+        {
+            string directory = initial.GetStoreDirForScope("local:notes");
+            Directory.CreateDirectory(directory);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
+                "tx-proof", "local:notes", MultiMemoryTransactionState.Committed,
+                [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
+            record = MultiMemoryTransactionRecordCodec.WithCompletionProof(record,
+                [new MultiMemoryParticipantCompletion("a", "op-a", "memory", "versions/.append-journal.json")], now);
+            MultiMemoryTransactionRecordCodec.Write(directory, record);
+            recordPath = MultiMemoryTransactionRecordCodec.GetPath(directory);
+        }
+
+        using var restarted = CreateStore(root);
+        restarted.LoadIndex("local:notes").Should().BeEmpty();
+        File.Exists(recordPath).Should().BeFalse();
+    }
+
     private static FileMemoryStore CreateStore() =>
         new(Path.Combine(Path.GetTempPath(), "scrinia-b3-recovery-" + Guid.NewGuid().ToString("N")));
+
+    private static FileMemoryStore CreateStore(string root) => new(root);
 
     private sealed class RecoveryTestAdapter : IMultiMemoryParticipantAdapter
     {

@@ -815,8 +815,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         RecoveryCandidate? candidate = discovery.Candidates
             .Where(candidate => candidate.Operation is RecoveryOperation.Append or RecoveryOperation.Restore)
             .FirstOrDefault(candidate => CandidateMatchesSubject(candidate, manifest.Subject));
-        if (candidate is null || discovery.BlockingEvidence is not null)
+        if (discovery.BlockingEvidence is not null)
             throw new MultiMemoryParticipantMismatchException();
+        if (candidate is not null && !CandidateKindMatches(candidate, manifest.Kind))
+            throw new MultiMemoryParticipantMismatchException();
+        if (candidate is null)
+        {
+            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(storeDirectory, scope);
+            MultiMemoryParticipantCompletion? proof = record.CompletedParticipants?.FirstOrDefault(completion =>
+                completion.Subject == manifest.Subject && completion.OperationId == manifest.OperationId &&
+                completion.Kind == manifest.Kind);
+            if (proof is null)
+                throw new MultiMemoryParticipantMismatchException();
+            return Task.FromResult<IMultiMemoryParticipantAdapter>(
+                new CompletedProofParticipantAdapter(scope, manifest, proof));
+        }
         return Task.FromResult<IMultiMemoryParticipantAdapter>(
             new FileMemoryParticipantAdapter(this, manifest, candidate));
     }
@@ -830,6 +843,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
         return candidate.CanonicalSubject.EndsWith('/' + subject, StringComparison.Ordinal);
     }
+
+    private static bool CandidateKindMatches(RecoveryCandidate candidate, string kind) =>
+        kind.Equals("memory", StringComparison.Ordinal) ||
+        kind.Equals(candidate.Operation.ToString(), StringComparison.OrdinalIgnoreCase);
 
     internal Task<MultiMemoryAggregateResult> ExecuteMultiMemoryAsync(
         MultiMemoryTransactionRequest request,

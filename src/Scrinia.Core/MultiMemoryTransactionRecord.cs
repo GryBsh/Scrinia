@@ -14,7 +14,8 @@ internal sealed record MultiMemoryTransactionRecord
         MultiMemoryTransactionState state,
         IReadOnlyList<MultiMemoryParticipantManifest> participants,
         DateTimeOffset createdAt,
-        DateTimeOffset updatedAt)
+        DateTimeOffset updatedAt,
+        IReadOnlyList<MultiMemoryParticipantCompletion>? completedParticipants = null)
     {
         Format = RequireText(format, nameof(format));
         Version = version;
@@ -28,6 +29,11 @@ internal sealed record MultiMemoryTransactionRecord
             throw new ArgumentException("Participants cannot contain null values.", nameof(participants));
 
         Participants = Array.AsReadOnly(participants.ToArray());
+        if (completedParticipants is not null && completedParticipants.Any(completion => completion is null))
+            throw new ArgumentException("Completed participants cannot contain null values.", nameof(completedParticipants));
+        CompletedParticipants = completedParticipants is null
+            ? null
+            : Array.AsReadOnly(completedParticipants.ToArray());
         CreatedAt = RequireUtc(createdAt, nameof(createdAt));
         UpdatedAt = RequireUtc(updatedAt, nameof(updatedAt));
     }
@@ -39,6 +45,8 @@ internal sealed record MultiMemoryTransactionRecord
     [JsonConverter(typeof(MultiMemoryTransactionStateJsonConverter))]
     public MultiMemoryTransactionState State { get; }
     public IReadOnlyList<MultiMemoryParticipantManifest> Participants { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<MultiMemoryParticipantCompletion>? CompletedParticipants { get; }
     public DateTimeOffset CreatedAt { get; }
     public DateTimeOffset UpdatedAt { get; }
 
@@ -53,13 +61,38 @@ internal sealed record MultiMemoryTransactionRecord
             : throw new ArgumentException("Timestamp must use UTC.", parameterName);
 }
 
+internal sealed record MultiMemoryParticipantCompletion
+{
+    public MultiMemoryParticipantCompletion(string subject, string operationId, string kind, string evidencePath)
+    {
+        Subject = RequireText(subject, nameof(subject));
+        OperationId = RequireText(operationId, nameof(operationId));
+        Kind = RequireText(kind, nameof(kind));
+        if (!MultiMemoryParticipantOutcome.IsSafeEvidencePath(evidencePath))
+            throw new ArgumentException("Completion evidence path must be safe.", nameof(evidencePath));
+        EvidencePath = evidencePath;
+    }
+
+    public string Subject { get; }
+    public string OperationId { get; }
+    public string Kind { get; }
+    public string EvidencePath { get; }
+
+    private static string RequireText(string value, string parameterName) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
+            : value;
+}
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow)]
 [JsonSerializable(typeof(MultiMemoryTransactionRecord))]
 [JsonSerializable(typeof(MultiMemoryParticipantManifest))]
+[JsonSerializable(typeof(MultiMemoryParticipantCompletion))]
 [JsonSerializable(typeof(MultiMemoryTransactionState))]
 [JsonSerializable(typeof(MultiMemoryParticipantManifest[]))]
+[JsonSerializable(typeof(MultiMemoryParticipantCompletion[]))]
 internal partial class MultiMemoryTransactionJsonContext : JsonSerializerContext;
 
 internal sealed class MultiMemoryTransactionStateJsonConverter : JsonConverter<MultiMemoryTransactionState>
@@ -149,8 +182,14 @@ internal static class MultiMemoryTransactionRecordCodec
     {
         ArgumentNullException.ThrowIfNull(record);
         return new MultiMemoryTransactionRecord(record.Format, record.Version, record.TransactionId,
-            record.Scope, state, record.Participants, record.CreatedAt, updatedAt);
+            record.Scope, state, record.Participants, record.CreatedAt, updatedAt, record.CompletedParticipants);
     }
+
+    internal static MultiMemoryTransactionRecord WithCompletionProof(
+        MultiMemoryTransactionRecord record, IReadOnlyList<MultiMemoryParticipantCompletion> completions,
+        DateTimeOffset updatedAt) =>
+        new(record.Format, record.Version, record.TransactionId, record.Scope, record.State,
+            record.Participants, record.CreatedAt, updatedAt, completions);
 
     internal static string GetPath(string scopeDirectory)
     {
@@ -248,6 +287,22 @@ internal static class MultiMemoryTransactionRecordCodec
                 throw new MultiMemoryTransactionRecordException("Coordinator participants are not deterministically ordered.", MultiMemoryFailure.Inconsistent);
             previousSubject = participant.Subject;
             previousOperation = participant.OperationId;
+        }
+
+        if (record.CompletedParticipants is not null)
+        {
+            var completed = new HashSet<(string Subject, string OperationId)>();
+            foreach (MultiMemoryParticipantCompletion completion in record.CompletedParticipants)
+            {
+                RequireBounded(completion.Subject, nameof(completion.Subject));
+                RequireBounded(completion.OperationId, nameof(completion.OperationId));
+                RequireBounded(completion.Kind, nameof(completion.Kind));
+                RequireBounded(completion.EvidencePath, nameof(completion.EvidencePath));
+                if (!IsSafeSubject(completion.EvidencePath) || !completed.Add((completion.Subject, completion.OperationId)) ||
+                    !record.Participants.Any(participant => participant.Subject == completion.Subject &&
+                        participant.OperationId == completion.OperationId && participant.Kind == completion.Kind))
+                    throw new MultiMemoryTransactionRecordException("Coordinator completion proof is inconsistent.", MultiMemoryFailure.Inconsistent);
+            }
         }
 
         if (recordPath is not null && expectedStoreDirectory is not null &&

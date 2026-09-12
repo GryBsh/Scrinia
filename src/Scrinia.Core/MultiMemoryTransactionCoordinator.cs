@@ -418,6 +418,22 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                     adapter.EvidencePath, true, false, null));
             }
             allParticipantsVerified = true;
+            MultiMemoryTransactionRecord proofRecord = MultiMemoryTransactionRecordCodec.WithCompletionProof(
+                record, adapters.Select(adapter => new MultiMemoryParticipantCompletion(
+                    adapter.Subject, adapter.OperationId, adapter.Kind, adapter.EvidencePath)).ToArray(),
+                DateTimeOffset.UtcNow);
+            try
+            {
+                Publish(_store.GetStoreDirForScope(record.Scope), proofRecord,
+                    MultiMemoryTransactionTransition.CompletionProofPublished);
+                record = proofRecord;
+            }
+            catch (Exception)
+            {
+                return RecoveryRequired(record, adapters, MultiMemoryFailure.DecisionPublication,
+                    "Participant completion proof could not be durably recorded.",
+                    _store.GetStoreDirForScope(record.Scope));
+            }
             foreach (IMultiMemoryParticipantAdapter adapter in adapters)
                 await adapter.CleanupAsync(cancellationToken).ConfigureAwait(false);
             Delete(record, MultiMemoryTransactionTransition.RecordDeleted);
@@ -672,6 +688,33 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
         RecoveryOperation.Restore => new RestoreRecoveryAdapter(),
         _ => throw new MultiMemoryParticipantMismatchException()
     };
+}
+
+internal sealed class CompletedProofParticipantAdapter : IMultiMemoryParticipantAdapter
+{
+    internal CompletedProofParticipantAdapter(string scope, MultiMemoryParticipantManifest manifest,
+        MultiMemoryParticipantCompletion proof)
+    {
+        Scope = scope;
+        Subject = manifest.Subject;
+        OperationId = manifest.OperationId;
+        Kind = manifest.Kind;
+        EvidencePath = proof.EvidencePath;
+    }
+
+    public string Kind { get; }
+    public string Scope { get; }
+    public string Subject { get; }
+    public string OperationId { get; }
+    public string EvidencePath { get; }
+    public Task PrepareAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(MultiMemoryCommitStatus.Committed);
+    public Task CommitAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task VerifyCommittedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task RollbackAsync(CancellationToken cancellationToken) =>
+        Task.FromException(new MultiMemoryParticipantMismatchException());
+    public Task CleanupAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 internal sealed record MultiMemoryAdmissionResult
