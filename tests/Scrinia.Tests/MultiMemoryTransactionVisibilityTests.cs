@@ -75,6 +75,54 @@ public sealed class MultiMemoryTransactionVisibilityTests
         }
     }
 
+    [Fact]
+    public async Task RecoverAsync_PreparedRollbackInvalidatesWhenVisibleFilesChanged()
+    {
+        using var store = CreateStore();
+        WritePreparedRecord(store, "tx-changed");
+        var adapter = new TestAdapter("a", "op-a") { ObservableStateChanged = true };
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store,
+            (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter)).RecoverAsync("local:notes");
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.RolledBack);
+        store.CommittedScopeInvalidationCount.Should().Be(0);
+        store.RollbackScopeInvalidationCount.Should().Be(1);
+        adapter.RollbackCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RecoverAsync_PreparedNoOpRollbackDoesNotInvalidateDerivedState()
+    {
+        using var store = CreateStore();
+        WritePreparedRecord(store, "tx-no-op");
+        var adapter = new TestAdapter("a", "op-a") { ObservableStateChanged = false };
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store,
+            (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter)).RecoverAsync("local:notes");
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.RolledBack);
+        store.CommittedScopeInvalidationCount.Should().Be(0);
+        store.RollbackScopeInvalidationCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RecoverAsync_PreparedUnknownRollbackStateRetainsRecoveryEvidence()
+    {
+        using var store = CreateStore();
+        WritePreparedRecord(store, "tx-unknown");
+        var adapter = new TestAdapter("a", "op-a");
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store,
+            (_, _) => Task.FromResult<IMultiMemoryParticipantAdapter>(adapter)).RecoverAsync("local:notes");
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.RecoveryRequired);
+        result.Failure.Should().Be(MultiMemoryFailure.Ambiguous);
+        store.RollbackScopeInvalidationCount.Should().Be(0);
+        File.Exists(MultiMemoryTransactionRecordCodec.GetPath(store.GetStoreDirForScope("local:notes")))
+            .Should().BeTrue();
+    }
+
     private static ArtifactEntry Entry(string name) =>
         new(name, $"file:///{name}.nmp2", 1, 1, DateTimeOffset.UtcNow);
 
@@ -85,6 +133,17 @@ public sealed class MultiMemoryTransactionVisibilityTests
         new(MemoryAddress.Parse(address), operationId, "memory");
 
     private static string LastSegment(string value) => value[(value.LastIndexOf('/') + 1)..];
+
+    private static void WritePreparedRecord(FileMemoryStore store, string transactionId)
+    {
+        string directory = store.GetStoreDirForScope("local:notes");
+        Directory.CreateDirectory(directory);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        MultiMemoryTransactionRecordCodec.Write(directory, new MultiMemoryTransactionRecord(
+            MultiMemoryTransactionRecordCodec.FormatName, 1, transactionId, "local:notes",
+            MultiMemoryTransactionState.Prepared,
+            [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now));
+    }
 
     private static FileMemoryStore CreateStore() =>
         new(Path.Combine(Path.GetTempPath(), "scrinia-b3-visibility-" + Guid.NewGuid().ToString("N")));
@@ -97,13 +156,19 @@ public sealed class MultiMemoryTransactionVisibilityTests
         public string OperationId { get; } = operationId;
         public string EvidencePath => "notes/evidence";
         public bool FailVerify { get; init; }
+        public bool? ObservableStateChanged { get; init; }
+        public int RollbackCalls { get; private set; }
         public Task PrepareAsync(CancellationToken _) => Task.CompletedTask;
         public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken _) =>
             Task.FromResult(MultiMemoryCommitStatus.Prepared);
         public Task CommitAsync(CancellationToken _) => Task.CompletedTask;
         public Task VerifyCommittedAsync(CancellationToken _) =>
             FailVerify ? Task.FromException(new IOException("injected")) : Task.CompletedTask;
-        public Task RollbackAsync(CancellationToken _) => Task.CompletedTask;
+        public Task RollbackAsync(CancellationToken _)
+        {
+            RollbackCalls++;
+            return Task.CompletedTask;
+        }
         public Task CleanupAsync(CancellationToken _) => Task.CompletedTask;
     }
 }

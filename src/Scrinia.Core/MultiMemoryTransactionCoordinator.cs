@@ -280,11 +280,15 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, string directory, CancellationToken cancellationToken)
     {
         var outcomes = new List<MultiMemoryParticipantOutcome>();
+        bool stateChanged = false;
+        bool stateChangeUnknown = false;
         foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
         {
             try
             {
                 await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                stateChanged |= adapter.ObservableStateChanged is true;
+                stateChangeUnknown |= adapter.ObservableStateChanged is null;
                 outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
                     adapter.EvidencePath, false, true, null));
             }
@@ -294,7 +298,11 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                     "Prepared decision could not be safely aborted; evidence is retained.", directory);
             }
         }
-        _store.InvalidateScopeCacheAfterRollback(record.Scope);
+        if (stateChangeUnknown)
+            return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous,
+                "Rollback completed but its observable state change could not be proven.", directory);
+        if (stateChanged)
+            _store.InvalidateScopeCacheAfterRollback(record.Scope);
         try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -462,6 +470,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
     {
         var outcomes = new List<MultiMemoryParticipantOutcome>();
         MultiMemoryFailure? failure = null;
+        bool stateChanged = false;
+        bool stateChangeUnknown = false;
         foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
         {
             bool rolledBack = false;
@@ -469,6 +479,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             {
                 await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 rolledBack = true;
+                stateChanged |= adapter.ObservableStateChanged is true;
+                stateChangeUnknown |= adapter.ObservableStateChanged is null;
             }
             catch (Exception exception) { failure ??= Classify(exception); }
             outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
@@ -476,6 +488,12 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         }
         if (failure is null)
         {
+            if (stateChangeUnknown)
+                return new MultiMemoryAggregateResult(id, scope, MultiMemoryOutcome.RecoveryRequired,
+                    outcomes.OrderBy(o => o.Subject, StringComparer.Ordinal).ToArray(), MultiMemoryFailure.Ambiguous,
+                    "Pre-decision rollback completed but its observable state change could not be proven.", SafeRecordPath(directory));
+            if (stateChanged)
+                _store.InvalidateScopeCacheAfterRollback(scope);
             try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
             catch (Exception) { failure = MultiMemoryFailure.Cleanup; }
         }
@@ -633,6 +651,7 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
     public string Subject { get; }
     public string OperationId { get; }
     public string EvidencePath { get; }
+    public bool? ObservableStateChanged { get; private set; }
 
     public Task PrepareAsync(CancellationToken cancellationToken)
     {
@@ -675,7 +694,7 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
         cancellationToken.ThrowIfCancellationRequested();
         if (_candidate.Operation != RecoveryOperation.Append)
             throw new MultiMemoryParticipantMismatchException();
-        await _store.RecoverAppendParticipantForCoordinatorAsync(Scope, cancellationToken).ConfigureAwait(false);
+        ObservableStateChanged = await _store.RecoverAppendParticipantForCoordinatorAsync(Scope, cancellationToken).ConfigureAwait(false);
     }
 
     public Task CleanupAsync(CancellationToken cancellationToken)
@@ -717,6 +736,7 @@ internal sealed class CompletedProofParticipantAdapter : IMultiMemoryParticipant
     public string Subject { get; }
     public string OperationId { get; }
     public string EvidencePath { get; }
+    public bool? ObservableStateChanged => false;
     public Task PrepareAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken) =>
         Task.FromResult(MultiMemoryCommitStatus.Committed);

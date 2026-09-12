@@ -175,6 +175,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     internal int CommittedScopeInvalidationCount { get; private set; }
+    internal int RollbackScopeInvalidationCount { get; private set; }
 
     /// <summary>
     /// In-memory cache of a scope's index entries, handed out by reference on a
@@ -1634,6 +1635,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
         InvalidateEntityFacts();
+        RollbackScopeInvalidationCount++;
     }
 
     /// <summary>
@@ -3048,7 +3050,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         await RecoverAppendUnsafeAsync(scope, "recovery", cancellationToken);
     }
 
-    internal Task RecoverAppendParticipantForCoordinatorAsync(string scope, CancellationToken cancellationToken) =>
+    internal Task<bool> RecoverAppendParticipantForCoordinatorAsync(string scope, CancellationToken cancellationToken) =>
         RecoverAppendUnsafeAsync(scope, "coordinator-recovery", cancellationToken);
 
     internal void WriteAppendRecoveryRequiredJournalForTest(string operationId)
@@ -3062,14 +3064,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             detail: "Deterministic recovery evidence created for testing.");
     }
 
-    private Task RecoverAppendUnsafeAsync(string scope, string operationId = "recovery", CancellationToken ct = default)
+    private Task<bool> RecoverAppendUnsafeAsync(string scope, string operationId = "recovery", CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ct.ThrowIfCancellationRequested();
         string storeDirectory = GetStoreDirForScope(scope);
         string journalPath = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
         if (!File.Exists(journalPath))
-            return Task.CompletedTask;
+            return Task.FromResult(false);
 
         AppendJournal journal;
         try
@@ -3114,6 +3116,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             }
         }
 
+        bool publicationWasVisible = AreAppendMembersCurrent(transaction);
         if (journal.State is AppendJournalState.Committed or AppendJournalState.CleanupPending)
         {
             Exception? verificationFailure = InjectAppendFault(
@@ -3145,7 +3148,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                         "Committed append cleanup could not remove its journal evidence.",
                         exception, transaction.OperationId);
                 }
-                return Task.CompletedTask;
+                return Task.FromResult(publicationWasVisible);
             }
 
             if (!TryRestoreAppendTransaction(transaction))
@@ -3168,7 +3171,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             PersistRecoveryRequiredOrThrow(transaction, journalPath,
                 "Rollback completed but final journalization could not be proven.", exception, operationId);
         }
-        return Task.CompletedTask;
+        return Task.FromResult(publicationWasVisible);
     }
 
     private AppendTransaction ReplayArchiveMembers(AppendTransaction transaction, string journalPath)
