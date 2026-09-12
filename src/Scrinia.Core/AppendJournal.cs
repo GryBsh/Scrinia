@@ -271,10 +271,13 @@ internal static class AppendJournalCodec
         };
     }
 
-    internal static void ValidateForRecovery(AppendJournal journal, string journalPath)
+    internal static void ValidateForRecovery(AppendJournal journal, string journalPath,
+        string? expectedStoreDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(journal);
         Validate(journal, journal.Scope, journalPath);
+        if (expectedStoreDirectory is not null)
+            ValidateLayout(journal, expectedStoreDirectory, journalPath);
         ValidatePayloads(journal, journalPath);
     }
 

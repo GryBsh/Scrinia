@@ -847,7 +847,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
             if (discovery.BlockingEvidence is not null)
                 throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
-            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
+            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append &&
+                IsAppendReadBlocked(discovery.Candidates[0]))
+                throw CreateDiscoveryRecoveryException(new RecoveryBlock(scope,
+                    discovery.Candidates[0].EvidencePath, RecoveryOperation.Append,
+                    discovery.Candidates[0].OperationId, RecoveryBlockReason.Inconsistent,
+                    "Append recovery evidence must be resolved before reading the affected scope."));
+            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
                 return read();
             if (discovery.Candidates.Count == 0)
             {
@@ -880,7 +886,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
             if (discovery.BlockingEvidence is not null)
                 throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
-            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
+            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append &&
+                IsAppendReadBlocked(discovery.Candidates[0]))
+                throw CreateDiscoveryRecoveryException(new RecoveryBlock(scope,
+                    discovery.Candidates[0].EvidencePath, RecoveryOperation.Append,
+                    discovery.Candidates[0].OperationId, RecoveryBlockReason.Inconsistent,
+                    "Append recovery evidence must be resolved before reading the affected scope."));
+            if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
                 return await read();
             if (discovery.Candidates.Count == 0)
             {
@@ -899,6 +911,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
         return await WithRecoveryReadBarrierAsync(scope, read);
     }
+
+    private static bool IsAppendReadBlocked(RecoveryCandidate candidate) =>
+        candidate.Envelope.TypedBody is not AppendRecoveryBody append ||
+        append.State is not (AppendJournalState.Committed or AppendJournalState.CleanupPending);
 
     /// <summary>
     /// Test-only seam for <see cref="WithExclusiveLock(string, Action, TimeSpan?)"/>, which is
@@ -3204,7 +3220,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return document.RootElement.TryGetProperty("operationId", out JsonElement operationId) &&
                 operationId.ValueKind == JsonValueKind.String ? operationId.GetString() : null;
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             return null;
         }

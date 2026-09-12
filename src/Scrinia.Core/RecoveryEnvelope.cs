@@ -452,7 +452,11 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
             body.CommittedHash, body.Detail);
         try
         {
-            AppendJournalCodec.ValidateForRecovery(journal, evidencePath);
+            string? versionsDirectory = Path.GetDirectoryName(evidencePath);
+            string? storeDirectory = !Path.IsPathRooted(evidencePath) || versionsDirectory is null
+                ? null
+                : Path.GetDirectoryName(versionsDirectory);
+            AppendJournalCodec.ValidateForRecovery(journal, evidencePath, storeDirectory);
         }
         catch (AppendJournalException exception)
         {

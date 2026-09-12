@@ -48,6 +48,32 @@ public sealed class AppendJournalTests
         adapter.FromEnvelope(envelope, "versions/.append-journal.json").Should().BeEquivalentTo(journal);
     }
 
+    [Fact]
+    public void AppendAdapter_RejectsMemberPathsOutsideTheEvidenceStore()
+    {
+        string storeDirectory = Path.Combine(Path.GetTempPath(), "scrinia-append-adapter-" + Guid.NewGuid().ToString("N"));
+        string evidencePath = Path.Combine(storeDirectory, "versions", AppendJournal.FileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(evidencePath)!);
+        try
+        {
+            AppendTransaction transaction = CreateTransaction() with
+            {
+                OldArtifact = Snapshot(Path.Combine(storeDirectory, "..", "outside.nmp2"), [1, 2, 3])
+            };
+            AppendJournal journal = AppendJournalCodec.CreatePrepared(transaction);
+
+            Action parse = () => new AppendRecoveryAdapter().FromEnvelope(
+                AppendJournalCodec.ToEnvelope(journal), evidencePath);
+
+            parse.Should().Throw<AppendJournalException>()
+                .Which.Failure.Should().Be(AppendJournalFailure.Malformed);
+        }
+        finally
+        {
+            try { Directory.Delete(storeDirectory, recursive: true); } catch { }
+        }
+    }
+
     [Theory]
     [InlineData(AppendJournalState.Prepared)]
     [InlineData(AppendJournalState.ArchiveInProgress)]

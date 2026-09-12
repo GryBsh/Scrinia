@@ -362,6 +362,49 @@ public sealed class AppendRecoveryTests
     }
 
     [Fact]
+    public async Task ReadAsync_BlocksWhenAppendEvidenceRemainsUnresolved()
+    {
+        using var workspace = new TempWorkspace();
+        await workspace.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["old"]));
+        workspace.Store.FailOnceAt(AppendFaultPoint.ArchiveCleanup);
+
+        (await workspace.Store.AppendAsync(
+            MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new"])))
+            .Outcome.Should().Be(AppendStoreOutcome.SuccessWithWarning);
+
+        string journalPath = Path.Combine(workspace.Store.GetStoreDirForScope("local"), "versions",
+            AppendJournal.FileName);
+        await File.WriteAllTextAsync(journalPath, "not-json");
+
+        var exception = await FluentActions.Invoking(() => workspace.Store.ReadAsync(MemoryAddress.Parse("/target")).AsTask())
+            .Should().ThrowAsync<AppendStoreException>();
+
+        exception.Which.Code.Should().Be(AppendStoreErrorCode.RecoveryRequired);
+    }
+
+    [Fact]
+    public async Task ReadAsync_DoesNotBypassAValidAppendJournalWhenRecoveryFails()
+    {
+        using var workspace = new TempWorkspace();
+        await workspace.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["old"]));
+        workspace.Store.FailOnceAt(AppendFaultPoint.ArchiveCleanup);
+
+        (await workspace.Store.AppendAsync(
+            MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new"])))
+            .Outcome.Should().Be(AppendStoreOutcome.SuccessWithWarning);
+        workspace.Store.FailPersistentlyAt(AppendFaultPoint.ArchiveCleanup);
+        string journalPath = Path.Combine(workspace.Store.GetStoreDirForScope("local"), "versions",
+            AppendJournal.FileName);
+        string journal = await File.ReadAllTextAsync(journalPath);
+        await File.WriteAllTextAsync(journalPath, journal.Replace("cleanupPending", "prepared", StringComparison.Ordinal));
+
+        var exception = await FluentActions.Invoking(() => workspace.Store.ReadAsync(MemoryAddress.Parse("/target")).AsTask())
+            .Should().ThrowAsync<AppendStoreException>();
+
+        exception.Which.Code.Should().Be(AppendStoreErrorCode.RecoveryRequired);
+    }
+
+    [Fact]
     public async Task RecoveryArchiveReplayFailureUsesTheJournalOperationId()
     {
         using var workspace = new TempWorkspace();
