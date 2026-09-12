@@ -106,9 +106,6 @@ internal sealed class RecoveryDiscoveryCoordinator
     private static RecoveryDiscoveryResult? InspectCoordinator(string root, string scope)
     {
         string path = Path.Combine(root, CoordinatorFileName);
-        if (!File.Exists(path))
-            return null;
-
         try
         {
             RejectReparsePoint(path);
@@ -117,6 +114,9 @@ internal sealed class RecoveryDiscoveryCoordinator
         }
         catch (MultiMemoryTransactionRecordException exception)
         {
+            if (IsMissingEvidence(exception))
+                return null;
+
             RecoveryBlockReason reason = exception.Failure switch
             {
                 MultiMemoryFailure.UnsupportedVersion => RecoveryBlockReason.UnsupportedVersion,
@@ -130,11 +130,17 @@ internal sealed class RecoveryDiscoveryCoordinator
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
+            if (exception is FileNotFoundException or DirectoryNotFoundException)
+                return null;
+
             return new RecoveryDiscoveryResult([], new RecoveryBlock(scope, path, null, "unknown",
                 exception is ArgumentException ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.ReplayIoFailed,
                 "Coordinator record could not safely be inspected."));
         }
     }
+
+    private static bool IsMissingEvidence(MultiMemoryTransactionRecordException exception) =>
+        exception.InnerException is FileNotFoundException or DirectoryNotFoundException;
 
     internal RecoveryOutcome AdmitNext(string scope, string storeDirectory,
         RecoveryDiscoveryResult discovery, CancellationToken cancellationToken)
