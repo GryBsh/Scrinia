@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Security.Cryptography;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 
@@ -83,6 +84,114 @@ public sealed class MultiMemoryTransactionRecoveryTests
         using var restarted = CreateStore(root);
         restarted.LoadIndex("local:notes").Should().BeEmpty();
         File.Exists(recordPath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task FreshFileMemoryStore_RecoversAfterCommittedAppendEvidenceWasCleanedUp()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-real-append-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string recordPath;
+            byte[] liveArtifact;
+            byte[] liveSidecar;
+            using (var initial = CreateStore(root))
+            {
+                await initial.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local:notes", ["live"]));
+                liveArtifact = await File.ReadAllBytesAsync(initial.ArtifactPath("target", "local:notes"));
+                liveSidecar = await File.ReadAllBytesAsync(initial.MetaPath("target", "local:notes"));
+                string directory = initial.GetStoreDirForScope("local:notes");
+                string artifactPath = Path.GetFileName(initial.ArtifactPath("target", "local:notes"));
+                string sidecarPath = Path.GetFileName(initial.MetaPath("target", "local:notes"));
+                var transaction = new AppendTransaction(
+                    "append-real-proof", MemoryAddress.Parse("/target"), "local:notes", false,
+                    RawMemberSnapshot.Capture(artifactPath, true, liveArtifact),
+                    RawMemberSnapshot.Capture(sidecarPath, true, liveSidecar),
+                    RawMemberSnapshot.Capture(artifactPath, true, liveArtifact),
+                    RawMemberSnapshot.Capture(sidecarPath, true, liveSidecar),
+                    new ArchivePlan(false, null, null, ArchiveMemberStatus.NotRequired,
+                        ArchiveMemberStatus.NotRequired, []), DateTimeOffset.UtcNow);
+                AppendJournal journal = AppendJournalCodec.WithState(
+                    AppendJournalCodec.CreatePrepared(transaction), AppendJournalState.NewPairInProgress);
+                journal = AppendJournalCodec.WithState(journal, AppendJournalState.Committed,
+                    Convert.ToHexStringLower(SHA256.HashData(liveArtifact.Concat(liveSidecar).ToArray())));
+                string evidencePath = Path.Combine(directory, "versions", AppendJournal.FileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(evidencePath)!);
+                byte[] evidence = AppendJournalCodec.Serialize(journal);
+                AppendJournalCodec.ParseAndValidate(evidence, "local:notes", evidencePath, directory);
+                await File.WriteAllBytesAsync(evidencePath, evidence);
+
+                recordPath = WriteCompletionProof(initial, "append-real-proof", "target",
+                    "append-real-proof", "memory", "versions/" + AppendJournal.FileName);
+                File.Delete(evidencePath);
+            }
+
+            using var restarted = CreateStore(root);
+            restarted.LoadIndex("local:notes").Should().ContainSingle(entry => entry.Name == "target");
+            (await File.ReadAllBytesAsync(restarted.ArtifactPath("target", "local:notes"))).Should().Equal(liveArtifact);
+            (await File.ReadAllBytesAsync(restarted.MetaPath("target", "local:notes"))).Should().Equal(liveSidecar);
+            File.Exists(recordPath).Should().BeFalse();
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task FreshFileMemoryStore_RecoversAfterCompletedRestoreEvidenceWasCleanedUp()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-real-restore-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string recordPath;
+            byte[] liveArtifact;
+            byte[] liveSidecar;
+            using (var initial = CreateStore(root))
+            {
+                await initial.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local:notes", ["live"]));
+                ArtifactEntry entry = initial.LoadIndex("local:notes").Should().ContainSingle().Subject;
+                liveArtifact = await File.ReadAllBytesAsync(initial.ArtifactPath("target", "local:notes"));
+                liveSidecar = await File.ReadAllBytesAsync(initial.MetaPath("target", "local:notes"));
+                string directory = initial.GetStoreDirForScope("local:notes");
+                RestoreJournal journal = RestoreJournalCodec.WithCompleted(
+                    RestoreJournalCodec.CreatePrepared("local:notes",
+                        [new RestoreJournalPayload(entry, liveArtifact, liveSidecar)]));
+                const string restoreJournalFileName = ".restore-journal.json";
+                string evidencePath = Path.Combine(directory, restoreJournalFileName);
+                byte[] evidence = RestoreJournalCodec.Serialize(journal);
+                RestoreJournalCodec.ParseAndValidate(evidence, "local:notes", evidencePath);
+                await File.WriteAllBytesAsync(evidencePath, evidence);
+
+                recordPath = WriteCompletionProof(initial, "restore-real-proof", "target",
+                    "restore-real-proof", "memory", restoreJournalFileName);
+                File.Delete(evidencePath);
+            }
+
+            using var restarted = CreateStore(root);
+            restarted.LoadIndex("local:notes").Should().ContainSingle(entry => entry.Name == "target");
+            (await File.ReadAllBytesAsync(restarted.ArtifactPath("target", "local:notes"))).Should().Equal(liveArtifact);
+            (await File.ReadAllBytesAsync(restarted.MetaPath("target", "local:notes"))).Should().Equal(liveSidecar);
+            File.Exists(recordPath).Should().BeFalse();
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    private static string WriteCompletionProof(FileMemoryStore store, string transactionId,
+        string subject, string operationId, string kind, string evidencePath)
+    {
+        string directory = store.GetStoreDirForScope("local:notes");
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var record = new MultiMemoryTransactionRecord(MultiMemoryTransactionRecordCodec.FormatName, 1,
+            transactionId, "local:notes", MultiMemoryTransactionState.Committed,
+            [new MultiMemoryParticipantManifest(subject, operationId, kind)], now, now);
+        record = MultiMemoryTransactionRecordCodec.WithCompletionProof(record,
+            [new MultiMemoryParticipantCompletion(subject, operationId, kind, evidencePath)], now);
+        MultiMemoryTransactionRecordCodec.Write(directory, record);
+        return MultiMemoryTransactionRecordCodec.GetPath(directory);
     }
 
     private static FileMemoryStore CreateStore() =>
