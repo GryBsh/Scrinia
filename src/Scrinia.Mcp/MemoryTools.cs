@@ -361,9 +361,49 @@ public sealed partial class ScriniaMcpTools
             .WithOperationId(exception.OperationId);
     }
 
-    private static McpResponse RecoveryBlockedResponse(
+    internal static McpResponse RecoveryBlockedResponse(
         RestoreRecoveryException exception, string? operationId = null)
     {
+        ArgumentNullException.ThrowIfNull(exception);
+        RecoveryBlock? block = exception.DiscoveryBlock;
+        if (block is not null)
+        {
+            string reason = FormatRecoveryReason(block.Reason);
+            string evidencePath = block.Operation == RecoveryOperation.FileEntity
+                ? Path.GetFileName(block.EvidencePath)
+                : block.EvidencePath;
+            string evidenceKind = block.Operation switch
+            {
+                RecoveryOperation.Restore => "restore journal",
+                RecoveryOperation.Append => "append journal",
+                RecoveryOperation.FileEntity => "file-entity recovery evidence",
+                _ => "recovery evidence"
+            };
+            string detail = block.Reason == RecoveryBlockReason.UnsupportedVersion && block.UnsupportedVersion is { } version
+                ? $"{evidenceKind} version {version} is newer than this build supports (1)."
+                : $"{evidenceKind} is {reason}.";
+            string retention = block.Operation == RecoveryOperation.Restore &&
+                block.Reason == RecoveryBlockReason.UnsupportedVersion
+                ? $"The journal was left unchanged at '{evidencePath}'. Upgrade scri, then retry the operation."
+                : block.Operation == RecoveryOperation.Restore
+                    ? "No files were changed and the journal was retained. Inspect or restore it with a compatible scri build, then retry."
+                    : "No files were changed and the retained evidence must be resolved before retry.";
+            string action = block.Operation == RecoveryOperation.Restore
+                ? "Resolve the retained restore journal for the named topic scope, then retry."
+                : "Resolve the retained recovery evidence for the named topic scope, then retry.";
+            McpResponse typedResponse = ResponseBuilder.Error(
+                    $"Recovery is blocked for topic scope '{block.Scope}': {detail} " +
+                    $"The retained evidence is at '{evidencePath}'. {retention}",
+                    ErrorCodes.RecoveryBlocked,
+                    action)
+                .WithRecovery(block.Scope, evidencePath)
+                .WithReason(reason);
+            string? safeOperationId = block.OperationId.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+                ? operationId
+                : block.OperationId;
+            return safeOperationId is null ? typedResponse : typedResponse.WithOperationId(safeOperationId);
+        }
+
         string error = exception.Failure switch
         {
             RestoreRecoveryFailure.UnsupportedVersion =>
@@ -382,12 +422,39 @@ public sealed partial class ScriniaMcpTools
         return operationId is null ? response : response.WithOperationId(operationId);
     }
 
+    private static string FormatRecoveryReason(RecoveryBlockReason reason) => reason switch
+    {
+        RecoveryBlockReason.UnsupportedVersion => "unsupportedVersion",
+        RecoveryBlockReason.ReplayIoFailed => "replayIoFailed",
+        RecoveryBlockReason.WrongScope => "wrongScope",
+        RecoveryBlockReason.Malformed => "malformed",
+        RecoveryBlockReason.Unsafe => "unsafe",
+        RecoveryBlockReason.Ambiguous => "ambiguous",
+        RecoveryBlockReason.Inconsistent => "inconsistent",
+        _ => "unknown"
+    };
+
     private static McpResponse AppendRecoveryBlockedResponse(
         AppendStoreException exception, string scope)
     {
         AppendRecoveryInfo recovery = exception.Recovery
             ?? throw new InvalidOperationException("Append recovery response is missing structured evidence.");
         string journalPath = recovery.JournalPath;
+
+        if (exception.DiscoveryBlock is { } block)
+        {
+            string reason = FormatRecoveryReason(block.Reason);
+            return ResponseBuilder.Error(
+                    $"Recovery is blocked for topic scope '{block.Scope}': append journal is {reason}. " +
+                    $"The retained evidence is at '{journalPath}'. No files were changed.",
+                    ErrorCodes.RecoveryBlocked,
+                    "Resolve the retained append journal for the named topic scope, then retry.")
+                .WithOperationId(block.OperationId.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+                    ? exception.OperationId
+                    : block.OperationId)
+                .WithRecovery(block.Scope, journalPath)
+                .WithReason(reason);
+        }
 
         return ResponseBuilder.Error(
                 $"Recovery is blocked for topic scope '{scope}': append journal '{journalPath}' " +

@@ -233,6 +233,7 @@ internal sealed class McpResponseAssert
     public string? OperationId => GetString("operationId");
     public string? Scope => GetString("scope");
     public string? JournalPath => GetString("journalPath");
+    public string? Reason => GetString("reason");
     public string? Instruction => GetString("instruction");
     public string? Error => GetString("error");
     public string? ErrorCode => GetString("errorCode");

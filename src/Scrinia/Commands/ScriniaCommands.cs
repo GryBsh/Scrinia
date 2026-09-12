@@ -195,6 +195,44 @@ public partial class ScriniaCommands
     /// error classification or JSON contract.</summary>
     private static int EmitRecoveryBlocked(RestoreRecoveryException exception, bool json, string action)
     {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (exception.DiscoveryBlock is { } block)
+        {
+            string reason = FormatRecoveryReason(block.Reason);
+            string evidencePath = block.Operation == RecoveryOperation.FileEntity
+                ? Path.GetFileName(block.EvidencePath)
+                : block.EvidencePath;
+            string evidenceKind = block.Operation switch
+            {
+                RecoveryOperation.Restore => "restore journal",
+                RecoveryOperation.Append => "append journal",
+                RecoveryOperation.FileEntity => "file-entity recovery evidence",
+                _ => "recovery evidence"
+            };
+            string detail = block.Reason == RecoveryBlockReason.UnsupportedVersion && block.UnsupportedVersion is { } version
+                ? $"{evidenceKind} version {version} is newer than this build supports (1)."
+                : $"{evidenceKind} is {reason}.";
+            string retention = block.Operation == RecoveryOperation.Restore &&
+                block.Reason == RecoveryBlockReason.UnsupportedVersion
+                ? $"The journal was left unchanged at '{evidencePath}'. Upgrade scri, then retry the operation."
+                : block.Operation == RecoveryOperation.Restore
+                    ? "No files were changed and the journal was retained. Inspect or restore it with a compatible scri build, then retry."
+                    : "No files were changed and the retained evidence must be resolved before retry.";
+            string recoveryAction = block.Operation == RecoveryOperation.Restore
+                ? "Resolve the retained restore journal for the named topic scope, then retry."
+                : "Resolve the retained recovery evidence for the named topic scope, then retry.";
+            McpResponse typedResponse = ResponseBuilder.Error(
+                    $"Recovery is blocked for topic scope '{block.Scope}': {detail} " +
+                    $"The retained evidence is at '{evidencePath}'. {retention}",
+                    ErrorCodes.RecoveryBlocked,
+                    recoveryAction)
+                .WithRecovery(block.Scope, evidencePath)
+                .WithReason(reason);
+            if (!block.OperationId.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+                typedResponse = typedResponse.WithOperationId(block.OperationId);
+            return EmitMcpResult(typedResponse, json, action);
+        }
+
         string error = exception.Failure switch
         {
             RestoreRecoveryFailure.UnsupportedVersion =>
@@ -217,6 +255,18 @@ public partial class ScriniaCommands
             Console.Write(yaml);
         return 1;
     }
+
+    private static string FormatRecoveryReason(RecoveryBlockReason reason) => reason switch
+    {
+        RecoveryBlockReason.UnsupportedVersion => "unsupportedVersion",
+        RecoveryBlockReason.ReplayIoFailed => "replayIoFailed",
+        RecoveryBlockReason.WrongScope => "wrongScope",
+        RecoveryBlockReason.Malformed => "malformed",
+        RecoveryBlockReason.Unsafe => "unsafe",
+        RecoveryBlockReason.Ambiguous => "ambiguous",
+        RecoveryBlockReason.Inconsistent => "inconsistent",
+        _ => "unknown"
+    };
 
     /// <summary>Print the embedded agent guide.</summary>
     /// <param name="json">Output as JSON instead of raw markdown.</param>

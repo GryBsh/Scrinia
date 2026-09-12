@@ -84,6 +84,8 @@ public sealed record McpResponse
     public string? Scope { get; init; }
     /// <summary>Retained recovery journal associated with the affected scope.</summary>
     public string? JournalPath { get; init; }
+    /// <summary>Stable category explaining why retained recovery evidence blocked admission.</summary>
+    public string? Reason { get; init; }
     public string? Instruction { get; init; }      // what the agent must do next
     public string[]? ActionNeeded { get; init; }    // action-needed items
     public string[]? Info { get; init; }           // informational items
@@ -216,6 +218,9 @@ public static class ResponseBuilder
     public static McpResponse WithRecovery(this McpResponse r, string scope, string journalPath) =>
         r with { Scope = scope, JournalPath = journalPath };
 
+    public static McpResponse WithReason(this McpResponse r, string reason) =>
+        r with { Reason = reason };
+
     public static McpResponse WithAction(this McpResponse r, string action) =>
         r with { Action = action };
 
@@ -280,6 +285,8 @@ public static class McpResponseExtensions
             sb.AppendLine(ci, $"scope: {YamlEscape(r.Scope)}");
         if (r.JournalPath is not null)
             sb.AppendLine(ci, $"journalPath: {YamlEscape(r.JournalPath)}");
+        if (r.Reason is not null)
+            sb.AppendLine(ci, $"reason: {r.Reason}");
         if (r.Error is not null)
             sb.AppendLine(ci, $"error: {YamlEscape(r.Error)}");
         if (r.ErrorCode is not null)
