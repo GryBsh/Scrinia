@@ -913,8 +913,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     private static bool IsAppendReadBlocked(RecoveryCandidate candidate) =>
-        candidate.Envelope.TypedBody is not AppendRecoveryBody append ||
-        append.State is not (AppendJournalState.Committed or AppendJournalState.CleanupPending);
+        candidate.Envelope.State is RecoveryLifecycleState.Prepared;
 
     /// <summary>
     /// Test-only seam for <see cref="WithExclusiveLock(string, Action, TimeSpan?)"/>, which is
@@ -4226,11 +4225,23 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (discovery.BlockingEvidence is not null)
             throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
 
-        RecoveryOutcome admission = _recoveryDiscovery.AdmitNext(scope, storeDir, discovery, CancellationToken.None);
+        RecoveryOutcome admission;
+        try
+        {
+            admission = _recoveryDiscovery.AdmitNext(scope, storeDir, discovery, CancellationToken.None);
+        }
+        catch (RecoveryEnvelopeException exception) when (discovery.Candidates.Count > 0 &&
+            discovery.Candidates[0].Operation == RecoveryOperation.Restore)
+        {
+            throw CreateRestoreRecoveryException(scope, discovery.Candidates[0].EvidencePath, exception);
+        }
         if (admission.IsBlocked && admission.Block is not null)
             throw CreateDiscoveryRecoveryException(admission.Block);
         if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append)
             return false;
+        if (discovery.Candidates.Count > 0 &&
+            discovery.Candidates[0].Envelope.State is RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending)
+            return admission.CleanupPending;
         if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation != RecoveryOperation.Restore)
             throw CreateDiscoveryRecoveryException(new RecoveryBlock(scope, admission.EvidencePath,
                 discovery.Candidates[0].Operation, admission.OperationId, RecoveryBlockReason.Inconsistent,
@@ -4386,7 +4397,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private static void ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition transition, string destination)
+    internal static void ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition transition, string destination)
     {
         Exception? failure = RestoreJournalFailureInjector.Value?.Invoke(transition, destination);
         if (failure is not null)
@@ -4418,6 +4429,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                     : RestoreRecoveryFailure.MalformedOrIntegrityFailed,
             block.Detail, unsupportedVersion: block.UnsupportedVersion, discoveryBlock: block);
     }
+
+    private static RestoreRecoveryException CreateRestoreRecoveryException(
+        string scope, string journalPath, RecoveryEnvelopeException exception) =>
+        new(scope, journalPath, exception.Failure switch
+        {
+            RecoveryEnvelopeFailure.UnsupportedVersion => RestoreRecoveryFailure.UnsupportedVersion,
+            _ => RestoreRecoveryFailure.MalformedOrIntegrityFailed
+        }, exception.Message, exception,
+            unsupportedVersion: exception.UnsupportedVersion);
 
     private List<RestoreJournalPayload> BuildRestorePayloadsUnsafe(string topicScope, List<ArtifactEntry> incoming,
         Dictionary<string, byte[]> bodies, bool overwrite)

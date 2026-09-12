@@ -127,6 +127,89 @@ public sealed class MixedVersionRecoveryTests
         }
     }
 
+    [Fact]
+    public void Discover_FileEntityUnsupportedLifecycleIsBlockedBeforeAdmission()
+    {
+        string root = CreateRoot();
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        string path = RecoveryTestFixtures.FileEntityRecoveryPath(skills, "unsupported-state");
+        try
+        {
+            byte[] body = RecoveryTestFixtures.FileEntityBody;
+            byte[] metadata = RecoveryTestFixtures.FileEntityMetadata;
+            var oldBody = new RecoveryMemberSnapshot("entity.md", true,
+                Convert.ToBase64String(body), RecoveryTestFixtures.Sha256(body));
+            var oldMeta = new RecoveryMemberSnapshot("entity.meta.json", true,
+                Convert.ToBase64String(metadata), RecoveryTestFixtures.Sha256(metadata));
+            var fileEntity = new FileEntityRecoveryBody("skill", "entity", oldBody, oldMeta,
+                null, null, null, null, "prepared");
+            RecoveryEnvelopeDocument document = RecoveryEnvelopeCodec.FromFileEntity(fileEntity,
+                RecoveryTestFixtures.LocalNotesScope, null, "unsupported-state",
+                RecoveryLifecycleState.Prepared, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+            string serialized = Encoding.UTF8.GetString(RecoveryEnvelopeCodec.Serialize(document));
+            const string preparedState = "\"state\":\"prepared\"";
+            int stateOffset = serialized.IndexOf(preparedState, StringComparison.Ordinal);
+            serialized = serialized[..stateOffset] + "\"state\":\"applying\"" +
+                serialized[(stateOffset + preparedState.Length)..];
+            File.WriteAllText(path, serialized);
+
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator().Discover(
+                RecoveryTestFixtures.LocalNotesScope, root);
+
+            result.BlockingEvidence.Should().NotBeNull();
+            result.BlockingEvidence!.Reason.Should().Be(RecoveryBlockReason.Inconsistent);
+            File.Exists(path).Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AdmitNext_CommittedAppendCleansEvidenceWithoutReplayingTheLivePair()
+    {
+        string root = CreateRoot();
+        string path = RecoveryTestFixtures.AppendJournalPath(root);
+        string artifactPath = Path.Combine(root, "notes.nmp2");
+        string sidecarPath = Path.Combine(root, "notes.meta.json");
+        try
+        {
+            File.WriteAllBytes(artifactPath, RecoveryTestFixtures.NewArtifact);
+            File.WriteAllBytes(sidecarPath, RecoveryTestFixtures.NewSidecar);
+            AppendJournal journal = AppendJournalCodec.ParseAndValidate(
+                RecoveryTestFixtures.BuildLegacyAppendJournal(), RecoveryTestFixtures.LocalNotesScope, path);
+            string committedHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+                RecoveryTestFixtures.NewArtifact.Concat(RecoveryTestFixtures.NewSidecar).ToArray()));
+            journal = AppendJournalCodec.WithState(journal, AppendJournalState.ArchiveInProgress);
+            journal = AppendJournalCodec.WithState(journal, AppendJournalState.Archived);
+            journal = AppendJournalCodec.WithState(journal, AppendJournalState.NewPairInProgress);
+            journal = AppendJournalCodec.WithState(journal, AppendJournalState.Committed, committedHash);
+            File.WriteAllBytes(path, RecoveryEnvelopeCodec.Serialize(new AppendRecoveryAdapter().ToEnvelope(journal)));
+            byte[] beforeArtifact = File.ReadAllBytes(artifactPath);
+            byte[] beforeSidecar = File.ReadAllBytes(sidecarPath);
+
+            RecoveryDiscoveryCoordinator coordinator = new();
+            RecoveryDiscoveryResult discovery = coordinator.Discover(
+                RecoveryTestFixtures.LocalNotesScope, root);
+            RecoveryOutcome result = coordinator.AdmitNext(
+                RecoveryTestFixtures.LocalNotesScope, root, discovery, CancellationToken.None);
+
+            result.IsBlocked.Should().BeFalse();
+            result.IsCommitted.Should().BeTrue();
+            result.CleanupPending.Should().BeFalse();
+            result.OperationId.Should().Be(RecoveryTestFixtures.OperationId);
+            File.Exists(path).Should().BeFalse();
+            File.ReadAllBytes(artifactPath).Should().Equal(beforeArtifact);
+            File.ReadAllBytes(sidecarPath).Should().Equal(beforeSidecar);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static byte[] BuildFileEntityEnvelope(string operationId)
     {
         byte[] body = RecoveryTestFixtures.FileEntityBody;

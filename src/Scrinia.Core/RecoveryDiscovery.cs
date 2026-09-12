@@ -117,6 +117,9 @@ internal sealed class RecoveryDiscoveryCoordinator
             return new RecoveryOutcome(false, false, false, scope, storeDirectory, "none", null, null);
 
         IRecoveryAdapter adapter = _adapters[candidate.Operation];
+        if (candidate.Envelope.State is RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending)
+            return adapter.RecoverOrCleanup(candidate.Envelope, candidate.EvidencePath, cancellationToken);
+
         return adapter.Admit(candidate.Envelope, candidate.EvidencePath);
     }
 

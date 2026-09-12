@@ -212,6 +212,7 @@ internal static class RecoveryEnvelopeCodec
                             throw new JsonException("Restore recovery entry is incomplete.");
                     return restore;
                 case RecoveryOperation.FileEntity:
+                    EnsureSupportedFileEntityLifecycle(document, evidencePath);
                     FileEntityRecoveryBody fileEntity = JsonSerializer.Deserialize(document.Body.GetRawText(), RecoveryEnvelopeJsonContext.Default.FileEntityRecoveryBody)
                         ?? throw new JsonException("File-entity recovery body is missing.");
                     if (string.IsNullOrWhiteSpace(fileEntity.EntityKind) || string.IsNullOrWhiteSpace(fileEntity.EntityName) ||
@@ -289,6 +290,16 @@ internal static class RecoveryEnvelopeCodec
         if (envelopeState == RecoveryLifecycleState.Committed &&
             (body.CommittedBody is null || body.CommittedMeta is null))
             throw new JsonException("Committed recovery evidence is missing a member snapshot.");
+    }
+
+    private static void EnsureSupportedFileEntityLifecycle(RecoveryEnvelopeDocument document,
+        string evidencePath)
+    {
+        if (document.State is RecoveryLifecycleState.Prepared or RecoveryLifecycleState.Committed)
+            return;
+
+        throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
+            "File-entity recovery evidence has an unsupported lifecycle state.", evidencePath);
     }
 
     private static bool CanonicalPathEquals(string left, string right)
@@ -474,6 +485,8 @@ internal static class RecoveryEnvelopeCodec
             try { _ = MemoryAddress.Parse(document.Address); } catch (ArgumentException exception) { throw Malformed("Recovery envelope address is invalid", evidencePath, exception); }
         }
         else if (document.Address is not null) throw Malformed("Recovery envelope address is not valid for this operation", evidencePath);
+        if (document.Operation == RecoveryOperation.FileEntity)
+            EnsureSupportedFileEntityLifecycle(document, evidencePath);
         if (document.UpdatedAt < document.CreatedAt) throw Malformed("Recovery envelope timestamps are invalid", evidencePath);
         if (document.Body.ValueKind != JsonValueKind.Object) throw Malformed("Recovery envelope body is missing", evidencePath);
     }
@@ -587,7 +600,8 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
     RecoveryEnvelopeDocument IRecoveryAdapter.ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
         string expectedSubject, string expectedEvidenceDirectory) =>
         RecoveryEnvelopeCodec.ValidateSubject(RecoveryEnvelopeCodec.ValidateForOperation(envelope, RecoveryOperation.Append, expectedScope, evidencePath, expectedEvidenceDirectory), expectedSubject, evidencePath, expectedEvidenceDirectory);
-    RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Append replay is owned by the append operation.");
+    RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) =>
+        RecoverCommittedCleanup(envelope, evidencePath, cancellationToken);
     RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
         new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
 
@@ -601,6 +615,56 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
             evidencePath, expectedEvidenceDirectory), RecoveryOperation.Append, expectedScope, evidencePath,
             expectedEvidenceDirectory);
     }
+
+    private static RecoveryOutcome RecoverCommittedCleanup(RecoveryEnvelopeDocument envelope,
+        string evidencePath, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        AppendJournal journal = new AppendRecoveryAdapter().FromEnvelope(envelope, evidencePath);
+        if (envelope.State is not (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending) ||
+            journal.State is not (AppendJournalState.Committed or AppendJournalState.CleanupPending))
+            return Blocked(envelope, evidencePath, "Append recovery evidence is not committed cleanup evidence.");
+
+        AppendJournalMember[] committedMembers = [journal.NewArtifact, journal.NewSidecar];
+        foreach (AppendJournalMember member in committedMembers)
+        {
+            string path = ResolveAppendPath(evidencePath, member.Path);
+            if (!File.Exists(path) || !member.ToSnapshot(evidencePath).Bytes.SequenceEqual(File.ReadAllBytes(path)))
+                return Blocked(envelope, evidencePath, "Committed append live state failed verification.");
+        }
+
+        List<string> failures = [];
+        IEnumerable<string> cleanupPaths = new[] { journal.ArchiveArtifactPath, journal.ArchiveSidecarPath }
+            .Concat(journal.PruneCandidates)
+            .Where(path => path is not null)
+            .Select(path => ResolveAppendPath(evidencePath, path!));
+        foreach (string path in cleanupPaths)
+            TryDelete(path, failures);
+        TryDelete(evidencePath, failures);
+        return failures.Count == 0
+            ? new RecoveryOutcome(false, true, false, envelope.Scope, evidencePath, envelope.OperationId, null, null)
+            : new RecoveryOutcome(false, true, true, envelope.Scope, evidencePath, envelope.OperationId, null,
+                $"Append cleanup remains pending: {string.Join("; ", failures)}");
+    }
+
+    private static string ResolveAppendPath(string evidencePath, string path)
+    {
+        string versionsDirectory = Path.GetDirectoryName(evidencePath)!;
+        string storeDirectory = Path.GetDirectoryName(versionsDirectory)!;
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(storeDirectory, path));
+    }
+
+    private static void TryDelete(string path, List<string> failures)
+    {
+        try { File.Delete(path); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { failures.Add($"{path}: {exception.GetType().Name}"); }
+    }
+
+    private static RecoveryOutcome Blocked(RecoveryEnvelopeDocument envelope, string evidencePath, string detail) =>
+        new(true, false, false, envelope.Scope, evidencePath, envelope.OperationId,
+            new RecoveryBlock(envelope.Scope, evidencePath, RecoveryOperation.Append, envelope.OperationId,
+                RecoveryBlockReason.Inconsistent, detail), null);
     private static bool IsJson(ReadOnlySpan<byte> bytes)
     {
         foreach (byte value in bytes)
@@ -665,7 +729,8 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         (envelopeState, bodyState) switch
         {
             (RecoveryLifecycleState.Prepared, RestoreJournalState.Prepared) => true,
-            (RecoveryLifecycleState.Committed, RestoreJournalState.Completed) => true,
+            (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending,
+                RestoreJournalState.Completed) => true,
             _ => false
         };
     internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
@@ -700,7 +765,8 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
             TypedBody = new RestoreRecoveryBody(journal.TransactionId, journal.State, journal.Entries)
         };
     }
-    RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("Restore replay is owned by the restore operation.");
+    RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) =>
+        RecoverCommittedCleanup(envelope, evidencePath, cancellationToken);
     RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
         new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
 
@@ -713,6 +779,46 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         return RecoveryEnvelopeCodec.ValidateForOperation(RecoveryEnvelopeCodec.Parse(bytes, expectedScope,
             evidencePath, expectedEvidenceDirectory), RecoveryOperation.Restore, expectedScope, evidencePath,
             expectedEvidenceDirectory);
+    }
+
+    private static RecoveryOutcome RecoverCommittedCleanup(RecoveryEnvelopeDocument envelope,
+        string evidencePath, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RestoreJournal journal = new RestoreRecoveryAdapter().FromEnvelope(envelope, evidencePath);
+        if (envelope.State is not (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending) ||
+            journal.State != RestoreJournalState.Completed)
+            return new RecoveryOutcome(true, false, false, envelope.Scope, evidencePath, envelope.OperationId,
+                new RecoveryBlock(envelope.Scope, evidencePath, RecoveryOperation.Restore, envelope.OperationId,
+                    RecoveryBlockReason.Inconsistent, "Restore recovery evidence is not committed cleanup evidence."), null);
+
+        string storeDirectory = Path.GetDirectoryName(evidencePath)!;
+        foreach (RestoreJournalEntry entry in journal.Entries)
+        {
+            (byte[] body, byte[] sidecar) = RestoreJournalCodec.DecodeAndVerifyPayloads(entry, journal.Scope, evidencePath);
+            VerifyFile(Path.Combine(storeDirectory, entry.BodyFile), body, evidencePath);
+            VerifyFile(Path.Combine(storeDirectory, entry.SidecarFile), sidecar, evidencePath);
+        }
+
+        try
+        {
+            FileMemoryStore.ThrowIfRestoreJournalTransitionFails(
+                RestoreJournalTransition.BeforeCleanupDelete, evidencePath);
+            File.Delete(evidencePath);
+            return new RecoveryOutcome(false, true, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new RecoveryOutcome(false, true, true, envelope.Scope, evidencePath, envelope.OperationId, null,
+                $"Restore cleanup remains pending: {exception.GetType().Name}");
+        }
+    }
+
+    private static void VerifyFile(string path, byte[] expected, string evidencePath)
+    {
+        if (!File.Exists(path) || !File.ReadAllBytes(path).SequenceEqual(expected))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
+                "Committed restore destination failed verification.", evidencePath);
     }
     private static bool IsJson(ReadOnlySpan<byte> bytes)
     {
@@ -810,7 +916,8 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         envelope.Operation == RecoveryOperation.FileEntity
             ? ValidateFileEntityMutation(envelope, expectedScope, evidencePath, expectedSubject, expectedEvidenceDirectory)
             : throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent, "Evidence operation does not match file-entity adapter.", evidencePath);
-    RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) => throw new NotSupportedException("File-entity replay is owned by the file-entity operation.");
+    RecoveryOutcome IRecoveryAdapter.RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken) =>
+        RecoverCommittedCleanup(envelope, evidencePath, cancellationToken);
     RecoveryOutcome IRecoveryAdapter.Admit(RecoveryEnvelopeDocument envelope, string evidencePath) =>
         new(false, false, false, envelope.Scope, evidencePath, envelope.OperationId, null, null);
 
@@ -911,6 +1018,54 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             ValidateMetaFileName(Path.GetFileName(body.CommittedMeta.Path), entityName, evidencePath);
 
         return RecoveryEnvelopeCodec.ValidateSubject(validated with { TypedBody = body }, expectedSubject, evidencePath, expectedEvidenceDirectory);
+    }
+
+    private static RecoveryOutcome RecoverCommittedCleanup(RecoveryEnvelopeDocument envelope,
+        string evidencePath, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string evidenceDirectory = Path.GetDirectoryName(evidencePath)!;
+        FileEntityRecoveryBody sourceBody = envelope.TypedBody as FileEntityRecoveryBody
+            ?? throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
+                "File-entity recovery body is missing.", evidencePath);
+        RecoveryEnvelopeDocument validated = ValidateFileEntityMutation(envelope, envelope.Scope, evidencePath,
+            $"{sourceBody.EntityKind}/{sourceBody.EntityName}", evidenceDirectory);
+        if (validated.State is not (RecoveryLifecycleState.Committed or RecoveryLifecycleState.CleanupPending))
+            return new RecoveryOutcome(true, false, false, envelope.Scope, evidencePath, envelope.OperationId,
+                new RecoveryBlock(envelope.Scope, evidencePath, RecoveryOperation.FileEntity, envelope.OperationId,
+                    RecoveryBlockReason.Inconsistent, "File-entity recovery evidence is not committed cleanup evidence."), null);
+
+        FileEntityRecoveryBody body = (FileEntityRecoveryBody)validated.TypedBody!;
+        VerifyCommittedSnapshot(body.CommittedBody, evidencePath);
+        VerifyCommittedSnapshot(body.CommittedMeta, evidencePath);
+        List<string> failures = [];
+        TryDelete(body.ArchiveBodyPath, failures);
+        TryDelete(body.ArchiveMetaPath, failures);
+        TryDelete(evidencePath, failures);
+        return failures.Count == 0
+            ? new RecoveryOutcome(false, true, false, envelope.Scope, evidencePath, envelope.OperationId, null, null)
+            : new RecoveryOutcome(false, true, true, envelope.Scope, evidencePath, envelope.OperationId, null,
+                $"File-entity cleanup remains pending: {string.Join("; ", failures)}");
+    }
+
+    private static void VerifyCommittedSnapshot(RecoveryMemberSnapshot? snapshot, string evidencePath)
+    {
+        if (snapshot is null)
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
+                "Committed file-entity evidence is missing a snapshot.", evidencePath);
+        byte[] expected = Convert.FromBase64String(snapshot.Payload ?? string.Empty);
+        if (!File.Exists(snapshot.Path) || !File.ReadAllBytes(snapshot.Path).SequenceEqual(expected))
+            throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
+                "Committed file-entity destination failed verification.", evidencePath);
+    }
+
+    private static void TryDelete(string? path, List<string> failures)
+    {
+        if (path is null)
+            return;
+        try { File.Delete(path); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { failures.Add($"{path}: {exception.GetType().Name}"); }
     }
 
     private static void ValidateFileEntitySnapshotShape(FileEntityRecoveryBody body,

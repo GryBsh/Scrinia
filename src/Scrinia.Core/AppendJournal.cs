@@ -344,10 +344,10 @@ internal static class AppendJournalCodec
         ValidateLiveMemberPath(journal.OldSidecar.Path, storeRoot, journalPath);
         ValidateLiveMemberPath(journal.NewArtifact.Path, storeRoot, journalPath);
         ValidateLiveMemberPath(journal.NewSidecar.Path, storeRoot, journalPath);
-        ValidateOptionalArchivePath(journal.ArchiveArtifactPath, versionsRoot, journalPath);
-        ValidateOptionalArchivePath(journal.ArchiveSidecarPath, versionsRoot, journalPath);
+        ValidateOptionalArchivePath(journal.ArchiveArtifactPath, storeRoot, versionsRoot, journalPath);
+        ValidateOptionalArchivePath(journal.ArchiveSidecarPath, storeRoot, versionsRoot, journalPath);
         foreach (string candidate in journal.PruneCandidates)
-            ValidatePruneCandidatePath(candidate, versionsRoot, journalPath);
+            ValidatePruneCandidatePath(candidate, storeRoot, versionsRoot, journalPath);
     }
 
     private static void ValidateLiveMemberPath(string path, string storeRoot, string journalPath)
@@ -355,7 +355,7 @@ internal static class AppendJournalCodec
         string fullPath;
         try
         {
-            fullPath = Path.GetFullPath(path);
+            fullPath = ResolveStorePath(path, storeRoot);
         }
         catch (ArgumentException exception)
         {
@@ -366,7 +366,7 @@ internal static class AppendJournalCodec
             throw Invalid("Append journal member path is outside the expected store layout", journalPath);
     }
 
-    private static void ValidateOptionalArchivePath(string? path, string versionsRoot, string journalPath)
+    private static void ValidateOptionalArchivePath(string? path, string storeRoot, string versionsRoot, string journalPath)
     {
         if (path is null)
             return;
@@ -374,7 +374,7 @@ internal static class AppendJournalCodec
         string fullPath;
         try
         {
-            fullPath = Path.GetFullPath(path);
+            fullPath = ResolveStorePath(path, storeRoot);
         }
         catch (ArgumentException exception)
         {
@@ -394,8 +394,11 @@ internal static class AppendJournalCodec
         }
     }
 
-    private static void ValidatePruneCandidatePath(string path, string versionsRoot, string journalPath) =>
-        ValidateOptionalArchivePath(path, versionsRoot, journalPath);
+    private static void ValidatePruneCandidatePath(string path, string storeRoot, string versionsRoot, string journalPath) =>
+        ValidateOptionalArchivePath(path, storeRoot, versionsRoot, journalPath);
+
+    private static string ResolveStorePath(string path, string storeRoot) =>
+        Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(storeRoot, path));
 
     private static bool IsArtifactOrSidecar(string path) =>
         path.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase) ||
