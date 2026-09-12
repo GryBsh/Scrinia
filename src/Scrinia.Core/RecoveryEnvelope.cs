@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
@@ -219,6 +220,8 @@ internal static class RecoveryEnvelopeCodec
                     ValidateFileEntityMember(fileEntity.OldMeta);
                     ValidateOptionalFileEntityMember(fileEntity.CommittedBody);
                     ValidateOptionalFileEntityMember(fileEntity.CommittedMeta);
+                    if ((document.State == RecoveryLifecycleState.Committed) != (fileEntity.State == "committed"))
+                        throw new JsonException("File-entity envelope and body lifecycle states are inconsistent.");
                     return fileEntity;
                 default:
                     throw new JsonException("Recovery envelope operation is invalid.");
@@ -240,8 +243,21 @@ internal static class RecoveryEnvelopeCodec
 
     private static void ValidateFileEntityMember(RecoveryMemberSnapshot member)
     {
-        if (string.IsNullOrWhiteSpace(member.Path) || string.IsNullOrWhiteSpace(member.Payload) || string.IsNullOrWhiteSpace(member.Sha256))
+        if (string.IsNullOrWhiteSpace(member.Path) ||
+            (member.Existed && string.IsNullOrWhiteSpace(member.Payload)) ||
+            string.IsNullOrWhiteSpace(member.Sha256))
             throw new JsonException("File-entity recovery member is incomplete.");
+        try
+        {
+            byte[] payload = Convert.FromBase64String(member.Payload);
+            if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(payload)), member.Sha256,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new JsonException("File-entity recovery member hash is invalid.");
+        }
+        catch (FormatException exception)
+        {
+            throw new JsonException("File-entity recovery member payload is invalid.", exception);
+        }
     }
 
     private static void ValidateOptionalFileEntityMember(RecoveryMemberSnapshot? member)
@@ -659,7 +675,19 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             if (stream.Position != stream.Length)
                 throw new InvalidDataException("File-entity recovery evidence has trailing data.");
             string entityName = Path.GetFileNameWithoutExtension(oldBody.Path);
+            bool metadataOnly = entityName.StartsWith(".file-entity-body-omitted", StringComparison.OrdinalIgnoreCase);
+            if (metadataOnly)
+            {
+                string metaName = Path.GetFileNameWithoutExtension(oldMeta.Path);
+                entityName = metaName.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
+                    ? metaName[..^".meta".Length] : metaName;
+                oldBody = oldBody with { Path = oldMeta.Path };
+                if (committedBody is not null)
+                    committedBody = null;
+            }
             string entityKind = Path.GetFileName(Path.GetDirectoryName(evidencePath) ?? string.Empty);
+            if (metadataOnly)
+                entityKind = "sidecar";
             var body = new FileEntityRecoveryBody(entityKind, entityName, oldBody, oldMeta, archiveBody, archiveMeta,
                 committedBody, committedMeta, committed ? "committed" : "prepared");
             string operationId = ExtractOperationId(evidencePath);
@@ -721,14 +749,20 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
 
         string entityName = body.EntityName;
         string entityDirectoryName = Path.GetFileName(Path.GetFullPath(expectedEvidenceDirectory));
-        if (!string.Equals(body.EntityKind, entityDirectoryName, StringComparison.OrdinalIgnoreCase))
+        bool kindMatchesDirectory = string.Equals(body.EntityKind, entityDirectoryName, StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(body.EntityKind, "skill", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(entityDirectoryName, "skills", StringComparison.OrdinalIgnoreCase))
+            || string.Equals(body.EntityKind, "sidecar", StringComparison.OrdinalIgnoreCase);
+        if (!kindMatchesDirectory)
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Malformed,
                 "File-entity recovery evidence belongs to a different entity directory.", evidencePath);
 
+        bool metadataOnly = string.Equals(body.EntityKind, "sidecar", StringComparison.OrdinalIgnoreCase);
         string oldBodyPath = CanonicalizeMemberPath(body.OldBody.Path, expectedEvidenceDirectory, entityName,
-            MemberRole.Body, allowVersions: false, evidencePath);
+            metadataOnly ? MemberRole.Meta : MemberRole.Body, allowVersions: false, evidencePath);
         string bodyFileName = Path.GetFileName(oldBodyPath);
-        ValidateBodyFileName(bodyFileName, entityName, evidencePath);
+        if (!metadataOnly)
+            ValidateBodyFileName(bodyFileName, entityName, evidencePath);
         string oldMetaPath = CanonicalizeMemberPath(body.OldMeta.Path, expectedEvidenceDirectory, entityName,
             MemberRole.Meta, allowVersions: false, evidencePath);
         ValidateMetaFileName(Path.GetFileName(oldMetaPath), entityName, evidencePath);
@@ -738,16 +772,16 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             OldBody = body.OldBody with { Path = oldBodyPath },
             OldMeta = body.OldMeta with { Path = oldMetaPath },
             CommittedBody = CanonicalizeOptionalMember(body.CommittedBody, expectedEvidenceDirectory, entityName,
-                MemberRole.Body, evidencePath),
+                metadataOnly ? MemberRole.Meta : MemberRole.Body, evidencePath),
             CommittedMeta = CanonicalizeOptionalMember(body.CommittedMeta, expectedEvidenceDirectory, entityName,
                 MemberRole.Meta, evidencePath),
             ArchiveBodyPath = CanonicalizeOptionalArchive(body.ArchiveBodyPath, expectedEvidenceDirectory, entityName,
-                MemberRole.Body, bodyFileName, evidencePath),
+                metadataOnly ? MemberRole.Meta : MemberRole.Body, bodyFileName, evidencePath),
             ArchiveMetaPath = CanonicalizeOptionalArchive(body.ArchiveMetaPath, expectedEvidenceDirectory, entityName,
                 MemberRole.Meta, body.ArchiveBodyPath, evidencePath)
         };
 
-        if (body.CommittedBody is not null &&
+        if (!metadataOnly && body.CommittedBody is not null &&
             !string.Equals(Path.GetFileName(body.CommittedBody.Path), bodyFileName, StringComparison.OrdinalIgnoreCase))
             throw UnsafeMemberPath(evidencePath);
         if (body.CommittedMeta is not null)

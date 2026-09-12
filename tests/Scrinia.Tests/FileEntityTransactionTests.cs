@@ -226,10 +226,13 @@ public sealed class FileEntityTransactionTests
 
         committed.Outcome.Should().Be(WholeMemoryOutcome.SuccessWithWarning);
         File.ReadAllText(paths.Meta).Should().Be("committed metadata");
+        File.ReadAllBytes(committed.Recovery!.EvidencePath).Should().StartWith(
+            System.Text.Encoding.UTF8.GetBytes("{"));
 
         FileEntityMutationResult recovered = await Coordinator(scope).ExecuteAsync(
             SidecarMutation(paths, "next metadata"));
 
+        recovered.Recovery.Should().BeNull("the retained committed envelope should be replayable");
         recovered.Outcome.Should().Be(WholeMemoryOutcome.Replaced);
         File.ReadAllText(paths.Body).Should().Be("body remains unchanged");
         File.ReadAllText(paths.Meta).Should().Be("next metadata");

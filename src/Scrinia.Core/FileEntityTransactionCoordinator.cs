@@ -6,7 +6,6 @@ namespace Scrinia.Core;
 /// <summary>Publishes one file entity's body and metadata as a recoverable pair.</summary>
 internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionCoordinator
 {
-    private const string EvidenceMagic = "SCRINIA-FILE-ENTITY-RECOVERY-1";
     private readonly string _workspaceRoot;
     private readonly object _faultGate = new();
     private readonly Queue<FileEntityFaultPoint> _faultPoints = new();
@@ -35,9 +34,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             Path.GetFullPath(mutation.BodyPath), Path.GetFullPath(mutation.MetaPath),
             StringComparison.OrdinalIgnoreCase);
         string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
-        string bodySnapshotPath = sidecarOnly
-            ? Path.Combine(entityDirectory, ".file-entity-body-omitted")
-            : mutation.BodyPath;
+        string bodySnapshotPath = mutation.BodyPath;
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
 
         FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory);
@@ -58,8 +55,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             cancellationToken.ThrowIfCancellationRequested();
             (archiveBody, archiveMeta) = BuildArchivePaths(mutation, oldBody, oldMeta);
             evidencePath = EvidencePath(entityDirectory, operationId);
-            WriteEvidence(evidencePath, oldBody, oldMeta, archiveBody, archiveMeta,
-                RecoveryEvidenceState.Prepared, null, null);
+            WriteEvidence(evidencePath, mutation, oldBody, oldMeta, archiveBody, archiveMeta,
+                RecoveryLifecycleState.Prepared, null, null);
 
             if (!sidecarOnly)
                 Archive(oldBody, archiveBody, FileEntityFaultPoint.ArchiveBodyWrite);
@@ -82,8 +79,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             RawMemberSnapshot committedMeta = metadataMutation
                 ? ExpectedSnapshot(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!)
                 : oldMeta;
-            WriteEvidence(evidencePath, oldBody, oldMeta, archiveBody, archiveMeta,
-                RecoveryEvidenceState.Committed, committedBody, committedMeta);
+            WriteEvidence(evidencePath, mutation, oldBody, oldMeta, archiveBody, archiveMeta,
+                RecoveryLifecycleState.Committed, committedBody, committedMeta);
 
             try
             {
@@ -251,30 +248,46 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     private static string EvidencePath(string directory, string operationId) =>
         Path.Combine(directory, $".file-entity-{operationId}.recovery");
 
-    private static void WriteEvidence(
+    internal RecoveryEnvelopeDocument CreateEnvelope(
+        FileEntityMutation mutation, RawMemberSnapshot oldBody, RawMemberSnapshot oldMeta,
+        string operationId, string evidencePath, string? archiveBody, string? archiveMeta,
+        RecoveryLifecycleState state = RecoveryLifecycleState.Prepared,
+        RawMemberSnapshot? committedBody = null, RawMemberSnapshot? committedMeta = null)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        string entityDirectory = Path.GetFullPath(Path.GetDirectoryName(evidencePath)
+            ?? throw new ArgumentException("Evidence path must have a directory.", nameof(evidencePath)));
+        bool metadataOnly = string.Equals(mutation.BodyPath, mutation.MetaPath,
+            StringComparison.OrdinalIgnoreCase);
+        var body = new FileEntityRecoveryBody(mutation.EntityKind, mutation.Name,
+            ToRecoverySnapshot(oldBody), ToRecoverySnapshot(oldMeta), archiveBody, archiveMeta,
+            metadataOnly ? null : committedBody is null ? null : ToRecoverySnapshot(committedBody),
+            committedMeta is null ? null : ToRecoverySnapshot(committedMeta),
+            state == RecoveryLifecycleState.Committed ? "committed" : "prepared");
+        return RecoveryEnvelopeCodec.FromFileEntity(body, ScopeForEntity(entityDirectory), null,
+            operationId, state, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+    }
+
+    private static string ScopeForEntity(string entityDirectory) =>
+        Path.GetFileName(Path.GetDirectoryName(entityDirectory) ?? entityDirectory);
+
+    private static RecoveryMemberSnapshot ToRecoverySnapshot(RawMemberSnapshot snapshot) =>
+        new(snapshot.Path, snapshot.Existed, Convert.ToBase64String(snapshot.Bytes), snapshot.Sha256);
+
+    private void WriteEvidence(
         string path,
+        FileEntityMutation mutation,
         RawMemberSnapshot oldBody,
         RawMemberSnapshot oldMeta,
         string? archiveBody,
         string? archiveMeta,
-        RecoveryEvidenceState state,
+        RecoveryLifecycleState state,
         RawMemberSnapshot? committedBody,
         RawMemberSnapshot? committedMeta)
     {
-        using var stream = new MemoryStream();
-        using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
-        {
-            writer.Write(EvidenceMagic);
-            writer.Write((byte)state);
-            WriteSnapshot(writer, oldBody);
-            WriteSnapshot(writer, oldMeta);
-            WriteOptionalPath(writer, archiveBody);
-            WriteOptionalPath(writer, archiveMeta);
-            WriteOptionalSnapshot(writer, committedBody);
-            WriteOptionalSnapshot(writer, committedMeta);
-        }
-
-        DurableFile.AtomicWriteAllBytes(path, stream.ToArray());
+        RecoveryEnvelopeDocument envelope = CreateEnvelope(mutation, oldBody, oldMeta,
+            ExtractOperationId(path), path, archiveBody, archiveMeta, state, committedBody, committedMeta);
+        DurableFile.AtomicWriteAllBytes(path, RecoveryEnvelopeCodec.Serialize(envelope));
     }
 
     private FileEntityMutationResult? RecoverPendingEvidence(string directory)
@@ -287,37 +300,17 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
         try
         {
-            RecoveryEvidence evidence;
-            using (var stream = File.OpenRead(evidencePath))
-            using (var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: false))
-            {
-                if (!reader.ReadString().Equals(EvidenceMagic, StringComparison.Ordinal))
-                    throw new InvalidDataException("Unknown file-entity recovery evidence format.");
-                evidence = ReadEvidence(reader);
-            }
-
-            ValidateEvidencePaths(evidence, directory);
-            if (evidence.State == RecoveryEvidenceState.Committed)
-            {
-                if (evidence.CommittedBody is null || evidence.CommittedMeta is null)
-                    throw new InvalidDataException("Committed recovery evidence is missing post-commit snapshots.");
-                VerifySnapshot(evidence.CommittedBody);
-                VerifySnapshot(evidence.CommittedMeta);
-            }
-            else
-            {
-                Restore(evidence.OldBody);
-                Restore(evidence.OldMeta);
-            }
-
-            Delete(evidence.ArchiveBody);
-            Delete(evidence.ArchiveMeta);
-            File.Delete(evidencePath);
+            byte[] bytes = File.ReadAllBytes(evidencePath);
+            var adapter = new FileEntityRecoveryAdapter();
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+                bytes, ScopeForEntity(directory), evidencePath, directory);
+            RecoverFileEntity(envelope, evidencePath,
+                ScopeForEntity(directory), directory, CancellationToken.None);
             return null;
         }
         catch (Exception failure)
         {
-            string operationId = Path.GetFileNameWithoutExtension(evidencePath)[".file-entity-".Length..];
+            string operationId = ExtractOperationId(evidencePath);
             return new FileEntityMutationResult(
                 WholeMemoryOutcome.RecoveryRequired,
                 operationId,
@@ -326,68 +319,56 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         }
     }
 
-    private static void WriteSnapshot(BinaryWriter writer, RawMemberSnapshot snapshot)
+    internal RecoveryOutcome RecoverFileEntity(RecoveryEnvelopeDocument document, string evidencePath,
+        string expectedScope, string expectedEntityDirectory, CancellationToken cancellationToken)
     {
-        writer.Write(snapshot.Path);
-        writer.Write(snapshot.Existed);
-        writer.Write(snapshot.Bytes.Length);
-        writer.Write(snapshot.Bytes);
-        writer.Write(snapshot.Sha256);
-    }
-
-    private static RawMemberSnapshot ReadSnapshot(BinaryReader reader)
-    {
-        string path = reader.ReadString();
-        bool existed = reader.ReadBoolean();
-        int length = reader.ReadInt32();
-        if (length < 0 || length > 128 * 1024 * 1024)
-            throw new InvalidDataException("Invalid file-entity recovery member length.");
-        byte[] bytes = reader.ReadBytes(length);
-        if (bytes.Length != length)
-            throw new EndOfStreamException();
-        return new RawMemberSnapshot(path, existed, bytes, reader.ReadString());
-    }
-
-    private static RecoveryEvidence ReadEvidence(BinaryReader reader)
-    {
-        RecoveryEvidenceState state = reader.ReadByte() switch
+        cancellationToken.ThrowIfCancellationRequested();
+        var adapter = new FileEntityRecoveryAdapter();
+        RecoveryEnvelopeDocument validated = ((IRecoveryAdapter)adapter).ValidateForMutation(document,
+            expectedScope, evidencePath, SubjectOf(document), expectedEntityDirectory);
+        FileEntityRecoveryBody body = (FileEntityRecoveryBody)validated.TypedBody!;
+        if (validated.State == RecoveryLifecycleState.Committed)
         {
-            (byte)RecoveryEvidenceState.Prepared => RecoveryEvidenceState.Prepared,
-            (byte)RecoveryEvidenceState.Committed => RecoveryEvidenceState.Committed,
-            _ => throw new InvalidDataException("Unknown file-entity recovery evidence state.")
-        };
-        RawMemberSnapshot oldBody = ReadSnapshot(reader);
-        RawMemberSnapshot oldMeta = ReadSnapshot(reader);
-        string? archiveBody = ReadOptionalPath(reader);
-        string? archiveMeta = ReadOptionalPath(reader);
-        RawMemberSnapshot? committedBody = ReadOptionalSnapshot(reader);
-        RawMemberSnapshot? committedMeta = ReadOptionalSnapshot(reader);
-        if (state == RecoveryEvidenceState.Prepared && (committedBody is not null || committedMeta is not null))
-            throw new InvalidDataException("Prepared recovery evidence contains post-commit snapshots.");
-        return new RecoveryEvidence(state, oldBody, oldMeta, archiveBody, archiveMeta,
-            committedBody, committedMeta);
+            if (body.CommittedBody is null && body.CommittedMeta is null)
+                throw new InvalidDataException("Committed recovery evidence is missing post-commit snapshots.");
+            if (body.CommittedBody is not null)
+                VerifySnapshot(ToRawSnapshot(body.CommittedBody));
+            if (body.CommittedMeta is not null)
+                VerifySnapshot(ToRawSnapshot(body.CommittedMeta));
+        }
+        else
+        {
+            Restore(ToRawSnapshot(body.OldBody));
+            Restore(ToRawSnapshot(body.OldMeta));
+        }
+
+        Delete(body.ArchiveBodyPath);
+        Delete(body.ArchiveMetaPath);
+            File.Delete(evidencePath);
+        return new RecoveryOutcome(false, validated.State == RecoveryLifecycleState.Committed,
+            false, expectedScope, evidencePath, validated.OperationId, null, null);
     }
 
-    private void ValidateEvidencePaths(RecoveryEvidence evidence, string entityDirectory)
+    private static string SubjectOf(RecoveryEnvelopeDocument document) =>
+        document.TypedBody is FileEntityRecoveryBody body
+            ? $"{body.EntityKind}/{body.EntityName}"
+            : throw new InvalidDataException("File-entity recovery body is missing.");
+
+    private static string ExtractOperationId(string evidencePath)
     {
-        string canonicalEntityDirectory = Path.GetFullPath(entityDirectory);
-        ValidateEvidencePath(evidence.OldBody.Path, canonicalEntityDirectory);
-        ValidateEvidencePath(evidence.OldMeta.Path, canonicalEntityDirectory);
-        ValidateEvidencePath(evidence.ArchiveBody, canonicalEntityDirectory);
-        ValidateEvidencePath(evidence.ArchiveMeta, canonicalEntityDirectory);
-        if (evidence.CommittedBody is not null)
-            ValidateEvidencePath(evidence.CommittedBody.Path, canonicalEntityDirectory);
-        if (evidence.CommittedMeta is not null)
-            ValidateEvidencePath(evidence.CommittedMeta.Path, canonicalEntityDirectory);
+        string name = Path.GetFileName(evidencePath);
+        const string prefix = ".file-entity-";
+        const string suffix = ".recovery";
+        return name.StartsWith(prefix, StringComparison.Ordinal) && name.EndsWith(suffix, StringComparison.Ordinal)
+            ? name[prefix.Length..^suffix.Length] : "unknown";
     }
 
-    private static void ValidateEvidencePath(string? path, string entityDirectory)
+    private static RawMemberSnapshot ToRawSnapshot(RecoveryMemberSnapshot snapshot)
     {
-        if (path is null)
-            return;
-        string canonicalPath = Path.GetFullPath(path);
-        if (!PathContainment.IsWithin(entityDirectory, canonicalPath))
-            throw new InvalidDataException($"Recovery evidence path escapes the entity directory: {path}");
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(snapshot.Payload); }
+        catch (FormatException exception) { throw new InvalidDataException("Recovery snapshot payload is invalid.", exception); }
+        return new RawMemberSnapshot(snapshot.Path, snapshot.Existed, bytes, snapshot.Sha256);
     }
 
     private static void VerifySnapshot(RawMemberSnapshot expected) =>
@@ -395,41 +376,6 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
     private static RawMemberSnapshot ExpectedSnapshot(string path, bool deleted, byte[] bytes) =>
         RawMemberSnapshot.Capture(path, !deleted, deleted ? [] : bytes);
-
-    private static RawMemberSnapshot? ReadOptionalSnapshot(BinaryReader reader) =>
-        reader.ReadBoolean() ? ReadSnapshot(reader) : null;
-
-    private static void WriteOptionalSnapshot(BinaryWriter writer, RawMemberSnapshot? snapshot)
-    {
-        writer.Write(snapshot is not null);
-        if (snapshot is not null)
-            WriteSnapshot(writer, snapshot);
-    }
-
-    private static void WriteOptionalPath(BinaryWriter writer, string? path)
-    {
-        writer.Write(path is not null);
-        if (path is not null)
-            writer.Write(path);
-    }
-
-    private static string? ReadOptionalPath(BinaryReader reader) =>
-        reader.ReadBoolean() ? reader.ReadString() : null;
-
-    private enum RecoveryEvidenceState : byte
-    {
-        Prepared,
-        Committed
-    }
-
-    private sealed record RecoveryEvidence(
-        RecoveryEvidenceState State,
-        RawMemberSnapshot OldBody,
-        RawMemberSnapshot OldMeta,
-        string? ArchiveBody,
-        string? ArchiveMeta,
-        RawMemberSnapshot? CommittedBody,
-        RawMemberSnapshot? CommittedMeta);
 
     private void ThrowIfFault(FileEntityFaultPoint point)
     {
