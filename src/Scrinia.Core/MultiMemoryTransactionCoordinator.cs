@@ -294,6 +294,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                     "Prepared decision could not be safely aborted; evidence is retained.", directory);
             }
         }
+        _store.InvalidateScopeCacheAfterRollback(record.Scope);
         try { DeleteIfPresent(directory, MultiMemoryTransactionTransition.RecordDeleted); }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -418,6 +419,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                     adapter.EvidencePath, true, false, null));
             }
             allParticipantsVerified = true;
+            _store.InvalidateCommittedScope(record.Scope);
             MultiMemoryTransactionRecord proofRecord = MultiMemoryTransactionRecordCodec.WithCompletionProof(
                 record, adapters.Select(adapter => new MultiMemoryParticipantCompletion(
                     adapter.Subject, adapter.OperationId, adapter.Kind, adapter.EvidencePath)).ToArray(),

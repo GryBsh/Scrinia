@@ -174,6 +174,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         get => _factMaterializer.IsDirty;
     }
 
+    internal int CommittedScopeInvalidationCount { get; private set; }
+
     /// <summary>
     /// In-memory cache of a scope's index entries, handed out by reference on a
     /// <see cref="LoadIndex"/> cache hit.
@@ -1632,6 +1634,22 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
         InvalidateEntityFacts();
+    }
+
+    /// <summary>
+    /// Drops every derived view that can expose a participant before the coordinator has finished
+    /// publishing and verifying the aggregate decision. The caller holds the scope write lock, so
+    /// a same-instance reader cannot reacquire the read lock between these replacements.
+    /// </summary>
+    internal void InvalidateCommittedScope(string scope)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        _indexCache.TryRemove(scope, out _);
+        _artifactCache.Invalidate($"{scope}|");
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            _cachedTopics = null;
+        InvalidateEntityFacts();
+        CommittedScopeInvalidationCount++;
     }
 
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
