@@ -620,9 +620,9 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
         _store = store;
         _candidate = candidate;
         Scope = candidate.Scope;
-        Subject = manifest.Subject;
-        OperationId = manifest.OperationId;
-        Kind = manifest.Kind;
+        Subject = ResolveCandidateSubject(store, candidate);
+        OperationId = candidate.OperationId;
+        Kind = manifest.Kind == "memory" ? "memory" : candidate.Operation.ToString();
         EvidencePath = Path.GetRelativePath(store.GetStoreDirForScope(candidate.Scope), candidate.EvidencePath).Replace('\\', '/');
     }
 
@@ -688,6 +688,14 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
         RecoveryOperation.Restore => new RestoreRecoveryAdapter(),
         _ => throw new MultiMemoryParticipantMismatchException()
     };
+
+    private static string ResolveCandidateSubject(FileMemoryStore store, RecoveryCandidate candidate)
+    {
+        if (candidate.Operation == RecoveryOperation.Append && candidate.Envelope.Address is not null)
+            return store.ResolveAddress(MemoryAddress.Parse(candidate.Envelope.Address)).Subject;
+        int slash = candidate.CanonicalSubject.LastIndexOf('/');
+        return slash < 0 ? candidate.CanonicalSubject : candidate.CanonicalSubject[(slash + 1)..];
+    }
 }
 
 internal sealed class CompletedProofParticipantAdapter : IMultiMemoryParticipantAdapter

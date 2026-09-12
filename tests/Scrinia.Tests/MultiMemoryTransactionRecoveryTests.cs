@@ -59,8 +59,10 @@ public sealed class MultiMemoryTransactionRecoveryTests
         store.LoadIndex("local:other").Should().BeEmpty();
     }
 
-    [Fact]
-    public void FreshFileMemoryStore_UsesPersistedCompletionProofForCleanupOnlyRecovery()
+    [Theory]
+    [InlineData("versions/.append-journal.json")]
+    [InlineData(".restore-journal.json")]
+    public void FreshFileMemoryStore_UsesPersistedCompletionProofForCleanupOnlyRecovery(string evidencePath)
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-proof-" + Guid.NewGuid().ToString("N"));
         string recordPath;
@@ -73,7 +75,7 @@ public sealed class MultiMemoryTransactionRecoveryTests
                 "tx-proof", "local:notes", MultiMemoryTransactionState.Committed,
                 [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
             record = MultiMemoryTransactionRecordCodec.WithCompletionProof(record,
-                [new MultiMemoryParticipantCompletion("a", "op-a", "memory", "versions/.append-journal.json")], now);
+                [new MultiMemoryParticipantCompletion("a", "op-a", "memory", evidencePath)], now);
             MultiMemoryTransactionRecordCodec.Write(directory, record);
             recordPath = MultiMemoryTransactionRecordCodec.GetPath(directory);
         }

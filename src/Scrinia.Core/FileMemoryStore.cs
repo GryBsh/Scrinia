@@ -812,16 +812,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDirectory = GetStoreDirForScope(scope);
         RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDirectory,
             includeCoordinator: false);
-        RecoveryCandidate? candidate = discovery.Candidates
-            .Where(candidate => candidate.Operation is RecoveryOperation.Append or RecoveryOperation.Restore)
-            .FirstOrDefault(candidate => CandidateMatchesSubject(candidate, manifest.Subject));
         if (discovery.BlockingEvidence is not null)
             throw new MultiMemoryParticipantMismatchException();
-        if (candidate is not null && !CandidateKindMatches(candidate, manifest.Kind))
-            throw new MultiMemoryParticipantMismatchException();
+        MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(storeDirectory, scope);
+        foreach (MultiMemoryParticipantManifest persistedManifest in record.Participants)
+            _ = ResolveCandidate(discovery, persistedManifest);
+
+        RecoveryCandidate? candidate = ResolveCandidate(discovery, manifest);
         if (candidate is null)
         {
-            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(storeDirectory, scope);
             MultiMemoryParticipantCompletion? proof = record.CompletedParticipants?.FirstOrDefault(completion =>
                 completion.Subject == manifest.Subject && completion.OperationId == manifest.OperationId &&
                 completion.Kind == manifest.Kind);
@@ -842,6 +841,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return scope == candidate.Scope && canonicalSubject == subject;
         }
         return candidate.CanonicalSubject.EndsWith('/' + subject, StringComparison.Ordinal);
+    }
+
+    private RecoveryCandidate? ResolveCandidate(RecoveryDiscoveryResult discovery,
+        MultiMemoryParticipantManifest manifest)
+    {
+        RecoveryCandidate[] matches = discovery.Candidates
+            .Where(candidate => candidate.Operation is RecoveryOperation.Append or RecoveryOperation.Restore)
+            .Where(candidate => CandidateMatchesSubject(candidate, manifest.Subject))
+            .ToArray();
+        if (matches.Any(candidate => candidate.OperationId != manifest.OperationId ||
+            !CandidateKindMatches(candidate, manifest.Kind)))
+            throw new MultiMemoryParticipantMismatchException();
+        if (matches.Length > 1)
+            throw new MultiMemoryParticipantMismatchException();
+        return matches.SingleOrDefault();
     }
 
     private static bool CandidateKindMatches(RecoveryCandidate candidate, string kind) =>

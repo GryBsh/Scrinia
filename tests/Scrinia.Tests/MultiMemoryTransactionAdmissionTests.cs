@@ -71,6 +71,7 @@ public sealed class MultiMemoryTransactionAdmissionTests
         {
             new MultiMemoryTransactionRequest("local:notes", [Participant("~scratch", "op-1")]),
             new MultiMemoryTransactionRequest("local:notes", [Participant("/skills/qa", "op-1")]),
+            new MultiMemoryTransactionRequest("local:notes", [Participant("/agent/profile", "op-1")]),
             new MultiMemoryTransactionRequest("local:notes", [Participant("/other/item", "op-1")])
         };
 
