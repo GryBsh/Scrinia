@@ -20,6 +20,95 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
+    /// <summary>Maps a typed multi-memory outcome through the existing CLI MCP envelope.</summary>
+    internal static McpResponse MapMultiMemoryResult(MultiMemoryAggregateResult result, string action)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentException.ThrowIfNullOrWhiteSpace(action);
+
+        McpResponse response = result.Outcome switch
+        {
+            MultiMemoryOutcome.Committed => ResponseBuilder.Success("Multi-memory transaction committed."),
+            MultiMemoryOutcome.CommittedCleanupPending => ResponseBuilder.SuccessWithWarning(
+                "Multi-memory transaction committed; cleanup remains pending."),
+            MultiMemoryOutcome.RolledBack => ResponseBuilder.Warning("Multi-memory transaction rolled back."),
+            MultiMemoryOutcome.RecoveryRequired => BuildMultiMemoryRecoveryResponse(result),
+            MultiMemoryOutcome.Rejected => BuildMultiMemoryRejectedResponse(result),
+            _ => throw new ArgumentOutOfRangeException(nameof(result), result.Outcome,
+                "The multi-memory outcome is not supported by this facade.")
+        };
+
+        return response.WithAction(action).WithOperationId(result.TransactionId)
+            .WithInfo(BuildParticipantSummaries(result));
+    }
+
+    private static McpResponse BuildMultiMemoryRecoveryResponse(MultiMemoryAggregateResult result)
+    {
+        string reason = FormatMultiMemoryReason(result.Failure);
+        string evidence = SafeMultiMemoryEvidenceFilename(result.EvidencePath) ?? "recovery-evidence";
+        string code = result.Failure is MultiMemoryFailure.Malformed or MultiMemoryFailure.UnsupportedVersion or
+            MultiMemoryFailure.Unsafe or MultiMemoryFailure.Inconsistent or MultiMemoryFailure.Ambiguous or
+            MultiMemoryFailure.ReplayIoFailed ? ErrorCodes.RecoveryBlocked : ErrorCodes.RecoveryRequired;
+        string instruction = code == ErrorCodes.RecoveryBlocked
+            ? "Resolve the retained multi-memory evidence for the named topic scope, then retry."
+            : "Resolve the retained multi-memory transaction evidence, then retry.";
+        return ResponseBuilder.Error(
+                code == ErrorCodes.RecoveryBlocked
+                    ? $"Multi-memory recovery is blocked for topic scope '{result.Scope}': {reason}."
+                    : $"Multi-memory transaction requires recovery in topic scope '{result.Scope}': {reason}.",
+                code, instruction)
+            .WithRecovery(result.Scope, evidence)
+            .WithReason(reason);
+    }
+
+    private static McpResponse BuildMultiMemoryRejectedResponse(MultiMemoryAggregateResult result)
+    {
+        bool invalidParameter = result.Failure is MultiMemoryFailure.Admission or MultiMemoryFailure.Inconsistent;
+        return ResponseBuilder.Error(
+                invalidParameter
+                    ? "The multi-memory transaction participants were rejected before mutation."
+                    : "The multi-memory transaction could not be completed safely before its decision.",
+                invalidParameter ? ErrorCodes.InvalidParameter : ErrorCodes.DurableWriteFailed,
+                invalidParameter ? "Provide unique persistent participants in one topic scope, then retry." :
+                    "Check permissions and retained evidence, then retry.");
+    }
+
+    private static string[] BuildParticipantSummaries(MultiMemoryAggregateResult result) =>
+        result.Participants.Select(participant =>
+        {
+            string state = participant.Committed ? "committed" : participant.RolledBack ? "rolledBack" : "incomplete";
+            string evidence = SafeMultiMemoryEvidenceFilename(participant.EvidencePath) ?? "none";
+            string reason = result.Failure is { } failure ? $", reason: {FormatMultiMemoryReason(failure)}" : string.Empty;
+            return $"participant: {participant.Subject}, operationId: {participant.OperationId}, kind: {participant.Kind}, state: {state}, evidence: {evidence}{reason}";
+        }).ToArray();
+
+    private static string FormatMultiMemoryReason(MultiMemoryFailure? failure) => failure switch
+    {
+        MultiMemoryFailure.Admission => "admission",
+        MultiMemoryFailure.Prepare => "prepare",
+        MultiMemoryFailure.DecisionPublication => "decisionPublication",
+        MultiMemoryFailure.ParticipantCommit => "participantCommit",
+        MultiMemoryFailure.Verification => "verification",
+        MultiMemoryFailure.Rollback => "rollback",
+        MultiMemoryFailure.Cleanup => "cleanup",
+        MultiMemoryFailure.Malformed => "malformed",
+        MultiMemoryFailure.UnsupportedVersion => "unsupportedVersion",
+        MultiMemoryFailure.Unsafe => "unsafe",
+        MultiMemoryFailure.Inconsistent => "inconsistent",
+        MultiMemoryFailure.Ambiguous => "ambiguous",
+        MultiMemoryFailure.ReplayIoFailed => "replayIoFailed",
+        MultiMemoryFailure.LockTimeout => "lockTimeout",
+        _ => "unknown"
+    };
+
+    private static string? SafeMultiMemoryEvidenceFilename(string? evidencePath)
+    {
+        if (string.IsNullOrWhiteSpace(evidencePath) || Path.IsPathRooted(evidencePath) ||
+            evidencePath.Contains('\\') || evidencePath.Contains(':'))
+            return null;
+        return Path.GetFileName(evidencePath);
+    }
+
     /// <summary>List stored memories.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral). A scope
