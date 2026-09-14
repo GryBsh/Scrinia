@@ -30,9 +30,9 @@ public sealed partial class ScriniaMcpTools
         {
             MultiMemoryOutcome.Committed => ResponseBuilder.Success("Multi-memory transaction committed."),
             MultiMemoryOutcome.CommittedCleanupPending => ResponseBuilder.SuccessWithWarning(
-                SafeMultiMemoryDetail(result.Warning) ?? "Multi-memory transaction committed; cleanup remains pending."),
+                MultiMemoryStableDetail.Sanitize(result.Warning) ?? "Multi-memory transaction committed; cleanup remains pending."),
             MultiMemoryOutcome.RolledBack => ResponseBuilder.Warning(
-                SafeMultiMemoryDetail(result.Warning) ?? "Multi-memory transaction rolled back."),
+                MultiMemoryStableDetail.Sanitize(result.Warning) ?? "Multi-memory transaction rolled back."),
             MultiMemoryOutcome.RecoveryRequired => BuildMultiMemoryRecoveryResponse(result),
             MultiMemoryOutcome.Rejected => BuildMultiMemoryRejectedResponse(result),
             _ => throw new ArgumentOutOfRangeException(nameof(result), result.Outcome,
@@ -41,7 +41,7 @@ public sealed partial class ScriniaMcpTools
 
         response = response.WithAction(action).WithOperationId(result.TransactionId)
             .WithInfo(BuildParticipantSummaries(result));
-        string? safeWarning = SafeMultiMemoryDetail(result.Warning);
+        string? safeWarning = MultiMemoryStableDetail.Sanitize(result.Warning);
         if (safeWarning is not null && result.Outcome is not
             (MultiMemoryOutcome.CommittedCleanupPending or MultiMemoryOutcome.RolledBack))
             response = response.WithInfo([.. response.Info ?? [], $"detail: {safeWarning}"]);
@@ -85,7 +85,7 @@ public sealed partial class ScriniaMcpTools
         {
             string state = participant.Committed ? "committed" : participant.RolledBack ? "rolledBack" : "incomplete";
             string evidence = SafeMultiMemoryEvidenceFilename(participant.EvidencePath) ?? "none";
-            string reason = SafeMultiMemoryDetail(participant.Reason) is { } participantReason
+            string reason = MultiMemoryStableDetail.Sanitize(participant.Reason) is { } participantReason
                 ? $", reason: {participantReason}"
                 : result.Failure is { } failure
                     ? $", reason: {FormatMultiMemoryReason(failure)}"
@@ -123,26 +123,6 @@ public sealed partial class ScriniaMcpTools
             return null;
         return Path.GetFileName(evidencePath);
     }
-
-    private static string? SafeMultiMemoryDetail(string? detail)
-    {
-        if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 ||
-            !detail.All(IsStableDetailCharacter) || Path.IsPathRooted(detail) ||
-            detail.StartsWith('~') || detail.Contains("//", StringComparison.Ordinal) ||
-            detail.Contains('/', StringComparison.Ordinal) ||
-            detail.Contains('\\') ||
-            detail.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("payload", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("sidecar", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("secret", StringComparison.OrdinalIgnoreCase))
-            return null;
-        return detail;
-    }
-
-    private static bool IsStableDetailCharacter(char character) =>
-        char.IsLetterOrDigit(character) || character == ' ' ||
-        ".,:;_()-".Contains(character, StringComparison.Ordinal);
 
     /// <summary>Emits an aggregate result through the existing MCP YAML response boundary.</summary>
     internal static string EmitMultiMemoryResult(

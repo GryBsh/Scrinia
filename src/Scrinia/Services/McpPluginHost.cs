@@ -105,8 +105,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(
-                    $"[scrinia:warn] Plugin status check failed: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(FormatPluginWarning("Plugin status check failed", ex));
             }
         }
     }
@@ -325,8 +324,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Plugin call '{toolName}' failed: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(FormatPluginWarning($"Plugin call '{toolName}' failed", ex));
 
             // Try reconnect + retry once
             if (!await TryReconnectAsync(ct)) return null;
@@ -373,8 +371,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Plugin reconnect failed: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(FormatPluginWarning("Plugin reconnect failed", ex));
             return false;
         }
     }
@@ -426,6 +423,12 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     private static int GetInt(JsonElement el, string prop) =>
         el.TryGetProperty(prop, out var v) ? v.GetInt32() : 0;
 
+    private static string FormatPluginWarning(string prefix, Exception exception)
+    {
+        string detail = MultiMemoryStableDetail.Sanitize(exception.Message) ?? "observer diagnostic omitted";
+        return $"[scrinia:warn] {prefix}: {exception.GetType().Name}: {detail}";
+    }
+
     // ── Disposal ─────────────────────────────────────────────────────────
 
     public async ValueTask DisposeAsync()
@@ -441,8 +444,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Embeddings plugin did not shut down cleanly: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(FormatPluginWarning("Embeddings plugin did not shut down cleanly", ex));
         }
     }
 }
