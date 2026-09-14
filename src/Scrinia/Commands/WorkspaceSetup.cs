@@ -58,6 +58,9 @@ internal static class WorkspaceSetup
             "WorkspaceSetup.Configure must be called before reading Store.");
 
     internal static void Configure(string? workspaceRoot)
+        => Configure(workspaceRoot, null);
+
+    internal static void Configure(string? workspaceRoot, IMultiMemoryParticipantAdapterFactory? participantAdapterFactory)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
         _root = root;
@@ -66,7 +69,9 @@ internal static class WorkspaceSetup
         // recompiling. Defaults (RankerOptions.Default) match the historical composition —
         // see RankerOptions docstring for the formula and calibration notes.
         var rankerOptions = RankerOptions.FromConfig(GetConfigValue);
-        var store = new FileMemoryStore(root, rankerOptions);
+        var store = participantAdapterFactory is null
+            ? new FileMemoryStore(root, rankerOptions)
+            : new FileMemoryStore(root, rankerOptions, null, participantAdapterFactory);
         MemoryStoreContext.Current = store;
         MemoryStoreContext.Default = store;
     }

@@ -141,6 +141,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly WholeMemoryTransactionCoordinator _wholeMemoryTransactions;
     private readonly FileEntityTransactionCoordinator _fileEntityTransactions;
     private readonly MultiMemoryTransactionCoordinator _multiMemoryTransactions;
+    private readonly IMultiMemoryParticipantAdapterFactory? _participantAdapterFactory;
     private readonly RecoveryDiscoveryCoordinator _recoveryDiscovery = new();
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
@@ -304,12 +305,23 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions = null,
         MemoryValidationOptions? writeValidationOptions = null)
+        : this(workspaceRoot, rankerOptions, writeValidationOptions, null)
+    {
+    }
+
+    internal FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions,
+        MemoryValidationOptions? writeValidationOptions,
+        IMultiMemoryParticipantAdapterFactory? participantAdapterFactory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
         _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
-        _multiMemoryTransactions = new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync);
+        _participantAdapterFactory = participantAdapterFactory;
+        _multiMemoryTransactions = participantAdapterFactory is null
+            ? new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync)
+            : new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync,
+                participantAdapterFactory);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
@@ -869,7 +881,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         MultiMemoryTransactionRequest request,
         Func<MultiMemoryParticipantRequest, CancellationToken, Task<IMultiMemoryParticipantAdapter>> admitParticipant,
         CancellationToken cancellationToken = default) =>
-        _multiMemoryTransactions.ExecuteAsync(request, admitParticipant, cancellationToken);
+        _multiMemoryTransactions.ExecuteAsync(request, (participant, token) =>
+            participant.ParticipantIdentity is not null && _participantAdapterFactory is not null
+                ? _participantAdapterFactory.CreateAsync(participant, token)
+                : admitParticipant(participant, token), cancellationToken);
 
     /// <summary>
     /// Creates the workspace store and the scope's directory. Called only from write paths, so

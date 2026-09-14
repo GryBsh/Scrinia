@@ -8,6 +8,38 @@ namespace Scrinia.Tests;
 public sealed class MultiMemoryTransactionAdmissionTests
 {
     [Fact]
+    public void TransactionalParticipantsAreOrderedAfterB3Participants()
+    {
+        using FileMemoryStore store = CreateStore();
+        var request = new MultiMemoryTransactionRequest("local:notes",
+            [Participant("/notes/z", "op-z")],
+            [TransactionalParticipant("/notes/a", "plugin-a", "plugin-key", "op-a")]);
+
+        MultiMemoryTransactionCoordinator.NormalizeAndOrder(store, request)
+            .Select(participant => participant.Address.Value)
+            .Should().Equal("/notes/z", "/notes/a");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PersistsProjectionOnlyMetadataForRejectedB4Participant()
+    {
+        using FileMemoryStore store = CreateStore();
+        var request = new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/z", "op-z")],
+            [TransactionalParticipant("/notes/a", "plugin-a", "plugin-key", "op-a")]);
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store).ExecuteAsync(
+            request,
+            (participant, _) => participant.ParticipantIdentity is not null
+                ? throw new InvalidOperationException("participant unavailable")
+                : Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("z", "op-z")));
+
+        result.Outcome.Should().Be(MultiMemoryOutcome.Committed);
+        result.NonAdmittedParticipants.Should().ContainSingle(item => item.ParticipantIdentity == "plugin-a");
+        File.Exists(Path.Combine(store.GetStoreDirForScope("local:notes"), MultiMemoryTransactionRecordCodec.FileName))
+            .Should().BeFalse();
+    }
+
+    [Fact]
     public void NormalizeAndOrder_UsesCanonicalSubjectThenOperationId()
     {
         using FileMemoryStore store = CreateStore();
@@ -313,6 +345,11 @@ public sealed class MultiMemoryTransactionAdmissionTests
 
     private static MultiMemoryParticipantRequest Participant(string address, string operationId) =>
         new(MemoryAddress.Parse(address), operationId, "memory");
+
+    private static MultiMemoryTransactionalParticipantRequest TransactionalParticipant(
+        string address, string identity, string orderingKey, string operationId) =>
+        new(MemoryAddress.Parse(address), identity, 1, orderingKey, operationId, "plugin",
+            new Dictionary<string, string>(), new Dictionary<string, string>());
 
     private static FileMemoryStore CreateStore() =>
         new(Path.Combine(Path.GetTempPath(), "scrinia-b3-admission-" + Guid.NewGuid().ToString("N")));
