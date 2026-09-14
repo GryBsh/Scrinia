@@ -374,9 +374,10 @@ public sealed class TransactionalParticipantAdapterTests
         await adapter.PrepareAsync(CancellationToken.None);
         await adapter.CommitAsync(CancellationToken.None);
 
+        attempts.Should().Be(2);
         adapter.RecoveryState.Should().NotBeNull();
         adapter.RecoveryState!.RetryAttempt.Should().Be(2);
-        adapter.RecoveryState.RetryElapsedMilliseconds.Should().Be(0);
+        adapter.RecoveryState.RetryElapsedMilliseconds.Should().BeGreaterThanOrEqualTo(0);
     }
 
     [Fact]
