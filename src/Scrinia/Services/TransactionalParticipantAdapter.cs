@@ -24,12 +24,23 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     private readonly MemoryAddress _address;
     private readonly string _operationId;
     private readonly string _kind;
+    private readonly string _participantIdentity;
+    private readonly int _contractVersion;
+    private readonly string _orderingKey;
+    private readonly IReadOnlyList<string> _capabilities;
+    private readonly IReadOnlyDictionary<string, string> _payload;
+    private readonly IReadOnlyDictionary<string, string> _metadata;
     private readonly RetryBudget _retryBudget;
     private TransactionalPreparedHandle? _preparedHandle;
     private TransactionalParticipantFailure? _lastFailure;
     private TransactionalRecoveryEvidence? _lastEvidence;
     private bool _lastAmbiguous;
     private string _evidencePath = string.Empty;
+    private TransactionalParticipantLifecycleState _lifecycleState = TransactionalParticipantLifecycleState.Prepared;
+    private bool _stateMayHaveChanged;
+    private bool _ambiguous;
+    private TransactionalQuarantineState _quarantineState;
+    private string? _quarantineReason;
 
     internal TransactionalParticipantAdapter(ITransactionalMemoryParticipant participant, MultiMemoryParticipantRequest request)
     {
@@ -37,6 +48,12 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _transactionId = request.TransactionId ?? throw new MultiMemoryParticipantMismatchException();
         _scope = request.Scope ?? throw new MultiMemoryParticipantMismatchException();
         _address = request.Address; _operationId = request.OperationId; _kind = request.Kind;
+        _participantIdentity = request.ParticipantIdentity ?? throw new MultiMemoryParticipantMismatchException();
+        _contractVersion = request.ContractVersion ?? throw new MultiMemoryParticipantMismatchException();
+        _orderingKey = request.OrderingKey ?? throw new MultiMemoryParticipantMismatchException();
+        _capabilities = participant.Descriptor.Capabilities.ToArray();
+        _payload = request.Payload ?? throw new MultiMemoryParticipantMismatchException();
+        _metadata = request.Metadata ?? throw new MultiMemoryParticipantMismatchException();
         _retryBudget = CreateRetryBudget(participant.Descriptor.RetryPolicy);
     }
 
@@ -45,8 +62,16 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _participant = participant ?? throw new ArgumentNullException(nameof(participant));
         _transactionId = state.TransactionId; _scope = state.Scope; _address = MemoryAddress.Parse(state.Address);
         _operationId = state.OperationId; _kind = state.Kind;
+        _participantIdentity = state.ParticipantIdentity; _contractVersion = state.ContractVersion;
+        _orderingKey = state.OrderingKey; _capabilities = state.Capabilities;
+        _payload = state.Payload; _metadata = state.Metadata;
         _preparedHandle = new(state.PreparedHandleReference!, state.PreparedHandleVersion!);
         _retryBudget = CreateRetryBudget(participant.Descriptor.RetryPolicy);
+        _lifecycleState = state.LifecycleState; _stateMayHaveChanged = state.StateMayHaveChanged;
+        _ambiguous = state.Ambiguous; _quarantineState = state.QuarantineState;
+        _quarantineReason = state.QuarantineReason; _lastFailure = state.LastFailureCode is { } code
+            ? new((Scrinia.Plugin.Abstractions.TransactionalFailureCode)(int)code, "recovered failure", state.StateMayHaveChanged) : null;
+        _evidencePath = state.EvidenceReference ?? string.Empty;
     }
 
     public string Kind => _kind;
@@ -54,6 +79,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     public string Subject => _address.ToString();
     public string OperationId => _operationId;
     public string EvidencePath => _evidencePath;
+    public B4ParticipantRecoveryState? RecoveryState => CreateRecoveryState();
 
     public async Task PrepareAsync(CancellationToken cancellationToken)
     {
@@ -64,6 +90,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             new PrepareClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value?.Handle is null) throw CreateTypedFailure(retry);
         _preparedHandle = retry.Value.Handle;
+        _lifecycleState = TransactionalParticipantLifecycleState.Prepared;
     }
 
     public async Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken)
@@ -88,6 +115,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             token => _participant.CommitAsync(CreateCommitContext(), token),
             new ParticipantResultClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value?.State != TransactionalParticipantState.Committed) throw CreateTypedFailure(retry);
+        _lifecycleState = TransactionalParticipantLifecycleState.Committed;
     }
 
     public async Task VerifyCommittedAsync(CancellationToken cancellationToken)
@@ -104,6 +132,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             token => _participant.RollbackAsync(CreateRollbackContext(), token),
             new ParticipantResultClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value?.State != TransactionalParticipantState.RolledBack) throw CreateTypedFailure(retry);
+        _lifecycleState = TransactionalParticipantLifecycleState.RolledBack;
     }
 
     public Task CleanupAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -170,6 +199,14 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _lastEvidence = evidence;
         _lastAmbiguous = failure?.StateMayHaveChanged == true && evidence is not null;
         _evidencePath = evidence?.EvidenceReference ?? string.Empty;
+        _stateMayHaveChanged = failure?.StateMayHaveChanged == true;
+        _ambiguous = _lastAmbiguous;
+        if (_ambiguous)
+        {
+            _lifecycleState = TransactionalParticipantLifecycleState.Ambiguous;
+            _quarantineState = TransactionalQuarantineState.Quarantined;
+            _quarantineReason = "ambiguous participant state";
+        }
     }
 
     private void CaptureException(Exception exception)
@@ -180,6 +217,14 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             _lastEvidence = typed.Evidence;
             _lastAmbiguous = typed.Ambiguous;
             _evidencePath = typed.Evidence?.EvidenceReference ?? string.Empty;
+            _stateMayHaveChanged = typed.Failure.StateMayHaveChanged;
+            _ambiguous = typed.Ambiguous;
+            if (_ambiguous)
+            {
+                _lifecycleState = TransactionalParticipantLifecycleState.Ambiguous;
+                _quarantineState = TransactionalQuarantineState.Quarantined;
+                _quarantineReason = "ambiguous participant state";
+            }
             return;
         }
 
@@ -195,6 +240,19 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _lastEvidence = null;
         _lastAmbiguous = false;
         _evidencePath = string.Empty;
+    }
+
+    private B4ParticipantRecoveryState? CreateRecoveryState()
+    {
+        if (_preparedHandle is null && _lifecycleState is TransactionalParticipantLifecycleState.Prepared or TransactionalParticipantLifecycleState.Committed)
+            return null;
+        Scrinia.Core.TransactionalFailureCode? failureCode = _lastFailure is null ? null : (Scrinia.Core.TransactionalFailureCode)(int)_lastFailure.Code;
+        string? evidenceReference = _lastEvidence?.EvidenceReference ?? (_evidencePath.Length == 0 ? null : _evidencePath);
+        return new B4ParticipantRecoveryState(_transactionId, _operationId, _scope, _address.ToString(),
+            _participantIdentity, _contractVersion, _orderingKey, _kind, _capabilities, _payload, _metadata,
+            _lifecycleState, _preparedHandle?.Reference, _preparedHandle?.Version, 0, 0,
+            _stateMayHaveChanged, _ambiguous, failureCode, evidenceReference,
+            _lastEvidence?.EvidenceKind, _lastEvidence?.EvidenceVersion, _quarantineState, _quarantineReason);
     }
 
     private sealed class PrepareClassifier : IRetryClassifier<TransactionalPrepareResult>

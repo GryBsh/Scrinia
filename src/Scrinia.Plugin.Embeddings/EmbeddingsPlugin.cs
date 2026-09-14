@@ -294,13 +294,9 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             await _indexer.IndexAsync(address, store, content, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to embed memory '{Name}'", address);
+            LogObserverFailure("store", ex);
         }
     }
 
@@ -332,13 +328,9 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             await _indexer.IndexAsync(address, store, elements, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", address);
+            LogObserverFailure("append", ex);
         }
     }
 
@@ -356,15 +348,15 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             await _indexer.RemoveAsync(address, store, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to remove vectors for '{Name}'", address);
+            LogObserverFailure("forget", ex);
         }
     }
+
+    private void LogObserverFailure(string operation, Exception exception) =>
+        _logger?.LogWarning("Embedding {Operation} observer failed: {Detail}", operation,
+            MultiMemoryStableDetail.SanitizeOrFallback(exception.Message));
 
     public async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
     {

@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
 using Scrinia.Mcp;
+using Scrinia.Services;
 
 namespace Scrinia.Tests;
 
@@ -23,6 +24,9 @@ public sealed class TransactionalObserverBoundaryTests
     [InlineData("https://example.test/payload")]
     [InlineData("System.InvalidOperationException: secret payload")]
     [InlineData("raw sidecar payload")]
+    [InlineData("mailto:user")]
+    [InlineData("urn:item")]
+    [InlineData("C:relative")]
     public void StableDetailSanitizerRejectsUnsafeCrossingValues(string? unsafeDetail)
     {
         InvokeSanitize(unsafeDetail).Should().BeNull();
@@ -32,6 +36,15 @@ public sealed class TransactionalObserverBoundaryTests
     public void StableDetailSanitizerPreservesOnlyStableDetailText()
     {
         InvokeSanitize("participant cleanup failed: retry-2").Should().Be("participant cleanup failed: retry-2");
+    }
+
+    [Theory]
+    [InlineData("mailto:user")]
+    [InlineData("urn:item")]
+    [InlineData("C:relative")]
+    public void MemoryAddressRejectsColonOnlyUriAndDriveRelativeForms(string raw)
+    {
+        MemoryAddress.TryParse(raw, out _, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -62,6 +75,28 @@ public sealed class TransactionalObserverBoundaryTests
         recorder.StoredCount.Should().Be(1);
     }
 
+    [Fact]
+    public async Task OperationAwareObserverFailureDoesNotAlterOutcomeOrBlockNextObserver()
+    {
+        var recorder = new RecordingSink();
+        var composite = new CompositeEventSink([new ThrowingOperationAwareSink(), recorder]);
+
+        var act = () => composite.OnAppendedAsync(
+            MemoryAddress.Parse("/note"), "content", null!, "operation-1", default);
+
+        await act.Should().NotThrowAsync();
+        recorder.AppendedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void ObserverDiagnosticsUseStableFallbackForUnsafeChildStderr()
+    {
+        McpPluginHostTestBridge.FormatStderr("C:\\secret\\payload")
+            .Should().EndWith("observer diagnostic omitted");
+        McpPluginHostTestBridge.FormatStderr(" ").Should().EndWith("observer diagnostic omitted");
+        McpPluginHostTestBridge.FormatStderr("provider ready").Should().EndWith("provider ready");
+    }
+
     private static string? InvokeSanitize(string? detail)
     {
         Type type = typeof(MemoryAddress).Assembly.GetType("Scrinia.Core.MultiMemoryStableDetail")
@@ -82,6 +117,7 @@ public sealed class TransactionalObserverBoundaryTests
     private sealed class RecordingSink : IMemoryEventSink
     {
         public int StoredCount { get; private set; }
+        public int AppendedCount { get; private set; }
 
         public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
@@ -90,10 +126,40 @@ public sealed class TransactionalObserverBoundaryTests
         }
 
         public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
-            Task.CompletedTask;
+            IncrementAppendedCount();
+
+        private Task IncrementAppendedCount()
+        {
+            AppendedCount++;
+            return Task.CompletedTask;
+        }
 
         public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
             Task.CompletedTask;
+    }
+
+    private sealed class ThrowingOperationAwareSink : IMemoryEventSink, IOperationAwareMemoryEventSink
+    {
+        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store,
+            string operationId, CancellationToken ct) =>
+            throw new InvalidOperationException("C:\\secret\\payload");
+
+        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+    }
+
+    private static class McpPluginHostTestBridge
+    {
+        public static string FormatStderr(string? line) =>
+            (string?)typeof(McpPluginHost)
+                .GetMethod("FormatPluginStderr", BindingFlags.Static | BindingFlags.NonPublic)
+                ?.Invoke(null, [line]) ?? throw new InvalidOperationException("stderr formatter missing");
     }
 
     private sealed class ThrowingSink : IMemoryEventSink

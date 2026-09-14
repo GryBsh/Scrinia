@@ -54,13 +54,9 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
 
             await _indexer.IndexAsync(address, memoryStore, elements, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", address);
+            LogObserverFailure("append", ex);
         }
     }
 
@@ -71,7 +67,14 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         // Uses the (qualifiedName, store) overload, which owns the ParseQualifiedName call
         // inside its own try — a malformed qualifiedName must not throw out of an event-sink
         // handler with no guard of its own.
-        await _indexer.RemoveAsync(address, memoryStore, ct);
+        try
+        {
+            await _indexer.RemoveAsync(address, memoryStore, ct);
+        }
+        catch (Exception ex)
+        {
+            LogObserverFailure("forget", ex);
+        }
     }
 
     private async Task EmbedAndIndexAsync(
@@ -81,13 +84,13 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
         {
             await _indexer.IndexAsync(address, memoryStore, content, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to embed memory '{Name}'", address);
+            LogObserverFailure("store", ex);
         }
     }
+
+    private void LogObserverFailure(string operation, Exception exception) =>
+        _logger.LogWarning("Embedding {Operation} observer failed: {Detail}", operation,
+            MultiMemoryStableDetail.SanitizeOrFallback(exception.Message));
 }

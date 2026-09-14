@@ -76,15 +76,14 @@ public sealed class CompositeEventSinkTests
     }
 
     [Fact]
-    public async Task OperationAwareFailureIsPropagatedWithTheOperationIdBoundaryIntact()
+    public async Task OperationAwareFailureIsLoggedAndDoesNotEscapeTheObserverBoundary()
     {
         var composite = new CompositeEventSink([new ThrowingOperationAwareSink()]);
 
         Func<Task> dispatch = () => composite.OnAppendedAsync(MemoryAddress.Parse("/test/topic"),
             "extra", null!, "op-456", CancellationToken.None);
 
-        await dispatch.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("operation-aware boom");
+        await dispatch.Should().NotThrowAsync();
     }
 
     private sealed class RecordingSink : IMemoryEventSink

@@ -13,7 +13,7 @@ public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventS
         foreach (var sink in sinks)
         {
             try { await sink.OnStoredAsync(address, content, store, ct); }
-            catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex) { LogObserverFailure(sink, ex); }
         }
     }
 
@@ -22,14 +22,13 @@ public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventS
         foreach (var sink in sinks)
         {
             try { await sink.OnAppendedAsync(address, content, store, ct); }
-            catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex) { LogObserverFailure(sink, ex); }
         }
     }
 
     public async Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store,
         string operationId, CancellationToken ct)
     {
-        Exception? operationAwareFailure = null;
         foreach (var sink in sinks)
         {
             try
@@ -41,17 +40,9 @@ public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventS
             }
             catch (Exception ex)
             {
-                if (sink is IOperationAwareMemoryEventSink)
-                {
-                    operationAwareFailure ??= ex;
-                    continue;
-                }
-                Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}");
+                LogObserverFailure(sink, ex);
             }
         }
-
-        if (operationAwareFailure is not null)
-            throw operationAwareFailure;
     }
 
     public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
@@ -59,7 +50,11 @@ public sealed class CompositeEventSink(IMemoryEventSink[] sinks) : IMemoryEventS
         foreach (var sink in sinks)
         {
             try { await sink.OnForgottenAsync(address, wasDeleted, store, ct); }
-            catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: {ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex) { LogObserverFailure(sink, ex); }
         }
     }
+
+    private static void LogObserverFailure(IMemoryEventSink sink, Exception exception) =>
+        Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: " +
+            MultiMemoryStableDetail.SanitizeOrFallback(exception.Message));
 }

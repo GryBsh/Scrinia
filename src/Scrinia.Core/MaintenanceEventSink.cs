@@ -66,7 +66,8 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[scrinia:warn] MaintenanceEventSink error: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine("[scrinia:warn] MaintenanceEventSink error: " +
+                MultiMemoryStableDetail.SanitizeOrFallback(ex.Message));
         }
     }
 
@@ -79,7 +80,8 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[scrinia:warn] MaintenanceEventSink error: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine("[scrinia:warn] MaintenanceEventSink error: " +
+                MultiMemoryStableDetail.SanitizeOrFallback(ex.Message));
         }
     }
 

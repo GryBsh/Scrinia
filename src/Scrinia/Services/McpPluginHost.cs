@@ -98,7 +98,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
                     _isAvailable = GetBool(root, "available");
                     Console.Error.WriteLine(
                         $"[scrinia:info] Embeddings plugin ready " +
-                        $"(provider={GetString(root, "provider")}, hardware={GetString(root, "hardware")}, " +
+                        $"(provider={FormatPluginStatusValue(GetString(root, "provider"))}, hardware={FormatPluginStatusValue(GetString(root, "hardware"))}, " +
                         $"available={_isAvailable}, dims={GetInt(root, "dimensions")}, " +
                         $"vectors={GetInt(root, "vectorCount")})");
                 }
@@ -148,7 +148,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             // Secret config (API keys) is handed to the child via its environment, never argv.
             EnvironmentVariables = _environment,
             Name = "scrinia-plugin",
-            StandardErrorLines = line => Console.Error.WriteLine(line),
+            StandardErrorLines = line => Console.Error.WriteLine(FormatPluginStderr(line)),
             ShutdownTimeout = TimeSpan.FromSeconds(3),
         });
 
@@ -202,6 +202,13 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnStoredAsync(MemoryAddress address, string[] content,
         IPluginStore store, CancellationToken ct)
     {
+        try { await OnStoredCoreAsync(address, content, store, ct); }
+        catch (Exception ex) { LogObserverFailure("store", ex); }
+    }
+
+    private async Task OnStoredCoreAsync(MemoryAddress address, string[] content,
+        IPluginStore store, CancellationToken ct)
+    {
         // Restored the early return in front of ParseQualifiedName: a plugin advertising only
         // `remove` has neither flag set, and must not pay for a parse (which throws on a
         // malformed name) on every store/append when it was never going to call out anyway.
@@ -252,6 +259,13 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnAppendedAsync(MemoryAddress address, string content,
         IPluginStore store, CancellationToken ct)
     {
+        try { await OnAppendedCoreAsync(address, content, store, ct); }
+        catch (Exception ex) { LogObserverFailure("append", ex); }
+    }
+
+    private async Task OnAppendedCoreAsync(MemoryAddress address, string content,
+        IPluginStore store, CancellationToken ct)
+    {
         // See OnStoredAsync — same early-return-before-parse fix, same reason.
         if (_degraded || (!_hasIndex && !_hasUpsert)) return;
 
@@ -292,6 +306,13 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     }
 
     public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted,
+        IPluginStore store, CancellationToken ct)
+    {
+        try { await OnForgottenCoreAsync(address, wasDeleted, store, ct); }
+        catch (Exception ex) { LogObserverFailure("forget", ex); }
+    }
+
+    private async Task OnForgottenCoreAsync(MemoryAddress address, bool wasDeleted,
         IPluginStore store, CancellationToken ct)
     {
         if (!wasDeleted || _degraded || !_hasRemove) return;
@@ -425,9 +446,18 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
     private static string FormatPluginWarning(string prefix, Exception exception)
     {
-        string detail = MultiMemoryStableDetail.Sanitize(exception.Message) ?? "observer diagnostic omitted";
-        return $"[scrinia:warn] {prefix}: {exception.GetType().Name}: {detail}";
+        string detail = MultiMemoryStableDetail.SanitizeOrFallback(exception.Message);
+        return $"[scrinia:warn] {prefix}: {detail}";
     }
+
+    private static string FormatPluginStderr(string? line) =>
+        $"[scrinia:warn] plugin stderr: {MultiMemoryStableDetail.SanitizeOrFallback(line)}";
+
+    private static string FormatPluginStatusValue(string? value) =>
+        MultiMemoryStableDetail.SanitizeOrFallback(value);
+
+    private static void LogObserverFailure(string operation, Exception exception) =>
+        Console.Error.WriteLine(FormatPluginWarning($"Plugin {operation} observer failed", exception));
 
     // ── Disposal ─────────────────────────────────────────────────────────
 

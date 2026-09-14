@@ -2,6 +2,8 @@ namespace Scrinia.Core;
 
 internal static class MultiMemoryStableDetail
 {
+    internal const string Fallback = "observer diagnostic omitted";
+
     internal static string? Sanitize(string? detail)
     {
         if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 ||
@@ -13,7 +15,8 @@ internal static class MultiMemoryStableDetail
             detail.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("payload", StringComparison.OrdinalIgnoreCase) ||
             detail.Contains("sidecar", StringComparison.OrdinalIgnoreCase) ||
-            detail.Contains("secret", StringComparison.OrdinalIgnoreCase))
+            detail.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
+            IsColonOnlyUriOrDriveRelative(detail))
             return null;
 
         return detail;
@@ -22,4 +25,22 @@ internal static class MultiMemoryStableDetail
     internal static bool IsStableDetailCharacter(char character) =>
         char.IsLetterOrDigit(character) || character == ' ' ||
         ".,:;_()-".Contains(character, StringComparison.Ordinal);
+
+    internal static string SanitizeOrFallback(string? detail) => Sanitize(detail) ?? Fallback;
+
+    private static bool IsColonOnlyUriOrDriveRelative(string detail)
+    {
+        int colon = detail.IndexOf(':');
+        if (colon <= 0) return false;
+
+        for (int i = 0; i < colon; i++)
+        {
+            char character = detail[i];
+            if (i == 0 && !char.IsLetter(character)) return false;
+            if (i > 0 && !char.IsLetterOrDigit(character) && character is not '+' and not '-' and not '.')
+                return false;
+        }
+
+        return true;
+    }
 }
