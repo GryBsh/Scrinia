@@ -15,7 +15,9 @@ internal sealed record MultiMemoryTransactionRecord
         IReadOnlyList<MultiMemoryParticipantManifest> participants,
         DateTimeOffset createdAt,
         DateTimeOffset updatedAt,
-        IReadOnlyList<MultiMemoryParticipantCompletion>? completedParticipants = null)
+        IReadOnlyList<MultiMemoryParticipantCompletion>? completedParticipants = null,
+        IReadOnlyList<B4ParticipantRecoveryState>? transactionalParticipants = null,
+        IReadOnlyList<B4ParticipantRequestMetadata>? rejectedTransactionalParticipants = null)
     {
         Format = RequireText(format, nameof(format));
         Version = version;
@@ -34,6 +36,12 @@ internal sealed record MultiMemoryTransactionRecord
         CompletedParticipants = completedParticipants is null
             ? null
             : Array.AsReadOnly(completedParticipants.ToArray());
+        if (transactionalParticipants is not null && transactionalParticipants.Any(participant => participant is null))
+            throw new ArgumentException("Transactional participants cannot contain null values.", nameof(transactionalParticipants));
+        if (rejectedTransactionalParticipants is not null && rejectedTransactionalParticipants.Any(participant => participant is null))
+            throw new ArgumentException("Rejected transactional participants cannot contain null values.", nameof(rejectedTransactionalParticipants));
+        TransactionalParticipants = transactionalParticipants is null ? null : Array.AsReadOnly(transactionalParticipants.ToArray());
+        RejectedTransactionalParticipants = rejectedTransactionalParticipants is null ? null : Array.AsReadOnly(rejectedTransactionalParticipants.ToArray());
         CreatedAt = RequireUtc(createdAt, nameof(createdAt));
         UpdatedAt = RequireUtc(updatedAt, nameof(updatedAt));
     }
@@ -47,6 +55,10 @@ internal sealed record MultiMemoryTransactionRecord
     public IReadOnlyList<MultiMemoryParticipantManifest> Participants { get; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<MultiMemoryParticipantCompletion>? CompletedParticipants { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<B4ParticipantRecoveryState>? TransactionalParticipants { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<B4ParticipantRequestMetadata>? RejectedTransactionalParticipants { get; }
     public DateTimeOffset CreatedAt { get; }
     public DateTimeOffset UpdatedAt { get; }
 
@@ -93,6 +105,15 @@ internal sealed record MultiMemoryParticipantCompletion
 [JsonSerializable(typeof(MultiMemoryTransactionState))]
 [JsonSerializable(typeof(MultiMemoryParticipantManifest[]))]
 [JsonSerializable(typeof(MultiMemoryParticipantCompletion[]))]
+[JsonSerializable(typeof(B4ParticipantRecoveryState))]
+[JsonSerializable(typeof(B4ParticipantRecoveryState[]))]
+[JsonSerializable(typeof(B4ParticipantRequestMetadata))]
+[JsonSerializable(typeof(B4ParticipantRequestMetadata[]))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(TransactionalParticipantLifecycleState))]
+[JsonSerializable(typeof(TransactionalQuarantineState))]
+[JsonSerializable(typeof(TransactionalFailureCode))]
 internal partial class MultiMemoryTransactionJsonContext : JsonSerializerContext;
 
 internal sealed class MultiMemoryTransactionStateJsonConverter : JsonConverter<MultiMemoryTransactionState>
@@ -182,14 +203,16 @@ internal static class MultiMemoryTransactionRecordCodec
     {
         ArgumentNullException.ThrowIfNull(record);
         return new MultiMemoryTransactionRecord(record.Format, record.Version, record.TransactionId,
-            record.Scope, state, record.Participants, record.CreatedAt, updatedAt, record.CompletedParticipants);
+            record.Scope, state, record.Participants, record.CreatedAt, updatedAt, record.CompletedParticipants,
+            record.TransactionalParticipants, record.RejectedTransactionalParticipants);
     }
 
     internal static MultiMemoryTransactionRecord WithCompletionProof(
         MultiMemoryTransactionRecord record, IReadOnlyList<MultiMemoryParticipantCompletion> completions,
         DateTimeOffset updatedAt) =>
         new(record.Format, record.Version, record.TransactionId, record.Scope, record.State,
-            record.Participants, record.CreatedAt, updatedAt, completions);
+            record.Participants, record.CreatedAt, updatedAt, completions,
+            record.TransactionalParticipants, record.RejectedTransactionalParticipants);
 
     internal static string GetPath(string scopeDirectory)
     {
@@ -199,10 +222,43 @@ internal static class MultiMemoryTransactionRecordCodec
         return Path.Combine(root, FileName);
     }
 
+    internal static MultiMemoryTransactionRecord WithTransactionalParticipant(
+        MultiMemoryTransactionRecord record, B4ParticipantRecoveryState participant, DateTimeOffset updatedAt)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(participant);
+        var participants = (record.TransactionalParticipants ?? Array.Empty<B4ParticipantRecoveryState>()).ToArray();
+        int index = Array.FindIndex(participants, item => item.ParticipantIdentity == participant.ParticipantIdentity);
+        if (index < 0) throw new ArgumentException("Participant is not part of the record.", nameof(participant));
+        participants[index] = participant;
+        return new(record.Format, record.Version, record.TransactionId, record.Scope, record.State,
+            record.Participants, record.CreatedAt, updatedAt, record.CompletedParticipants, participants,
+            record.RejectedTransactionalParticipants);
+    }
+
+    internal static MultiMemoryTransactionRecord WithTransactionalParticipants(
+        MultiMemoryTransactionRecord record, IReadOnlyList<B4ParticipantRecoveryState> participants, DateTimeOffset updatedAt) =>
+        new(record.Format, record.Version, record.TransactionId, record.Scope, record.State,
+            record.Participants, record.CreatedAt, updatedAt, record.CompletedParticipants, participants,
+            record.RejectedTransactionalParticipants);
+
     internal static void Write(string scopeDirectory, MultiMemoryTransactionRecord record)
     {
         string path = GetPath(scopeDirectory);
         DurableFile.AtomicWriteAllBytes(path, Serialize(record));
+    }
+
+    internal static void WriteExpected(string scopeDirectory, MultiMemoryTransactionRecord expected,
+        MultiMemoryTransactionRecord replacement)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        ArgumentNullException.ThrowIfNull(replacement);
+        string path = GetPath(scopeDirectory);
+        MultiMemoryTransactionRecord current = Read(scopeDirectory, expected.Scope);
+        if (!Serialize(current).AsSpan().SequenceEqual(Serialize(expected)))
+            throw new MultiMemoryTransactionRecordException("Coordinator record changed before replacement.", MultiMemoryFailure.Inconsistent,
+                transactionId: expected.TransactionId, expectedScope: expected.Scope);
+        DurableFile.AtomicWriteAllBytes(path, Serialize(replacement));
     }
 
     internal static MultiMemoryTransactionRecord Read(string scopeDirectory, string expectedScope)
@@ -257,6 +313,10 @@ internal static class MultiMemoryTransactionRecordCodec
             throw new MultiMemoryTransactionRecordException("Coordinator record scope is inconsistent.", MultiMemoryFailure.Inconsistent);
         if (record.Participants.Count is 0 or > MaximumParticipants)
             throw new MultiMemoryTransactionRecordException("Coordinator participant count is outside its bounds.", MultiMemoryFailure.Malformed);
+        int transactionalCount = record.TransactionalParticipants?.Count ?? 0;
+        int rejectedCount = record.RejectedTransactionalParticipants?.Count ?? 0;
+        if (transactionalCount + record.Participants.Count > MaximumParticipants || rejectedCount > MaximumParticipants)
+            throw new MultiMemoryTransactionRecordException("Transactional participant count is outside its bounds.", MultiMemoryFailure.Malformed);
         if (record.UpdatedAt < record.CreatedAt)
             throw new MultiMemoryTransactionRecordException("Coordinator timestamps are inconsistent.", MultiMemoryFailure.Inconsistent);
         RequireBounded(record.TransactionId, nameof(record.TransactionId));
@@ -303,6 +363,27 @@ internal static class MultiMemoryTransactionRecordCodec
                         participant.OperationId == completion.OperationId && participant.Kind == completion.Kind))
                     throw new MultiMemoryTransactionRecordException("Coordinator completion proof is inconsistent.", MultiMemoryFailure.Inconsistent);
             }
+        }
+
+        var identities = new HashSet<string>(StringComparer.Ordinal);
+        string? previousOrderingKey = null;
+        foreach (var participant in record.TransactionalParticipants ?? Array.Empty<B4ParticipantRecoveryState>())
+        {
+            if (!identities.Add(participant.ParticipantIdentity) ||
+                previousOrderingKey is not null && string.CompareOrdinal(previousOrderingKey, participant.OrderingKey) >= 0 ||
+                !string.Equals(participant.TransactionId, record.TransactionId, StringComparison.Ordinal) ||
+                !string.Equals(participant.Scope, record.Scope, StringComparison.Ordinal))
+                throw new MultiMemoryTransactionRecordException("Transactional participant snapshot is inconsistent.", MultiMemoryFailure.Inconsistent);
+            previousOrderingKey = participant.OrderingKey;
+        }
+        previousOrderingKey = null;
+        foreach (var participant in record.RejectedTransactionalParticipants ?? Array.Empty<B4ParticipantRequestMetadata>())
+        {
+            if (previousOrderingKey is not null && string.CompareOrdinal(previousOrderingKey, participant.OrderingKey) >= 0 ||
+                !string.Equals(participant.TransactionId, record.TransactionId, StringComparison.Ordinal) ||
+                !string.Equals(participant.Scope, record.Scope, StringComparison.Ordinal))
+                throw new MultiMemoryTransactionRecordException("Rejected transactional participant metadata is inconsistent.", MultiMemoryFailure.Inconsistent);
+            previousOrderingKey = participant.OrderingKey;
         }
 
         if (recordPath is not null && expectedStoreDirectory is not null &&

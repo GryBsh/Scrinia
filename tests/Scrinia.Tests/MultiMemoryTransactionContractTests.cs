@@ -7,7 +7,7 @@ using Xunit;
 
 namespace Scrinia.Tests;
 
-public sealed class MultiMemoryTransactionContractTests
+public sealed partial class MultiMemoryTransactionContractTests
 {
     [Fact]
     public void Request_RejectsMissingParticipantsAndBlankParticipantIdentity()

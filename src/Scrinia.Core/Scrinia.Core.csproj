@@ -18,5 +18,6 @@
     <!-- The embeddings test project drives the content-verified download through the managers'
          internal EnsureModelAsync overloads; keep the download seam internal to production. -->
     <InternalsVisibleTo Include="Scrinia.Plugin.Embeddings.Tests" />
+    <InternalsVisibleTo Include="Scrinia" />
   </ItemGroup>
 </Project>
