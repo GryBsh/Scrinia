@@ -114,19 +114,26 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     private TransactionalRollbackContext CreateRollbackContext() =>
         new(_transactionId, _scope, _address, _operationId, _kind, _preparedHandle ?? throw new MultiMemoryParticipantMismatchException());
 
-    internal static RetryClassification ClassifyReturnedFailure(TransactionalPrepareResult result, bool callbackStarted) =>
+    internal static RetryClassification ClassifyReturnedFailure(TransactionalPrepareResult? result, bool callbackStarted) =>
+        result is null ? InvalidResponse() :
         result.Handle is not null ? new(RetryTerminalState.Success, null, false, false, false, false, null) :
-        ClassifyFailure(result.Failure!, callbackStarted);
+        result.Failure is null ? InvalidResponse() : ClassifyFailure(result.Failure, callbackStarted);
 
-    internal static RetryClassification ClassifyReturnedFailure(TransactionalParticipantResult result, bool callbackStarted) =>
+    internal static RetryClassification ClassifyReturnedFailure(TransactionalParticipantResult? result, bool callbackStarted) =>
+        result is null ? InvalidResponse() :
         result.State is TransactionalParticipantState.Committed or TransactionalParticipantState.RolledBack
             ? new(RetryTerminalState.Success, null, false, false, false, false, null)
-            : ClassifyFailure(result.Failure!, callbackStarted);
+            : result.Failure is null ? InvalidResponse() : ClassifyFailure(result.Failure, callbackStarted);
 
-    internal static RetryClassification ClassifyReturnedFailure(TransactionalCommitStatusResult result, bool callbackStarted) =>
+    internal static RetryClassification ClassifyReturnedFailure(TransactionalCommitStatusResult? result, bool callbackStarted) =>
+        result is null ? InvalidResponse() :
         result.State is TransactionalCommitStatus.Prepared or TransactionalCommitStatus.Committed
             ? new(RetryTerminalState.Success, null, false, false, false, false, null)
-            : ClassifyFailure(result.Failure!, callbackStarted);
+            : result.Failure is null ? InvalidResponse() : ClassifyFailure(result.Failure, callbackStarted);
+
+    private static RetryClassification InvalidResponse() =>
+        new(RetryTerminalState.Success, Scrinia.Core.TransactionalFailureCode.InvalidResponse,
+            true, true, false, false, "Callback returned an invalid result.");
 
     internal static RetryClassification ClassifyThrownException(Exception exception, bool callbackStarted)
     {
@@ -186,6 +193,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _lastFailure = null;
         _lastEvidence = null;
         _lastAmbiguous = false;
+        _evidencePath = string.Empty;
     }
 
     private sealed class PrepareClassifier : IRetryClassifier<TransactionalPrepareResult>

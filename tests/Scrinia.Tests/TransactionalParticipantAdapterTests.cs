@@ -188,6 +188,25 @@ public sealed class TransactionalParticipantAdapterTests
     }
 
     [Fact]
+    public async Task Monotonic_clock_failure_stops_without_delay_or_additional_callback()
+    {
+        var callbacks = 0;
+        var delays = 0;
+        var budget = new RetryBudget(new TransactionalRetryPolicy(), new FailingClock(),
+            (_, _) => { delays++; return ValueTask.CompletedTask; });
+
+        var result = await budget.ExecuteAsync(_ =>
+        {
+            callbacks++;
+            return Task.FromResult(TestResult.Transient);
+        }, new ResultClassifier(), CancellationToken.None);
+
+        result.FailureCode.Should().Be(TransactionalFailureCode.RetryMonotonicClockFailed);
+        callbacks.Should().Be(1);
+        delays.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Adapter_preserves_commit_failure_evidence_context_and_handle()
     {
         TransactionalCommitContext? captured = null;
@@ -242,6 +261,41 @@ public sealed class TransactionalParticipantAdapterTests
     }
 
     [Fact]
+    public async Task Successful_follow_up_operation_clears_stale_evidence()
+    {
+        var evidence = new TransactionalRecoveryEvidence("recovery/commit", "journal", "v1");
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => Task.FromResult(new TransactionalParticipantResult(
+                TransactionalParticipantState.Changed,
+                new(Scrinia.Plugin.Abstractions.TransactionalFailureCode.CommitFailed, "failed", true), evidence)),
+            Rollback = (_, _) => Task.FromResult(new TransactionalParticipantResult(
+                TransactionalParticipantState.RolledBack, null, null))
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+        await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+        adapter.EvidencePath.Should().Be("recovery/commit");
+
+        await adapter.RollbackAsync(CancellationToken.None);
+
+        adapter.EvidencePath.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Null_callback_results_are_invalid_response_not_permanent()
+    {
+        TransactionalParticipantAdapter.ClassifyReturnedFailure((TransactionalPrepareResult?)null, true)
+            .Should().Match<RetryClassification>(x => x.FailureCode == TransactionalFailureCode.InvalidResponse && x.Ambiguous);
+        TransactionalParticipantAdapter.ClassifyReturnedFailure((TransactionalParticipantResult?)null, true)
+            .Should().Match<RetryClassification>(x => x.FailureCode == TransactionalFailureCode.InvalidResponse && x.Ambiguous);
+        TransactionalParticipantAdapter.ClassifyReturnedFailure((TransactionalCommitStatusResult?)null, true)
+            .Should().Match<RetryClassification>(x => x.FailureCode == TransactionalFailureCode.InvalidResponse && x.Ambiguous);
+    }
+
+    [Fact]
     public void All_lifecycle_returned_failures_and_typed_exceptions_preserve_disposition()
     {
         var failure = new TransactionalParticipantFailure(
@@ -275,6 +329,11 @@ public sealed class TransactionalParticipantAdapterTests
     {
         private readonly Queue<TimeSpan> _values = new(values);
         public TimeSpan GetElapsed() => _values.Count == 0 ? values[^1] : _values.Dequeue();
+    }
+
+    private sealed class FailingClock : IMonotonicClock
+    {
+        public TimeSpan GetElapsed() => throw new InvalidOperationException("clock unavailable");
     }
 
     private sealed class ResultClassifier : IRetryClassifier<TestResult>
