@@ -14,6 +14,12 @@ public sealed class TransactionalParticipantContractTests
 
         descriptor.Capabilities.Should().Equal("alpha", "zeta");
         descriptor.Capabilities.Should().NotBeAssignableTo<string[]>();
+        new TransactionalParticipantDescriptor("participant", 1,
+            Enumerable.Range(1, 32).Select(number => $"cap-{number}").ToArray(), new(), "participant-key")
+            .Capabilities.Should().HaveCount(32);
+        FluentActions.Invoking(() => new TransactionalParticipantDescriptor("participant", 1,
+            Enumerable.Range(1, 33).Select(number => $"cap-{number}").ToArray(), new(), "participant-key"))
+            .Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalParticipantDescriptor(
             "participant", 1, Array.Empty<string>(), new TransactionalRetryPolicy(), "participant-key"))
             .Should().Throw<ArgumentException>();
@@ -72,7 +78,9 @@ public sealed class TransactionalParticipantContractTests
         new TransactionalCommitStatusResult(TransactionalCommitStatus.Unknown, Evidence(), Failure()).State.Should().Be(TransactionalCommitStatus.Unknown);
 
         FluentActions.Invoking(() => new TransactionalPrepareResult(null, null, null)).Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new TransactionalPrepareResult(null, null, Evidence())).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalPrepareResult(handle, Failure(), null)).Should().Throw<ArgumentException>();
+        new TransactionalPrepareResult(null, Failure(), null).Failure.Should().NotBeNull();
         FluentActions.Invoking(() => new TransactionalCommitStatusResult(TransactionalCommitStatus.Unknown, null, null)).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalParticipantResult((TransactionalParticipantState)99, null, null)).Should().Throw<ArgumentException>();
     }
