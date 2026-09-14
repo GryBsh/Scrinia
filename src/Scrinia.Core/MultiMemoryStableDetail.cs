@@ -41,6 +41,10 @@ internal static class MultiMemoryStableDetail
                 return false;
         }
 
-        return true;
+        if (colon == 1 && char.IsLetter(detail[0]) &&
+            (detail.Length == colon + 1 || detail[colon + 1] is not '/' and not '\\'))
+            return true;
+
+        return detail.Length > colon + 1 && !char.IsWhiteSpace(detail[colon + 1]);
     }
 }

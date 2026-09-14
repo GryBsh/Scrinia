@@ -282,6 +282,58 @@ public sealed class TransactionalParticipantAdapterTests
         await adapter.RollbackAsync(CancellationToken.None);
 
         adapter.EvidencePath.Should().BeEmpty();
+        adapter.RecoveryState.Should().NotBeNull();
+        adapter.RecoveryState!.LifecycleState.Should().Be(TransactionalParticipantLifecycleState.RolledBack);
+        adapter.RecoveryState.StateMayHaveChanged.Should().BeFalse();
+        adapter.RecoveryState.Ambiguous.Should().BeFalse();
+        adapter.RecoveryState.QuarantineState.Should().Be(TransactionalQuarantineState.None);
+    }
+
+    [Fact]
+    public async Task Ordinary_exception_creates_ambiguous_recovery_state_with_quarantine()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => throw new InvalidOperationException("provider failed")
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+
+        await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        adapter.RecoveryState.Should().NotBeNull();
+        adapter.RecoveryState!.LifecycleState.Should().Be(TransactionalParticipantLifecycleState.Ambiguous);
+        adapter.RecoveryState.StateMayHaveChanged.Should().BeTrue();
+        adapter.RecoveryState.Ambiguous.Should().BeTrue();
+        adapter.RecoveryState.QuarantineState.Should().Be(TransactionalQuarantineState.Quarantined);
+        adapter.RecoveryState.LastFailureCode.Should().Be(TransactionalFailureCode.Permanent);
+    }
+
+    [Fact]
+    public async Task Successful_status_and_commit_clear_previous_ambiguity_state()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => Task.FromResult(new TransactionalParticipantResult(
+                TransactionalParticipantState.Committed, null, null)),
+            Status = (_, _) => Task.FromResult(new TransactionalCommitStatusResult(
+                TransactionalCommitStatus.Committed, null, null))
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+
+        await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().NotThrowAsync();
+        await adapter.GetCommitStatusAsync(CancellationToken.None);
+
+        adapter.RecoveryState.Should().NotBeNull();
+        adapter.RecoveryState!.LifecycleState.Should().Be(TransactionalParticipantLifecycleState.Committed);
+        adapter.RecoveryState.StateMayHaveChanged.Should().BeFalse();
+        adapter.RecoveryState.Ambiguous.Should().BeFalse();
+        adapter.RecoveryState.QuarantineState.Should().Be(TransactionalQuarantineState.None);
     }
 
     [Fact]
@@ -474,7 +526,14 @@ public sealed class TransactionalParticipantAdapterTests
     }
 
     private static MultiMemoryParticipantRequest Request() =>
-        new(MemoryAddress.Parse("/memory/item"), "op", "kind", "tx", "scope");
+        new MultiMemoryTransactionRequest(
+            "scope",
+            [new MultiMemoryParticipantRequest(MemoryAddress.Parse("/b3"), "b3-op", "b3-kind")],
+            [new MultiMemoryTransactionalParticipantRequest(
+                MemoryAddress.Parse("/memory/item"), "participant", 1, "participant-key",
+                "op", "kind", new Dictionary<string, string>(), new Dictionary<string, string>())])
+            .RequestedParticipants("tx")
+            .Last();
 
     private sealed class TestMonotonicClock : IMonotonicClock
     {

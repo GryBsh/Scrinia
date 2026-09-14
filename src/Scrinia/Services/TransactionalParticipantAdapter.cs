@@ -100,12 +100,16 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             token => _participant.GetCommitStatusAsync(CreateCommitContext(), token),
             new CommitStatusClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value is null) throw CreateTypedFailure(retry);
-        return retry.Value.State switch
+        MultiMemoryCommitStatus status = retry.Value.State switch
         {
             TransactionalCommitStatus.Prepared => MultiMemoryCommitStatus.Prepared,
             TransactionalCommitStatus.Committed => MultiMemoryCommitStatus.Committed,
             _ => throw CreateTypedFailure(retry)
         };
+        _lifecycleState = status == MultiMemoryCommitStatus.Committed
+            ? TransactionalParticipantLifecycleState.Committed
+            : TransactionalParticipantLifecycleState.Prepared;
+        return status;
     }
 
     public async Task CommitAsync(CancellationToken cancellationToken)
@@ -197,19 +201,12 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     {
         _lastFailure = failure;
         _lastEvidence = evidence;
-        _lastAmbiguous = failure?.StateMayHaveChanged == true && evidence is not null;
         _evidencePath = evidence?.EvidenceReference ?? string.Empty;
-        _stateMayHaveChanged = failure?.StateMayHaveChanged == true;
-        _ambiguous = _lastAmbiguous;
-        if (_ambiguous)
-        {
-            _lifecycleState = TransactionalParticipantLifecycleState.Ambiguous;
-            _quarantineState = TransactionalQuarantineState.Quarantined;
-            _quarantineReason = "ambiguous participant state";
-        }
+        bool stateMayHaveChanged = failure?.StateMayHaveChanged == true;
+        SetFailureLifecycle(stateMayHaveChanged, stateMayHaveChanged && evidence is not null);
     }
 
-    private void CaptureException(Exception exception)
+    private void CaptureException(Exception exception, bool callbackStarted)
     {
         if (exception is TransactionalParticipantException typed)
         {
@@ -225,13 +222,17 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
                 _quarantineState = TransactionalQuarantineState.Quarantined;
                 _quarantineReason = "ambiguous participant state";
             }
+            SetFailureLifecycle(typed.Failure.StateMayHaveChanged, typed.Ambiguous);
             return;
         }
 
-        _lastFailure = null;
+        bool stateMayHaveChanged = callbackStarted;
+        _lastFailure = new(
+            Scrinia.Plugin.Abstractions.TransactionalFailureCode.Permanent,
+            MultiMemoryStableDetail.SanitizeOrFallback(exception.Message), stateMayHaveChanged);
         _lastEvidence = null;
-        _lastAmbiguous = false;
         _evidencePath = string.Empty;
+        SetFailureLifecycle(stateMayHaveChanged, stateMayHaveChanged);
     }
 
     private void ClearCapturedFailure()
@@ -240,6 +241,25 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _lastEvidence = null;
         _lastAmbiguous = false;
         _evidencePath = string.Empty;
+        _stateMayHaveChanged = false;
+        _ambiguous = false;
+        _lifecycleState = TransactionalParticipantLifecycleState.Prepared;
+        _quarantineState = TransactionalQuarantineState.None;
+        _quarantineReason = null;
+    }
+
+    private void SetFailureLifecycle(bool stateMayHaveChanged, bool ambiguous)
+    {
+        _lastAmbiguous = ambiguous;
+        _stateMayHaveChanged = stateMayHaveChanged;
+        _ambiguous = ambiguous;
+        _lifecycleState = ambiguous
+            ? TransactionalParticipantLifecycleState.Ambiguous
+            : stateMayHaveChanged
+                ? TransactionalParticipantLifecycleState.Changed
+                : TransactionalParticipantLifecycleState.Prepared;
+        _quarantineState = ambiguous ? TransactionalQuarantineState.Quarantined : TransactionalQuarantineState.None;
+        _quarantineReason = ambiguous ? "ambiguous participant state" : null;
     }
 
     private B4ParticipantRecoveryState? CreateRecoveryState()
@@ -266,7 +286,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             _capture(result?.Failure, result?.Evidence);
             return ClassifyReturnedFailure(result, callbackStarted);
         }
-        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
+        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception, callbackStarted); return ClassifyThrownException(exception, callbackStarted); }
 
     }
 
@@ -281,7 +301,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             _capture(result?.Failure, result?.Evidence);
             return ClassifyReturnedFailure(result, callbackStarted);
         }
-        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
+        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception, callbackStarted); return ClassifyThrownException(exception, callbackStarted); }
 
     }
 
@@ -296,7 +316,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             _capture(result?.Failure, result?.Evidence);
             return ClassifyReturnedFailure(result, callbackStarted);
         }
-        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
+        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception, callbackStarted); return ClassifyThrownException(exception, callbackStarted); }
 
     }
 }

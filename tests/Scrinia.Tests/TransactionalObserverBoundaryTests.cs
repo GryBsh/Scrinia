@@ -39,6 +39,14 @@ public sealed class TransactionalObserverBoundaryTests
     }
 
     [Theory]
+    [InlineData("provider: ready")]
+    [InlineData("retry: exhausted")]
+    public void StableDetailSanitizerPreservesReadableColonDiagnostics(string detail)
+    {
+        InvokeSanitize(detail).Should().Be(detail);
+    }
+
+    [Theory]
     [InlineData("mailto:user")]
     [InlineData("urn:item")]
     [InlineData("C:relative")]
