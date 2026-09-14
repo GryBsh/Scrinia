@@ -46,18 +46,33 @@ internal sealed record RetryClassification(
     {
         get
         {
-            if (!Enum.IsDefined(State) || Retryable && FailureCode != TransactionalFailureCode.DeclaredTransient ||
-                Cancelled && FailureCode != TransactionalFailureCode.Cancelled || Ambiguous && !StateMayHaveChanged)
+            if (!Enum.IsDefined(State) || FailureCode is not null && !Enum.IsDefined(FailureCode.Value) ||
+                Ambiguous && !StateMayHaveChanged ||
+                Cancelled && FailureCode != TransactionalFailureCode.Cancelled ||
+                Retryable && (Cancelled || FailureCode != TransactionalFailureCode.DeclaredTransient))
                 return false;
             return State switch
             {
-                RetryTerminalState.RetryMonotonicClockFailed => FailureCode == TransactionalFailureCode.RetryMonotonicClockFailed && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled,
-                RetryTerminalState.RetryMonotonicClockMovedBackwards => FailureCode == TransactionalFailureCode.RetryMonotonicClockMovedBackwards && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled,
-                RetryTerminalState.RetryElapsedOverflow => FailureCode == TransactionalFailureCode.RetryElapsedOverflow && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled,
-                _ => true
+                RetryTerminalState.Success => FailureCode is not null
+                    ? !Retryable || FailureCode == TransactionalFailureCode.DeclaredTransient
+                    : !StateMayHaveChanged && !Ambiguous && !Retryable && !Cancelled,
+                RetryTerminalState.DeclaredTransientExhausted => FailureCode == TransactionalFailureCode.DeclaredTransient &&
+                    !Retryable && !Ambiguous && !Cancelled,
+                RetryTerminalState.CancellationAfterCallbackStart => FailureCode == TransactionalFailureCode.Cancelled &&
+                    Cancelled && StateMayHaveChanged && Ambiguous && !Retryable,
+                RetryTerminalState.CancellationBeforeCallback => FailureCode == TransactionalFailureCode.Cancelled &&
+                    Cancelled && !StateMayHaveChanged && !Ambiguous && !Retryable,
+                RetryTerminalState.RetryMonotonicClockFailed => IsClockFailure(TransactionalFailureCode.RetryMonotonicClockFailed),
+                RetryTerminalState.RetryMonotonicClockMovedBackwards => IsClockFailure(TransactionalFailureCode.RetryMonotonicClockMovedBackwards),
+                RetryTerminalState.RetryElapsedOverflow => IsClockFailure(TransactionalFailureCode.RetryElapsedOverflow),
+                _ => false
             };
         }
+
     }
+
+    private bool IsClockFailure(TransactionalFailureCode code) =>
+        FailureCode == code && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled;
 }
 
 internal interface IRetryClassifier<T>
@@ -66,19 +81,30 @@ internal interface IRetryClassifier<T>
     RetryClassification Classify(Exception exception, bool callbackStarted);
 }
 
-internal sealed record RetryResult<T>
+    internal sealed record RetryResult<T> where T : class
 {
     internal RetryResult(T? value, int attempts, TimeSpan elapsed,
         TransactionalFailureCode? failureCode, bool stateMayHaveChanged,
         bool ambiguous, bool exhausted, bool cancelled)
     {
-        if (attempts < 0 || elapsed < TimeSpan.Zero ||
+        if (attempts is < 0 or > 8 || elapsed < TimeSpan.Zero ||
             failureCode is null && !cancelled && !exhausted && value is null ||
             (failureCode is not null || cancelled || exhausted) && value is not null ||
             cancelled && failureCode != TransactionalFailureCode.Cancelled ||
             exhausted && failureCode != TransactionalFailureCode.DeclaredTransient ||
             failureCode is null && (cancelled || exhausted))
             throw new ArgumentException("Retry result fields are inconsistent.");
+        if (attempts == 0 && (value is not null || failureCode is not TransactionalFailureCode.Cancelled))
+            throw new ArgumentException("A zero-attempt result must be cancellation before callback.");
+        if (failureCode is TransactionalFailureCode.RetryMonotonicClockFailed or TransactionalFailureCode.RetryMonotonicClockMovedBackwards or TransactionalFailureCode.RetryElapsedOverflow &&
+            (!stateMayHaveChanged || !ambiguous || exhausted || cancelled))
+            throw new ArgumentException("Clock failures must be ambiguous and state-changing.");
+        if (exhausted && (failureCode != TransactionalFailureCode.DeclaredTransient || ambiguous || cancelled))
+            throw new ArgumentException("Exhaustion must be a declared-transient, non-ambiguous terminal result.");
+        if (cancelled && ambiguous != stateMayHaveChanged)
+            throw new ArgumentException("Cancellation ambiguity must match state change.");
+        if (!exhausted && stateMayHaveChanged != ambiguous)
+            throw new ArgumentException("Non-exhausted state-change results must agree with ambiguity.");
         if (!stateMayHaveChanged && ambiguous)
             throw new ArgumentException("An ambiguous retry result must allow state change.");
         Value = value; Attempts = attempts; Elapsed = elapsed; FailureCode = failureCode;
@@ -112,6 +138,7 @@ internal sealed class RetryBudget
 
     internal async Task<RetryResult<T>> ExecuteAsync<T>(Func<CancellationToken, Task<T>> operation,
         IRetryClassifier<T> classifier, CancellationToken cancellationToken)
+        where T : class
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(classifier);
@@ -141,10 +168,12 @@ internal sealed class RetryBudget
             if (!TryReadElapsed(ref previousElapsed, ref hasClockReading, out lastElapsed, out var clockFailure))
                 return new(default, attempts, lastElapsed, clockFailure, true, true, false, false);
 
-            if (classification.Cancelled)
-                return Cancelled<T>(attempts, lastElapsed, true);
             if (!classification.IsValid)
                 return new(default, attempts, lastElapsed, TransactionalFailureCode.InvalidResponse, true, true, false, false);
+            if (classification.FailureCode is null && value is null)
+                return new(default, attempts, lastElapsed, TransactionalFailureCode.InvalidResponse, true, true, false, false);
+            if (classification.Cancelled)
+                return Cancelled<T>(attempts, lastElapsed, true);
             if (!classification.Retryable)
             {
                 if (classification.FailureCode is null)
@@ -213,7 +242,7 @@ internal sealed class RetryBudget
         }
     }
 
-    private static RetryResult<T> Cancelled<T>(int attempts, TimeSpan elapsed, bool callbackStarted) =>
+    private static RetryResult<T> Cancelled<T>(int attempts, TimeSpan elapsed, bool callbackStarted) where T : class =>
         new(default, attempts, elapsed, TransactionalFailureCode.Cancelled,
             callbackStarted, callbackStarted, false, true);
 }

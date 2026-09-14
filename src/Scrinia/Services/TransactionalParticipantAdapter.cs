@@ -6,8 +6,14 @@ namespace Scrinia.Services;
 
 internal sealed class TransactionalParticipantException : Exception
 {
-    internal TransactionalParticipantException(TransactionalParticipantFailure failure) => Failure = failure ?? throw new ArgumentNullException(nameof(failure));
+    internal TransactionalParticipantException(TransactionalParticipantFailure failure, TransactionalRecoveryEvidence? evidence, bool ambiguous)
+    {
+        Failure = failure ?? throw new ArgumentNullException(nameof(failure));
+        Evidence = evidence; Ambiguous = ambiguous;
+    }
     internal TransactionalParticipantFailure Failure { get; }
+    internal TransactionalRecoveryEvidence? Evidence { get; }
+    internal bool Ambiguous { get; }
 }
 
 internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantAdapter
@@ -20,6 +26,10 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     private readonly string _kind;
     private readonly RetryBudget _retryBudget;
     private TransactionalPreparedHandle? _preparedHandle;
+    private TransactionalParticipantFailure? _lastFailure;
+    private TransactionalRecoveryEvidence? _lastEvidence;
+    private bool _lastAmbiguous;
+    private string _evidencePath = string.Empty;
 
     internal TransactionalParticipantAdapter(ITransactionalMemoryParticipant participant, MultiMemoryParticipantRequest request)
     {
@@ -43,51 +53,56 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     public string Scope => _scope;
     public string Subject => _address.ToString();
     public string OperationId => _operationId;
-    public string EvidencePath => string.Empty;
+    public string EvidencePath => _evidencePath;
 
     public async Task PrepareAsync(CancellationToken cancellationToken)
     {
+        ClearCapturedFailure();
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.PrepareAsync(new(_transactionId, _scope, _address, _operationId, _kind,
                 [new(_address, _operationId, _kind)]), token),
-            new PrepareClassifier(), cancellationToken).ConfigureAwait(false);
+            new PrepareClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value?.Handle is null) throw CreateTypedFailure(retry);
         _preparedHandle = retry.Value.Handle;
     }
 
     public async Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken)
     {
+        ClearCapturedFailure();
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.GetCommitStatusAsync(CreateCommitContext(), token),
-            new CommitStatusClassifier(), cancellationToken).ConfigureAwait(false);
+            new CommitStatusClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value is null) throw CreateTypedFailure(retry);
         return retry.Value.State switch
         {
             TransactionalCommitStatus.Prepared => MultiMemoryCommitStatus.Prepared,
             TransactionalCommitStatus.Committed => MultiMemoryCommitStatus.Committed,
-            _ => MultiMemoryCommitStatus.Unknown
+            _ => throw CreateTypedFailure(retry)
         };
     }
 
     public async Task CommitAsync(CancellationToken cancellationToken)
     {
+        ClearCapturedFailure();
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.CommitAsync(CreateCommitContext(), token),
-            new ParticipantResultClassifier(), cancellationToken).ConfigureAwait(false);
+            new ParticipantResultClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value?.State != TransactionalParticipantState.Committed) throw CreateTypedFailure(retry);
     }
 
     public async Task VerifyCommittedAsync(CancellationToken cancellationToken)
     {
         if (await GetCommitStatusAsync(cancellationToken).ConfigureAwait(false) != MultiMemoryCommitStatus.Committed)
-            throw new MultiMemoryParticipantMismatchException();
+            throw CreateTypedFailure(new RetryResult<TransactionalCommitStatusResult>(default, 1, TimeSpan.Zero,
+                Scrinia.Core.TransactionalFailureCode.VerificationFailed, true, _lastAmbiguous, false, false));
     }
 
     public async Task RollbackAsync(CancellationToken cancellationToken)
     {
+        ClearCapturedFailure();
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.RollbackAsync(CreateRollbackContext(), token),
-            new ParticipantResultClassifier(), cancellationToken).ConfigureAwait(false);
+            new ParticipantResultClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
         if (retry.Value?.State != TransactionalParticipantState.RolledBack) throw CreateTypedFailure(retry);
     }
 
@@ -119,13 +134,15 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             return new(RetryTerminalState.CancellationAfterCallbackStart, Scrinia.Core.TransactionalFailureCode.Cancelled,
                 callbackStarted, callbackStarted, false, true, null);
         if (exception is TransactionalParticipantException typed)
-            return ClassifyFailure(typed.Failure, callbackStarted);
+            return ClassifyFailure(typed.Failure, callbackStarted, typed.Ambiguous);
         return new(RetryTerminalState.Success, Scrinia.Core.TransactionalFailureCode.Permanent, true, true, false, false, null);
     }
 
-    private static RetryClassification ClassifyFailure(TransactionalParticipantFailure failure, bool callbackStarted) =>
+    private static RetryClassification ClassifyFailure(TransactionalParticipantFailure failure, bool callbackStarted,
+        bool? ambiguous = null) =>
         new(RetryTerminalState.Success, ToCoreCode(failure.Code), failure.StateMayHaveChanged,
-            failure.StateMayHaveChanged, failure.Code == Scrinia.Plugin.Abstractions.TransactionalFailureCode.DeclaredTransient,
+            ambiguous ?? failure.StateMayHaveChanged,
+            failure.Code == Scrinia.Plugin.Abstractions.TransactionalFailureCode.DeclaredTransient,
             failure.Code == Scrinia.Plugin.Abstractions.TransactionalFailureCode.Cancelled, failure.Detail);
 
     private static Scrinia.Core.TransactionalFailureCode ToCoreCode(Scrinia.Plugin.Abstractions.TransactionalFailureCode code) =>
@@ -135,25 +152,72 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         new(new Scrinia.Core.TransactionalRetryPolicy(policy.MaxAttempts, policy.MaxElapsed, policy.InitialDelay, policy.MaximumDelay),
             new SystemMonotonicClock(), (delay, token) => new(Task.Delay(delay, token)));
 
-    private static TransactionalParticipantException CreateTypedFailure<T>(RetryResult<T> result) =>
-        new(new((Scrinia.Plugin.Abstractions.TransactionalFailureCode)(int)(result.FailureCode ?? Scrinia.Core.TransactionalFailureCode.InvalidResponse),
-            "Transactional participant callback did not complete successfully.", result.StateMayHaveChanged));
+    private TransactionalParticipantException CreateTypedFailure<T>(RetryResult<T> result) where T : class =>
+        new(_lastFailure ?? new((Scrinia.Plugin.Abstractions.TransactionalFailureCode)(int)(result.FailureCode ?? Scrinia.Core.TransactionalFailureCode.InvalidResponse),
+            "Transactional participant callback did not complete successfully.", result.StateMayHaveChanged),
+            _lastEvidence, _lastAmbiguous || result.Ambiguous);
+
+    private void CaptureFailure(TransactionalParticipantFailure? failure, TransactionalRecoveryEvidence? evidence)
+    {
+        _lastFailure = failure;
+        _lastEvidence = evidence;
+        _lastAmbiguous = failure?.StateMayHaveChanged == true && evidence is not null;
+        if (evidence is not null) _evidencePath = evidence.EvidenceReference;
+    }
+
+    private void CaptureException(Exception exception)
+    {
+        if (exception is TransactionalParticipantException typed)
+        {
+            _lastFailure = typed.Failure;
+            _lastEvidence = typed.Evidence;
+            _lastAmbiguous = typed.Ambiguous;
+            if (typed.Evidence is not null) _evidencePath = typed.Evidence.EvidenceReference;
+            return;
+        }
+
+        _lastFailure = null;
+        _lastEvidence = null;
+        _lastAmbiguous = false;
+    }
+
+    private void ClearCapturedFailure()
+    {
+        _lastFailure = null;
+        _lastEvidence = null;
+        _lastAmbiguous = false;
+    }
 
     private sealed class PrepareClassifier : IRetryClassifier<TransactionalPrepareResult>
     {
-        public RetryClassification Classify(TransactionalPrepareResult result, bool callbackStarted) => ClassifyReturnedFailure(result, callbackStarted);
-        public RetryClassification Classify(Exception exception, bool callbackStarted) => ClassifyThrownException(exception, callbackStarted);
+        private readonly Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> _capture;
+        private readonly TransactionalParticipantAdapter _owner;
+        internal PrepareClassifier(Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> capture,
+            TransactionalParticipantAdapter owner) { _capture = capture; _owner = owner; }
+        public RetryClassification Classify(TransactionalPrepareResult result, bool callbackStarted) { _capture(result.Failure, result.Evidence); return ClassifyReturnedFailure(result, callbackStarted); }
+        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
+
     }
 
     private sealed class ParticipantResultClassifier : IRetryClassifier<TransactionalParticipantResult>
     {
-        public RetryClassification Classify(TransactionalParticipantResult result, bool callbackStarted) => ClassifyReturnedFailure(result, callbackStarted);
-        public RetryClassification Classify(Exception exception, bool callbackStarted) => ClassifyThrownException(exception, callbackStarted);
+        private readonly Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> _capture;
+        private readonly TransactionalParticipantAdapter _owner;
+        internal ParticipantResultClassifier(Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> capture,
+            TransactionalParticipantAdapter owner) { _capture = capture; _owner = owner; }
+        public RetryClassification Classify(TransactionalParticipantResult result, bool callbackStarted) { _capture(result.Failure, result.Evidence); return ClassifyReturnedFailure(result, callbackStarted); }
+        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
+
     }
 
     private sealed class CommitStatusClassifier : IRetryClassifier<TransactionalCommitStatusResult>
     {
-        public RetryClassification Classify(TransactionalCommitStatusResult result, bool callbackStarted) => ClassifyReturnedFailure(result, callbackStarted);
-        public RetryClassification Classify(Exception exception, bool callbackStarted) => ClassifyThrownException(exception, callbackStarted);
+        private readonly Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> _capture;
+        private readonly TransactionalParticipantAdapter _owner;
+        internal CommitStatusClassifier(Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> capture,
+            TransactionalParticipantAdapter owner) { _capture = capture; _owner = owner; }
+        public RetryClassification Classify(TransactionalCommitStatusResult result, bool callbackStarted) { _capture(result.Failure, result.Evidence); return ClassifyReturnedFailure(result, callbackStarted); }
+        public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
+
     }
 }

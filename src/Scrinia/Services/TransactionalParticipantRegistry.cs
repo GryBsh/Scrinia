@@ -23,6 +23,7 @@ internal sealed class TransactionalParticipantAdapterFactory : IMultiMemoryParti
 
     public Task<IMultiMemoryParticipantAdapter> CreateAsync(MultiMemoryParticipantRequest request, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(request);
         if (request.ParticipantIdentity is null || request.ContractVersion != 1 || request.OrderingKey is null || request.Payload is null || request.Metadata is null)
             throw new MultiMemoryParticipantMismatchException();
@@ -36,6 +37,7 @@ internal sealed class TransactionalParticipantAdapterFactory : IMultiMemoryParti
 
     public Task<IMultiMemoryParticipantAdapter> RehydrateAsync(B4ParticipantRehydrationRequest request, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(request);
         var state = request.State;
         if (state.QuarantineState != TransactionalQuarantineState.None || state.PreparedHandleReference is null ||
