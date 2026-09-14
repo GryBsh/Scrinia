@@ -40,7 +40,25 @@ internal enum RetryTerminalState
 internal sealed record RetryClassification(
     RetryTerminalState State, TransactionalFailureCode? FailureCode,
     bool StateMayHaveChanged, bool Ambiguous, bool Retryable,
-    bool Cancelled, string? Detail);
+    bool Cancelled, string? Detail)
+{
+    internal bool IsValid
+    {
+        get
+        {
+            if (!Enum.IsDefined(State) || Retryable && FailureCode != TransactionalFailureCode.DeclaredTransient ||
+                Cancelled && FailureCode != TransactionalFailureCode.Cancelled || Ambiguous && !StateMayHaveChanged)
+                return false;
+            return State switch
+            {
+                RetryTerminalState.RetryMonotonicClockFailed => FailureCode == TransactionalFailureCode.RetryMonotonicClockFailed && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled,
+                RetryTerminalState.RetryMonotonicClockMovedBackwards => FailureCode == TransactionalFailureCode.RetryMonotonicClockMovedBackwards && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled,
+                RetryTerminalState.RetryElapsedOverflow => FailureCode == TransactionalFailureCode.RetryElapsedOverflow && StateMayHaveChanged && Ambiguous && !Retryable && !Cancelled,
+                _ => true
+            };
+        }
+    }
+}
 
 internal interface IRetryClassifier<T>
 {
@@ -56,7 +74,10 @@ internal sealed record RetryResult<T>
     {
         if (attempts < 0 || elapsed < TimeSpan.Zero ||
             failureCode is null && !cancelled && !exhausted && value is null ||
-            (failureCode is not null || cancelled || exhausted) && value is not null)
+            (failureCode is not null || cancelled || exhausted) && value is not null ||
+            cancelled && failureCode != TransactionalFailureCode.Cancelled ||
+            exhausted && failureCode != TransactionalFailureCode.DeclaredTransient ||
+            failureCode is null && (cancelled || exhausted))
             throw new ArgumentException("Retry result fields are inconsistent.");
         if (!stateMayHaveChanged && ambiguous)
             throw new ArgumentException("An ambiguous retry result must allow state change.");
@@ -122,6 +143,8 @@ internal sealed class RetryBudget
 
             if (classification.Cancelled)
                 return Cancelled<T>(attempts, lastElapsed, true);
+            if (!classification.IsValid)
+                return new(default, attempts, lastElapsed, TransactionalFailureCode.InvalidResponse, true, true, false, false);
             if (!classification.Retryable)
             {
                 if (classification.FailureCode is null)
@@ -136,9 +159,13 @@ internal sealed class RetryBudget
             var delay = CalculateDelay(attempts - 1);
             if (delay is null)
                 return new(default, attempts, lastElapsed, TransactionalFailureCode.RetryElapsedOverflow, true, true, false, false);
-            if (!CanAdvance(lastElapsed, delay.Value, _policy.MaxElapsed))
+            if (!CanAdvance(lastElapsed, delay.Value, _policy.MaxElapsed, out var elapsedOverflow))
+            {
+                if (elapsedOverflow)
+                    return new(default, attempts, lastElapsed, TransactionalFailureCode.RetryElapsedOverflow, true, true, false, false);
                 return new(default, attempts, lastElapsed, TransactionalFailureCode.DeclaredTransient,
                     classification.StateMayHaveChanged, false, true, false);
+            }
             try
             {
                 await _delayScheduler(delay.Value, cancellationToken).ConfigureAwait(false);
@@ -171,8 +198,20 @@ internal sealed class RetryBudget
         catch (OverflowException) { return null; }
     }
 
-    private static bool CanAdvance(TimeSpan elapsed, TimeSpan delay, TimeSpan maximum) =>
-        elapsed <= maximum && delay <= maximum - elapsed;
+    private static bool CanAdvance(TimeSpan elapsed, TimeSpan delay, TimeSpan maximum, out bool overflow)
+    {
+        try
+        {
+            var next = TimeSpan.FromTicks(checked(elapsed.Ticks + delay.Ticks));
+            overflow = false;
+            return elapsed <= maximum && next <= maximum;
+        }
+        catch (OverflowException)
+        {
+            overflow = true;
+            return false;
+        }
+    }
 
     private static RetryResult<T> Cancelled<T>(int attempts, TimeSpan elapsed, bool callbackStarted) =>
         new(default, attempts, elapsed, TransactionalFailureCode.Cancelled,

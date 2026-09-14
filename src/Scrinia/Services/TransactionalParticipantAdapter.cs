@@ -51,14 +51,17 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             token => _participant.PrepareAsync(new(_transactionId, _scope, _address, _operationId, _kind,
                 [new(_address, _operationId, _kind)]), token),
             new PrepareClassifier(), cancellationToken).ConfigureAwait(false);
-        if (retry.Value?.Handle is null) throw new MultiMemoryParticipantMismatchException();
+        if (retry.Value?.Handle is null) throw CreateTypedFailure(retry);
         _preparedHandle = retry.Value.Handle;
     }
 
     public async Task<MultiMemoryCommitStatus> GetCommitStatusAsync(CancellationToken cancellationToken)
     {
-        var result = await _participant.GetCommitStatusAsync(CreateCommitContext(), cancellationToken).ConfigureAwait(false);
-        return result.State switch
+        var retry = await _retryBudget.ExecuteAsync(
+            token => _participant.GetCommitStatusAsync(CreateCommitContext(), token),
+            new CommitStatusClassifier(), cancellationToken).ConfigureAwait(false);
+        if (retry.Value is null) throw CreateTypedFailure(retry);
+        return retry.Value.State switch
         {
             TransactionalCommitStatus.Prepared => MultiMemoryCommitStatus.Prepared,
             TransactionalCommitStatus.Committed => MultiMemoryCommitStatus.Committed,
@@ -68,8 +71,10 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
 
     public async Task CommitAsync(CancellationToken cancellationToken)
     {
-        var result = await _participant.CommitAsync(CreateCommitContext(), cancellationToken).ConfigureAwait(false);
-        if (result.State != TransactionalParticipantState.Committed) throw new MultiMemoryParticipantMismatchException();
+        var retry = await _retryBudget.ExecuteAsync(
+            token => _participant.CommitAsync(CreateCommitContext(), token),
+            new ParticipantResultClassifier(), cancellationToken).ConfigureAwait(false);
+        if (retry.Value?.State != TransactionalParticipantState.Committed) throw CreateTypedFailure(retry);
     }
 
     public async Task VerifyCommittedAsync(CancellationToken cancellationToken)
@@ -80,8 +85,10 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
 
     public async Task RollbackAsync(CancellationToken cancellationToken)
     {
-        var result = await _participant.RollbackAsync(CreateRollbackContext(), cancellationToken).ConfigureAwait(false);
-        if (result.State != TransactionalParticipantState.RolledBack) throw new MultiMemoryParticipantMismatchException();
+        var retry = await _retryBudget.ExecuteAsync(
+            token => _participant.RollbackAsync(CreateRollbackContext(), token),
+            new ParticipantResultClassifier(), cancellationToken).ConfigureAwait(false);
+        if (retry.Value?.State != TransactionalParticipantState.RolledBack) throw CreateTypedFailure(retry);
     }
 
     public Task CleanupAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -128,9 +135,25 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         new(new Scrinia.Core.TransactionalRetryPolicy(policy.MaxAttempts, policy.MaxElapsed, policy.InitialDelay, policy.MaximumDelay),
             new SystemMonotonicClock(), (delay, token) => new(Task.Delay(delay, token)));
 
+    private static TransactionalParticipantException CreateTypedFailure<T>(RetryResult<T> result) =>
+        new(new((Scrinia.Plugin.Abstractions.TransactionalFailureCode)(int)(result.FailureCode ?? Scrinia.Core.TransactionalFailureCode.InvalidResponse),
+            "Transactional participant callback did not complete successfully.", result.StateMayHaveChanged));
+
     private sealed class PrepareClassifier : IRetryClassifier<TransactionalPrepareResult>
     {
         public RetryClassification Classify(TransactionalPrepareResult result, bool callbackStarted) => ClassifyReturnedFailure(result, callbackStarted);
+        public RetryClassification Classify(Exception exception, bool callbackStarted) => ClassifyThrownException(exception, callbackStarted);
+    }
+
+    private sealed class ParticipantResultClassifier : IRetryClassifier<TransactionalParticipantResult>
+    {
+        public RetryClassification Classify(TransactionalParticipantResult result, bool callbackStarted) => ClassifyReturnedFailure(result, callbackStarted);
+        public RetryClassification Classify(Exception exception, bool callbackStarted) => ClassifyThrownException(exception, callbackStarted);
+    }
+
+    private sealed class CommitStatusClassifier : IRetryClassifier<TransactionalCommitStatusResult>
+    {
+        public RetryClassification Classify(TransactionalCommitStatusResult result, bool callbackStarted) => ClassifyReturnedFailure(result, callbackStarted);
         public RetryClassification Classify(Exception exception, bool callbackStarted) => ClassifyThrownException(exception, callbackStarted);
     }
 }
