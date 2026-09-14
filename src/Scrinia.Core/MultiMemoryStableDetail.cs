@@ -7,7 +7,7 @@ internal static class MultiMemoryStableDetail
     internal static string? Sanitize(string? detail)
     {
         if (string.IsNullOrWhiteSpace(detail) || detail.Length > 240 ||
-            !detail.All(IsStableDetailCharacter) || Path.IsPathRooted(detail) ||
+            !detail.All(IsStableDetailCharacter) ||
             detail.StartsWith('~') || detail.StartsWith("//", StringComparison.Ordinal) ||
             detail.StartsWith('/') ||
             detail.Contains('/', StringComparison.Ordinal) || detail.Contains('\\') ||
@@ -41,9 +41,11 @@ internal static class MultiMemoryStableDetail
                 return false;
         }
 
-        if (colon == 1 && char.IsLetter(detail[0]) &&
-            (detail.Length == colon + 1 || detail[colon + 1] is not '/' and not '\\'))
-            return true;
+        if (colon == 1 && char.IsLetter(detail[0]))
+        {
+            if (detail.Length == colon + 1) return true;
+            return !char.IsWhiteSpace(detail[colon + 1]);
+        }
 
         return detail.Length > colon + 1 && !char.IsWhiteSpace(detail[colon + 1]);
     }
