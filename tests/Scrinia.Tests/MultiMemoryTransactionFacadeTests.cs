@@ -88,6 +88,20 @@ public sealed class MultiMemoryTransactionFacadeTests
         yaml.Should().Contain("participant-specific");
     }
 
+    [Fact]
+    public void MCPEntrypointOmitsB4ProjectionDetailsFromTheB3Envelope()
+    {
+        string yaml = ScriniaMcpTools.EmitMultiMemoryResult(
+            AggregateWithB4Projection(), "multi-memory");
+
+        yaml.Should().Contain("participant: note-a");
+        yaml.Should().Contain("operationId: tx-1");
+        yaml.Should().NotContain("transactionalParticipants");
+        yaml.Should().NotContain("nonAdmittedParticipants");
+        yaml.Should().NotContain("plugin-a");
+        yaml.Should().NotContain("plugin-rejected");
+    }
+
     [Theory]
     [InlineData("/var/lib/scrinia/secret.json")]
     [InlineData("C:/foreign/root/recovery.json")]
@@ -138,4 +152,32 @@ public sealed class MultiMemoryTransactionFacadeTests
                 "note-a", "op-a", "memory", "evidence.json", outcome == MultiMemoryOutcome.Committed, false,
                 participantReason ?? "participant-specific")],
             failure, warning, outcome == MultiMemoryOutcome.RecoveryRequired ? evidencePath : null);
+
+    private static MultiMemoryAggregateResult AggregateWithB4Projection()
+    {
+        MultiMemoryTransactionRequest request = new("local:notes",
+            [new MultiMemoryParticipantRequest(MemoryAddress.Parse("/notes/note-a"), "op-a", "memory")],
+            [
+                new MultiMemoryTransactionalParticipantRequest(
+                    MemoryAddress.Parse("/notes/plugin"), "plugin-a", 1, "plugin-key",
+                    "op-plugin", "plugin", new Dictionary<string, string>(), new Dictionary<string, string>()),
+                new MultiMemoryTransactionalParticipantRequest(
+                    MemoryAddress.Parse("/notes/rejected"), "plugin-rejected", 1, "plugin-key-rejected",
+                    "op-rejected", "plugin", new Dictionary<string, string>(), new Dictionary<string, string>())
+            ]);
+
+        return MultiMemoryAggregateResult.Create(
+            "tx-1", "local:notes", MultiMemoryOutcome.Committed, request.RequestedParticipants(),
+            new MultiMemoryAggregateProjectionInput(
+                [new MultiMemoryParticipantOutcome(
+                    "note-a", "op-a", "memory", "evidence.json", true, false, "participant-specific", 0)],
+                [new MultiMemoryTransactionalParticipantOutcome(
+                    "plugin-a", "plugin-key", "op-plugin", "plugin", true,
+                    TransactionalParticipantLifecycleState.Committed, true, false, "plugin/evidence", null, 1)],
+                [new MultiMemoryTransactionalParticipantOutcome(
+                    "plugin-rejected", "plugin-key-rejected", "op-rejected", "plugin", false,
+                    TransactionalParticipantLifecycleState.Ambiguous, false, false,
+                    "plugin/rejected", "admission rejected", 2)]),
+            null, "typed aggregate detail", null);
+    }
 }

@@ -91,6 +91,36 @@ public sealed class CliMultiMemoryTransactionTests
     }
 
     [Fact]
+    public void ExistingCliWrapperOmitsB4ProjectionDetailsFromSourceGeneratedJson()
+    {
+        McpResponse response = ScriniaCommands.MapMultiMemoryResult(
+            AggregateWithB4Projection(), "multi-memory");
+        string json = JsonSerializer.Serialize(
+            new CliMcpOutput("multi-memory", response.Status, response.ToYaml()),
+            CliJsonContext.Default.CliMcpOutput);
+
+        json.Should().Contain("operationId: tx-1");
+        json.Should().Contain("participant: note-a");
+        json.Should().NotContain("transactionalParticipants");
+        json.Should().NotContain("nonAdmittedParticipants");
+        json.Should().NotContain("plugin-a");
+        json.Should().NotContain("plugin-rejected");
+    }
+
+    [Fact]
+    public void CliEntrypointOmitsB4ProjectionDetailsFromEmbeddedYaml()
+    {
+        (int exitCode, string output) = CaptureCliOutput(
+            AggregateWithB4Projection(), json: true);
+
+        exitCode.Should().Be(0);
+        output.Should().NotContain("transactionalParticipants");
+        output.Should().NotContain("nonAdmittedParticipants");
+        output.Should().Contain("operationId: tx-1");
+        output.Should().Contain("participant: note-a");
+    }
+
+    [Fact]
     public void CliAndMcpMappingsHaveIdenticalTypedSemantics()
     {
         MultiMemoryAggregateResult result = Aggregate(
@@ -140,22 +170,80 @@ public sealed class CliMultiMemoryTransactionTests
     [InlineData("warning\u2007text")]
     public void CLIControlWhitespaceIsRedactedFromPlainAndJsonEnvelopes(string unsafeDetail)
     {
-        McpResponse response = ScriniaCommands.MapMultiMemoryResult(
-            Aggregate(MultiMemoryOutcome.CommittedCleanupPending, MultiMemoryFailure.Cleanup, unsafeDetail),
-            "multi-memory");
+        MultiMemoryAggregateResult result = Aggregate(
+            MultiMemoryOutcome.CommittedCleanupPending, MultiMemoryFailure.Cleanup, unsafeDetail,
+            participantReason: unsafeDetail);
 
-        response.ToYaml().Should().NotContain(unsafeDetail);
-        response.ToYaml().Should().Contain("reason: participant-specific");
-        response.ToYaml().Should().Contain("Multi-memory transaction committed; cleanup remains pending.");
+        (int plainExitCode, string plainOutput) = CaptureCliOutput(result, json: false);
+        (int jsonExitCode, string jsonOutput) = CaptureCliOutput(result, json: true);
+
+        plainExitCode.Should().Be(1);
+        jsonExitCode.Should().Be(1);
+        plainOutput.Should().NotContain(unsafeDetail);
+        jsonOutput.Should().NotContain(unsafeDetail);
+        plainOutput.Should().Contain("operationId: tx-1");
+        jsonOutput.Should().Contain("operationId: tx-1");
+        plainOutput.Should().Contain("reason: cleanup");
+        jsonOutput.Should().Contain("reason: cleanup");
+        plainOutput.Should().Contain("participant: note-a");
+        jsonOutput.Should().Contain("participant: note-a");
+        plainOutput.Should().Contain("Multi-memory transaction committed; cleanup remains pending.");
+        jsonOutput.Should().Contain("Multi-memory transaction committed; cleanup remains pending.");
+    }
+
+    private static (int ExitCode, string Output) CaptureCliOutput(
+        MultiMemoryAggregateResult result, bool json)
+    {
+        TextWriter original = Console.Out;
+        using var output = new StringWriter(new StringBuilder());
+        Console.SetOut(output);
+        try
+        {
+            int exitCode = ScriniaCommands.EmitMultiMemoryResult(result, json, "multi-memory");
+            return (exitCode, output.ToString());
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
     }
 
     private static MultiMemoryAggregateResult Aggregate(
-        MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null, string? warning = null) =>
+        MultiMemoryOutcome outcome, MultiMemoryFailure? failure = null, string? warning = null,
+        string? participantReason = null) =>
         new(
             "tx-1", "local:notes", outcome,
             [new MultiMemoryParticipantOutcome(
                 "note-a", "op-a", "memory", "evidence.json", outcome == MultiMemoryOutcome.Committed, false,
-                "participant-specific")],
-            failure, warning ?? "typed aggregate detail", outcome == MultiMemoryOutcome.RecoveryRequired
+                participantReason ?? "participant-specific")],
+                failure, warning ?? "typed aggregate detail", outcome == MultiMemoryOutcome.RecoveryRequired
                 ? "nested/.multi-memory-transaction.json" : null);
+
+    private static MultiMemoryAggregateResult AggregateWithB4Projection()
+    {
+        MultiMemoryTransactionRequest request = new("local:notes",
+            [new MultiMemoryParticipantRequest(MemoryAddress.Parse("/notes/note-a"), "op-a", "memory")],
+            [
+                new MultiMemoryTransactionalParticipantRequest(
+                    MemoryAddress.Parse("/notes/plugin"), "plugin-a", 1, "plugin-key",
+                    "op-plugin", "plugin", new Dictionary<string, string>(), new Dictionary<string, string>()),
+                new MultiMemoryTransactionalParticipantRequest(
+                    MemoryAddress.Parse("/notes/rejected"), "plugin-rejected", 1, "plugin-key-rejected",
+                    "op-rejected", "plugin", new Dictionary<string, string>(), new Dictionary<string, string>())
+            ]);
+
+        return MultiMemoryAggregateResult.Create(
+            "tx-1", "local:notes", MultiMemoryOutcome.Committed, request.RequestedParticipants(),
+            new MultiMemoryAggregateProjectionInput(
+                [new MultiMemoryParticipantOutcome(
+                    "note-a", "op-a", "memory", "evidence.json", true, false, "participant-specific", 0)],
+                [new MultiMemoryTransactionalParticipantOutcome(
+                    "plugin-a", "plugin-key", "op-plugin", "plugin", true,
+                    TransactionalParticipantLifecycleState.Committed, true, false, "plugin/evidence", null, 1)],
+                [new MultiMemoryTransactionalParticipantOutcome(
+                    "plugin-rejected", "plugin-key-rejected", "op-rejected", "plugin", false,
+                    TransactionalParticipantLifecycleState.Ambiguous, false, false,
+                    "plugin/rejected", "admission rejected", 2)]),
+            null, "typed aggregate detail", null);
+    }
 }
