@@ -337,6 +337,64 @@ public sealed class TransactionalParticipantAdapterTests
     }
 
     [Fact]
+    public async Task Ordinary_exception_uses_fixed_failure_detail_without_exception_message()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => throw new InvalidOperationException("secret provider detail")
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+
+        var error = await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        error.Which.Failure.Code.Should().Be(Scrinia.Plugin.Abstractions.TransactionalFailureCode.Permanent);
+        error.Which.Failure.Detail.Should().Be("observer diagnostic omitted");
+        error.Which.Failure.Detail.Should().NotContain("secret provider detail");
+    }
+
+    [Fact]
+    public async Task Recovery_state_preserves_retry_metadata_after_lifecycle_update()
+    {
+        var attempts = 0;
+        var participant = new TestParticipant
+        {
+            RetryPolicy = new(2, initialDelay: TimeSpan.Zero, maximumDelay: TimeSpan.Zero),
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => Task.FromResult(++attempts == 1
+                ? new TransactionalParticipantResult(TransactionalParticipantState.Changed,
+                    new(Scrinia.Plugin.Abstractions.TransactionalFailureCode.DeclaredTransient, "retry", false),
+                    new TransactionalRecoveryEvidence("recovery/retry", "journal", "v1"))
+                : new TransactionalParticipantResult(TransactionalParticipantState.Committed, null, null))
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+
+        await adapter.PrepareAsync(CancellationToken.None);
+        await adapter.CommitAsync(CancellationToken.None);
+
+        adapter.RecoveryState.Should().NotBeNull();
+        adapter.RecoveryState!.RetryAttempt.Should().Be(2);
+        adapter.RecoveryState.RetryElapsedMilliseconds.Should().Be(0);
+    }
+
+    [Fact]
+    public void Rehydration_preserves_complete_evidence_triple()
+    {
+        var state = new B4ParticipantRecoveryState(
+            "tx", "op", "scope", "/memory/item", "participant", 1, "participant-key", "kind",
+            ["transaction"], new Dictionary<string, string>(), new Dictionary<string, string>(),
+            TransactionalParticipantLifecycleState.Ambiguous, "opaque", "v1", 3, 42, true, true,
+            Scrinia.Core.TransactionalFailureCode.CommitFailed, "recovery/commit", "journal", "v2",
+            TransactionalQuarantineState.Quarantined, "ambiguous participant state");
+
+        var adapter = new TransactionalParticipantAdapter(new TestParticipant(), state);
+
+        adapter.RecoveryState.Should().BeEquivalentTo(state);
+    }
+
+    [Fact]
     public async Task Null_prepare_callback_result_is_typed_as_invalid_response()
     {
         var participant = new TestParticipant

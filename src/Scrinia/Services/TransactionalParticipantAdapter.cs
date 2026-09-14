@@ -41,6 +41,8 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
     private bool _ambiguous;
     private TransactionalQuarantineState _quarantineState;
     private string? _quarantineReason;
+    private int _retryAttempt;
+    private long _retryElapsedMilliseconds;
 
     internal TransactionalParticipantAdapter(ITransactionalMemoryParticipant participant, MultiMemoryParticipantRequest request)
     {
@@ -68,9 +70,12 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _preparedHandle = new(state.PreparedHandleReference!, state.PreparedHandleVersion!);
         _retryBudget = CreateRetryBudget(participant.Descriptor.RetryPolicy);
         _lifecycleState = state.LifecycleState; _stateMayHaveChanged = state.StateMayHaveChanged;
-        _ambiguous = state.Ambiguous; _quarantineState = state.QuarantineState;
+        _ambiguous = state.Ambiguous; _lastAmbiguous = state.Ambiguous; _quarantineState = state.QuarantineState;
+        _retryAttempt = state.RetryAttempt; _retryElapsedMilliseconds = state.RetryElapsedMilliseconds;
         _quarantineReason = state.QuarantineReason; _lastFailure = state.LastFailureCode is { } code
             ? new((Scrinia.Plugin.Abstractions.TransactionalFailureCode)(int)code, "recovered failure", state.StateMayHaveChanged) : null;
+        _lastEvidence = state.EvidenceReference is { } evidenceReference
+            ? new(evidenceReference, state.EvidenceKind!, state.EvidenceVersion!) : null;
         _evidencePath = state.EvidenceReference ?? string.Empty;
     }
 
@@ -88,6 +93,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             token => _participant.PrepareAsync(new(_transactionId, _scope, _address, _operationId, _kind,
                 [new(_address, _operationId, _kind)]), token),
             new PrepareClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
+        CaptureRetryMetadata(retry);
         if (retry.Value?.Handle is null) throw CreateTypedFailure(retry);
         _preparedHandle = retry.Value.Handle;
         _lifecycleState = TransactionalParticipantLifecycleState.Prepared;
@@ -99,6 +105,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.GetCommitStatusAsync(CreateCommitContext(), token),
             new CommitStatusClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
+        CaptureRetryMetadata(retry);
         if (retry.Value is null) throw CreateTypedFailure(retry);
         MultiMemoryCommitStatus status = retry.Value.State switch
         {
@@ -118,6 +125,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.CommitAsync(CreateCommitContext(), token),
             new ParticipantResultClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
+        CaptureRetryMetadata(retry);
         if (retry.Value?.State != TransactionalParticipantState.Committed) throw CreateTypedFailure(retry);
         _lifecycleState = TransactionalParticipantLifecycleState.Committed;
     }
@@ -135,6 +143,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         var retry = await _retryBudget.ExecuteAsync(
             token => _participant.RollbackAsync(CreateRollbackContext(), token),
             new ParticipantResultClassifier(CaptureFailure, this), cancellationToken).ConfigureAwait(false);
+        CaptureRetryMetadata(retry);
         if (retry.Value?.State != TransactionalParticipantState.RolledBack) throw CreateTypedFailure(retry);
         _lifecycleState = TransactionalParticipantLifecycleState.RolledBack;
     }
@@ -229,7 +238,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         bool stateMayHaveChanged = callbackStarted;
         _lastFailure = new(
             Scrinia.Plugin.Abstractions.TransactionalFailureCode.Permanent,
-            MultiMemoryStableDetail.SanitizeOrFallback(exception.Message), stateMayHaveChanged);
+            MultiMemoryStableDetail.Fallback, stateMayHaveChanged);
         _lastEvidence = null;
         _evidencePath = string.Empty;
         SetFailureLifecycle(stateMayHaveChanged, stateMayHaveChanged);
@@ -246,6 +255,8 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _lifecycleState = TransactionalParticipantLifecycleState.Prepared;
         _quarantineState = TransactionalQuarantineState.None;
         _quarantineReason = null;
+        _retryAttempt = 0;
+        _retryElapsedMilliseconds = 0;
     }
 
     private void SetFailureLifecycle(bool stateMayHaveChanged, bool ambiguous)
@@ -270,9 +281,15 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         string? evidenceReference = _lastEvidence?.EvidenceReference ?? (_evidencePath.Length == 0 ? null : _evidencePath);
         return new B4ParticipantRecoveryState(_transactionId, _operationId, _scope, _address.ToString(),
             _participantIdentity, _contractVersion, _orderingKey, _kind, _capabilities, _payload, _metadata,
-            _lifecycleState, _preparedHandle?.Reference, _preparedHandle?.Version, 0, 0,
+            _lifecycleState, _preparedHandle?.Reference, _preparedHandle?.Version, _retryAttempt, _retryElapsedMilliseconds,
             _stateMayHaveChanged, _ambiguous, failureCode, evidenceReference,
             _lastEvidence?.EvidenceKind, _lastEvidence?.EvidenceVersion, _quarantineState, _quarantineReason);
+    }
+
+    private void CaptureRetryMetadata<T>(RetryResult<T> result) where T : class
+    {
+        _retryAttempt = result.Attempts;
+        _retryElapsedMilliseconds = result.Elapsed.Ticks / TimeSpan.TicksPerMillisecond;
     }
 
     private sealed class PrepareClassifier : IRetryClassifier<TransactionalPrepareResult>
