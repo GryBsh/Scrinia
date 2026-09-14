@@ -255,7 +255,8 @@ internal static class MultiMemoryTransactionRecordCodec
         ArgumentNullException.ThrowIfNull(replacement);
         if (replacement.Version != expected.Version || replacement.TransactionId != expected.TransactionId ||
             replacement.Scope != expected.Scope || !SameParticipants(replacement.Participants, expected.Participants) ||
-            !SameTransactionalIdentities(replacement, expected))
+            !SameAdmittedSnapshots(replacement.TransactionalParticipants, expected.TransactionalParticipants) ||
+            !SameRejectedSnapshots(replacement.RejectedTransactionalParticipants, expected.RejectedTransactionalParticipants))
             throw new MultiMemoryTransactionRecordException("Replacement changes coordinator identity or participant snapshot.",
                 MultiMemoryFailure.Inconsistent, transactionId: expected.TransactionId, expectedScope: expected.Scope);
         string path = GetPath(scopeDirectory);
@@ -402,14 +403,33 @@ internal static class MultiMemoryTransactionRecordCodec
         left.Count == right.Count && left.Zip(right).All(pair => pair.First.Subject == pair.Second.Subject &&
             pair.First.OperationId == pair.Second.OperationId && pair.First.Kind == pair.Second.Kind);
 
-    private static bool SameTransactionalIdentities(MultiMemoryTransactionRecord left, MultiMemoryTransactionRecord right)
+    private static bool SameAdmittedSnapshots(IReadOnlyList<B4ParticipantRecoveryState>? left,
+        IReadOnlyList<B4ParticipantRecoveryState>? right)
     {
-        static IEnumerable<(string Identity, string Ordering)> Keys(MultiMemoryTransactionRecord record) =>
-            (record.TransactionalParticipants ?? []).Select(item => (item.ParticipantIdentity, item.OrderingKey))
-            .Concat((record.RejectedTransactionalParticipants ?? []).Select(item => (item.ParticipantIdentity, item.OrderingKey)));
-        return Keys(left).SequenceEqual(Keys(right));
+        if (left is null || right is null) return left is null && right is null;
+        return left.Count == right.Count && left.Zip(right).All(pair =>
+            pair.First.TransactionId == pair.Second.TransactionId && pair.First.OperationId == pair.Second.OperationId &&
+            pair.First.Scope == pair.Second.Scope && pair.First.Address == pair.Second.Address &&
+            pair.First.ParticipantIdentity == pair.Second.ParticipantIdentity &&
+            pair.First.ContractVersion == pair.Second.ContractVersion && pair.First.OrderingKey == pair.Second.OrderingKey &&
+            pair.First.Kind == pair.Second.Kind && pair.First.Capabilities.SequenceEqual(pair.Second.Capabilities, StringComparer.Ordinal) &&
+            SameDictionary(pair.First.Payload, pair.Second.Payload) && SameDictionary(pair.First.Metadata, pair.Second.Metadata));
     }
 
+    private static bool SameRejectedSnapshots(IReadOnlyList<B4ParticipantRequestMetadata>? left,
+        IReadOnlyList<B4ParticipantRequestMetadata>? right)
+    {
+        if (left is null || right is null) return left is null && right is null;
+        return left.Count == right.Count && left.Zip(right).All(pair =>
+            pair.First.TransactionId == pair.Second.TransactionId && pair.First.Scope == pair.Second.Scope &&
+            pair.First.Address == pair.Second.Address && pair.First.ParticipantIdentity == pair.Second.ParticipantIdentity &&
+            pair.First.ContractVersion == pair.Second.ContractVersion && pair.First.OrderingKey == pair.Second.OrderingKey &&
+            pair.First.OperationId == pair.Second.OperationId && pair.First.Kind == pair.Second.Kind &&
+            pair.First.RejectionCode == pair.Second.RejectionCode && pair.First.RejectionDetail == pair.Second.RejectionDetail);
+    }
+
+    private static bool SameDictionary(IReadOnlyDictionary<string, string> left, IReadOnlyDictionary<string, string> right) =>
+        left.Count == right.Count && left.All(pair => right.TryGetValue(pair.Key, out var value) && value == pair.Value);
     private static void RequireBounded(string value, string name)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length > MaximumIdentityLength)
