@@ -167,6 +167,20 @@ public sealed partial class MultiMemoryTransactionContractTests
         }
     }
 
+    [Fact]
+    public void AggregateProjectionRejectsMissingOrNegativeOrdinals()
+    {
+        var request = new MultiMemoryTransactionRequest("local-topic:notes",
+            [new MultiMemoryParticipantRequest(MemoryAddress.Parse("/notes/a"), "op-a", "memory")]);
+        var outcome = new MultiMemoryParticipantOutcome("a", "op-a", "memory", null, true, false, null, -1);
+
+        FluentActions.Invoking(() => MultiMemoryAggregateResult.Create(
+                "tx-1", "local-topic:notes", MultiMemoryOutcome.Committed, request.RequestedParticipants(),
+                new MultiMemoryAggregateProjectionInput([outcome], [], []), null, null, null))
+            .Should().Throw<MultiMemoryTransactionRecordException>()
+            .Which.Failure.Should().Be(MultiMemoryFailure.Inconsistent);
+    }
+
     private static MultiMemoryTransactionRecord NewRecord() => new(
         MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-1", "local-topic:notes",
         MultiMemoryTransactionState.Prepared,

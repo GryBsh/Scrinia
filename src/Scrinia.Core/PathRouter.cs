@@ -105,6 +105,10 @@ public static class PathRouter
         if (scope == "local")
             return memories;
 
+        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return Path.Combine(memories,
+                scope["local-topic:".Length..].Replace('/', Path.DirectorySeparatorChar));
+
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             return Path.Combine(memories,
                 scope["local:".Length..].Replace('/', Path.DirectorySeparatorChar));

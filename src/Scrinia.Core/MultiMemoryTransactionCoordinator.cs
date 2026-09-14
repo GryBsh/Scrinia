@@ -349,6 +349,30 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             .Select(outcome => new MultiMemoryParticipantOutcome(outcome.Subject, outcome.OperationId, outcome.Kind,
                 outcome.EvidencePath, outcome.Committed, outcome.RolledBack, outcome.Reason))
             .ToArray();
+        var ordered = request.RequestedParticipants(record.TransactionId)
+            .OrderBy(participant => participant.ParticipantIdentity is null ? 0 : 1)
+            .ThenBy(participant => participant.OrderingKey ?? participant.Address.Value, StringComparer.Ordinal)
+            .ThenBy(participant => participant.ParticipantIdentity ?? participant.Address.Value, StringComparer.Ordinal)
+            .ThenBy(participant => participant.OperationId, StringComparer.Ordinal)
+            .ThenBy(participant => participant.Kind, StringComparer.Ordinal).ToArray();
+        int OrdinalFor(string operationId, string kind, string? identity, string subject) => ordered
+            .Select((participant, ordinal) => (participant, ordinal))
+            .Where(item => item.participant.OperationId == operationId && item.participant.Kind == kind &&
+                (identity is null ? item.participant.ParticipantIdentity is null &&
+                    item.participant.Address.Value.EndsWith('/' + subject, StringComparison.Ordinal) :
+                    item.participant.ParticipantIdentity == identity))
+            .Select(item => item.ordinal).Single();
+        b3 = b3.Select(item => new MultiMemoryParticipantOutcome(item.Subject, item.OperationId, item.Kind,
+            item.EvidencePath, item.Committed, item.RolledBack, item.Reason,
+            OrdinalFor(item.OperationId, item.Kind, null, item.Subject))).ToArray();
+        b4 = b4.Select(item => new MultiMemoryTransactionalParticipantOutcome(item.ParticipantIdentity,
+            item.OrderingKey, item.OperationId, item.Kind, true, item.LifecycleState, item.Committed,
+            item.RolledBack, item.EvidencePath, item.Reason,
+            OrdinalFor(item.OperationId, item.Kind, item.ParticipantIdentity, item.OperationId))).ToList();
+        rejected = rejected.Select(item => new MultiMemoryTransactionalParticipantOutcome(item.ParticipantIdentity,
+            item.OrderingKey, item.OperationId, item.Kind, false, item.LifecycleState, false, false,
+            item.EvidencePath, item.Reason,
+            OrdinalFor(item.OperationId, item.Kind, item.ParticipantIdentity, item.OperationId))).ToArray();
         MultiMemoryAggregateProjectionInput input = new(b3, b4, rejected);
         return MultiMemoryAggregateResult.Create(result.TransactionId, result.Scope, result.Outcome,
             request.RequestedParticipants(record.TransactionId), input, result.Failure, result.Warning, result.EvidencePath);
@@ -390,18 +414,26 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 if (participantFactory is null)
                     throw new MultiMemoryParticipantMismatchException();
                 var manifest = new MultiMemoryParticipantManifest(state.Address, state.OperationId, state.Kind);
-                adapters.Add(await participantFactory.RehydrateAsync(
+                IMultiMemoryParticipantAdapter adapter = await participantFactory.RehydrateAsync(
                     new B4ParticipantRehydrationRequest(state, manifest, state.Capabilities), cancellationToken)
-                    .ConfigureAwait(false));
+                    .ConfigureAwait(false) ?? throw new MultiMemoryParticipantMismatchException();
+                ValidateRehydratedAdapter(state, adapter);
+                adapters.Add(adapter);
             }
+            adapters = OrderRecoveryAdapters(record, adapters);
             if (record.TransactionalParticipants is null or { Count: 0 })
                 return await ProjectRejectedOnlyRecoveryAsync(record, b3Adapters, directory, cancellationToken).ConfigureAwait(false);
             if (record.State == MultiMemoryTransactionState.Prepared)
-                return await AbortPreparedAsync(record, adapters, directory, cancellationToken).ConfigureAwait(false);
+            {
+                MultiMemoryAggregateResult aborted = await AbortPreparedAsync(record, adapters, directory, cancellationToken)
+                    .ConfigureAwait(false);
+                return ProjectAggregate(aborted, CreateRecoveryRequest(record), record, adapters);
+            }
             if (record.State == MultiMemoryTransactionState.RecoveryRequired)
                 return RecoveryRequired(record, adapters, MultiMemoryFailure.Ambiguous,
                     "The coordinator record requires explicit recovery before participant replay.", directory);
-            return await FinishDecisionAsync(record, adapters, cancellationToken).ConfigureAwait(false);
+            MultiMemoryAggregateResult finished = await FinishDecisionAsync(record, adapters, cancellationToken).ConfigureAwait(false);
+            return ProjectAggregate(finished, CreateRecoveryRequest(record), record, adapters);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception exception)
@@ -428,24 +460,70 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 item.OperationId, item.Kind, false, TransactionalParticipantLifecycleState.Changed,
                 false, false, null, item.RejectionDetail)).ToArray();
         var requested = record.Participants.Select(manifest => new MultiMemoryParticipantRequest(
-            MemoryAddress.Parse(record.Scope == "local" ? $"/{manifest.Subject}" : $"/{record.Scope["local:".Length..]}/{manifest.Subject}"),
+            MultiMemoryTransactionRequest.AddressForScope(record.Scope, manifest.Subject),
             manifest.OperationId, manifest.Kind)).Concat(rejectedMetadata.Select(item =>
                 MultiMemoryParticipantRequest.ForTransactionalParticipant(record.TransactionId, record.Scope,
                     new MultiMemoryTransactionalParticipantRequest(MemoryAddress.Parse(item.Address),
                         item.ParticipantIdentity, item.ContractVersion, item.OrderingKey, item.OperationId, item.Kind,
                         new Dictionary<string, string>(), new Dictionary<string, string>())))).ToArray();
+        (IReadOnlyList<MultiMemoryParticipantOutcome> numberedB3,
+            IReadOnlyList<MultiMemoryTransactionalParticipantOutcome> numberedRejected) =
+            AddCanonicalOrdinals(requested, b3Outcomes, rejected);
         MultiMemoryAggregateResult result = MultiMemoryAggregateResult.Create(record.TransactionId, record.Scope,
             record.State == MultiMemoryTransactionState.Committed ? MultiMemoryOutcome.Committed : MultiMemoryOutcome.RolledBack,
-            requested, new MultiMemoryAggregateProjectionInput(b3Outcomes, [], rejected), null, null, null);
+            requested, new MultiMemoryAggregateProjectionInput(numberedB3, [], numberedRejected), null, null, null);
         await Task.CompletedTask.ConfigureAwait(false);
         return result;
+    }
+
+    private static (IReadOnlyList<MultiMemoryParticipantOutcome> B3,
+        IReadOnlyList<MultiMemoryTransactionalParticipantOutcome> Rejected) AddCanonicalOrdinals(
+        IReadOnlyList<MultiMemoryParticipantRequest> requested,
+        IReadOnlyList<MultiMemoryParticipantOutcome> b3,
+        IReadOnlyList<MultiMemoryTransactionalParticipantOutcome> rejected)
+    {
+        var ordered = requested.OrderBy(participant => participant.ParticipantIdentity is null ? 0 : 1)
+            .ThenBy(participant => participant.OrderingKey ?? participant.Address.Value, StringComparer.Ordinal)
+            .ThenBy(participant => participant.ParticipantIdentity ?? participant.Address.Value, StringComparer.Ordinal)
+            .ThenBy(participant => participant.OperationId, StringComparer.Ordinal)
+            .ThenBy(participant => participant.Kind, StringComparer.Ordinal)
+            .Select((participant, ordinal) => (participant, ordinal)).ToArray();
+        int OrdinalFor(string operationId, string kind, string? identity, string subject) => ordered
+            .Where(item => item.participant.OperationId == operationId && item.participant.Kind == kind &&
+                (identity is null ? item.participant.ParticipantIdentity is null &&
+                    item.participant.Address.Value.EndsWith('/' + subject, StringComparison.Ordinal) :
+                    item.participant.ParticipantIdentity == identity))
+            .Select(item => item.ordinal).Single();
+        return (
+            b3.Select(item => new MultiMemoryParticipantOutcome(item.Subject, item.OperationId, item.Kind,
+                item.EvidencePath, item.Committed, item.RolledBack, item.Reason,
+                OrdinalFor(item.OperationId, item.Kind, null, item.Subject))).ToArray(),
+            rejected.Select(item => new MultiMemoryTransactionalParticipantOutcome(item.ParticipantIdentity,
+                item.OrderingKey, item.OperationId, item.Kind, false, item.LifecycleState, false, false,
+                item.EvidencePath, item.Reason, OrdinalFor(item.OperationId, item.Kind,
+                    item.ParticipantIdentity, item.OperationId))).ToArray());
+    }
+
+    private static List<IMultiMemoryParticipantAdapter> OrderRecoveryAdapters(
+        MultiMemoryTransactionRecord record, IEnumerable<IMultiMemoryParticipantAdapter> adapters)
+    {
+        var b4Keys = (record.TransactionalParticipants ?? []).ToDictionary(
+            state => (state.ParticipantIdentity, state.OperationId, state.Kind),
+            state => state.OrderingKey);
+        return adapters.OrderBy(adapter => b4Keys.TryGetValue(
+                (adapter.RecoveryState?.ParticipantIdentity ?? string.Empty, adapter.OperationId, adapter.Kind),
+                out string? orderingKey) ? 1 : 0)
+            .ThenBy(adapter => b4Keys.TryGetValue(
+                (adapter.RecoveryState?.ParticipantIdentity ?? string.Empty, adapter.OperationId, adapter.Kind),
+                out string? orderingKey) ? orderingKey : adapter.Subject, StringComparer.Ordinal)
+            .ThenBy(adapter => adapter.Subject, StringComparer.Ordinal).ToList();
     }
 
     private static MultiMemoryTransactionRequest CreateRecoveryRequest(MultiMemoryTransactionRecord record)
     {
         string TopicAddress(string address) => address;
         var b3 = record.Participants.Select(manifest => new MultiMemoryParticipantRequest(
-            MemoryAddress.Parse(record.Scope == "local" ? $"/{manifest.Subject}" : $"/{record.Scope["local:".Length..]}/{manifest.Subject}"),
+            MultiMemoryTransactionRequest.AddressForScope(record.Scope, manifest.Subject),
             manifest.OperationId, manifest.Kind)).ToArray();
         var b4 = (record.TransactionalParticipants ?? []).Select(state =>
             new MultiMemoryTransactionalParticipantRequest(MemoryAddress.Parse(TopicAddress(state.Address)),
@@ -880,6 +958,22 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         if (adapter.Scope != scope || adapter.Subject != manifest.Subject ||
             adapter.OperationId != manifest.OperationId || adapter.Kind != manifest.Kind ||
             !MultiMemoryParticipantOutcome.IsSafeEvidencePath(adapter.EvidencePath))
+            throw new MultiMemoryParticipantMismatchException();
+    }
+
+    private static void ValidateRehydratedAdapter(B4ParticipantRecoveryState state,
+        IMultiMemoryParticipantAdapter adapter)
+    {
+        B4ParticipantRecoveryState? snapshot = adapter.RecoveryState;
+        if (adapter.Scope != state.Scope || adapter.Subject != state.Address ||
+            adapter.OperationId != state.OperationId || adapter.Kind != state.Kind ||
+            !MultiMemoryParticipantOutcome.IsSafeEvidencePath(adapter.EvidencePath) || snapshot is null ||
+            snapshot.TransactionId != state.TransactionId || snapshot.Scope != state.Scope ||
+            snapshot.Address != state.Address || snapshot.ParticipantIdentity != state.ParticipantIdentity ||
+            snapshot.ContractVersion != state.ContractVersion || snapshot.OrderingKey != state.OrderingKey ||
+            snapshot.OperationId != state.OperationId || snapshot.Kind != state.Kind ||
+            !snapshot.Capabilities.SequenceEqual(state.Capabilities, StringComparer.Ordinal) ||
+            !snapshot.Payload.SequenceEqual(state.Payload) || !snapshot.Metadata.SequenceEqual(state.Metadata))
             throw new MultiMemoryParticipantMismatchException();
     }
 

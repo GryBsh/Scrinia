@@ -172,6 +172,21 @@ internal sealed record MultiMemoryTransactionRequest
                     : MultiMemoryParticipantRequest.ForTransactionalParticipant(transactionId, Scope, participant)))
             .ToArray();
 
+    internal static MemoryAddress AddressForScope(string scope, string subject)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+            throw new ArgumentException("A transaction scope is required.", nameof(scope));
+        if (string.IsNullOrWhiteSpace(subject))
+            throw new ArgumentException("A participant subject is required.", nameof(subject));
+        if (scope.Equals("local", StringComparison.Ordinal))
+            return MemoryAddress.Parse($"/{subject}");
+        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return MemoryAddress.Parse($"/{scope["local-topic:".Length..]}/{subject}");
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            return MemoryAddress.Parse($"/{scope["local:".Length..]}/{subject}");
+        throw new ArgumentException($"Unknown transaction scope: {scope}", nameof(scope));
+    }
+
     internal void Deconstruct(
         out string scope,
         out IReadOnlyList<MultiMemoryParticipantRequest> participants) =>
@@ -388,7 +403,7 @@ internal sealed record MultiMemoryAggregateResult
         string? evidencePath)
         : this(transactionId, scope, outcome,
             participants.Select(participant => new MultiMemoryParticipantRequest(
-                MemoryAddress.Parse(scope == "local" ? $"/{participant.Subject}" : $"/{scope["local:".Length..]}/{participant.Subject}"),
+                MultiMemoryTransactionRequest.AddressForScope(scope, participant.Subject),
                 participant.OperationId, participant.Kind)).ToArray(),
             BuildLegacyProjection(participants, scope), failure, warning, evidencePath)
     {
@@ -465,9 +480,12 @@ internal sealed record MultiMemoryAggregateResult
             ? ValidatedMultiMemoryAggregateProjection.Create([], [], [])
             : BuildAggregateProjection(
             participants.Select(participant => new MultiMemoryParticipantRequest(
-                MemoryAddress.Parse(scope == "local" ? $"/{participant.Subject}" : $"/{scope["local:".Length..]}/{participant.Subject}"),
+                MultiMemoryTransactionRequest.AddressForScope(scope, participant.Subject),
                 participant.OperationId, participant.Kind)).ToArray(),
-            new MultiMemoryAggregateProjectionInput(participants, [], []));
+            new MultiMemoryAggregateProjectionInput(
+                participants.Select((participant, ordinal) => new MultiMemoryParticipantOutcome(
+                    participant.Subject, participant.OperationId, participant.Kind, participant.EvidencePath,
+                    participant.Committed, participant.RolledBack, participant.Reason, ordinal)).ToArray(), [], []));
 
     private static ValidatedMultiMemoryAggregateProjection BuildAggregateProjection(
         IReadOnlyList<MultiMemoryParticipantRequest> requestedParticipants,
@@ -532,7 +550,7 @@ internal sealed record MultiMemoryAggregateResult
 
     private static void ValidateOrdinal(int ordinal, int expectedOrdinal)
     {
-        if (ordinal >= 0 && ordinal != expectedOrdinal)
+        if (ordinal < 0 || ordinal != expectedOrdinal)
             throw InconsistentProjection("Aggregate projection ordinal is not canonical.");
     }
 

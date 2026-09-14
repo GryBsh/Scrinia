@@ -7,6 +7,31 @@ namespace Scrinia.Tests;
 public sealed class TransactionalParticipantRecoveryTests
 {
     [Fact]
+    public async Task LegacyLocalTopicRecoveryPreservesB3AggregateAddressConstruction()
+    {
+        using var store = CreateStore();
+        string directory = store.GetStoreDirForScope("local-topic:notes");
+        Directory.CreateDirectory(directory);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var record = new MultiMemoryTransactionRecord(
+            MultiMemoryTransactionRecordCodec.FormatName, 1, "tx-legacy", "local-topic:notes",
+            MultiMemoryTransactionState.Committed,
+            [new MultiMemoryParticipantManifest("a", "op-a", "memory")], now, now);
+        MultiMemoryTransactionRecordCodec.Write(directory, record);
+        string? receivedAddress = null;
+
+        MultiMemoryAggregateResult result = await new MultiMemoryTransactionCoordinator(store,
+            (manifest, _) =>
+            {
+                receivedAddress = manifest.Subject;
+                return Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-a", "local-topic:notes"));
+            }).RecoverAsync("local-topic:notes");
+
+        receivedAddress.Should().Be("a");
+        result.Outcome.Should().Be(MultiMemoryOutcome.Committed);
+    }
+
+    [Fact]
     public async Task RejectedOnlyRecoveryBuildsProjectionWithoutFactoryOrAdapterInvocation()
     {
         using var store = CreateStore();
