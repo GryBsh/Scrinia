@@ -179,13 +179,14 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
             _lastFailure = typed.Failure;
             _lastEvidence = typed.Evidence;
             _lastAmbiguous = typed.Ambiguous;
-            if (typed.Evidence is not null) _evidencePath = typed.Evidence.EvidenceReference;
+            _evidencePath = typed.Evidence?.EvidenceReference ?? string.Empty;
             return;
         }
 
         _lastFailure = null;
         _lastEvidence = null;
         _lastAmbiguous = false;
+        _evidencePath = string.Empty;
     }
 
     private void ClearCapturedFailure()

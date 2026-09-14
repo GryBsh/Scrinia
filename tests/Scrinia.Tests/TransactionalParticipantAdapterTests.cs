@@ -378,6 +378,69 @@ public sealed class TransactionalParticipantAdapterTests
     }
 
     [Fact]
+    public async Task Thrown_failure_without_evidence_clears_evidence_from_previous_retry_attempt()
+    {
+        var evidence = new TransactionalRecoveryEvidence("recovery/first-attempt", "journal", "v1");
+        var attempts = 0;
+        var participant = new TestParticipant
+        {
+            RetryPolicy = new(2, initialDelay: TimeSpan.Zero, maximumDelay: TimeSpan.Zero),
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    return Task.FromResult(new TransactionalParticipantResult(
+                        TransactionalParticipantState.Changed,
+                        new(Scrinia.Plugin.Abstractions.TransactionalFailureCode.DeclaredTransient, "retry", true), evidence));
+
+                throw new InvalidOperationException("commit failed");
+            }
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+
+        await adapter.PrepareAsync(CancellationToken.None);
+        await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        attempts.Should().Be(2);
+        adapter.EvidencePath.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Typed_failure_without_evidence_clears_evidence_from_previous_retry_attempt()
+    {
+        var evidence = new TransactionalRecoveryEvidence("recovery/first-attempt", "journal", "v1");
+        var attempts = 0;
+        var participant = new TestParticipant
+        {
+            RetryPolicy = new(2, initialDelay: TimeSpan.Zero, maximumDelay: TimeSpan.Zero),
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    return Task.FromResult(new TransactionalParticipantResult(
+                        TransactionalParticipantState.Changed,
+                        new(Scrinia.Plugin.Abstractions.TransactionalFailureCode.DeclaredTransient, "retry", true), evidence));
+
+                throw new TransactionalParticipantException(
+                    new(Scrinia.Plugin.Abstractions.TransactionalFailureCode.CommitFailed, "commit failed", true),
+                    null,
+                    true);
+            }
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+
+        await adapter.PrepareAsync(CancellationToken.None);
+        await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        attempts.Should().Be(2);
+        adapter.EvidencePath.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Null_callback_results_are_invalid_response_not_permanent()
     {
         TransactionalParticipantAdapter.ClassifyReturnedFailure((TransactionalPrepareResult?)null, true)
