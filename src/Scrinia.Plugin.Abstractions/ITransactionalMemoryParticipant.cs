@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Plugin.Abstractions;
@@ -20,11 +21,11 @@ public sealed record TransactionalParticipantDescriptor
         if (contractVersion != 1) throw new ArgumentException("Contract version must be 1.", nameof(contractVersion));
         ContractVersion = contractVersion;
         ArgumentNullException.ThrowIfNull(capabilities);
-        if (capabilities.Count > 32) throw new ArgumentException("Capabilities cannot exceed 32 entries.", nameof(capabilities));
+        if (capabilities.Count is < 1 or > 32) throw new ArgumentException("Capabilities must contain 1 to 32 entries.", nameof(capabilities));
         var canonicalCapabilities = capabilities.Select((value, index) => ContractValidation.Capability(value, index)).ToArray();
         if (canonicalCapabilities.Distinct(StringComparer.Ordinal).Count() != canonicalCapabilities.Length)
             throw new ArgumentException("Capabilities must be ordinal-distinct.", nameof(capabilities));
-        Capabilities = canonicalCapabilities.Order(StringComparer.Ordinal).ToArray();
+        Capabilities = ImmutableArray.CreateRange(canonicalCapabilities.Order(StringComparer.Ordinal));
         RetryPolicy = retryPolicy ?? throw new ArgumentNullException(nameof(retryPolicy));
         OrderingKey = ContractValidation.OrderingKey(orderingKey);
     }
@@ -166,7 +167,7 @@ internal static class ContractValidation
     internal static string Capability(string value, int index) { var trimmed = Text(value, $"capabilities[{index}]").Trim(); if (trimmed.Length > 64 || trimmed.Length == 0) throw new ArgumentException("Capability must be nonblank and at most 64 characters."); return trimmed; }
     internal static string OrderingKey(string value) { Text(value, nameof(value)); if (value.Length > 64 || value.Any(c => !(c is >= 'a' and <= 'z') && !(c is >= '0' and <= '9') && c != '-') || value[0] == '-') throw new ArgumentException("Ordering key is not canonical.", nameof(value)); return value; }
     internal static MemoryAddress Address(MemoryAddress value) { if (!value.IsValid) throw new ArgumentException("Address must be valid.", nameof(value)); return value; }
-    internal static IReadOnlyList<TransactionalMemoryManifestEntry> Manifest(IReadOnlyList<TransactionalMemoryManifestEntry> value) { ArgumentNullException.ThrowIfNull(value); if (value.Count is < 1 or > 4096 || value.Any(item => item is null)) throw new ArgumentException("Manifest must contain 1 to 4096 entries.", nameof(value)); return value.ToArray(); }
+    internal static IReadOnlyList<TransactionalMemoryManifestEntry> Manifest(IReadOnlyList<TransactionalMemoryManifestEntry> value) { ArgumentNullException.ThrowIfNull(value); if (value.Count is < 1 or > 4096 || value.Any(item => item is null)) throw new ArgumentException("Manifest must contain 1 to 4096 entries.", nameof(value)); return ImmutableArray.CreateRange(value); }
     internal static string EvidencePath(string value) { Text(value, nameof(value)); if (Path.IsPathRooted(value) || value.Contains('\\') || value.Contains(':') || value.Split('/').Any(segment => segment is "." or "..")) throw new ArgumentException("Evidence reference must be a safe relative path.", nameof(value)); return value; }
     internal static void FailureCode(TransactionalFailureCode value) { if (!Enum.IsDefined(value)) throw new ArgumentException("Unknown failure code.", nameof(value)); }
 }
