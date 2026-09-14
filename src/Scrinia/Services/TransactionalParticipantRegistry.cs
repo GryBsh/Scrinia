@@ -29,6 +29,8 @@ internal sealed class TransactionalParticipantAdapterFactory : IMultiMemoryParti
         if (!_participants.TryGetValue(request.ParticipantIdentity, out var participant) ||
             participant.Descriptor.ContractVersion != request.ContractVersion || participant.Descriptor.OrderingKey != request.OrderingKey)
             throw new MultiMemoryParticipantMismatchException();
+        if (request.TransactionId is null || request.Scope is null)
+            throw new MultiMemoryParticipantMismatchException();
         return Task.FromResult<IMultiMemoryParticipantAdapter>(new TransactionalParticipantAdapter(participant, request));
     }
 
@@ -58,8 +60,8 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _participant = participant;
         var address = request.Address;
         var handle = new TransactionalPreparedHandle("pending", "1");
-        _commitContext = new(request.OperationId, request.OperationId, address, request.OperationId, request.Kind, handle);
-        _rollbackContext = new(request.OperationId, request.OperationId, address, request.OperationId, request.Kind, handle);
+        _commitContext = new(request.TransactionId!, request.Scope!, address, request.OperationId, request.Kind, handle);
+        _rollbackContext = new(request.TransactionId!, request.Scope!, address, request.OperationId, request.Kind, handle);
     }
 
     internal TransactionalParticipantAdapter(ITransactionalMemoryParticipant participant, B4ParticipantRecoveryState state)

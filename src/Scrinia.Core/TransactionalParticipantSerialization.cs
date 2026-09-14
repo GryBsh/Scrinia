@@ -42,8 +42,8 @@ internal sealed record B4ParticipantRecoveryState
             quarantineReason is not null && !B4Validation.SafeReference(quarantineReason))
             throw new ArgumentException("Quarantine state is inconsistent.");
         if (lastFailureCode is not null && !Enum.IsDefined(lastFailureCode.Value)) throw new ArgumentException("Failure code is unsupported.");
-        if (lifecycleState == TransactionalParticipantLifecycleState.Ambiguous && !ambiguous)
-            throw new ArgumentException("Ambiguous lifecycle state requires the ambiguous flag.");
+        B4Validation.ValidateLifecycle(lifecycleState, preparedHandleReference, preparedHandleVersion,
+            stateMayHaveChanged, ambiguous);
         PreparedHandleReference = preparedHandleReference; PreparedHandleVersion = preparedHandleVersion;
         LifecycleState = lifecycleState; RetryAttempt = retryAttempt; RetryElapsedMilliseconds = retryElapsedMilliseconds;
         StateMayHaveChanged = stateMayHaveChanged; Ambiguous = ambiguous; LastFailureCode = lastFailureCode;
@@ -99,8 +99,12 @@ internal sealed record B4ParticipantRequestMetadata
 internal sealed class TransactionalParticipantLifecycleStateJsonConverter : JsonConverter<TransactionalParticipantLifecycleState>
 {
     public override TransactionalParticipantLifecycleState Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.String && Enum.TryParse<TransactionalParticipantLifecycleState>(reader.GetString(), true, out var value)
-            ? value : throw new JsonException("Lifecycle state is unsupported.");
+        reader.TokenType == JsonTokenType.String ? reader.GetString() switch
+        {
+            "prepared" => TransactionalParticipantLifecycleState.Prepared, "committed" => TransactionalParticipantLifecycleState.Committed,
+            "rolledBack" => TransactionalParticipantLifecycleState.RolledBack, "changed" => TransactionalParticipantLifecycleState.Changed,
+            "ambiguous" => TransactionalParticipantLifecycleState.Ambiguous, _ => throw new JsonException("Lifecycle state is unsupported.")
+        } : throw new JsonException("Lifecycle state is unsupported.");
     public override void Write(Utf8JsonWriter writer, TransactionalParticipantLifecycleState value, JsonSerializerOptions options) =>
         writer.WriteStringValue(value switch { TransactionalParticipantLifecycleState.Prepared => "prepared", TransactionalParticipantLifecycleState.Committed => "committed", TransactionalParticipantLifecycleState.RolledBack => "rolledBack", TransactionalParticipantLifecycleState.Changed => "changed", TransactionalParticipantLifecycleState.Ambiguous => "ambiguous", _ => throw new JsonException("Lifecycle state is unsupported.") });
 }
@@ -108,8 +112,9 @@ internal sealed class TransactionalParticipantLifecycleStateJsonConverter : Json
 internal sealed class TransactionalQuarantineStateJsonConverter : JsonConverter<TransactionalQuarantineState>
 {
     public override TransactionalQuarantineState Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.String && Enum.TryParse<TransactionalQuarantineState>(reader.GetString(), true, out var value)
-            ? value : throw new JsonException("Quarantine state is unsupported.");
+        reader.TokenType == JsonTokenType.String ? reader.GetString() switch
+        { "none" => TransactionalQuarantineState.None, "quarantined" => TransactionalQuarantineState.Quarantined,
+          _ => throw new JsonException("Quarantine state is unsupported.") } : throw new JsonException("Quarantine state is unsupported.");
     public override void Write(Utf8JsonWriter writer, TransactionalQuarantineState value, JsonSerializerOptions options) =>
         writer.WriteStringValue(value switch { TransactionalQuarantineState.None => "none", TransactionalQuarantineState.Quarantined => "quarantined", _ => throw new JsonException("Quarantine state is unsupported.") });
 }
@@ -117,8 +122,21 @@ internal sealed class TransactionalQuarantineStateJsonConverter : JsonConverter<
 internal sealed class TransactionalFailureCodeJsonConverter : JsonConverter<TransactionalFailureCode>
 {
     public override TransactionalFailureCode Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.String && Enum.TryParse<TransactionalFailureCode>(reader.GetString(), true, out var value)
+        reader.TokenType == JsonTokenType.String && FailureCodes.TryGetValue(reader.GetString()!, out var value)
             ? value : throw new JsonException("Failure code is unsupported.");
     public override void Write(Utf8JsonWriter writer, TransactionalFailureCode value, JsonSerializerOptions options) =>
-        writer.WriteStringValue(char.ToLowerInvariant(value.ToString()[0]) + value.ToString()[1..]);
+        writer.WriteStringValue(FailureCodes.FirstOrDefault(pair => pair.Value == value).Key ?? throw new JsonException("Failure code is unsupported."));
+
+    private static readonly Dictionary<string, TransactionalFailureCode> FailureCodes =
+        new Dictionary<string, TransactionalFailureCode>(StringComparer.Ordinal)
+        {
+            ["veto"] = TransactionalFailureCode.Veto, ["declaredTransient"] = TransactionalFailureCode.DeclaredTransient,
+            ["permanent"] = TransactionalFailureCode.Permanent, ["unknownTransient"] = TransactionalFailureCode.UnknownTransient,
+            ["cancelled"] = TransactionalFailureCode.Cancelled, ["invalidResponse"] = TransactionalFailureCode.InvalidResponse,
+            ["commitFailed"] = TransactionalFailureCode.CommitFailed, ["verificationFailed"] = TransactionalFailureCode.VerificationFailed,
+            ["rollbackFailed"] = TransactionalFailureCode.RollbackFailed, ["evidenceInvalid"] = TransactionalFailureCode.EvidenceInvalid,
+            ["retryMonotonicClockFailed"] = TransactionalFailureCode.RetryMonotonicClockFailed,
+            ["retryMonotonicClockMovedBackwards"] = TransactionalFailureCode.RetryMonotonicClockMovedBackwards,
+            ["retryElapsedOverflow"] = TransactionalFailureCode.RetryElapsedOverflow
+        };
 }

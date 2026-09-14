@@ -71,7 +71,8 @@ internal sealed class MultiMemoryParticipantMismatchException : Exception;
 
 internal sealed record MultiMemoryParticipantRequest
 {
-    internal MultiMemoryParticipantRequest(MemoryAddress address, string operationId, string kind)
+    internal MultiMemoryParticipantRequest(MemoryAddress address, string operationId, string kind,
+        string? transactionId = null, string? scope = null)
     {
         if (!address.IsValid)
             throw new ArgumentException("A valid memory address is required.", nameof(address));
@@ -79,11 +80,15 @@ internal sealed record MultiMemoryParticipantRequest
         Address = address;
         OperationId = RequireText(operationId, nameof(operationId));
         Kind = RequireText(kind, nameof(kind));
+        TransactionId = transactionId is null ? null : RequireText(transactionId, nameof(transactionId));
+        Scope = scope is null ? null : RequireText(scope, nameof(scope));
     }
 
     internal MemoryAddress Address { get; }
     internal string OperationId { get; }
     internal string Kind { get; }
+    internal string? TransactionId { get; }
+    internal string? Scope { get; }
     internal string? ParticipantIdentity { get; private init; }
     internal int? ContractVersion { get; private init; }
     internal string? OrderingKey { get; private init; }
@@ -94,7 +99,7 @@ internal sealed record MultiMemoryParticipantRequest
         string scope, MultiMemoryTransactionalParticipantRequest participant)
     {
         ArgumentNullException.ThrowIfNull(participant);
-        return new MultiMemoryParticipantRequest(participant.Address, participant.OperationId, participant.Kind)
+        return new MultiMemoryParticipantRequest(participant.Address, participant.OperationId, participant.Kind, null, scope)
         {
             ParticipantIdentity = participant.ParticipantIdentity,
             ContractVersion = participant.ContractVersion,
@@ -103,6 +108,14 @@ internal sealed record MultiMemoryParticipantRequest
             Metadata = participant.Metadata
         };
     }
+
+    internal static MultiMemoryParticipantRequest ForTransactionalParticipant(
+        string transactionId, string scope, MultiMemoryTransactionalParticipantRequest participant) =>
+        new MultiMemoryParticipantRequest(participant.Address, participant.OperationId, participant.Kind, transactionId, scope)
+        {
+            ParticipantIdentity = participant.ParticipantIdentity, ContractVersion = participant.ContractVersion,
+            OrderingKey = participant.OrderingKey, Payload = participant.Payload, Metadata = participant.Metadata
+        };
 
     internal void Deconstruct(out MemoryAddress address, out string operationId, out string kind) =>
         (address, operationId, kind) = (Address, OperationId, Kind);
@@ -226,6 +239,18 @@ internal static class B4Validation
             if (!copy.TryAdd(pair.Key, pair.Value)) throw new ArgumentException("Dictionary keys must be unique.", name);
         }
         return new ReadOnlyDictionary<string, string>(copy);
+    }
+
+    internal static void ValidateLifecycle(TransactionalParticipantLifecycleState state, string? handle, string? version,
+        bool changed, bool ambiguous)
+    {
+        bool hasHandle = handle is not null && version is not null;
+        if (state is TransactionalParticipantLifecycleState.Prepared or TransactionalParticipantLifecycleState.Committed && !hasHandle)
+            throw new ArgumentException("Prepared and committed participants require a complete handle.");
+        if (state is TransactionalParticipantLifecycleState.Changed && (!changed || ambiguous) ||
+            state is TransactionalParticipantLifecycleState.Ambiguous && (!ambiguous || !changed) ||
+            state is not (TransactionalParticipantLifecycleState.Changed or TransactionalParticipantLifecycleState.Ambiguous) && (changed || ambiguous))
+            throw new ArgumentException("Lifecycle state and change flags are inconsistent.");
     }
 }
 

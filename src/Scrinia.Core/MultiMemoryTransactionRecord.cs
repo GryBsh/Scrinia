@@ -253,6 +253,11 @@ internal static class MultiMemoryTransactionRecordCodec
     {
         ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(replacement);
+        if (replacement.Version != expected.Version || replacement.TransactionId != expected.TransactionId ||
+            replacement.Scope != expected.Scope || !SameParticipants(replacement.Participants, expected.Participants) ||
+            !SameTransactionalIdentities(replacement, expected))
+            throw new MultiMemoryTransactionRecordException("Replacement changes coordinator identity or participant snapshot.",
+                MultiMemoryFailure.Inconsistent, transactionId: expected.TransactionId, expectedScope: expected.Scope);
         string path = GetPath(scopeDirectory);
         MultiMemoryTransactionRecord current = Read(scopeDirectory, expected.Scope);
         if (!Serialize(current).AsSpan().SequenceEqual(Serialize(expected)))
@@ -366,10 +371,11 @@ internal static class MultiMemoryTransactionRecordCodec
         }
 
         var identities = new HashSet<string>(StringComparer.Ordinal);
+        var orderingKeys = new HashSet<string>(StringComparer.Ordinal);
         string? previousOrderingKey = null;
         foreach (var participant in record.TransactionalParticipants ?? Array.Empty<B4ParticipantRecoveryState>())
         {
-            if (!identities.Add(participant.ParticipantIdentity) ||
+            if (!identities.Add(participant.ParticipantIdentity) || !orderingKeys.Add(participant.OrderingKey) ||
                 previousOrderingKey is not null && string.CompareOrdinal(previousOrderingKey, participant.OrderingKey) >= 0 ||
                 !string.Equals(participant.TransactionId, record.TransactionId, StringComparison.Ordinal) ||
                 !string.Equals(participant.Scope, record.Scope, StringComparison.Ordinal))
@@ -379,7 +385,8 @@ internal static class MultiMemoryTransactionRecordCodec
         previousOrderingKey = null;
         foreach (var participant in record.RejectedTransactionalParticipants ?? Array.Empty<B4ParticipantRequestMetadata>())
         {
-            if (previousOrderingKey is not null && string.CompareOrdinal(previousOrderingKey, participant.OrderingKey) >= 0 ||
+            if (!identities.Add(participant.ParticipantIdentity) || !orderingKeys.Add(participant.OrderingKey) ||
+                previousOrderingKey is not null && string.CompareOrdinal(previousOrderingKey, participant.OrderingKey) >= 0 ||
                 !string.Equals(participant.TransactionId, record.TransactionId, StringComparison.Ordinal) ||
                 !string.Equals(participant.Scope, record.Scope, StringComparison.Ordinal))
                 throw new MultiMemoryTransactionRecordException("Rejected transactional participant metadata is inconsistent.", MultiMemoryFailure.Inconsistent);
@@ -389,6 +396,18 @@ internal static class MultiMemoryTransactionRecordCodec
         if (recordPath is not null && expectedStoreDirectory is not null &&
             !PathContainment.IsWithin(expectedStoreDirectory, recordPath))
             throw new MultiMemoryTransactionRecordException("Coordinator record path is outside its scope.", MultiMemoryFailure.Unsafe);
+    }
+
+    private static bool SameParticipants(IReadOnlyList<MultiMemoryParticipantManifest> left, IReadOnlyList<MultiMemoryParticipantManifest> right) =>
+        left.Count == right.Count && left.Zip(right).All(pair => pair.First.Subject == pair.Second.Subject &&
+            pair.First.OperationId == pair.Second.OperationId && pair.First.Kind == pair.Second.Kind);
+
+    private static bool SameTransactionalIdentities(MultiMemoryTransactionRecord left, MultiMemoryTransactionRecord right)
+    {
+        static IEnumerable<(string Identity, string Ordering)> Keys(MultiMemoryTransactionRecord record) =>
+            (record.TransactionalParticipants ?? []).Select(item => (item.ParticipantIdentity, item.OrderingKey))
+            .Concat((record.RejectedTransactionalParticipants ?? []).Select(item => (item.ParticipantIdentity, item.OrderingKey)));
+        return Keys(left).SequenceEqual(Keys(right));
     }
 
     private static void RequireBounded(string value, string name)
