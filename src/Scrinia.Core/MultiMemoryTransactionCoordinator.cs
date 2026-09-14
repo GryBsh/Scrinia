@@ -973,8 +973,32 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             snapshot.ContractVersion != state.ContractVersion || snapshot.OrderingKey != state.OrderingKey ||
             snapshot.OperationId != state.OperationId || snapshot.Kind != state.Kind ||
             !snapshot.Capabilities.SequenceEqual(state.Capabilities, StringComparer.Ordinal) ||
-            !snapshot.Payload.SequenceEqual(state.Payload) || !snapshot.Metadata.SequenceEqual(state.Metadata))
+            !DictionariesMatch(snapshot.Payload, state.Payload) || !DictionariesMatch(snapshot.Metadata, state.Metadata))
             throw new MultiMemoryParticipantMismatchException();
+    }
+
+    internal static bool DictionariesMatch(
+        IReadOnlyDictionary<string, string>? left,
+        IReadOnlyDictionary<string, string>? right)
+    {
+        if (left is null || right is null) return left is null && right is null;
+        if (left.Count != right.Count) return false;
+
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, string> pair in left)
+        {
+            if (pair.Key is null || pair.Value is null || !expected.TryAdd(pair.Key, pair.Value))
+                return false;
+        }
+
+        foreach (KeyValuePair<string, string> pair in right)
+        {
+            if (pair.Key is null || pair.Value is null ||
+                !expected.TryGetValue(pair.Key, out string? value) || !string.Equals(value, pair.Value, StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
     }
 
     private sealed class MultiMemoryParticipantMismatchException : Exception;

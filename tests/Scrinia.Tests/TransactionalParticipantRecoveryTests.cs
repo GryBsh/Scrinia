@@ -58,6 +58,24 @@ public sealed class TransactionalParticipantRecoveryTests
         factory.CreateCalls.Should().Be(0);
     }
 
+    [Fact]
+    public void RehydrationAcceptsEquivalentPayloadAndMetadataRegardlessOfInsertionOrder()
+    {
+        IReadOnlyDictionary<string, string> persistedPayload =
+            new Dictionary<string, string> { ["a"] = "1", ["b"] = "2" };
+        IReadOnlyDictionary<string, string> rehydratedPayload =
+            new Dictionary<string, string> { ["b"] = "2", ["a"] = "1" };
+        IReadOnlyDictionary<string, string> persistedMetadata =
+            new Dictionary<string, string> { ["x"] = "1", ["y"] = "2" };
+        IReadOnlyDictionary<string, string> rehydratedMetadata =
+            new Dictionary<string, string> { ["y"] = "2", ["x"] = "1" };
+
+        MultiMemoryTransactionCoordinator.DictionariesMatch(persistedPayload, rehydratedPayload).Should().BeTrue();
+        MultiMemoryTransactionCoordinator.DictionariesMatch(persistedMetadata, rehydratedMetadata).Should().BeTrue();
+        MultiMemoryTransactionCoordinator.DictionariesMatch(
+            persistedPayload, new Dictionary<string, string> { ["a"] = "different", ["b"] = "2" }).Should().BeFalse();
+    }
+
     private static FileMemoryStore CreateStore() =>
         new(Path.Combine(Path.GetTempPath(), "scrinia-b4-recovery-" + Guid.NewGuid().ToString("N")));
 
