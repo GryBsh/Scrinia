@@ -121,6 +121,21 @@ public sealed class CliMultiMemoryTransactionTests
     }
 
     [Fact]
+    public void CliEntrypointPlainOutputOmitsB4ProjectionDetailsFromEmbeddedYaml()
+    {
+        (int exitCode, string output) = CaptureCliOutput(
+            AggregateWithB4Projection(), json: false);
+
+        exitCode.Should().Be(0);
+        output.Should().Contain("operationId: tx-1");
+        output.Should().Contain("participant: note-a");
+        output.Should().NotContain("transactionalParticipants");
+        output.Should().NotContain("nonAdmittedParticipants");
+        output.Should().NotContain("plugin-a");
+        output.Should().NotContain("plugin-rejected");
+    }
+
+    [Fact]
     public void CliAndMcpMappingsHaveIdenticalTypedSemantics()
     {
         MultiMemoryAggregateResult result = Aggregate(
