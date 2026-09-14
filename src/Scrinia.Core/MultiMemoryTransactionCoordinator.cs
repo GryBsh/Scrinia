@@ -333,9 +333,11 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 state?.ParticipantIdentity ?? requested!.ParticipantIdentity,
                 state?.OrderingKey ?? requested!.OrderingKey,
                 adapter.OperationId, adapter.Kind, true,
-                result.Outcome == MultiMemoryOutcome.RolledBack
-                    ? TransactionalParticipantLifecycleState.RolledBack
-                    : TransactionalParticipantLifecycleState.Committed,
+                result.Outcome == MultiMemoryOutcome.RecoveryRequired
+                    ? state?.LifecycleState ?? TransactionalParticipantLifecycleState.Ambiguous
+                    : result.Outcome == MultiMemoryOutcome.RolledBack
+                        ? TransactionalParticipantLifecycleState.RolledBack
+                        : TransactionalParticipantLifecycleState.Committed,
                 result.Outcome is MultiMemoryOutcome.Committed or MultiMemoryOutcome.CommittedCleanupPending,
                 result.Outcome == MultiMemoryOutcome.RolledBack, adapter.EvidencePath, null));
         }
@@ -419,6 +421,14 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                     .ConfigureAwait(false) ?? throw new MultiMemoryParticipantMismatchException();
                 ValidateRehydratedAdapter(state, adapter);
                 adapters.Add(adapter);
+                if (state.PreparedHandleReference is null)
+                {
+                    await PersistRecoveryFailureAsync(record, directory, adapters,
+                        new MultiMemoryParticipantMismatchException(), cancellationToken).ConfigureAwait(false);
+                    MultiMemoryAggregateResult blocked = RecoveryRequired(record, b3Adapters, MultiMemoryFailure.Ambiguous,
+                        "A handle-less participant state requires explicit recovery; evidence is retained.", directory);
+                    return ProjectAggregate(blocked, CreateRecoveryRequest(record), record, adapters);
+                }
             }
             adapters = OrderRecoveryAdapters(record, adapters);
             if (record.TransactionalParticipants is null or { Count: 0 })

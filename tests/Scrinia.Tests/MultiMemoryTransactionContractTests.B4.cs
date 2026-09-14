@@ -83,6 +83,22 @@ public sealed partial class MultiMemoryTransactionContractTests
             hasHandle ? "v1" : null, changed, ambiguous)).Should().NotThrow();
     }
 
+    [Theory]
+    [InlineData(3, false)]
+    [InlineData(4, true)]
+    public void B4_lifecycle_accepts_handleless_evidence_only_states(
+        int stateValue, bool ambiguous)
+    {
+        var state = (TransactionalParticipantLifecycleState)stateValue;
+        FluentActions.Invoking(() => new B4ParticipantRecoveryState(
+            "tx-1", "op-1", "local-topic:notes", "/notes/a", "participant", 1, "participant-key", "memory",
+            ["alpha"], new Dictionary<string, string> { ["body"] = "value" },
+            new Dictionary<string, string> { ["source"] = "test" }, state, null, null, 1, 10, true, ambiguous,
+            TransactionalFailureCode.UnknownTransient, "evidence/1", "journal", "v1",
+            ambiguous ? TransactionalQuarantineState.Quarantined : TransactionalQuarantineState.None,
+            ambiguous ? "ambiguous participant state" : null)).Should().NotThrow();
+    }
+
     [Fact]
     public void B4_enum_wire_values_are_case_sensitive()
     {

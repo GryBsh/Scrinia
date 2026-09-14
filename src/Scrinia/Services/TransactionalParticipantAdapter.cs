@@ -67,7 +67,9 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _participantIdentity = state.ParticipantIdentity; _contractVersion = state.ContractVersion;
         _orderingKey = state.OrderingKey; _capabilities = state.Capabilities;
         _payload = state.Payload; _metadata = state.Metadata;
-        _preparedHandle = new(state.PreparedHandleReference!, state.PreparedHandleVersion!);
+        _preparedHandle = state.PreparedHandleReference is null
+            ? null
+            : new(state.PreparedHandleReference, state.PreparedHandleVersion!);
         _retryBudget = CreateRetryBudget(participant.Descriptor.RetryPolicy);
         _lifecycleState = state.LifecycleState; _stateMayHaveChanged = state.StateMayHaveChanged;
         _ambiguous = state.Ambiguous; _lastAmbiguous = state.Ambiguous; _quarantineState = state.QuarantineState;

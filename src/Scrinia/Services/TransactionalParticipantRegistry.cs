@@ -40,8 +40,12 @@ internal sealed class TransactionalParticipantAdapterFactory : IMultiMemoryParti
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(request);
         var state = request.State;
-        if (state.QuarantineState != TransactionalQuarantineState.None || state.PreparedHandleReference is null ||
-            state.PreparedHandleVersion is null || state.ContractVersion != 1 || !state.Capabilities.SequenceEqual(request.Capabilities, StringComparer.Ordinal) ||
+        bool handlelessEvidenceOnly = state.PreparedHandleReference is null &&
+            state.PreparedHandleVersion is null &&
+            state.LifecycleState is TransactionalParticipantLifecycleState.Changed or TransactionalParticipantLifecycleState.Ambiguous;
+        if ((!handlelessEvidenceOnly && state.QuarantineState != TransactionalQuarantineState.None) ||
+            (!handlelessEvidenceOnly && (state.PreparedHandleReference is null || state.PreparedHandleVersion is null)) ||
+            state.ContractVersion != 1 || !state.Capabilities.SequenceEqual(request.Capabilities, StringComparer.Ordinal) ||
             !string.Equals(state.Address, request.Manifest.Subject, StringComparison.Ordinal) || state.OperationId != request.Manifest.OperationId || state.Kind != request.Manifest.Kind)
             throw new MultiMemoryParticipantMismatchException();
         if (!_participants.TryGetValue(state.ParticipantIdentity, out var participant) || participant.Descriptor.ContractVersion != state.ContractVersion ||
