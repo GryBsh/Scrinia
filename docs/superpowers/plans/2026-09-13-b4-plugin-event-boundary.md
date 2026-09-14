@@ -1145,32 +1145,117 @@ Use `TransactionalParticipantAdapter.ClassifyReturnedFailure`,
 
 ## Task order and explicit inventory
 
-1. Define the public contract, descriptor capability canonicalization, and constructor/result
-   validation. This has no dependency on the coordinator.
-2. Add the registry, source-generated metadata, durable DTO extension including persisted
-   capabilities and bounded `RejectedTransactionalParticipants` metadata, exact-content expected-write
-   concurrency, and fail-closed rehydration. This
-   depends on task 1 and must land before recovery orchestration.
-3. Implement the host adapter, `IRetryClassifier<T>` returned-result and exception overloads with
-    explicit declared-code/`StateMayHaveChanged` extraction, `IMonotonicClock`, `IWallClock`, injected
-    delay scheduler, `RetryBudget`, `RetryResult<T>`, separate returned-failure/exception tests, and
-    no-hang tests. This depends on the contract and registry
-   shapes from tasks 1-2.
-4. Inject the Core factory into `FileMemoryStore` and the existing coordinator, add the private
-    `ValidatedMultiMemoryAggregateProjection` builder/`MultiMemoryAggregateResult.Create` boundary, then implement the
-   coordinator-owned `RecoverTransactionalParticipantsAsync` with the single-lock B3/B4 admission
-   bridge, global combined ordering, prepared abort, committed roll-forward, exact lifecycle writes,
-    quarantine, rejected-only and mixed admitted/rejected recovery, and the three-list aggregate result.
-    This depends on tasks 1-3 and is the only task
-    that changes recovery control flow; it must not add B4 recovery behavior to the discovery/parser
-    boundary in `src/Scrinia.Core/RecoveryDiscovery.cs`.
-5. Extract the sanitizer and prove observer/child-process exclusion. This is independent of the
-   recovery algorithm but must retain the no-public-surface boundary.
-6. Preserve MCP/CLI mappings and verify that no new public command, response field, or endpoint is
-   introduced; this depends on tasks 1-5.
-7. Run the focused contract, registry, recovery, ordering, aggregate, Release-build,
-   self-contained-trimmed-publish, full-solution, and independent-review gates. Write the B4 ledger
-   and report only after raw evidence is checked in.
+### Task 1: Public plugin contract and validation
+
+**Files:**
+- Add: `src/Scrinia.Plugin.Abstractions/ITransactionalMemoryParticipant.cs`
+- Test: `tests/Scrinia.Tests/TransactionalParticipantContractTests.cs`
+
+**Interfaces:**
+- Produces: the public transactional participant contract, immutable descriptors, contexts, result types, failure types, and validation boundaries defined above.
+- Consumes: the already-public `Scrinia.Core.MemoryAddress` type only where specified by the contract.
+
+**Steps:**
+1. Define the public contract, descriptor capability canonicalization, and constructor/result validation. This has no dependency on the coordinator.
+
+### Task 2: Registry, durable DTOs, and exact-content writes
+
+**Files:**
+- Modify: `src/Scrinia.Core/MultiMemoryTransaction.cs`
+- Modify: `src/Scrinia.Core/MultiMemoryTransactionRecord.cs`
+- Modify: `src/Scrinia.Core/TransactionalParticipantSerialization.cs`
+- Modify: `src/Scrinia.Core/Scrinia.Core.csproj`
+- Add: `src/Scrinia/Services/TransactionalParticipantRegistry.cs`
+- Test: `tests/Scrinia.Tests/TransactionalParticipantRegistryTests.cs`
+- Test: `tests/Scrinia.Tests/MultiMemoryTransactionContractTests.cs`
+
+**Interfaces:**
+- Produces: the Core-owned `IMultiMemoryParticipantAdapterFactory`, durable B4 recovery/request DTOs, source-generated serialization metadata, exact-content `WriteExpected` publication, and fail-closed rehydration.
+- Consumes: Task 1's public contract and the existing B3 record, manifest, codec, and adapter seams.
+
+**Steps:**
+1. Add the registry, source-generated metadata, durable DTO extension including persisted capabilities and bounded `RejectedTransactionalParticipants` metadata, exact-content expected-write concurrency, and fail-closed rehydration. This depends on task 1 and must land before recovery orchestration.
+
+### Task 3: Host adapter and retry boundaries
+
+**Files:**
+- Add: `src/Scrinia/Services/TransactionalParticipantAdapter.cs`
+- Add: `src/Scrinia.Core/TransactionalRetry.cs`
+- Test: `tests/Scrinia.Tests/TransactionalParticipantAdapterTests.cs`
+
+**Interfaces:**
+- Produces: the host adapter, `IRetryClassifier<T>` returned-result and exception overloads, `IMonotonicClock`, `IWallClock`, injected delay scheduler, `RetryBudget`, and `RetryResult<T>`.
+- Consumes: the contract and registry shapes from tasks 1-2.
+
+**Steps:**
+1. Implement the host adapter and retry dependencies with explicit declared-code/`StateMayHaveChanged` extraction, separate returned-failure/exception tests, and no-hang tests. This depends on the contract and registry shapes from tasks 1-2.
+
+### Task 4: Coordinator injection, recovery, and aggregate projection
+
+**Files:**
+- Modify: `src/Scrinia.Core/FileMemoryStore.cs`
+- Modify: `src/Scrinia.Core/MultiMemoryTransactionCoordinator.cs`
+- Modify: `src/Scrinia.Core/MultiMemoryTransaction.cs`
+- Modify: `src/Scrinia/Commands/WorkspaceSetup.cs`
+- Test: `tests/Scrinia.Tests/TransactionalParticipantRecoveryTests.cs`
+- Test: `tests/Scrinia.Tests/MultiMemoryTransactionAdmissionTests.cs`
+- Test: `tests/Scrinia.Tests/MultiMemoryTransactionAggregateProjectionTests.cs`
+- Test: `tests/Scrinia.Tests/MultiMemoryTransactionLifecycleTests.cs`
+
+**Interfaces:**
+- Produces: Core factory injection, the private `ValidatedMultiMemoryAggregateProjection` builder and `MultiMemoryAggregateResult.Create` boundary, and coordinator-owned `RecoverTransactionalParticipantsAsync`.
+- Consumes: tasks 1-3 and the existing B3 lock, admission, decision, recovery, and aggregate contracts.
+
+**Steps:**
+1. Inject the Core factory into `FileMemoryStore` and the existing coordinator, add the private `ValidatedMultiMemoryAggregateProjection` builder/`MultiMemoryAggregateResult.Create` boundary, then implement the coordinator-owned `RecoverTransactionalParticipantsAsync` with the single-lock B3/B4 admission bridge, global combined ordering, prepared abort, committed roll-forward, exact lifecycle writes, quarantine, rejected-only and mixed admitted/rejected recovery, and the three-list aggregate result. This depends on tasks 1-3 and is the only task that changes recovery control flow; it must not add B4 recovery behavior to the discovery/parser boundary in `src/Scrinia.Core/RecoveryDiscovery.cs`.
+
+### Task 5: Stable-detail sanitization and observer boundaries
+
+**Files:**
+- Add: `src/Scrinia.Core/MultiMemoryStableDetail.cs`
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs`
+- Modify: `src/Scrinia/Commands/ScriniaCommands.Memory.cs`
+- Modify: `src/Scrinia/Services/McpPluginHost.cs`
+- Test: `tests/Scrinia.Tests/TransactionalObserverBoundaryTests.cs`
+- Test: `tests/Scrinia.Plugin.Embeddings.Tests/EmbeddingsPluginObserverBoundaryTests.cs`
+
+**Interfaces:**
+- Produces: the shared stable-detail sanitizer and tested observer/child-process exclusion.
+- Consumes: the existing no-public-surface boundary and Vulkan child-process observer setup.
+
+**Steps:**
+1. Extract the sanitizer and prove observer/child-process exclusion. This is independent of the recovery algorithm but must retain the no-public-surface boundary.
+
+### Task 6: MCP/CLI mapping preservation
+
+**Files:**
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs`
+- Modify: `src/Scrinia.Mcp/MemoryTools.Skills.cs`
+- Modify: `src/Scrinia/Commands/ScriniaCommands.Memory.cs`
+- Modify: `src/Scrinia/Commands/CliJsonContext.cs`
+- Test: `tests/Scrinia.Tests/MultiMemoryTransactionFacadeTests.cs`
+- Test: `tests/Scrinia.Tests/CliMultiMemoryTransactionTests.cs`
+
+**Interfaces:**
+- Produces: unchanged existing MCP/CLI mappings with no new public command, response field, endpoint, or serializer root.
+- Consumes: tasks 1-5 and the existing B3-only facade response shape.
+
+**Steps:**
+1. Preserve MCP/CLI mappings and verify that no new public command, response field, or endpoint is introduced; this depends on tasks 1-5.
+
+### Task 7: Verification and evidence gates
+
+**Files:**
+- Test: the focused contract, registry, recovery, ordering, aggregate, Release-build, self-contained-trimmed-publish, full-solution, and independent-review gates listed above.
+- Evidence: `docs/superpowers/ledgers/2026-09-13-b4-plugin-event-boundary.md`
+- Evidence: `docs/superpowers/reports/2026-09-13-b4-final-gate.md`
+
+**Interfaces:**
+- Produces: checked-in raw verification evidence and the final B4 ledger/report.
+- Consumes: the completed implementation and test boundaries from tasks 1-6.
+
+**Steps:**
+1. Run the focused contract, registry, recovery, ordering, aggregate, Release-build, self-contained-trimmed-publish, full-solution, and independent-review gates. Write the B4 ledger and report only after raw evidence is checked in.
 
 The dependency and boundary citations are the accepted B3 ledger
 (`docs/superpowers/ledgers/2026-09-13-b3-final-acceptance.md`), the B3 implementation/test range
