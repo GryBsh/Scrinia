@@ -285,6 +285,99 @@ public sealed class TransactionalParticipantAdapterTests
     }
 
     [Fact]
+    public async Task Null_prepare_callback_result_is_typed_as_invalid_response()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult<TransactionalPrepareResult>(null!)
+        };
+
+        var error = await FluentActions.Invoking(() => new TransactionalParticipantAdapter(participant, Request())
+                .PrepareAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        error.Which.Failure.Code.Should().Be(Scrinia.Plugin.Abstractions.TransactionalFailureCode.InvalidResponse);
+        error.Which.Evidence.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Null_commit_callback_result_is_typed_as_invalid_response()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => Task.FromResult<TransactionalParticipantResult>(null!)
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+
+        var error = await FluentActions.Invoking(() => adapter.CommitAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        error.Which.Failure.Code.Should().Be(Scrinia.Plugin.Abstractions.TransactionalFailureCode.InvalidResponse);
+        error.Which.Evidence.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Null_rollback_callback_result_is_typed_as_invalid_response()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Rollback = (_, _) => Task.FromResult<TransactionalParticipantResult>(null!)
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+
+        var error = await FluentActions.Invoking(() => adapter.RollbackAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        error.Which.Failure.Code.Should().Be(Scrinia.Plugin.Abstractions.TransactionalFailureCode.InvalidResponse);
+        error.Which.Evidence.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Null_status_callback_result_is_typed_as_invalid_response()
+    {
+        var participant = new TestParticipant
+        {
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Status = (_, _) => Task.FromResult<TransactionalCommitStatusResult>(null!)
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+        await adapter.PrepareAsync(CancellationToken.None);
+
+        var error = await FluentActions.Invoking(() => adapter.GetCommitStatusAsync(CancellationToken.None))
+            .Should().ThrowAsync<TransactionalParticipantException>();
+
+        error.Which.Failure.Code.Should().Be(Scrinia.Plugin.Abstractions.TransactionalFailureCode.InvalidResponse);
+        error.Which.Evidence.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Successful_retry_replaces_evidence_from_the_previous_attempt()
+    {
+        var evidence = new TransactionalRecoveryEvidence("recovery/first-attempt", "journal", "v1");
+        var attempts = 0;
+        var participant = new TestParticipant
+        {
+            RetryPolicy = new(2, initialDelay: TimeSpan.Zero, maximumDelay: TimeSpan.Zero),
+            Prepare = (_, _) => Task.FromResult(new TransactionalPrepareResult(new("opaque", "v1"), null, null)),
+            Commit = (_, _) => Task.FromResult(++attempts == 1
+                ? new TransactionalParticipantResult(TransactionalParticipantState.Changed,
+                    new(Scrinia.Plugin.Abstractions.TransactionalFailureCode.DeclaredTransient, "retry", true), evidence)
+                : new TransactionalParticipantResult(TransactionalParticipantState.Committed, null, null))
+        };
+        var adapter = new TransactionalParticipantAdapter(participant, Request());
+
+        await adapter.PrepareAsync(CancellationToken.None);
+        await adapter.CommitAsync(CancellationToken.None);
+
+        attempts.Should().Be(2);
+        adapter.EvidencePath.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Null_callback_results_are_invalid_response_not_permanent()
     {
         TransactionalParticipantAdapter.ClassifyReturnedFailure((TransactionalPrepareResult?)null, true)
@@ -381,11 +474,12 @@ public sealed class TransactionalParticipantAdapterTests
         internal Func<TransactionalCommitContext, CancellationToken, Task<TransactionalParticipantResult>>? Commit { get; init; }
         internal Func<TransactionalRollbackContext, CancellationToken, Task<TransactionalParticipantResult>>? Rollback { get; init; }
         internal Func<TransactionalCommitContext, CancellationToken, Task<TransactionalCommitStatusResult>>? Status { get; init; }
+        internal Scrinia.Plugin.Abstractions.TransactionalRetryPolicy RetryPolicy { get; init; } =
+            new(1, initialDelay: TimeSpan.Zero, maximumDelay: TimeSpan.Zero);
 
         public string Name => "test";
         public string Version => "1";
-        public TransactionalParticipantDescriptor Descriptor { get; } = new("participant", 1, ["transaction"],
-            new Scrinia.Plugin.Abstractions.TransactionalRetryPolicy(1, initialDelay: TimeSpan.Zero, maximumDelay: TimeSpan.Zero), "participant-key");
+        public TransactionalParticipantDescriptor Descriptor => new("participant", 1, ["transaction"], RetryPolicy, "participant-key");
         public Task<TransactionalPrepareResult> PrepareAsync(TransactionalPrepareContext context, CancellationToken cancellationToken = default) => Prepare!(context, cancellationToken);
         public Task<TransactionalParticipantResult> CommitAsync(TransactionalCommitContext context, CancellationToken cancellationToken = default) => Commit!(context, cancellationToken);
         public Task<TransactionalParticipantResult> RollbackAsync(TransactionalRollbackContext context, CancellationToken cancellationToken = default) => Rollback!(context, cancellationToken);

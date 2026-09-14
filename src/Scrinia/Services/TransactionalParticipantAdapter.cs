@@ -169,7 +169,7 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         _lastFailure = failure;
         _lastEvidence = evidence;
         _lastAmbiguous = failure?.StateMayHaveChanged == true && evidence is not null;
-        if (evidence is not null) _evidencePath = evidence.EvidenceReference;
+        _evidencePath = evidence?.EvidenceReference ?? string.Empty;
     }
 
     private void CaptureException(Exception exception)
@@ -202,7 +202,11 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         private readonly TransactionalParticipantAdapter _owner;
         internal PrepareClassifier(Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> capture,
             TransactionalParticipantAdapter owner) { _capture = capture; _owner = owner; }
-        public RetryClassification Classify(TransactionalPrepareResult result, bool callbackStarted) { _capture(result.Failure, result.Evidence); return ClassifyReturnedFailure(result, callbackStarted); }
+        public RetryClassification Classify(TransactionalPrepareResult result, bool callbackStarted)
+        {
+            _capture(result?.Failure, result?.Evidence);
+            return ClassifyReturnedFailure(result, callbackStarted);
+        }
         public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
 
     }
@@ -213,7 +217,11 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         private readonly TransactionalParticipantAdapter _owner;
         internal ParticipantResultClassifier(Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> capture,
             TransactionalParticipantAdapter owner) { _capture = capture; _owner = owner; }
-        public RetryClassification Classify(TransactionalParticipantResult result, bool callbackStarted) { _capture(result.Failure, result.Evidence); return ClassifyReturnedFailure(result, callbackStarted); }
+        public RetryClassification Classify(TransactionalParticipantResult result, bool callbackStarted)
+        {
+            _capture(result?.Failure, result?.Evidence);
+            return ClassifyReturnedFailure(result, callbackStarted);
+        }
         public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
 
     }
@@ -224,7 +232,11 @@ internal sealed class TransactionalParticipantAdapter : IMultiMemoryParticipantA
         private readonly TransactionalParticipantAdapter _owner;
         internal CommitStatusClassifier(Action<TransactionalParticipantFailure?, TransactionalRecoveryEvidence?> capture,
             TransactionalParticipantAdapter owner) { _capture = capture; _owner = owner; }
-        public RetryClassification Classify(TransactionalCommitStatusResult result, bool callbackStarted) { _capture(result.Failure, result.Evidence); return ClassifyReturnedFailure(result, callbackStarted); }
+        public RetryClassification Classify(TransactionalCommitStatusResult result, bool callbackStarted)
+        {
+            _capture(result?.Failure, result?.Evidence);
+            return ClassifyReturnedFailure(result, callbackStarted);
+        }
         public RetryClassification Classify(Exception exception, bool callbackStarted) { _owner.CaptureException(exception); return ClassifyThrownException(exception, callbackStarted); }
 
     }
