@@ -8,6 +8,48 @@ namespace Scrinia.Tests;
 public sealed class MaintenanceContractTests
 {
     [Fact]
+    public void Registry_binds_cursor_semantics_and_invalidates_the_key()
+    {
+        var workspace = new MaintenanceWorkspaceKey(Guid.NewGuid());
+        var run = new MaintenanceRunId(Guid.NewGuid());
+        var snapshot = new MaintenanceSnapshotId(Guid.NewGuid());
+        var scope = new MaintenanceScopeBinding(Guid.NewGuid());
+        var policy = new MaintenanceHash256(new byte[32]);
+        using var registry = new MaintenanceRunRegistry();
+        registry.Create(workspace, run, snapshot, scope, policy, DateTimeOffset.UtcNow.AddMinutes(5));
+        var cursor = new MaintenanceCursor(2, workspace, run, snapshot, scope, 0,
+            MaintenanceCursorPhase.Discover, new MaintenanceCandidateKey(Guid.Empty), 0, policy,
+            (ulong)DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+
+        string token = MaintenanceCursorCodec.Encode(cursor, registry);
+        MaintenanceCursorCodec.TryDecode(token, registry, out _, out _).Should().BeTrue();
+
+        registry.Remove(run);
+        MaintenanceCursorCodec.TryDecode(token, registry, out _, out string? error).Should().BeFalse();
+        error.Should().Be("Invalid continuation.");
+    }
+
+    [Fact]
+    public void Enumerator_capability_is_consumed_and_requires_strictly_increasing_ordinals()
+    {
+        using var enumerator = JournalBoundaryEnumerator.Create(
+            new MaintenanceRunId(Guid.NewGuid()), new MaintenanceSnapshotId(Guid.NewGuid()),
+            new MaintenanceScopeBinding(Guid.NewGuid()), 1, 0, null);
+        var first = enumerator.BufferJournal(1, new MaintenanceCandidateKey(Guid.NewGuid()),
+            JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal,
+            JournalDirectoryEntryKind.File);
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(first, out JournalBoundaryProof? proof).Should().BeTrue();
+        enumerator.Advance();
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(first, out _).Should().BeFalse();
+
+        var next = enumerator.BufferJournal(2, new MaintenanceCandidateKey(Guid.NewGuid()),
+            JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal,
+            JournalDirectoryEntryKind.File);
+        next.Should().NotBeNull();
+        next!.DirectoryEntryOrdinal.Should().BeGreaterThan(proof!.DirectoryEntryOrdinal);
+    }
+
+    [Fact]
     public void Cursor_codec_uses_the_fixed_b5c2_wire_shape_and_rfc_hmac_vector()
     {
         var cursor = new MaintenanceCursor(
@@ -56,15 +98,13 @@ public sealed class MaintenanceContractTests
         var run = new MaintenanceRunId(Guid.NewGuid());
         var snapshot = new MaintenanceSnapshotId(Guid.NewGuid());
         var root = new MaintenanceScopeBinding(Guid.NewGuid());
-        var enumerator = new MaintenanceEnumeratorId(Guid.NewGuid());
         var key = new MaintenanceCandidateKey(Guid.NewGuid());
-        var boundary = new JournalEnumeratorBoundary(run, snapshot, root, enumerator, 2, null, 4, 1, key,
-            JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal,
-            JournalDirectoryEntryKind.File, JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly,
-            true, true, true, true, true, true, true);
+        using var owner = JournalBoundaryEnumerator.Create(run, snapshot, root, 2, 4, null);
+        var boundary = owner.BufferJournal(1, key, JournalBoundaryLocation.AppendVersions,
+            JournalBoundaryNameClass.AppendJournal, JournalDirectoryEntryKind.File)!;
 
         JournalBoundaryProof.TryCaptureFromBufferedMetadata(boundary, out JournalBoundaryProof? proof).Should().BeTrue();
-        var context = new JournalBoundaryValidationContext(run, snapshot, root, enumerator, 2, null, 4, key,
+        var context = new JournalBoundaryValidationContext(run, snapshot, root, owner.Id, 2, null, 4, key,
             JournalDirectoryEntryKind.File, 0);
 
         JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, context, out JournalBoundaryRejection rejection)

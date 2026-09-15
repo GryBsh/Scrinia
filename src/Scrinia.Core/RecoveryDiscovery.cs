@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Diagnostics;
+using System.Security.Cryptography;
 
 namespace Scrinia.Core;
 
@@ -381,57 +383,126 @@ internal sealed class B2RecoveryMaintenanceAdapter : IB2RecoveryMaintenanceAdapt
     };
 
     internal static bool VerifyTerminal(RecoveryCandidate candidate, string evidenceRoot)
+        => VerifyTerminalBounded(candidate, evidenceRoot, CancellationToken.None).IsVerified;
+
+    internal static MaintenanceVerificationResult VerifyTerminalBounded(RecoveryCandidate candidate,
+        string evidenceRoot, CancellationToken cancellationToken)
     {
+        var budget = new TerminalVerificationBudget(MaintenanceLimits.TerminalVerificationMaximumBytes,
+            TimeSpan.FromMilliseconds(MaintenanceLimits.TerminalVerificationMaximumMilliseconds), cancellationToken);
         try
         {
-            if (!IsSafeEvidencePath(candidate.EvidencePath, evidenceRoot)) return false;
-            return candidate.Envelope.TypedBody switch
+            if (!IsSafeEvidencePath(candidate.EvidencePath, evidenceRoot)) return ProtectedVerification();
+            bool verified = candidate.Envelope.TypedBody switch
             {
-                AppendRecoveryBody append => VerifyAppend(append, evidenceRoot, candidate.Envelope.State),
-                RestoreRecoveryBody restore => VerifyRestore(restore, candidate.Envelope.Scope, candidate.EvidencePath, evidenceRoot, candidate.Envelope.State),
-                FileEntityRecoveryBody entity => VerifyEntity(entity, evidenceRoot, candidate.Envelope.State),
+                AppendRecoveryBody append => VerifyAppend(append, evidenceRoot, candidate.Envelope.State, budget),
+                RestoreRecoveryBody restore => VerifyRestore(restore, candidate.Envelope.Scope, candidate.EvidencePath, evidenceRoot, candidate.Envelope.State, budget),
+                FileEntityRecoveryBody entity => VerifyEntity(entity, evidenceRoot, candidate.Envelope.State, budget),
                 _ => false
             };
+            return verified ? new(MaintenanceVerificationStatus.Verified, MaintenanceProtectionReason.UnresolvedRecovery) : ProtectedVerification();
         }
-        catch (Exception) { return false; }
+        catch (OperationCanceledException) { return ProtectedVerification(MaintenanceProtectionReason.VerificationBudgetExceeded); }
+        catch (MaintenanceVerificationBudgetException) { return ProtectedVerification(MaintenanceProtectionReason.VerificationBudgetExceeded); }
+        catch (Exception) { return ProtectedVerification(); }
     }
 
-    private static bool VerifyAppend(AppendRecoveryBody body, string root, RecoveryLifecycleState state)
+    private static MaintenanceVerificationResult ProtectedVerification(
+        MaintenanceProtectionReason reason = MaintenanceProtectionReason.Unverifiable) =>
+        new(MaintenanceVerificationStatus.ProtectedEvidence, reason);
+
+    private static bool VerifyAppend(AppendRecoveryBody body, string root, RecoveryLifecycleState state, TerminalVerificationBudget budget)
     {
         if (state == RecoveryLifecycleState.RolledBack)
-            return VerifyMember(body.OldArtifact, root) && VerifyMember(body.OldSidecar, root);
-        return VerifyMember(body.NewArtifact, root) && VerifyMember(body.NewSidecar, root);
+            return VerifyMember(body.OldArtifact, root, budget) && VerifyMember(body.OldSidecar, root, budget);
+        return VerifyMember(body.NewArtifact, root, budget) && VerifyMember(body.NewSidecar, root, budget);
     }
 
-    private static bool VerifyRestore(RestoreRecoveryBody body, string scope, string evidencePath, string root, RecoveryLifecycleState state)
+    private static bool VerifyRestore(RestoreRecoveryBody body, string scope, string evidencePath, string root, RecoveryLifecycleState state, TerminalVerificationBudget budget)
     {
         if (state != RecoveryLifecycleState.Committed) return false;
         foreach (RestoreJournalEntry entry in body.Entries)
         {
-            (byte[] bodyBytes, byte[] sidecarBytes) = RestoreJournalCodec.DecodeAndVerifyPayloads(entry, scope, evidencePath);
-            if (!VerifyBytes(Path.Combine(root, entry.BodyFile), bodyBytes, root) ||
-                !VerifyBytes(Path.Combine(root, entry.SidecarFile), sidecarBytes, root)) return false;
+            budget.ThrowIfExceeded();
+            (byte[] bodyBytes, byte[] sidecarBytes) = DecodeBounded(entry, scope, evidencePath, budget);
+            if (!VerifyBytes(Path.Combine(root, entry.BodyFile), bodyBytes, root, budget) ||
+                !VerifyBytes(Path.Combine(root, entry.SidecarFile), sidecarBytes, root, budget)) return false;
         }
         return body.Entries.Count > 0;
     }
 
-    private static bool VerifyEntity(FileEntityRecoveryBody body, string root, RecoveryLifecycleState state)
+    private static bool VerifyEntity(FileEntityRecoveryBody body, string root, RecoveryLifecycleState state, TerminalVerificationBudget budget)
     {
         if (state == RecoveryLifecycleState.RolledBack)
-            return VerifySnapshot(body.OldBody, root) && VerifySnapshot(body.OldMeta, root);
+            return VerifySnapshot(body.OldBody, root, budget) && VerifySnapshot(body.OldMeta, root, budget);
         return body.CommittedBody is not null && body.CommittedMeta is not null &&
-            VerifySnapshot(body.CommittedBody, root) && VerifySnapshot(body.CommittedMeta, root);
+            VerifySnapshot(body.CommittedBody, root, budget) && VerifySnapshot(body.CommittedMeta, root, budget);
     }
 
-    private static bool VerifyMember(AppendJournalMember member, string root) =>
-        VerifyBytes(Path.Combine(root, member.Path), member.ToSnapshot(member.Path).Bytes, root);
+    private static bool VerifyMember(AppendJournalMember member, string root, TerminalVerificationBudget budget) =>
+        VerifyBytes(Path.Combine(root, member.Path), member.ToSnapshot(member.Path).Bytes, root, budget);
 
-    private static bool VerifySnapshot(RecoveryMemberSnapshot snapshot, string root) =>
-        snapshot.Existed && snapshot.Payload is not null && VerifyBytes(snapshot.Path, Convert.FromBase64String(snapshot.Payload), root);
+    private static bool VerifySnapshot(RecoveryMemberSnapshot snapshot, string root, TerminalVerificationBudget budget)
+    {
+        if (!snapshot.Existed || snapshot.Payload is null) return false;
+        byte[] bytes = DecodeBase64Bounded(snapshot.Payload, budget);
+        return VerifyBytes(snapshot.Path, bytes, root, budget);
+    }
 
-    private static bool VerifyBytes(string path, byte[] expected, string root) =>
-        PathContainment.IsWithin(root, path) && File.Exists(path) &&
-        File.ReadAllBytes(path).AsSpan().SequenceEqual(expected);
+    private static bool VerifyBytes(string path, byte[] expected, string root, TerminalVerificationBudget budget)
+    {
+        if (!PathContainment.IsWithin(root, path) || !File.Exists(path) || !budget.TryReserve(expected.Length)) return false;
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
+        byte[] buffer = new byte[64 * 1024];
+        int offset = 0;
+        while (offset < expected.Length)
+        {
+            budget.ThrowIfExceeded();
+            int read = stream.Read(buffer, 0, Math.Min(buffer.Length, expected.Length - offset));
+            if (read == 0 || !buffer.AsSpan(0, read).SequenceEqual(expected.AsSpan(offset, read))) return false;
+            offset += read;
+        }
+        return stream.ReadByte() == -1;
+    }
+
+    private static (byte[] Body, byte[] Sidecar) DecodeBounded(RestoreJournalEntry entry, string scope, string evidencePath, TerminalVerificationBudget budget)
+    {
+        budget.ThrowIfExceeded();
+        byte[] body = DecodeBase64Bounded(entry.BodyBase64, budget);
+        byte[] sidecar = DecodeBase64Bounded(entry.SidecarBase64, budget);
+        if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(body)), entry.BodySha256, StringComparison.Ordinal) ||
+            !string.Equals(Convert.ToHexStringLower(SHA256.HashData(sidecar)), entry.SidecarSha256, StringComparison.Ordinal))
+            throw new InvalidDataException("Invalid verification evidence.");
+        return (body, sidecar);
+    }
+
+    private static byte[] DecodeBase64Bounded(string payload, TerminalVerificationBudget budget)
+    {
+        if (payload.Length > ((MaintenanceLimits.TerminalVerificationMaximumBytes + 2) / 3) * 4)
+            throw new MaintenanceVerificationBudgetException();
+        int length = payload.Length / 4 * 3;
+        byte[] decoded = new byte[length];
+        if (!Convert.TryFromBase64String(payload, decoded, out int written)) throw new InvalidDataException("Invalid verification evidence.");
+        Array.Resize(ref decoded, written);
+        if (!budget.TryReserve(written)) throw new MaintenanceVerificationBudgetException();
+        return decoded;
+    }
+
+    private sealed class TerminalVerificationBudget
+    {
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private readonly CancellationToken _cancellationToken;
+        private readonly int _maximumBytes;
+        private readonly TimeSpan _deadline;
+        private int _bytes;
+        internal TerminalVerificationBudget(int maxBytes, TimeSpan deadline, CancellationToken cancellationToken)
+        { _maximumBytes = maxBytes; _deadline = deadline; _cancellationToken = cancellationToken; }
+        internal bool TryReserve(int bytes) => bytes >= 0 && _bytes <= _maximumBytes - bytes && (_bytes += bytes) >= 0;
+        internal void ThrowIfExceeded()
+        { _cancellationToken.ThrowIfCancellationRequested(); if (_clock.Elapsed > _deadline) throw new MaintenanceVerificationBudgetException(); }
+    }
+
+    private sealed class MaintenanceVerificationBudgetException : Exception;
 
     internal static string SafeRelativePath(string evidencePath)
     {

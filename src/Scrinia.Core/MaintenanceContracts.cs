@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Buffers.Binary;
@@ -31,9 +32,12 @@ internal readonly struct MaintenanceHash256 : IEquatable<MaintenanceHash256>
 
     public bool Equals(MaintenanceHash256 other) => Bytes.Span.SequenceEqual(other.Bytes.Span);
     public override bool Equals(object? obj) => obj is MaintenanceHash256 other && Equals(other);
-    public override int GetHashCode() => Bytes.Length == 0
-        ? 0
-        : System.HashCode.Combine(Bytes.Span[0], Bytes.Span[^1]);
+    public override int GetHashCode()
+    {
+        var hash = new System.HashCode();
+        foreach (byte value in Bytes.Span) hash.Add(value);
+        return hash.ToHashCode();
+    }
 }
 
 internal enum MaintenanceCursorPhase : byte
@@ -70,6 +74,14 @@ internal static class MaintenanceLimits
     internal const int MetadataReadLimit = CandidatePageSize;
     internal const int ReturnedProjectionLimit = 64;
     internal const int JournalBudgetMaximum = 50;
+    internal const int TerminalVerificationMaximumBytes = 8 * 1024 * 1024;
+    internal const int TerminalVerificationMaximumMilliseconds = 250;
+}
+
+internal enum MaintenanceVerificationStatus { Verified, ProtectedEvidence }
+internal sealed record MaintenanceVerificationResult(MaintenanceVerificationStatus Status, MaintenanceProtectionReason Reason)
+{
+    internal bool IsVerified => Status == MaintenanceVerificationStatus.Verified;
 }
 
 internal sealed record MaintenanceCandidateProjection(
@@ -174,6 +186,49 @@ internal static class MaintenanceCursorCodec
         catch (ArgumentException exception) { return Fail(out error, exception.Message); }
     }
 
+    internal static string Encode(MaintenanceCursor cursor, MaintenanceRunRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        if (!registry.TryGet(cursor.Run, out MaintenanceRunBinding? binding) || binding is null || !binding.Matches(cursor))
+            throw new InvalidOperationException("Invalid continuation.");
+        return Encode(cursor, binding.SigningKey.Span);
+    }
+
+    internal static bool TryDecode(string token, MaintenanceRunRegistry registry,
+        out MaintenanceCursor cursor, out string? error)
+    {
+        cursor = default;
+        error = null;
+        if (!TryReadRunId(token, out MaintenanceRunId runId))
+            return Fail(out error, "Invalid continuation.");
+        if (!registry.TryGet(runId, out MaintenanceRunBinding? binding) || binding is null)
+            return Fail(out error, "Invalid continuation.");
+        if (!TryDecode(token, binding.SigningKey.Span, out cursor, out _))
+            return Fail(out error, "Invalid continuation.");
+        if (!binding.Matches(cursor))
+        {
+            cursor = default;
+            return Fail(out error, "Invalid continuation.");
+        }
+        return true;
+    }
+
+    private static bool TryReadRunId(string token, out MaintenanceRunId runId)
+    {
+        runId = default;
+        if (string.IsNullOrWhiteSpace(token) || !token.StartsWith(Prefix, StringComparison.Ordinal)) return false;
+        string encoded = token[Prefix.Length..];
+        if (encoded.Length != 214) return false;
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(encoded.Replace('-', '+').Replace('_', '/') + "==");
+            if (bytes.Length != PayloadLength + MacLength) return false;
+            runId = new MaintenanceRunId(ReadGuid(bytes.AsSpan(17, 16)));
+            return true;
+        }
+        catch (FormatException) { return false; }
+    }
+
     internal static MaintenanceCandidateKey ComputeCandidateKey(MaintenanceWorkspaceKey workspace,
         MaintenanceCandidateIdentity identity, ReadOnlySpan<byte> signingKey)
     {
@@ -220,6 +275,103 @@ internal static class MaintenanceCursorCodec
     private static Guid ReadRawGuid(ReadOnlySpan<byte> bytes) => new(bytes);
 }
 
+internal sealed class MaintenanceRunBinding
+{
+    private readonly byte[] _signingKey;
+
+    internal MaintenanceRunBinding(MaintenanceWorkspaceKey workspace, MaintenanceRunId run,
+        MaintenanceSnapshotId snapshot, MaintenanceScopeBinding scopes, MaintenanceHash256 policyHash,
+        ulong expiresUnixSeconds, byte[] signingKey)
+    {
+        Workspace = workspace;
+        Run = run;
+        Snapshot = snapshot;
+        Scopes = scopes;
+        PolicyHash = policyHash;
+        ExpiresUnixSeconds = expiresUnixSeconds;
+        _signingKey = signingKey;
+    }
+
+    internal MaintenanceWorkspaceKey Workspace { get; }
+    internal MaintenanceRunId Run { get; }
+    internal MaintenanceSnapshotId Snapshot { get; }
+    internal MaintenanceScopeBinding Scopes { get; }
+    internal MaintenanceHash256 PolicyHash { get; }
+    internal ulong ExpiresUnixSeconds { get; }
+    internal ReadOnlyMemory<byte> SigningKey => _signingKey.ToArray();
+
+    internal bool Matches(MaintenanceCursor cursor) =>
+        cursor.Workspace == Workspace && cursor.Run == Run && cursor.Snapshot == Snapshot &&
+        cursor.Scopes == Scopes && cursor.PolicyHash.Equals(PolicyHash) &&
+        cursor.ExpiresUnixSeconds == ExpiresUnixSeconds;
+
+    internal void Clear() => CryptographicOperations.ZeroMemory(_signingKey);
+}
+
+internal sealed class MaintenanceRunRegistry : IDisposable
+{
+    private readonly ConcurrentDictionary<MaintenanceRunId, MaintenanceRunBinding> _runs = new();
+    private readonly byte[] _processKey = RandomNumberGenerator.GetBytes(32);
+    private int _disposed;
+
+    internal MaintenanceRunBinding Create(MaintenanceWorkspaceKey workspace, MaintenanceRunId run,
+        MaintenanceSnapshotId snapshot, MaintenanceScopeBinding scopes, MaintenanceHash256 policyHash,
+        DateTimeOffset expiresAt)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ulong expiry = checked((ulong)expiresAt.ToUnixTimeSeconds());
+        if (expiry <= (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+            throw new ArgumentException("Maintenance run expiry must be in the future.", nameof(expiresAt));
+        byte[] input = new byte[16];
+        run.Value.TryWriteBytes(input, bigEndian: true, out _);
+        byte[] key = HMACSHA256.HashData(_processKey, input);
+        var binding = new MaintenanceRunBinding(workspace, run, snapshot, scopes, policyHash, expiry, key);
+        _runs.AddOrUpdate(run, binding, (_, replaced) =>
+        {
+            replaced.Clear();
+            return binding;
+        });
+        return binding;
+    }
+
+    internal bool TryGet(MaintenanceRunId run, out MaintenanceRunBinding? binding)
+    {
+        binding = null;
+        if (Volatile.Read(ref _disposed) != 0) return false;
+        if (!_runs.TryGetValue(run, out MaintenanceRunBinding? found)) return false;
+        if (found.ExpiresUnixSeconds <= (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        {
+            Remove(run);
+            return false;
+        }
+        binding = found;
+        return true;
+    }
+
+    internal bool Remove(MaintenanceRunId run)
+    {
+        if (!_runs.TryRemove(run, out MaintenanceRunBinding? removed)) return false;
+        removed.Clear();
+        return true;
+    }
+
+    internal int EvictExpired()
+    {
+        ulong now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        int removed = 0;
+        foreach ((MaintenanceRunId run, MaintenanceRunBinding binding) in _runs)
+            if (binding.ExpiresUnixSeconds <= now && Remove(run)) removed++;
+        return removed;
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        foreach (MaintenanceRunId run in _runs.Keys) Remove(run);
+        CryptographicOperations.ZeroMemory(_processKey);
+    }
+}
+
 internal enum JournalBoundaryLocation : byte { Restore = 1, AppendVersions = 2, FileEntity = 3 }
 internal enum JournalBoundaryNameClass : byte { RestoreJournal = 1, AppendJournal = 2, FileEntityRecovery = 3 }
 internal enum JournalDirectoryEntryKind : byte { File = 1, Directory = 2 }
@@ -243,29 +395,113 @@ internal readonly record struct JournalBoundaryValidationContext(
     uint CurrentPageSequence,
     MaintenanceCandidateKey ExpectedCanonicalEntryKey,
     JournalDirectoryEntryKind ExpectedEntryKind,
-    int JournalBudgetRemaining);
+    int JournalBudgetRemaining,
+    ulong LastDirectoryEntryOrdinal = 0);
 
-internal readonly record struct JournalEnumeratorBoundary(
-    MaintenanceRunId RunId,
-    MaintenanceSnapshotId SnapshotId,
-    MaintenanceScopeBinding SafeRootBinding,
-    MaintenanceEnumeratorId EnumeratorId,
-    ushort ScopeOrdinal,
-    MaintenanceCandidateKey? AfterCandidate,
-    uint PageSequence,
-    ulong DirectoryEntryOrdinal,
-    MaintenanceCandidateKey CanonicalEntryKey,
-    JournalBoundaryLocation Location,
-    JournalBoundaryNameClass NameClass,
-    JournalDirectoryEntryKind EntryKind,
-    JournalBoundaryProvenance Provenance,
-    bool ClassifiedJournalEntryRemains,
-    bool SafeRootValidated,
-    bool JournalSyntaxValid,
-    bool MetadataWellFormed,
-    bool EnumeratorHasNotAdvanced,
-    bool EntryHasNotBeenOpened,
-    bool EntryHasNotBeenInspected);
+internal sealed class JournalEnumeratorBoundary
+{
+    private readonly JournalBoundaryCapability _capability;
+
+    private JournalEnumeratorBoundary(JournalBoundaryCapability capability) => _capability = capability;
+    internal MaintenanceRunId RunId => _capability.RunId;
+    internal MaintenanceSnapshotId SnapshotId => _capability.SnapshotId;
+    internal MaintenanceScopeBinding SafeRootBinding => _capability.SafeRootBinding;
+    internal MaintenanceEnumeratorId EnumeratorId => _capability.EnumeratorId;
+    internal ushort ScopeOrdinal => _capability.ScopeOrdinal;
+    internal MaintenanceCandidateKey? AfterCandidate => _capability.AfterCandidate;
+    internal uint PageSequence => _capability.PageSequence;
+    internal ulong DirectoryEntryOrdinal => _capability.DirectoryEntryOrdinal;
+    internal MaintenanceCandidateKey CanonicalEntryKey => _capability.CanonicalEntryKey;
+    internal JournalBoundaryLocation Location => _capability.Location;
+    internal JournalBoundaryNameClass NameClass => _capability.NameClass;
+    internal JournalDirectoryEntryKind EntryKind => _capability.EntryKind;
+    internal JournalBoundaryProvenance Provenance => JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly;
+    internal bool IsLive => _capability.IsLive;
+    internal void Consume() => _capability.Consume();
+
+    internal static JournalEnumeratorBoundary FromCapability(JournalBoundaryCapability capability) =>
+        new(capability);
+}
+
+internal abstract class JournalBoundaryCapability
+{
+    private protected JournalBoundaryCapability() { }
+    internal abstract MaintenanceRunId RunId { get; }
+    internal abstract MaintenanceSnapshotId SnapshotId { get; }
+    internal abstract MaintenanceScopeBinding SafeRootBinding { get; }
+    internal abstract MaintenanceEnumeratorId EnumeratorId { get; }
+    internal abstract ushort ScopeOrdinal { get; }
+    internal abstract MaintenanceCandidateKey? AfterCandidate { get; }
+    internal abstract uint PageSequence { get; }
+    internal abstract ulong DirectoryEntryOrdinal { get; }
+    internal abstract MaintenanceCandidateKey CanonicalEntryKey { get; }
+    internal abstract JournalBoundaryLocation Location { get; }
+    internal abstract JournalBoundaryNameClass NameClass { get; }
+    internal abstract JournalDirectoryEntryKind EntryKind { get; }
+    internal abstract bool IsLive { get; }
+    internal abstract void Consume();
+}
+
+internal sealed class JournalBoundaryEnumerator : IDisposable
+{
+    private sealed class EnumeratorCapability : JournalBoundaryCapability
+    {
+        private bool _isLive = true;
+        internal EnumeratorCapability(MaintenanceRunId runId, MaintenanceSnapshotId snapshotId,
+            MaintenanceScopeBinding safeRootBinding, MaintenanceEnumeratorId enumeratorId, ushort scopeOrdinal,
+            MaintenanceCandidateKey? afterCandidate, uint pageSequence, ulong ordinal,
+            MaintenanceCandidateKey key, JournalBoundaryLocation location,
+            JournalBoundaryNameClass nameClass, JournalDirectoryEntryKind kind)
+        { RunId = runId; SnapshotId = snapshotId; SafeRootBinding = safeRootBinding; EnumeratorId = enumeratorId; ScopeOrdinal = scopeOrdinal; AfterCandidate = afterCandidate; PageSequence = pageSequence; DirectoryEntryOrdinal = ordinal; CanonicalEntryKey = key; Location = location; NameClass = nameClass; EntryKind = kind; }
+        internal override MaintenanceRunId RunId { get; }
+        internal override MaintenanceSnapshotId SnapshotId { get; }
+        internal override MaintenanceScopeBinding SafeRootBinding { get; }
+        internal override MaintenanceEnumeratorId EnumeratorId { get; }
+        internal override ushort ScopeOrdinal { get; }
+        internal override MaintenanceCandidateKey? AfterCandidate { get; }
+        internal override uint PageSequence { get; }
+        internal override ulong DirectoryEntryOrdinal { get; }
+        internal override MaintenanceCandidateKey CanonicalEntryKey { get; }
+        internal override JournalBoundaryLocation Location { get; }
+        internal override JournalBoundaryNameClass NameClass { get; }
+        internal override JournalDirectoryEntryKind EntryKind { get; }
+        internal override bool IsLive => _isLive;
+        internal override void Consume() => _isLive = false;
+    }
+
+    private readonly MaintenanceRunId _runId;
+    private readonly MaintenanceSnapshotId _snapshotId;
+    private readonly MaintenanceScopeBinding _root;
+    private readonly MaintenanceEnumeratorId _id = new(Guid.NewGuid());
+    private readonly ushort _scopeOrdinal;
+    private readonly uint _pageSequence;
+    private readonly MaintenanceCandidateKey? _after;
+    private ulong _lastOrdinal;
+    private JournalEnumeratorBoundary? _current;
+    internal MaintenanceEnumeratorId Id => _id;
+
+    private JournalBoundaryEnumerator(MaintenanceRunId runId, MaintenanceSnapshotId snapshotId,
+        MaintenanceScopeBinding root, ushort scopeOrdinal, uint pageSequence, MaintenanceCandidateKey? after)
+    { _runId = runId; _snapshotId = snapshotId; _root = root; _scopeOrdinal = scopeOrdinal; _pageSequence = pageSequence; _after = after; }
+
+    internal static JournalBoundaryEnumerator Create(MaintenanceRunId runId, MaintenanceSnapshotId snapshotId,
+        MaintenanceScopeBinding root, ushort scopeOrdinal, uint pageSequence, MaintenanceCandidateKey? after) =>
+        new(runId, snapshotId, root, scopeOrdinal, pageSequence, after);
+
+    internal JournalEnumeratorBoundary? BufferJournal(ulong ordinal, MaintenanceCandidateKey key,
+        JournalBoundaryLocation location, JournalBoundaryNameClass nameClass, JournalDirectoryEntryKind kind)
+    {
+        if (ordinal <= _lastOrdinal || ordinal == 0) return null;
+        _current?.Consume();
+        _lastOrdinal = ordinal;
+        _current = JournalEnumeratorBoundary.FromCapability(new EnumeratorCapability(
+            _runId, _snapshotId, _root, _id, _scopeOrdinal, _after, _pageSequence, ordinal, key, location, nameClass, kind));
+        return _current;
+    }
+
+    internal void Advance() => _current?.Consume();
+    public void Dispose() => Advance();
+}
 
 internal sealed class JournalBoundaryProof
 {
@@ -304,14 +540,11 @@ internal sealed class JournalBoundaryProof
         out JournalBoundaryProof proof)
     {
         proof = null!;
-        if (!boundary.SafeRootValidated || !boundary.ClassifiedJournalEntryRemains ||
-            !boundary.JournalSyntaxValid || !boundary.MetadataWellFormed ||
-            !boundary.EnumeratorHasNotAdvanced || !boundary.EntryHasNotBeenOpened ||
-            !boundary.EntryHasNotBeenInspected ||
-            boundary.Provenance != JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly ||
+        if (!boundary.IsLive || boundary.Provenance != JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly ||
             boundary.EntryKind != JournalDirectoryEntryKind.File || !IsFixedJournalPair(boundary.Location, boundary.NameClass))
             return false;
         proof = new JournalBoundaryProof(boundary);
+        boundary.Consume();
         return true;
     }
 
@@ -332,6 +565,8 @@ internal sealed class JournalBoundaryProof
         if (proof.Provenance != JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly) return Reject(ref rejection, JournalBoundaryRejection.NonMetadataProvenance);
         if (proof.DirectoryEntryOrdinal == 0) return Reject(ref rejection, JournalBoundaryRejection.MalformedMetadata);
         if (context.LastAdmission is not null && proof.CanonicalEntryKey == context.LastAdmission.Value)
+            return Reject(ref rejection, JournalBoundaryRejection.StaleOrdinal);
+        if (proof.DirectoryEntryOrdinal <= context.LastDirectoryEntryOrdinal)
             return Reject(ref rejection, JournalBoundaryRejection.StaleOrdinal);
         if (context.JournalBudgetRemaining != 0) return Reject(ref rejection, JournalBoundaryRejection.JournalBudgetRemaining);
         return true;
@@ -368,6 +603,7 @@ internal enum MaintenanceProtectionReason
     WithinRetentionLimit,
     MissingExpectedMember,
     InvalidContinuation,
+    VerificationBudgetExceeded,
     DeletionFailed
 }
 
