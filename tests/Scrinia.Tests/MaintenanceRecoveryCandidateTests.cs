@@ -32,4 +32,108 @@ public sealed class MaintenanceRecoveryCandidateTests
         FluentActions.Invoking(() => new MaintenanceDiscoveryCursor("../foreign"))
             .Should().Throw<ArgumentException>();
     }
+
+    [Fact]
+    public void B4MaintenanceCleanupMatchesTheActualEvidenceReference()
+    {
+        var state = new B4ParticipantRecoveryState(
+            "transaction", "operation", "local", "/notes/item", "participant", 1, "participant-1", "kind",
+            ["rollback"], new Dictionary<string, string>(), new Dictionary<string, string>(),
+            TransactionalParticipantLifecycleState.RolledBack, "handle", "v1", 0, 0, false, false,
+            null, "evidence/operation.recovery", "journal", "v1", TransactionalQuarantineState.None, null);
+
+        B4ParticipantMaintenanceProjection projection = new B4ParticipantMaintenanceAdapter().Project(state);
+        RecoveryCleanupDecision decision = new B4ParticipantMaintenanceAdapter().EvaluateCleanup(
+            projection, new HashSet<string>(["evidence/operation.recovery"], StringComparer.Ordinal));
+
+        decision.Protection.Should().Be(MaintenanceProtectionReason.Referenced);
+        decision.Eligible.Should().BeFalse();
+    }
+
+    [Fact]
+    public void MaintenanceDiscoveryStopsAtBudgetAndContinuesAfterTheReturnedPath()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        int enumerated = 0;
+        try
+        {
+            string[] paths = new[] { ".file-entity-a.recovery", ".file-entity-b.recovery", ".file-entity-c.recovery" }
+                .Select(name => Path.Combine(skills, name)).ToArray();
+            RecoveryDiscoveryCoordinator coordinator = new(
+                new Func<string, IEnumerable<string>>(_ => new[] { skills }),
+                new Func<string, IEnumerable<string>>(_ => paths.Select(path => { enumerated++; return path; })));
+
+            RecoveryMaintenanceDiscoveryPage first = coordinator.DiscoverForMaintenance(
+                "local", root, new MaintenanceDiscoveryCursor(), 1, TimeSpan.FromSeconds(5), CancellationToken.None);
+            first.Recovery.Should().ContainSingle();
+            first.HasMore.Should().BeTrue();
+            enumerated.Should().Be(1);
+
+            RecoveryMaintenanceDiscoveryPage second = coordinator.DiscoverForMaintenance(
+                "local", root, first.NextCursor!, 1, TimeSpan.FromSeconds(5), CancellationToken.None);
+            second.Recovery.Should().ContainSingle();
+            second.Recovery[0].EvidencePath.Should().NotBe(first.Recovery[0].EvidencePath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("Malformed", "Malformed")]
+    [InlineData("UnsupportedVersion", "UnsupportedVersion")]
+    [InlineData("Ambiguous", "Ambiguous")]
+    [InlineData("Inconsistent", "Unverifiable")]
+    [InlineData("WrongScope", "Unsafe")]
+    [InlineData("Unsafe", "Unsafe")]
+    [InlineData("ReplayIoFailed", "Inaccessible")]
+    public void BlockedRecoveryEvidenceKeepsItsTypedProtectionReason(
+        string reasonName, string expectedName)
+    {
+        string path = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-evidence");
+        RecoveryBlockReason reason = Enum.Parse<RecoveryBlockReason>(reasonName);
+        MaintenanceProtectionReason expected = Enum.Parse<MaintenanceProtectionReason>(expectedName);
+        RecoveryBlock block = new("local", path, RecoveryOperation.Restore, "operation", reason, "hidden detail");
+        B2RecoveryMaintenanceProjection projection = new B2RecoveryMaintenanceAdapter()
+            .Project(new RecoveryDiscoveryResult([], block), "local").Single();
+
+        RecoveryCleanupDecision decision = new B2RecoveryMaintenanceAdapter().EvaluateCleanup(
+            projection, new HashSet<string>(StringComparer.Ordinal));
+        decision.Protection.Should().Be(expected);
+        decision.Eligible.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AppendTerminalProofIsRevokedWhenLiveBytesChange()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-proof-" + Guid.NewGuid().ToString("N"));
+        string versions = Path.Combine(root, "versions");
+        Directory.CreateDirectory(versions);
+        try
+        {
+            RecoveryTestFixtures.WriteLegacyAppendJournal(root, "committed");
+            File.WriteAllBytes(Path.Combine(root, "notes.nmp2"), RecoveryTestFixtures.NewArtifact);
+            File.WriteAllBytes(Path.Combine(root, "notes.meta.json"), RecoveryTestFixtures.NewSidecar);
+
+            RecoveryDiscoveryResult discovery = new RecoveryDiscoveryCoordinator().Discover("local:notes", root, false);
+            B2RecoveryMaintenanceProjection before = new B2RecoveryMaintenanceAdapter(root).Project(discovery, "local:notes").Single();
+            before.IsTerminalAndVerified.Should().BeTrue();
+
+            File.WriteAllBytes(Path.Combine(root, "notes.nmp2"), [0xFF]);
+            RecoveryDiscoveryResult changed = new RecoveryDiscoveryCoordinator().Discover("local:notes", root, false);
+            B2RecoveryMaintenanceProjection after = new B2RecoveryMaintenanceAdapter(root).Project(changed, "local:notes").Single();
+            RecoveryCleanupDecision decision = new B2RecoveryMaintenanceAdapter().EvaluateCleanup(after,
+                new HashSet<string>(StringComparer.Ordinal));
+
+            after.IsTerminalAndVerified.Should().BeFalse();
+            decision.Protection.Should().Be(MaintenanceProtectionReason.UnresolvedRecovery);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

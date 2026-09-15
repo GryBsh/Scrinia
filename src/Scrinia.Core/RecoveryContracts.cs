@@ -136,7 +136,10 @@ internal sealed record B2RecoveryMaintenanceProjection(
     string CanonicalSubject, string OperationId, RecoveryLifecycleState State,
     DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     bool IsTerminalAndVerified, bool IsReferenced, bool IsQuarantined,
-    bool IsAmbiguous, bool IsPathSafe);
+    bool IsAmbiguous, bool IsPathSafe)
+{
+    internal MaintenanceProtectionReason? Protection { get; init; }
+}
 
 internal interface IB2RecoveryMaintenanceAdapter
 {
@@ -151,7 +154,10 @@ internal sealed record B3CoordinatorMaintenanceProjection(
     IReadOnlyList<MultiMemoryParticipantCompletion> CompletedParticipants,
     IReadOnlyList<B4ParticipantMaintenanceProjection> TransactionalParticipants,
     IReadOnlyList<B4RejectedParticipantMaintenanceProjection> RejectedParticipants,
-    bool IsTerminalAndVerified, bool IsPathSafe);
+    bool IsTerminalAndVerified, bool IsPathSafe)
+{
+    internal MaintenanceProtectionReason? Protection { get; init; }
+}
 
 internal interface IB3CoordinatorMaintenanceAdapter
 {
