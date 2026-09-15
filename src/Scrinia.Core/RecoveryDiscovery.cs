@@ -200,6 +200,7 @@ internal sealed class RecoveryDiscoveryCoordinator
             cancellationToken.ThrowIfCancellationRequested();
             if (DateTimeOffset.UtcNow - started >= deadline)
             {
+                last = B2RecoveryMaintenanceAdapter.SafeRelativePath(candidate.Path, root);
                 more = true;
                 break;
             }
@@ -217,8 +218,10 @@ internal sealed class RecoveryDiscoveryCoordinator
                 break;
             }
         }
+        bool canContinue = more && last is not null &&
+            !string.Equals(last, cursor.AfterRelativePath, StringComparison.Ordinal);
         return new RecoveryMaintenanceDiscoveryPage(projected, null,
-            more ? new MaintenanceDiscoveryCursor(last) : null, more);
+            canContinue ? new MaintenanceDiscoveryCursor(last) : null, canContinue);
     }
 
     private IEnumerable<(RecoveryOperation Operation, string Path, string Directory)> EnumerateMaintenanceEvidence(

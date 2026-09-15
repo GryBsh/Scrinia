@@ -101,6 +101,41 @@ public sealed class MaintenanceRecoveryCandidateTests
         }
     }
 
+    [Fact]
+    public void DeadlineAfterEnumerationProgressAdvancesTheContinuationCursor()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-deadline-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        try
+        {
+            string first = Path.Combine(skills, ".file-entity-a.recovery");
+            string second = Path.Combine(skills, ".file-entity-b.recovery");
+            RecoveryDiscoveryCoordinator coordinator = new(
+                new Func<string, IEnumerable<string>>(_ => new[] { skills }),
+                new Func<string, IEnumerable<string>>(_ => SlowEvidence(first, second)));
+
+            RecoveryMaintenanceDiscoveryPage page = coordinator.DiscoverForMaintenance(
+                "local", root, new MaintenanceDiscoveryCursor(), 10, TimeSpan.FromMilliseconds(100), CancellationToken.None);
+
+            page.HasMore.Should().BeTrue();
+            page.NextCursor.Should().NotBeNull();
+            page.NextCursor!.AfterRelativePath.Should().NotBeNullOrEmpty();
+            page.NextCursor.AfterRelativePath.Should().NotBe(new MaintenanceDiscoveryCursor().AfterRelativePath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static IEnumerable<string> SlowEvidence(string first, string second)
+        {
+            yield return first;
+            Thread.Sleep(250);
+            yield return second;
+        }
+    }
+
     [Theory]
     [InlineData("Malformed", "Malformed")]
     [InlineData("UnsupportedVersion", "UnsupportedVersion")]
