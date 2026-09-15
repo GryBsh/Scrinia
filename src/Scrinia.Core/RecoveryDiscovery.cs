@@ -219,7 +219,8 @@ internal sealed class RecoveryDiscoveryCoordinator
             }
         }
         bool canContinue = more && last is not null &&
-            !string.Equals(last, cursor.AfterRelativePath, StringComparison.Ordinal);
+            !string.Equals(last, cursor.AfterRelativePath, StringComparison.Ordinal) &&
+            !string.Equals(last, "recovery/unsafe", StringComparison.Ordinal);
         return new RecoveryMaintenanceDiscoveryPage(projected, null,
             canContinue ? new MaintenanceDiscoveryCursor(last) : null, canContinue);
     }

@@ -136,6 +136,37 @@ public sealed class MaintenanceRecoveryCandidateTests
         }
     }
 
+    [Fact]
+    public void UnsafeDeadlineCandidateCannotAdvanceTheContinuationCursor()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-unsafe-cursor-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        string foreign = Path.Combine(Path.GetTempPath(), "foreign.recovery");
+        try
+        {
+            RecoveryDiscoveryCoordinator coordinator = new(
+                new Func<string, IEnumerable<string>>(_ => new[] { skills }),
+                new Func<string, IEnumerable<string>>(_ => SlowForeignEvidence(foreign)));
+
+            RecoveryMaintenanceDiscoveryPage page = coordinator.DiscoverForMaintenance(
+                "local", root, new MaintenanceDiscoveryCursor(), 10, TimeSpan.FromMilliseconds(100), CancellationToken.None);
+
+            page.HasMore.Should().BeFalse();
+            page.NextCursor.Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static IEnumerable<string> SlowForeignEvidence(string path)
+        {
+            yield return path;
+            Thread.Sleep(250);
+        }
+    }
+
     [Theory]
     [InlineData("Malformed", "Malformed")]
     [InlineData("UnsupportedVersion", "UnsupportedVersion")]
