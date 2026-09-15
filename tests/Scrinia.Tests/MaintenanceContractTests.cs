@@ -8,6 +8,84 @@ namespace Scrinia.Tests;
 public sealed class MaintenanceContractTests
 {
     [Fact]
+    public void Cursor_codec_uses_the_fixed_b5c2_wire_shape_and_rfc_hmac_vector()
+    {
+        var cursor = new MaintenanceCursor(
+            2,
+            new MaintenanceWorkspaceKey(Guid.Empty),
+            new MaintenanceRunId(Guid.Empty),
+            new MaintenanceSnapshotId(Guid.Empty),
+            new MaintenanceScopeBinding(Guid.Empty),
+            0,
+            MaintenanceCursorPhase.Discover,
+            new MaintenanceCandidateKey(Guid.Empty),
+            0,
+            new MaintenanceHash256(new byte[32]),
+            (ulong)DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+
+        string token = MaintenanceCursorCodec.Encode(cursor, "0123456789abcdef0123456789abcdef"u8);
+
+        token.Should().StartWith("b5c2.");
+        token.Length.Should().BeLessThanOrEqualTo(219);
+        MaintenanceCursorCodec.TryDecode(token, "0123456789abcdef0123456789abcdef"u8,
+            out MaintenanceCursor decoded, out string? error).Should().BeTrue();
+        error.Should().BeNull();
+        decoded.Should().Be(cursor);
+    }
+
+    [Fact]
+    public void Candidate_key_matches_the_approved_b5c2_vector()
+    {
+        var identity = new MaintenanceCandidateIdentity(
+            MaintenanceCandidateKind.CompletedRecoveryEvidence,
+            new MaintenanceWorkspaceKey(Guid.Empty),
+            3,
+            new MaintenanceHash256(Enumerable.Range(0, 32).Select(index => (byte)index).ToArray()),
+            42);
+
+        MaintenanceCandidateKey key = MaintenanceCursorCodec.ComputeCandidateKey(
+            new MaintenanceWorkspaceKey(Guid.Empty), identity,
+            "0123456789abcdef0123456789abcdef"u8);
+
+        Convert.ToHexString(key.Value.ToByteArray()).Should().Be("C6D0988044D8F2D78F44EC2A1625F0AC");
+    }
+
+    [Fact]
+    public void Journal_boundary_proof_requires_buffered_metadata_and_exact_run_binding()
+    {
+        var run = new MaintenanceRunId(Guid.NewGuid());
+        var snapshot = new MaintenanceSnapshotId(Guid.NewGuid());
+        var root = new MaintenanceScopeBinding(Guid.NewGuid());
+        var enumerator = new MaintenanceEnumeratorId(Guid.NewGuid());
+        var key = new MaintenanceCandidateKey(Guid.NewGuid());
+        var boundary = new JournalEnumeratorBoundary(run, snapshot, root, enumerator, 2, null, 4, 1, key,
+            JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal,
+            JournalDirectoryEntryKind.File, JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly,
+            true, true, true, true, true, true, true);
+
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(boundary, out JournalBoundaryProof? proof).Should().BeTrue();
+        var context = new JournalBoundaryValidationContext(run, snapshot, root, enumerator, 2, null, 4, key,
+            JournalDirectoryEntryKind.File, 0);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, context, out JournalBoundaryRejection rejection)
+            .Should().BeTrue();
+        rejection.Should().Be(JournalBoundaryRejection.None);
+
+        var wrongRun = context with { ActiveRunId = new MaintenanceRunId(Guid.NewGuid()) };
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, wrongRun, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.WrongRun);
+    }
+
+    [Fact]
+    public void Maintenance_limits_use_one_shared_page_and_fixed_journal_ceiling()
+    {
+        MaintenanceLimits.CandidatePageSize.Should().Be(128);
+        MaintenanceLimits.UnsafeScanLimit.Should().Be(32);
+        MaintenanceLimits.JournalBudgetMaximum.Should().Be(50);
+        MaintenanceLimits.ReturnedProjectionLimit.Should().BeLessThan(MaintenanceLimits.CandidatePageSize);
+    }
+
+    [Fact]
     public void Request_copies_and_normalizes_collections()
     {
         var scopes = new List<string> { MaintenanceScopes.DefaultLocalScope };
@@ -29,6 +107,14 @@ public sealed class MaintenanceContractTests
     public void Request_rejects_batch_sizes_outside_the_contract(int batchSize)
     {
         var action = () => new MaintenanceRequest(null, batchSize, null, null);
+
+        action.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Request_rejects_a_journal_batch_override_above_the_fixed_ceiling()
+    {
+        var action = () => new MaintenanceRequest(null, 51, null, null);
 
         action.Should().Throw<ArgumentException>();
     }
@@ -156,33 +242,6 @@ public sealed class MaintenanceContractTests
     }
 
     [Fact]
-    public void Continuation_payload_rejects_null_snapshot_collections_and_elements()
-    {
-        var nullCollection = () => new MaintenanceContinuationPayload(1, "workspace", "local", "local", "archive",
-            "/memory/item", "memory/versions/item.nmp2", null!, 0, DateTimeOffset.UtcNow);
-        var nullElement = () => new MaintenanceContinuationPayload(1, "workspace", "local", "local", "archive",
-            "/memory/item", "memory/versions/item.nmp2", new MaintenanceSnapshotCandidate[] { null! }, 0,
-            DateTimeOffset.UtcNow);
-
-        nullCollection.Should().Throw<ArgumentException>();
-        nullElement.Should().Throw<ArgumentException>();
-    }
-
-    [Fact]
-    public void Continuation_payload_defensively_copies_snapshot_candidates()
-    {
-        var snapshots = new List<MaintenanceSnapshotCandidate>
-        {
-            new("/memory/item", "memory/versions/item.nmp2", DateTimeOffset.UtcNow, "pair", true, null)
-        };
-        var payload = new MaintenanceContinuationPayload(1, "workspace", "local", "local", "archive",
-            "/memory/item", "memory/versions/item.nmp2", snapshots, 12, DateTimeOffset.UtcNow);
-        snapshots.Clear();
-
-        payload.SnapshotCandidates.Should().ContainSingle();
-    }
-
-    [Fact]
     public void Results_defensively_copy_every_exposed_collection()
     {
         var candidate = CreateCandidate();
@@ -236,12 +295,7 @@ public sealed class MaintenanceContractTests
             () => new MaintenanceResult(0, 0, -1, true, false, false, false, false, false,
                 false, null, Array.Empty<MaintenanceScopeResult>(), Array.Empty<string>(), null)
         };
-        var payload = () => new MaintenanceContinuationPayload(1, "workspace", "local", "local", "archive",
-            "/memory/item", "memory/versions/item.nmp2", Array.Empty<MaintenanceSnapshotCandidate>(), -1,
-            DateTimeOffset.UtcNow);
-
         actions.Should().AllSatisfy(action => action.Should().Throw<ArgumentException>());
-        payload.Should().Throw<ArgumentException>();
     }
 
     [Fact]
@@ -331,8 +385,6 @@ public sealed class MaintenanceContractTests
             typeof(MaintenanceCandidateResult),
             typeof(MaintenanceScopeResult),
             typeof(MaintenanceResult),
-            typeof(MaintenanceContinuationPayload),
-            typeof(MaintenanceSnapshotCandidate)
         };
 
         approvedTypes.Select(type => MaintenanceJsonContext.Default.GetTypeInfo(type))

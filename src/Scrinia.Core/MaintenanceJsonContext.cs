@@ -9,8 +9,6 @@ namespace Scrinia.Core;
 [JsonSerializable(typeof(MaintenanceCandidateResult))]
 [JsonSerializable(typeof(MaintenanceScopeResult))]
 [JsonSerializable(typeof(MaintenanceResult))]
-[JsonSerializable(typeof(MaintenanceContinuationPayload))]
-[JsonSerializable(typeof(MaintenanceSnapshotCandidate))]
 [JsonSerializable(typeof(MaintenanceCandidateKind))]
 [JsonSerializable(typeof(MaintenanceProtectionReason))]
 internal partial class MaintenanceJsonContext : JsonSerializerContext;

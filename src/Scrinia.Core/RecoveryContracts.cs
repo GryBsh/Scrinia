@@ -116,27 +116,6 @@ internal sealed record RecoveryDiscoveryResult
     internal MultiMemoryTransactionRecord? CoordinatorRecord { get; }
 }
 
-internal sealed record MaintenanceDiscoveryCursor
-{
-    internal MaintenanceDiscoveryCursor(string? afterRelativePath = null, int unsafeCandidatesToSkip = 0)
-    {
-        AfterRelativePath = afterRelativePath is null
-            ? null
-            : MaintenanceContractValidation.RequireRelativePath(afterRelativePath, nameof(afterRelativePath));
-        ArgumentOutOfRangeException.ThrowIfNegative(unsafeCandidatesToSkip);
-        UnsafeCandidatesToSkip = unsafeCandidatesToSkip;
-    }
-
-    internal string? AfterRelativePath { get; }
-    internal int UnsafeCandidatesToSkip { get; }
-}
-
-internal sealed record RecoveryMaintenanceDiscoveryPage(
-    IReadOnlyList<B2RecoveryMaintenanceProjection> Recovery,
-    B3CoordinatorMaintenanceProjection? Coordinator,
-    MaintenanceDiscoveryCursor? NextCursor,
-    bool HasMore);
-
 internal sealed record B2RecoveryMaintenanceProjection(
     RecoveryOperation Operation, string Scope, string EvidencePath,
     string CanonicalSubject, string OperationId, RecoveryLifecycleState State,
