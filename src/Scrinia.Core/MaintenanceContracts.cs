@@ -201,6 +201,7 @@ internal sealed record MaintenanceContinuationPayload
         Phase = MaintenanceContractValidation.RequireSafeText(phase, nameof(phase));
         Subject = MaintenanceContractValidation.RequireSafeText(subject, nameof(subject));
         LastRelativePath = MaintenanceContractValidation.RequireRelativePath(lastRelativePath, nameof(lastRelativePath));
+        ArgumentNullException.ThrowIfNull(snapshotCandidates);
         SnapshotCandidates = new ReadOnlyCollection<MaintenanceSnapshotCandidate>(snapshotCandidates
             .Select(candidate => candidate ?? throw new ArgumentException("Snapshot candidates cannot contain null elements.", nameof(snapshotCandidates)))
             .ToArray());
@@ -263,6 +264,7 @@ internal static class MaintenanceContractValidation
 
     internal static IReadOnlyList<string> CopyScopes(IReadOnlyList<string> values)
     {
+        ArgumentNullException.ThrowIfNull(values);
         if (values.Count is < 1 or > 128)
             throw new ArgumentException("Scopes must contain between 1 and 128 values.", nameof(values));
         var copy = values.Select(value => RequireSafeText(value, nameof(values))).ToArray();
@@ -273,6 +275,7 @@ internal static class MaintenanceContractValidation
 
     internal static IReadOnlySet<string> CopyRelativePathSet(IReadOnlySet<string> values)
     {
+        ArgumentNullException.ThrowIfNull(values);
         if (values.Count > 4096)
             throw new ArgumentException("Protection paths cannot exceed 4096 values.", nameof(values));
         return values.Select(value => RequireRelativePath(value, nameof(values)))
@@ -287,12 +290,21 @@ internal static class MaintenanceContractValidation
         return value;
     }
 
-    internal static IReadOnlyList<MaintenanceCandidateResult> CopyCandidates(IReadOnlyList<MaintenanceCandidateResult> values) =>
-        new ReadOnlyCollection<MaintenanceCandidateResult>(values.Select(value => value ?? throw new ArgumentException("Candidates cannot contain null elements.", nameof(values))).ToArray());
+    internal static IReadOnlyList<MaintenanceCandidateResult> CopyCandidates(IReadOnlyList<MaintenanceCandidateResult> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return new ReadOnlyCollection<MaintenanceCandidateResult>(values.Select(value => value ?? throw new ArgumentException("Candidates cannot contain null elements.", nameof(values))).ToArray());
+    }
 
-    internal static IReadOnlyList<MaintenanceScopeResult> CopyScopesResults(IReadOnlyList<MaintenanceScopeResult> values) =>
-        new ReadOnlyCollection<MaintenanceScopeResult>(values.Select(value => value ?? throw new ArgumentException("Scopes cannot contain null elements.", nameof(values))).ToArray());
+    internal static IReadOnlyList<MaintenanceScopeResult> CopyScopesResults(IReadOnlyList<MaintenanceScopeResult> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return new ReadOnlyCollection<MaintenanceScopeResult>(values.Select(value => value ?? throw new ArgumentException("Scopes cannot contain null elements.", nameof(values))).ToArray());
+    }
 
-    internal static IReadOnlyList<string> CopyStrings(IReadOnlyList<string> values, string parameterName) =>
-        new ReadOnlyCollection<string>(values.Select(value => RequireSafeText(value, parameterName)).ToArray());
+    internal static IReadOnlyList<string> CopyStrings(IReadOnlyList<string> values, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(values, parameterName);
+        return new ReadOnlyCollection<string>(values.Select(value => RequireSafeText(value, parameterName)).ToArray());
+    }
 }
