@@ -195,7 +195,7 @@ internal sealed class RecoveryDiscoveryCoordinator
         bool more = false;
         bool StopEnumeration() => DateTimeOffset.UtcNow - started >= deadline;
         foreach ((RecoveryOperation Operation, string Path, string Directory) candidate in EnumerateMaintenanceEvidence(
-            root, StopEnumeration, cancellationToken))
+            root, candidateBudget, cursor.AfterRelativePath, StopEnumeration, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (DateTimeOffset.UtcNow - started >= deadline)
@@ -222,18 +222,34 @@ internal sealed class RecoveryDiscoveryCoordinator
     }
 
     private IEnumerable<(RecoveryOperation Operation, string Path, string Directory)> EnumerateMaintenanceEvidence(
-        string root, Func<bool> shouldStop, CancellationToken cancellationToken)
+        string root, int budget, string? afterRelativePath, Func<bool> shouldStop, CancellationToken cancellationToken)
     {
+        var ordered = new SortedSet<(string Relative, RecoveryOperation Operation, string Path, string Directory)>(
+            Comparer<(string Relative, RecoveryOperation Operation, string Path, string Directory)>.Create((left, right) =>
+            {
+                int relative = string.CompareOrdinal(left.Relative, right.Relative);
+                if (relative != 0) return relative;
+                int operation = left.Operation.CompareTo(right.Operation);
+                return operation != 0 ? operation : string.CompareOrdinal(left.Path, right.Path);
+            }));
+        void Add(RecoveryOperation operation, string path, string directory)
+        {
+            string relative = B2RecoveryMaintenanceAdapter.SafeRelativePath(path, root);
+            if (afterRelativePath is not null && string.CompareOrdinal(relative, afterRelativePath) <= 0) return;
+            ordered.Add((relative, operation, path, directory));
+            while (ordered.Count > budget + 1) ordered.Remove(ordered.Max);
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         if (shouldStop()) yield break;
         string restore = Path.Combine(root, RestoreFileName);
-        if (File.Exists(restore)) yield return (RecoveryOperation.Restore, restore, root);
+        if (File.Exists(restore)) Add(RecoveryOperation.Restore, restore, root);
         cancellationToken.ThrowIfCancellationRequested();
         if (shouldStop()) yield break;
         string appendDirectory = Path.Combine(root, "versions");
         if (Directory.Exists(appendDirectory)) RejectReparsePoint(appendDirectory);
         string append = Path.Combine(appendDirectory, AppendJournal.FileName);
-        if (File.Exists(append)) yield return (RecoveryOperation.Append, append, root);
+        if (File.Exists(append)) Add(RecoveryOperation.Append, append, root);
         foreach (string directoryName in FileEntityDirectoryNames)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -245,9 +261,12 @@ internal sealed class RecoveryDiscoveryCoordinator
             while (!shouldStop() && paths.MoveNext())
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                yield return (RecoveryOperation.FileEntity, paths.Current, directory);
+                Add(RecoveryOperation.FileEntity, paths.Current, directory);
             }
         }
+
+        foreach (var candidate in ordered)
+            yield return (candidate.Operation, candidate.Path, candidate.Directory);
     }
 
     private B2RecoveryMaintenanceProjection InspectMaintenanceCandidate(RecoveryOperation operation,
@@ -627,13 +646,17 @@ internal sealed class B4ParticipantMaintenanceAdapter : IB4ParticipantMaintenanc
     public B4ParticipantMaintenanceProjection Project(B4ParticipantRecoveryState state)
     {
         ArgumentNullException.ThrowIfNull(state);
-        bool safe = IsSafe(state.EvidenceReference) && IsSafe(state.EvidenceKind) && IsSafe(state.EvidenceVersion);
+        bool hasEvidence = !string.IsNullOrWhiteSpace(state.EvidenceReference);
+        bool safe = hasEvidence && IsSafe(state.EvidenceReference) && IsSafe(state.EvidenceKind) && IsSafe(state.EvidenceVersion);
         bool terminal = state.LifecycleState is TransactionalParticipantLifecycleState.Committed or TransactionalParticipantLifecycleState.RolledBack;
         terminal &= state.QuarantineState == TransactionalQuarantineState.None && !state.Ambiguous && !state.StateMayHaveChanged && safe;
+        MaintenanceProtectionReason? protection = !hasEvidence
+            ? MaintenanceProtectionReason.MissingExpectedMember
+            : !safe ? MaintenanceProtectionReason.Unsafe : null;
         return new B4ParticipantMaintenanceProjection(state.TransactionId, state.OperationId, state.Scope, state.Address,
             state.ParticipantIdentity, state.OrderingKey, state.Kind, state.LifecycleState, state.QuarantineState,
             state.EvidenceReference, state.EvidenceKind, state.EvidenceVersion, state.StateMayHaveChanged,
-            state.Ambiguous, terminal, safe);
+            state.Ambiguous, terminal, safe) { Protection = protection };
     }
 
     public B4RejectedParticipantMaintenanceProjection ProjectRejected(B4ParticipantRequestMetadata metadata)
@@ -655,10 +678,12 @@ internal sealed class B4ParticipantMaintenanceAdapter : IB4ParticipantMaintenanc
     {
         ArgumentNullException.ThrowIfNull(projection);
         ArgumentNullException.ThrowIfNull(referencedRelativePaths);
-        string path = projection.EvidenceReference is not null
-            ? projection.EvidenceReference
-            : $"transactional/{projection.ParticipantIdentity}";
-        if (!projection.IsPathSafe) return new(false, true, MaintenanceProtectionReason.Unsafe, path, null);
+        if (projection.Protection is not null)
+            return new(false, true, projection.Protection.Value, string.Empty, null);
+        if (projection.EvidenceReference is null || !B4Validation.SafeReference(projection.EvidenceReference))
+            return new(false, true, MaintenanceProtectionReason.MissingExpectedMember, string.Empty, null);
+        string path = projection.EvidenceReference;
+        if (!projection.IsPathSafe) return new(false, true, MaintenanceProtectionReason.Unsafe, string.Empty, null);
         if (projection.QuarantineState == TransactionalQuarantineState.Quarantined) return new(false, true, MaintenanceProtectionReason.UnresolvedRecovery, path, null);
         if (projection.Ambiguous || projection.StateMayHaveChanged) return new(false, true, MaintenanceProtectionReason.Ambiguous, path, null);
         if (!projection.IsTerminalAndVerified) return new(false, true, MaintenanceProtectionReason.UnresolvedRecovery, path, null);

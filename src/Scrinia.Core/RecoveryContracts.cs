@@ -171,7 +171,10 @@ internal sealed record B4ParticipantMaintenanceProjection(
     TransactionalParticipantLifecycleState LifecycleState,
     TransactionalQuarantineState QuarantineState, string? EvidenceReference,
     string? EvidenceKind, string? EvidenceVersion, bool StateMayHaveChanged,
-    bool Ambiguous, bool IsTerminalAndVerified, bool IsPathSafe);
+    bool Ambiguous, bool IsTerminalAndVerified, bool IsPathSafe)
+{
+    internal MaintenanceProtectionReason? Protection { get; init; }
+}
 
 internal sealed record B4RejectedParticipantMaintenanceProjection(
     string TransactionId, string OperationId, string Scope, string Address,

@@ -51,6 +51,24 @@ public sealed class MaintenanceRecoveryCandidateTests
     }
 
     [Fact]
+    public void B4MissingEvidenceReferenceCannotAuthorizeCleanup()
+    {
+        var state = new B4ParticipantRecoveryState(
+            "transaction", "operation", "local", "/notes/item", "participant", 1, "participant-1", "kind",
+            ["rollback"], new Dictionary<string, string>(), new Dictionary<string, string>(),
+            TransactionalParticipantLifecycleState.RolledBack, "handle", "v1", 0, 0, false, false,
+            null, null, null, null, TransactionalQuarantineState.None, null);
+
+        B4ParticipantMaintenanceProjection projection = new B4ParticipantMaintenanceAdapter().Project(state);
+        RecoveryCleanupDecision decision = new B4ParticipantMaintenanceAdapter().EvaluateCleanup(projection,
+            new HashSet<string>(StringComparer.Ordinal));
+
+        decision.Eligible.Should().BeFalse();
+        decision.Protection.Should().Be(MaintenanceProtectionReason.MissingExpectedMember);
+        decision.SafeRelativePath.Should().BeEmpty();
+    }
+
+    [Fact]
     public void MaintenanceDiscoveryStopsAtBudgetAndContinuesAfterTheReturnedPath()
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-" + Guid.NewGuid().ToString("N"));
@@ -59,7 +77,7 @@ public sealed class MaintenanceRecoveryCandidateTests
         int enumerated = 0;
         try
         {
-            string[] paths = new[] { ".file-entity-a.recovery", ".file-entity-b.recovery", ".file-entity-c.recovery" }
+            string[] paths = new[] { ".file-entity-c.recovery", ".file-entity-a.recovery", ".file-entity-b.recovery" }
                 .Select(name => Path.Combine(skills, name)).ToArray();
             RecoveryDiscoveryCoordinator coordinator = new(
                 new Func<string, IEnumerable<string>>(_ => new[] { skills }),
@@ -69,12 +87,13 @@ public sealed class MaintenanceRecoveryCandidateTests
                 "local", root, new MaintenanceDiscoveryCursor(), 1, TimeSpan.FromSeconds(5), CancellationToken.None);
             first.Recovery.Should().ContainSingle();
             first.HasMore.Should().BeTrue();
-            enumerated.Should().Be(1);
+            enumerated.Should().Be(3);
+            first.Recovery[0].EvidencePath.Should().EndWith(".file-entity-a.recovery");
 
             RecoveryMaintenanceDiscoveryPage second = coordinator.DiscoverForMaintenance(
                 "local", root, first.NextCursor!, 1, TimeSpan.FromSeconds(5), CancellationToken.None);
             second.Recovery.Should().ContainSingle();
-            second.Recovery[0].EvidencePath.Should().NotBe(first.Recovery[0].EvidencePath);
+            second.Recovery[0].EvidencePath.Should().EndWith(".file-entity-b.recovery");
         }
         finally
         {
