@@ -193,11 +193,10 @@ internal sealed class RecoveryDiscoveryCoordinator
         var projected = new List<B2RecoveryMaintenanceProjection>(Math.Min(candidateBudget, 64));
         string? last = cursor.AfterRelativePath;
         int unsafeCandidatesToSkip = cursor.UnsafeCandidatesToSkip;
-        int unsafeCandidatesSeen = 0;
         bool more = false;
         bool StopEnumeration() => DateTimeOffset.UtcNow - started >= deadline;
         foreach ((RecoveryOperation Operation, string Path, string Directory) candidate in EnumerateMaintenanceEvidence(
-            root, candidateBudget, cursor.AfterRelativePath, StopEnumeration, cancellationToken))
+            root, candidateBudget, cursor.AfterRelativePath, cursor.UnsafeCandidatesToSkip, StopEnumeration, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (DateTimeOffset.UtcNow - started >= deadline)
@@ -205,16 +204,12 @@ internal sealed class RecoveryDiscoveryCoordinator
                 string deadlineRelative = B2RecoveryMaintenanceAdapter.SafeRelativePath(candidate.Path, root);
                 if (deadlineRelative == "recovery/unsafe")
                     unsafeCandidatesToSkip++;
-                else
-                    last = deadlineRelative;
                 more = true;
                 break;
             }
 
             string relative = B2RecoveryMaintenanceAdapter.SafeRelativePath(candidate.Path, root);
             if (cursor.AfterRelativePath is not null && string.CompareOrdinal(relative, cursor.AfterRelativePath) <= 0)
-                continue;
-            if (relative == "recovery/unsafe" && unsafeCandidatesSeen++ < unsafeCandidatesToSkip)
                 continue;
             B2RecoveryMaintenanceProjection view = InspectMaintenanceCandidate(candidate.Operation,
                 candidate.Path, candidate.Directory, scope, root);
@@ -229,15 +224,14 @@ internal sealed class RecoveryDiscoveryCoordinator
                 break;
             }
         }
-        bool canContinue = more &&
-            (!string.Equals(last, cursor.AfterRelativePath, StringComparison.Ordinal) ||
-             unsafeCandidatesToSkip > cursor.UnsafeCandidatesToSkip);
+        bool canContinue = more;
         return new RecoveryMaintenanceDiscoveryPage(projected, null,
             canContinue ? new MaintenanceDiscoveryCursor(last, unsafeCandidatesToSkip) : null, canContinue);
     }
 
     private IEnumerable<(RecoveryOperation Operation, string Path, string Directory)> EnumerateMaintenanceEvidence(
-        string root, int budget, string? afterRelativePath, Func<bool> shouldStop, CancellationToken cancellationToken)
+        string root, int budget, string? afterRelativePath, int unsafeCandidatesToSkip,
+        Func<bool> shouldStop, CancellationToken cancellationToken)
     {
         var ordered = new SortedSet<(string Relative, RecoveryOperation Operation, string Path, string Directory)>(
             Comparer<(string Relative, RecoveryOperation Operation, string Path, string Directory)>.Create((left, right) =>
@@ -247,10 +241,19 @@ internal sealed class RecoveryDiscoveryCoordinator
                 int operation = left.Operation.CompareTo(right.Operation);
                 return operation != 0 ? operation : string.CompareOrdinal(left.Path, right.Path);
             }));
+        (RecoveryOperation Operation, string Path, string Directory)? unsafeCandidate = null;
+        int unsafeCandidatesSkipped = 0;
         void Add(RecoveryOperation operation, string path, string directory)
         {
             string relative = B2RecoveryMaintenanceAdapter.SafeRelativePath(path, root);
             if (afterRelativePath is not null && string.CompareOrdinal(relative, afterRelativePath) <= 0) return;
+            if (relative == "recovery/unsafe")
+            {
+                if (unsafeCandidatesSkipped++ < unsafeCandidatesToSkip)
+                    return;
+                unsafeCandidate ??= (operation, path, directory);
+                return;
+            }
             ordered.Add((relative, operation, path, directory));
             while (ordered.Count > budget + 1) ordered.Remove(ordered.Max);
         }
@@ -280,6 +283,8 @@ internal sealed class RecoveryDiscoveryCoordinator
             }
         }
 
+        if (unsafeCandidate is { } unsafeValue)
+            yield return unsafeValue;
         foreach (var candidate in ordered)
             yield return (candidate.Operation, candidate.Path, candidate.Directory);
     }

@@ -120,8 +120,7 @@ public sealed class MaintenanceRecoveryCandidateTests
 
             page.HasMore.Should().BeTrue();
             page.NextCursor.Should().NotBeNull();
-            page.NextCursor!.AfterRelativePath.Should().NotBeNullOrEmpty();
-            page.NextCursor.AfterRelativePath.Should().NotBe(new MaintenanceDiscoveryCursor().AfterRelativePath);
+            page.NextCursor!.AfterRelativePath.Should().BeNull();
         }
         finally
         {
@@ -203,6 +202,87 @@ public sealed class MaintenanceRecoveryCandidateTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ManyUnsafeCandidatesBeforeValidEvidenceConvergeWithBudgetOne()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-many-unsafe-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        string[] foreign = Enumerable.Range(0, 5)
+            .Select(index => Path.Combine(Path.GetTempPath(), $".file-entity-unsafe-{index}.recovery"))
+            .ToArray();
+        try
+        {
+            string valid = Path.Combine(skills, ".file-entity-valid.recovery");
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills, operationId: "valid");
+            RecoveryDiscoveryCoordinator coordinator = new(
+                new Func<string, IEnumerable<string>>(_ => new[] { skills }),
+                new Func<string, IEnumerable<string>>(_ => foreign.Append(valid)));
+
+            var pages = new List<RecoveryMaintenanceDiscoveryPage>();
+            MaintenanceDiscoveryCursor cursor = new();
+            for (int pageNumber = 0; pageNumber < foreign.Length + 1; pageNumber++)
+            {
+                RecoveryMaintenanceDiscoveryPage page = coordinator.DiscoverForMaintenance(
+                    "local", root, cursor, 1, TimeSpan.FromSeconds(5), CancellationToken.None);
+                pages.Add(page);
+                cursor = page.NextCursor!;
+            }
+
+            pages.SelectMany(page => page.Recovery).Count(view => !view.IsPathSafe).Should().Be(foreign.Length);
+            pages[^1].Recovery.Should().ContainSingle(view => view.IsPathSafe);
+            pages[^1].Recovery[0].EvidencePath.Should().EndWith("skills/.file-entity-valid.recovery");
+            pages.SelectMany(page => page.Recovery).Where(view => view.IsPathSafe)
+                .Select(view => view.EvidencePath).Should().OnlyHaveUniqueItems();
+            pages.SelectMany(page => page.Recovery).Select(view => view.OperationId)
+                .Should().OnlyHaveUniqueItems();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DeadlineBeforeProjectionDoesNotSkipTheUnprojectedCandidate()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-deadline-unprojected-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        try
+        {
+            string first = Path.Combine(skills, ".file-entity-a.recovery");
+            string second = Path.Combine(skills, ".file-entity-b.recovery");
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills, operationId: "a");
+            File.Copy(first, second);
+            RecoveryDiscoveryCoordinator coordinator = new(
+                new Func<string, IEnumerable<string>>(_ => new[] { skills }),
+                new Func<string, IEnumerable<string>>(_ => SlowBeforeSecond(first, second)));
+
+            RecoveryMaintenanceDiscoveryPage firstPage = coordinator.DiscoverForMaintenance(
+                "local", root, new MaintenanceDiscoveryCursor(), 10, TimeSpan.FromMilliseconds(100), CancellationToken.None);
+            firstPage.Recovery.Should().BeEmpty();
+            firstPage.NextCursor.Should().NotBeNull();
+            firstPage.NextCursor!.AfterRelativePath.Should().BeNull();
+
+            RecoveryMaintenanceDiscoveryPage secondPage = coordinator.DiscoverForMaintenance(
+                "local", root, firstPage.NextCursor, 10, TimeSpan.FromSeconds(5), CancellationToken.None);
+            secondPage.Recovery.Select(view => view.EvidencePath).Should().ContainInOrder(
+                "skills/.file-entity-a.recovery", "skills/.file-entity-b.recovery");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static IEnumerable<string> SlowBeforeSecond(string first, string second)
+        {
+            yield return first;
+            Thread.Sleep(250);
+            yield return second;
         }
     }
 

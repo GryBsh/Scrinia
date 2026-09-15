@@ -123,8 +123,7 @@ internal sealed record MaintenanceDiscoveryCursor
         AfterRelativePath = afterRelativePath is null
             ? null
             : MaintenanceContractValidation.RequireRelativePath(afterRelativePath, nameof(afterRelativePath));
-        if (unsafeCandidatesToSkip is < 0 or > 10000)
-            throw new ArgumentOutOfRangeException(nameof(unsafeCandidatesToSkip));
+        ArgumentOutOfRangeException.ThrowIfNegative(unsafeCandidatesToSkip);
         UnsafeCandidatesToSkip = unsafeCandidatesToSkip;
     }
 
