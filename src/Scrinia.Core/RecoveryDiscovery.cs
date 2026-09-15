@@ -167,6 +167,37 @@ internal sealed class RecoveryDiscoveryCoordinator
         return adapter.Admit(candidate.Envelope, candidate.EvidencePath);
     }
 
+    internal RecoveryMaintenanceDiscoveryPage DiscoverForMaintenance(string scope, string storeDirectory,
+        MaintenanceDiscoveryCursor cursor, int candidateBudget, TimeSpan deadline,
+        CancellationToken cancellationToken)
+    {
+        if (candidateBudget is < 1 or > 10000)
+            throw new ArgumentOutOfRangeException(nameof(candidateBudget));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(deadline, TimeSpan.Zero, nameof(deadline));
+        ArgumentNullException.ThrowIfNull(cursor);
+        cancellationToken.ThrowIfCancellationRequested();
+        DateTimeOffset started = DateTimeOffset.UtcNow;
+        RecoveryDiscoveryResult recovery = Discover(scope, storeDirectory, includeCoordinator: false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTimeOffset.UtcNow - started >= deadline)
+            return new RecoveryMaintenanceDiscoveryPage([], null, cursor, true);
+
+        IReadOnlyList<B2RecoveryMaintenanceProjection> projected = new B2RecoveryMaintenanceAdapter().Project(recovery, scope);
+        var selected = projected.Where(view => cursor.AfterRelativePath is null ||
+                string.CompareOrdinal(B2RecoveryMaintenanceAdapter.SafeRelativePath(view.EvidencePath), cursor.AfterRelativePath) > 0)
+            .Take(candidateBudget).ToArray();
+        string? last = selected.Length == 0 ? cursor.AfterRelativePath : B2RecoveryMaintenanceAdapter.SafeRelativePath(selected[^1].EvidencePath);
+        bool more = projected.Count(view => cursor.AfterRelativePath is null ||
+            string.CompareOrdinal(B2RecoveryMaintenanceAdapter.SafeRelativePath(view.EvidencePath), cursor.AfterRelativePath) > 0) > selected.Length;
+
+        B3CoordinatorMaintenanceProjection? coordinator = null;
+        RecoveryDiscoveryResult coordinatorDiscovery = Discover(scope, storeDirectory, includeCoordinator: true);
+        if (coordinatorDiscovery.CoordinatorRecord is not null)
+            coordinator = new B3CoordinatorMaintenanceAdapter().Project(coordinatorDiscovery.CoordinatorRecord, scope);
+        return new RecoveryMaintenanceDiscoveryPage(selected, coordinator,
+            more ? new MaintenanceDiscoveryCursor(last) : null, more);
+    }
+
     private RecoveryBlock? InspectFixedCandidate(RecoveryOperation operation, string evidencePath,
         string evidenceDirectory, string scope, List<RecoveryCandidate> candidates)
     {
@@ -302,4 +333,162 @@ internal sealed class RecoveryDiscoveryCoordinator
             ? name[prefix.Length..^suffix.Length]
             : "unknown";
     }
+}
+
+internal sealed class B2RecoveryMaintenanceAdapter : IB2RecoveryMaintenanceAdapter
+{
+    public IReadOnlyList<B2RecoveryMaintenanceProjection> Project(RecoveryDiscoveryResult discovery, string expectedScope)
+    {
+        ArgumentNullException.ThrowIfNull(discovery);
+        RequireScope(expectedScope);
+        var views = discovery.Candidates.Select(candidate =>
+        {
+            if (!string.Equals(candidate.Scope, expectedScope, StringComparison.Ordinal))
+                throw new ArgumentException("Recovery candidate scope does not match the requested scope.", nameof(discovery));
+            if (!Path.IsPathRooted(candidate.EvidencePath))
+                throw new ArgumentException("Recovery evidence path must be absolute at the adapter boundary.", nameof(discovery));
+            if (candidate.Envelope.TypedBody is null)
+                throw new ArgumentException("Recovery candidate has no typed body.", nameof(discovery));
+
+            bool terminal = candidate.Envelope.State is RecoveryLifecycleState.Committed or RecoveryLifecycleState.RolledBack;
+            bool pathSafe = IsSafeEvidencePath(candidate.EvidencePath);
+            return new B2RecoveryMaintenanceProjection(candidate.Operation, candidate.Scope,
+                pathSafe ? SafeRelativePath(candidate.EvidencePath) : "recovery/unsafe",
+                candidate.CanonicalSubject, candidate.OperationId, candidate.Envelope.State,
+                candidate.Envelope.CreatedAt, candidate.Envelope.UpdatedAt, terminal && IsVerified(candidate),
+                false, false, false, pathSafe);
+        }).ToArray();
+
+        if (discovery.BlockingEvidence is not null)
+            views = views.Append(Blocked(discovery.BlockingEvidence, expectedScope)).ToArray();
+        return views.OrderBy(view => SafeRelativePath(view.EvidencePath), StringComparer.Ordinal).ToArray();
+    }
+
+    public RecoveryCleanupDecision EvaluateCleanup(B2RecoveryMaintenanceProjection view, IReadOnlySet<string> referencedRelativePaths)
+    {
+        ArgumentNullException.ThrowIfNull(view);
+        ArgumentNullException.ThrowIfNull(referencedRelativePaths);
+        string path = view.EvidencePath;
+        if (!view.IsPathSafe) return Protected(path, MaintenanceProtectionReason.Unsafe, "Recovery evidence path is unsafe.");
+        if (view.IsQuarantined || view.IsAmbiguous) return Protected(path, view.IsQuarantined ? MaintenanceProtectionReason.UnresolvedRecovery : MaintenanceProtectionReason.Ambiguous, null);
+        if (referencedRelativePaths.Contains(path)) return Protected(path, MaintenanceProtectionReason.Referenced, null);
+        if (!view.IsTerminalAndVerified) return Protected(path, MaintenanceProtectionReason.UnresolvedRecovery, null);
+        return new RecoveryCleanupDecision(true, false, null, path, null);
+    }
+
+    private static B2RecoveryMaintenanceProjection Blocked(RecoveryBlock block, string scope)
+    {
+        if (!string.Equals(block.Scope, scope, StringComparison.Ordinal))
+            throw new ArgumentException("Recovery block scope does not match the requested scope.", nameof(scope));
+        RecoveryOperation operation = block.Operation ?? RecoveryOperation.Restore;
+        bool pathSafe = IsSafeEvidencePath(block.EvidencePath);
+        return new B2RecoveryMaintenanceProjection(operation, scope, pathSafe ? SafeRelativePath(block.EvidencePath) : "recovery/unsafe", "unknown", block.OperationId,
+            RecoveryLifecycleState.RecoveryRequired, DateTimeOffset.MinValue, DateTimeOffset.MinValue,
+            false, false, false, block.Reason == RecoveryBlockReason.Ambiguous, pathSafe);
+    }
+
+    private static bool IsVerified(RecoveryCandidate candidate) => candidate.Envelope.TypedBody switch
+    {
+        AppendRecoveryBody append => append.NewArtifact is not null && append.NewSidecar is not null,
+        RestoreRecoveryBody restore => restore.Entries.Count > 0 && restore.Entries.All(entry => !string.IsNullOrWhiteSpace(entry.BodyFile) && !string.IsNullOrWhiteSpace(entry.SidecarFile)),
+        FileEntityRecoveryBody entity => entity.CommittedBody is not null || entity.CommittedMeta is not null || candidate.Envelope.State == RecoveryLifecycleState.RolledBack,
+        _ => false
+    };
+
+    internal static string SafeRelativePath(string evidencePath)
+    {
+        if (!Path.IsPathRooted(evidencePath))
+            return MaintenanceContractValidation.RequireRelativePath(evidencePath, nameof(evidencePath));
+        if (!IsSafeEvidencePath(evidencePath)) return "recovery/unsafe";
+        string file = Path.GetFileName(evidencePath);
+        string? parent = Path.GetFileName(Path.GetDirectoryName(evidencePath));
+        return parent is "versions" or "skills" or "agents" ? $"{parent}/{file}" : file;
+    }
+
+    internal static bool IsSafeEvidencePath(string path) => Path.IsPathRooted(path) &&
+        !path.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.None)
+            .Any(segment => segment is "." or "..");
+
+    private static RecoveryCleanupDecision Protected(string path, MaintenanceProtectionReason reason, string? warning) =>
+        new(false, true, reason, path, warning);
+
+    private static void RequireScope(string scope) =>
+        MaintenanceContractValidation.RequireSafeText(scope, nameof(scope));
+}
+
+internal sealed class B3CoordinatorMaintenanceAdapter : IB3CoordinatorMaintenanceAdapter
+{
+    public B3CoordinatorMaintenanceProjection Project(MultiMemoryTransactionRecord record, string expectedScope)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        MaintenanceContractValidation.RequireSafeText(expectedScope, nameof(expectedScope));
+        if (!string.Equals(record.Scope, expectedScope, StringComparison.Ordinal))
+            throw new ArgumentException("Coordinator record scope does not match the requested scope.", nameof(record));
+
+        var participants = (record.TransactionalParticipants ?? []).Select(new B4ParticipantMaintenanceAdapter().Project).ToArray();
+        var rejected = (record.RejectedTransactionalParticipants ?? []).Select(new B4ParticipantMaintenanceAdapter().ProjectRejected).ToArray();
+        bool proofsComplete = record.CompletedParticipants is { Count: > 0 } completions &&
+            record.Participants.All(participant => completions.Any(completion => completion.Subject == participant.Subject && completion.OperationId == participant.OperationId && completion.Kind == participant.Kind));
+        bool terminal = record.State == MultiMemoryTransactionState.Committed && proofsComplete &&
+            participants.All(participant => participant.IsTerminalAndVerified) && rejected.Length == 0;
+        return new B3CoordinatorMaintenanceProjection(record.Scope, record.TransactionId, record.State,
+            record.CreatedAt, record.UpdatedAt, record.Participants.ToArray(),
+            (record.CompletedParticipants ?? []).ToArray(), participants, rejected, terminal, true);
+    }
+
+    public RecoveryCleanupDecision EvaluateCleanup(B3CoordinatorMaintenanceProjection projection, IReadOnlySet<string> referencedRelativePaths)
+    {
+        ArgumentNullException.ThrowIfNull(projection);
+        ArgumentNullException.ThrowIfNull(referencedRelativePaths);
+        const string path = MultiMemoryTransactionRecordCodec.FileName;
+        if (!projection.IsPathSafe) return new(false, true, MaintenanceProtectionReason.Unsafe, path, null);
+        if (referencedRelativePaths.Contains(path)) return new(false, true, MaintenanceProtectionReason.Referenced, path, null);
+        if (!projection.IsTerminalAndVerified) return new(false, true, MaintenanceProtectionReason.UnresolvedRecovery, path, null);
+        return new(true, false, null, path, null);
+    }
+}
+
+internal sealed class B4ParticipantMaintenanceAdapter : IB4ParticipantMaintenanceAdapter
+{
+    public B4ParticipantMaintenanceProjection Project(B4ParticipantRecoveryState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        bool safe = IsSafe(state.EvidenceReference) && IsSafe(state.EvidenceKind) && IsSafe(state.EvidenceVersion);
+        bool terminal = state.LifecycleState is TransactionalParticipantLifecycleState.Committed or TransactionalParticipantLifecycleState.RolledBack;
+        terminal &= state.QuarantineState == TransactionalQuarantineState.None && !state.Ambiguous && !state.StateMayHaveChanged && safe;
+        return new B4ParticipantMaintenanceProjection(state.TransactionId, state.OperationId, state.Scope, state.Address,
+            state.ParticipantIdentity, state.OrderingKey, state.Kind, state.LifecycleState, state.QuarantineState,
+            state.EvidenceReference, state.EvidenceKind, state.EvidenceVersion, state.StateMayHaveChanged,
+            state.Ambiguous, terminal, safe);
+    }
+
+    public B4RejectedParticipantMaintenanceProjection ProjectRejected(B4ParticipantRequestMetadata metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        return new B4RejectedParticipantMaintenanceProjection(metadata.TransactionId, metadata.OperationId, metadata.Scope,
+            metadata.Address, metadata.ParticipantIdentity, metadata.OrderingKey, metadata.Kind, metadata.RejectionCode,
+            IsSafe(metadata.Address) && IsSafe(metadata.ParticipantIdentity) && IsSafe(metadata.OrderingKey));
+    }
+
+    public B4QuarantineMaintenanceProjection ProjectQuarantine(B4ParticipantRecoveryState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return new B4QuarantineMaintenanceProjection(state.TransactionId, state.OperationId, state.Scope, state.Address,
+            state.QuarantineState, state.QuarantineReason, IsSafe(state.QuarantineReason));
+    }
+
+    public RecoveryCleanupDecision EvaluateCleanup(B4ParticipantMaintenanceProjection projection, IReadOnlySet<string> referencedRelativePaths)
+    {
+        ArgumentNullException.ThrowIfNull(projection);
+        ArgumentNullException.ThrowIfNull(referencedRelativePaths);
+        const string path = "transactional-participant";
+        if (!projection.IsPathSafe) return new(false, true, MaintenanceProtectionReason.Unsafe, path, null);
+        if (projection.QuarantineState == TransactionalQuarantineState.Quarantined) return new(false, true, MaintenanceProtectionReason.UnresolvedRecovery, path, null);
+        if (projection.Ambiguous || projection.StateMayHaveChanged) return new(false, true, MaintenanceProtectionReason.Ambiguous, path, null);
+        if (!projection.IsTerminalAndVerified) return new(false, true, MaintenanceProtectionReason.UnresolvedRecovery, path, null);
+        if (referencedRelativePaths.Contains(path)) return new(false, true, MaintenanceProtectionReason.Referenced, path, null);
+        return new(true, false, null, path, null);
+    }
+
+    private static bool IsSafe(string? value) => value is null || B4Validation.SafeReference(value);
 }

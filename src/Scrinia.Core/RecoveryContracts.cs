@@ -116,6 +116,78 @@ internal sealed record RecoveryDiscoveryResult
     internal MultiMemoryTransactionRecord? CoordinatorRecord { get; }
 }
 
+internal sealed record MaintenanceDiscoveryCursor
+{
+    internal MaintenanceDiscoveryCursor(string? afterRelativePath = null) => AfterRelativePath = afterRelativePath is null
+        ? null
+        : MaintenanceContractValidation.RequireRelativePath(afterRelativePath, nameof(afterRelativePath));
+
+    internal string? AfterRelativePath { get; }
+}
+
+internal sealed record RecoveryMaintenanceDiscoveryPage(
+    IReadOnlyList<B2RecoveryMaintenanceProjection> Recovery,
+    B3CoordinatorMaintenanceProjection? Coordinator,
+    MaintenanceDiscoveryCursor? NextCursor,
+    bool HasMore);
+
+internal sealed record B2RecoveryMaintenanceProjection(
+    RecoveryOperation Operation, string Scope, string EvidencePath,
+    string CanonicalSubject, string OperationId, RecoveryLifecycleState State,
+    DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    bool IsTerminalAndVerified, bool IsReferenced, bool IsQuarantined,
+    bool IsAmbiguous, bool IsPathSafe);
+
+internal interface IB2RecoveryMaintenanceAdapter
+{
+    IReadOnlyList<B2RecoveryMaintenanceProjection> Project(RecoveryDiscoveryResult discovery, string expectedScope);
+    RecoveryCleanupDecision EvaluateCleanup(B2RecoveryMaintenanceProjection view, IReadOnlySet<string> referencedRelativePaths);
+}
+
+internal sealed record B3CoordinatorMaintenanceProjection(
+    string Scope, string TransactionId, MultiMemoryTransactionState State,
+    DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    IReadOnlyList<MultiMemoryParticipantManifest> Participants,
+    IReadOnlyList<MultiMemoryParticipantCompletion> CompletedParticipants,
+    IReadOnlyList<B4ParticipantMaintenanceProjection> TransactionalParticipants,
+    IReadOnlyList<B4RejectedParticipantMaintenanceProjection> RejectedParticipants,
+    bool IsTerminalAndVerified, bool IsPathSafe);
+
+internal interface IB3CoordinatorMaintenanceAdapter
+{
+    B3CoordinatorMaintenanceProjection Project(MultiMemoryTransactionRecord record, string expectedScope);
+    RecoveryCleanupDecision EvaluateCleanup(B3CoordinatorMaintenanceProjection projection, IReadOnlySet<string> referencedRelativePaths);
+}
+
+internal sealed record B4ParticipantMaintenanceProjection(
+    string TransactionId, string OperationId, string Scope, string Address,
+    string ParticipantIdentity, string OrderingKey, string Kind,
+    TransactionalParticipantLifecycleState LifecycleState,
+    TransactionalQuarantineState QuarantineState, string? EvidenceReference,
+    string? EvidenceKind, string? EvidenceVersion, bool StateMayHaveChanged,
+    bool Ambiguous, bool IsTerminalAndVerified, bool IsPathSafe);
+
+internal sealed record B4RejectedParticipantMaintenanceProjection(
+    string TransactionId, string OperationId, string Scope, string Address,
+    string ParticipantIdentity, string OrderingKey, string Kind,
+    TransactionalFailureCode RejectionCode, bool IsPathSafe);
+
+internal sealed record B4QuarantineMaintenanceProjection(
+    string TransactionId, string OperationId, string Scope, string Address,
+    TransactionalQuarantineState State, string? Reason, bool IsPathSafe);
+
+internal interface IB4ParticipantMaintenanceAdapter
+{
+    B4ParticipantMaintenanceProjection Project(B4ParticipantRecoveryState state);
+    B4RejectedParticipantMaintenanceProjection ProjectRejected(B4ParticipantRequestMetadata metadata);
+    B4QuarantineMaintenanceProjection ProjectQuarantine(B4ParticipantRecoveryState state);
+    RecoveryCleanupDecision EvaluateCleanup(B4ParticipantMaintenanceProjection projection, IReadOnlySet<string> referencedRelativePaths);
+}
+
+internal sealed record RecoveryCleanupDecision(
+    bool Eligible, bool Protected, MaintenanceProtectionReason? Protection,
+    string SafeRelativePath, string? Warning);
+
 internal interface IRecoveryAdapter
 {
     RecoveryOperation Operation { get; }
