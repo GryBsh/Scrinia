@@ -128,6 +128,37 @@ public sealed class DurableFileTests
         TemporarySiblings(destination).Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void AtomicWriteAllBytes_WhenTransientWriteOrFlushFails_CleansEveryAttemptTemporaryFile(
+        int failurePhaseValue)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string destination = Path.Combine(scope.TempDir, "retry.meta.json");
+        DurableWritePhase failurePhase = (DurableWritePhase)failurePhaseValue;
+        int writeFailures = 0;
+        DurableFile.FailureInjector = (phase, _) =>
+        {
+            if (phase == failurePhase && writeFailures++ == 0)
+                return new IOException("injected transient write failure");
+
+            return null;
+        };
+
+        try
+        {
+            DurableFile.AtomicWriteAllBytes(destination, [8, 9, 10]);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+
+        File.ReadAllBytes(destination).Should().Equal([8, 9, 10]);
+        TemporarySiblings(destination).Should().BeEmpty();
+    }
+
     [Fact]
     public void AtomicWriteAllBytes_GeneratesUniqueTemporarySiblings()
     {
@@ -162,10 +193,7 @@ public sealed class DurableFileTests
     private static IEnumerable<string> TemporarySiblings(string destination)
     {
         string directory = Path.GetDirectoryName(destination)!;
-        string prefix = Path.GetFileName(destination) + ".";
-
         return Directory.EnumerateFiles(directory)
-            .Where(path => Path.GetFileName(path).StartsWith(prefix, StringComparison.Ordinal)
-                && path.EndsWith(".tmp", StringComparison.Ordinal));
+            .Where(path => Path.GetFileName(path).EndsWith(".tmp", StringComparison.Ordinal));
     }
 }

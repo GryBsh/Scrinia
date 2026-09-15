@@ -68,12 +68,24 @@ internal static class DurableFile
 
         try
         {
-            FileRetry.Run(() =>
+            temporaryPath = FileRetry.Run(() =>
             {
                 string candidatePath = CreateTemporaryPath(path);
-                using var stream = new FileStream(candidatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                temporaryPath = candidatePath;
-                WriteTemporaryFile(stream, bytes, path, operationId, writePoint, flushPoint);
+                bool temporaryFileCreated = false;
+
+                try
+                {
+                    using var stream = new FileStream(candidatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    temporaryFileCreated = true;
+                    WriteTemporaryFile(stream, bytes, path, operationId, writePoint, flushPoint);
+                    return candidatePath;
+                }
+                catch
+                {
+                    if (temporaryFileCreated)
+                        TryDeleteTemporaryFile(candidatePath);
+                    throw;
+                }
             });
             FileRetry.Run(() =>
             {
