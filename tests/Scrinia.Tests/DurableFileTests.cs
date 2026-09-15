@@ -95,6 +95,70 @@ public sealed class DurableFileTests
         File.ReadAllBytes(path).Should().Equal(expected);
     }
 
+    [Fact]
+    public void AtomicWriteAllBytes_WithLongDestination_UsesShortSameDirectoryTemporarySibling()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string destination = Path.Combine(scope.TempDir, new string('x', 225) + ".meta.json");
+        string? temporaryPath = null;
+        DurableFile.FailureInjector = (phase, path) =>
+        {
+            if (phase != DurableWritePhase.BeforeMove)
+                return null;
+
+            temporaryPath = Directory.EnumerateFiles(Path.GetDirectoryName(path)!)
+                .Single(candidate => candidate.EndsWith(".tmp", StringComparison.Ordinal));
+            return new UnauthorizedAccessException("injected before move");
+        };
+
+        try
+        {
+            Action write = () => DurableFile.AtomicWriteAllBytes(destination, [1, 2, 3]);
+
+            write.Should().Throw<DurableWriteException>();
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+
+        temporaryPath.Should().NotBeNull();
+        Path.GetDirectoryName(temporaryPath!).Should().Be(Path.GetDirectoryName(destination));
+        Path.GetFileName(temporaryPath!).Length.Should().BeLessThanOrEqualTo(255);
+        TemporarySiblings(destination).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AtomicWriteAllBytes_GeneratesUniqueTemporarySiblings()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string destination = Path.Combine(scope.TempDir, "unique.meta.json");
+        var temporaryPaths = new List<string>();
+        DurableFile.FailureInjector = (phase, path) =>
+        {
+            if (phase == DurableWritePhase.BeforeMove)
+            {
+                temporaryPaths.Add(Directory.EnumerateFiles(Path.GetDirectoryName(path)!)
+                    .Single(candidate => candidate.EndsWith(".tmp", StringComparison.Ordinal)));
+            }
+
+            return null;
+        };
+
+        try
+        {
+            DurableFile.AtomicWriteAllBytes(destination, [1]);
+            DurableFile.AtomicWriteAllBytes(destination, [2]);
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+        }
+
+        temporaryPaths.Should().HaveCount(2);
+        temporaryPaths.Should().OnlyHaveUniqueItems();
+    }
+
     private static IEnumerable<string> TemporarySiblings(string destination)
     {
         string directory = Path.GetDirectoryName(destination)!;

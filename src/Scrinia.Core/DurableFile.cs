@@ -64,33 +64,46 @@ internal static class DurableFile
         AppendFaultPoint? writePoint, AppendFaultPoint? flushPoint)
     {
         byte[] bytes = content.ToArray();
-        string temporaryPath = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        string? temporaryPath = null;
 
         try
         {
-            FileRetry.Run(() => WriteTemporaryFile(temporaryPath, bytes, path, operationId, writePoint, flushPoint));
+            FileRetry.Run(() =>
+            {
+                string candidatePath = CreateTemporaryPath(path);
+                using var stream = new FileStream(candidatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                temporaryPath = candidatePath;
+                WriteTemporaryFile(stream, bytes, path, operationId, writePoint, flushPoint);
+            });
             FileRetry.Run(() =>
             {
                 ThrowInjected(DurableWritePhase.BeforeMove, path);
-                File.Move(temporaryPath, path, overwrite: true);
+                File.Move(temporaryPath!, path, overwrite: true);
             });
         }
         catch (Exception exception)
         {
-            TryDeleteTemporaryFile(temporaryPath);
+            if (temporaryPath is not null)
+                TryDeleteTemporaryFile(temporaryPath);
             throw new DurableWriteException(operation, path, exception);
         }
     }
 
+    private static string CreateTemporaryPath(string destination)
+    {
+        string directory = Path.GetDirectoryName(destination) ?? ".";
+        string shortRandomName = Path.GetFileNameWithoutExtension(Path.GetRandomFileName());
+        return Path.Combine(directory, shortRandomName + ".tmp");
+    }
+
     private static void WriteTemporaryFile(
-        string temporaryPath, byte[] bytes, string destination, string? operationId = null,
+        FileStream stream, byte[] bytes, string destination, string? operationId = null,
         AppendFaultPoint? writePoint = null, AppendFaultPoint? flushPoint = null)
     {
         if (operationId is not null && writePoint is not null)
             ThrowAppendFault(writePoint.Value, operationId, destination);
         ThrowInjected(DurableWritePhase.BeforeWrite, destination);
 
-        using var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None);
         stream.Write(bytes);
 
         if (operationId is not null && flushPoint is not null)
