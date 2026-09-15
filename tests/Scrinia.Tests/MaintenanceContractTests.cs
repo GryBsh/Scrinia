@@ -114,6 +114,10 @@ public sealed class MaintenanceContractTests
         var wrongRun = context with { ActiveRunId = new MaintenanceRunId(Guid.NewGuid()) };
         JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, wrongRun, out rejection).Should().BeFalse();
         rejection.Should().Be(JournalBoundaryRejection.WrongRun);
+
+        owner.Advance();
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, context, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.PostInspection);
     }
 
     [Fact]

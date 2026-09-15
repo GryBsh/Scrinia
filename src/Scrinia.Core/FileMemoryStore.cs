@@ -2223,8 +2223,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             if (createTransaction is not null)
             {
-                VerifyAppendMember(createTransaction.NewArtifact, appendOperationId!);
-                VerifyAppendMember(createTransaction.NewSidecar, appendOperationId!);
+                await VerifyAppendMemberAsync(createTransaction.NewArtifact, appendOperationId!, ct);
+                await VerifyAppendMemberAsync(createTransaction.NewSidecar, appendOperationId!, ct);
                 string committedHash = Convert.ToHexStringLower(SHA256.HashData(
                     createTransaction.NewArtifact.Bytes.Concat(createTransaction.NewSidecar.Bytes).ToArray()));
                 PersistAppendJournal(createTransaction, AppendJournalState.Committed, committedHash);
@@ -3051,8 +3051,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         PersistAppendJournal(transaction, AppendJournalState.NewPairInProgress);
         UpsertForAppend(entry, transaction.Scope, transaction.OperationId);
 
-        VerifyAppendMember(transaction.NewArtifact, transaction.OperationId);
-        VerifyAppendMember(transaction.NewSidecar, transaction.OperationId);
+        await VerifyAppendMemberAsync(transaction.NewArtifact, transaction.OperationId, ct);
+        await VerifyAppendMemberAsync(transaction.NewSidecar, transaction.OperationId, ct);
         string committedHash = Convert.ToHexStringLower(SHA256.HashData(
             transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
         PersistAppendJournal(transaction, AppendJournalState.Committed, committedHash);
@@ -3268,15 +3268,41 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         File.Delete(path);
     }
 
-    private static void VerifyAppendMember(RawMemberSnapshot expected, string operationId)
+    private static async Task VerifyAppendMemberAsync(
+        RawMemberSnapshot expected, string operationId, CancellationToken cancellationToken)
     {
         Exception? failure = InjectAppendFault(AppendFaultPoint.VerificationRead, operationId, expected.Path);
         if (failure is not null)
             throw failure;
         if (!File.Exists(expected.Path))
             throw new IOException($"Append member is missing after publication: {expected.Path}");
-        byte[] actual = File.ReadAllBytes(expected.Path);
-        if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(actual)), expected.Sha256,
+
+        var options = new FileStreamOptions
+        {
+            Access = FileAccess.Read,
+            Mode = FileMode.Open,
+            Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+            Share = FileShare.ReadWrite | FileShare.Delete
+        };
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(MaintenanceLimits.TerminalVerificationMaximumMilliseconds);
+        await using FileStream stream = new(expected.Path, options);
+        if (stream.Length > MaintenanceLimits.TerminalVerificationMaximumBytes)
+            throw new IOException("Append member exceeds the bounded verification size.");
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] buffer = new byte[64 * 1024];
+        int read;
+        long total = 0;
+        while ((read = await stream.ReadAsync(buffer.AsMemory(), timeout.Token)) != 0)
+        {
+            total += read;
+            if (total > MaintenanceLimits.TerminalVerificationMaximumBytes)
+                throw new IOException("Append member exceeds the bounded verification size.");
+            hash.AppendData(buffer, 0, read);
+        }
+
+        if (!string.Equals(Convert.ToHexStringLower(hash.GetHashAndReset()), expected.Sha256,
                 StringComparison.Ordinal))
             throw new IOException($"Append member hash mismatch after publication: {expected.Path}");
     }

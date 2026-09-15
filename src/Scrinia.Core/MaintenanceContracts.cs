@@ -401,6 +401,7 @@ internal readonly record struct JournalBoundaryValidationContext(
 internal sealed class JournalEnumeratorBoundary
 {
     private readonly JournalBoundaryCapability _capability;
+    private bool _proofCaptured;
 
     private JournalEnumeratorBoundary(JournalBoundaryCapability capability) => _capability = capability;
     internal MaintenanceRunId RunId => _capability.RunId;
@@ -417,7 +418,9 @@ internal sealed class JournalEnumeratorBoundary
     internal JournalDirectoryEntryKind EntryKind => _capability.EntryKind;
     internal JournalBoundaryProvenance Provenance => JournalBoundaryProvenance.BufferedDirectoryEntryMetadataOnly;
     internal bool IsLive => _capability.IsLive;
-    internal void Consume() => _capability.Consume();
+    internal bool IsCurrentProof => _proofCaptured && _capability.IsLive;
+    internal void MarkProofCaptured() => _proofCaptured = true;
+    internal void Consume() { _proofCaptured = false; _capability.Consume(); }
 
     internal static JournalEnumeratorBoundary FromCapability(JournalBoundaryCapability capability) =>
         new(capability);
@@ -507,6 +510,7 @@ internal sealed class JournalBoundaryProof
 {
     private JournalBoundaryProof(JournalEnumeratorBoundary boundary)
     {
+        _boundary = boundary;
         RunId = boundary.RunId;
         SnapshotId = boundary.SnapshotId;
         SafeRootBinding = boundary.SafeRootBinding;
@@ -535,6 +539,7 @@ internal sealed class JournalBoundaryProof
     internal JournalDirectoryEntryKind EntryKind { get; }
     internal JournalBoundaryProvenance Provenance { get; }
     internal MaintenanceCandidateKey CanonicalEntryKey { get; }
+    private readonly JournalEnumeratorBoundary _boundary;
 
     internal static bool TryCaptureFromBufferedMetadata(JournalEnumeratorBoundary boundary,
         out JournalBoundaryProof proof)
@@ -544,7 +549,7 @@ internal sealed class JournalBoundaryProof
             boundary.EntryKind != JournalDirectoryEntryKind.File || !IsFixedJournalPair(boundary.Location, boundary.NameClass))
             return false;
         proof = new JournalBoundaryProof(boundary);
-        boundary.Consume();
+        boundary.MarkProofCaptured();
         return true;
     }
 
@@ -553,6 +558,8 @@ internal sealed class JournalBoundaryProof
     {
         ArgumentNullException.ThrowIfNull(proof);
         rejection = JournalBoundaryRejection.None;
+        if (!proof._boundary.IsCurrentProof)
+            return Reject(ref rejection, JournalBoundaryRejection.PostInspection);
         if (proof.EntryKind != context.ExpectedEntryKind) return Reject(ref rejection, JournalBoundaryRejection.WrongEntryKind);
         if (proof.SafeRootBinding != context.ActiveScopeBinding) return Reject(ref rejection, JournalBoundaryRejection.UnsafeOrMismatchedSafeRoot);
         if (proof.RunId != context.ActiveRunId) return Reject(ref rejection, JournalBoundaryRejection.WrongRun);
