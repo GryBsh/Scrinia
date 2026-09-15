@@ -26,13 +26,13 @@ public sealed class MaintenancePolicyTests
     {
         var config = new WorkspaceConfig(new Dictionary<string, string>
         {
-            [MaxVersions] = "42", [MinimumAge] = "0", [JournalBatch] = "10000",
+            [MaxVersions] = "42", [MinimumAge] = "0", [JournalBatch] = "50",
             [TimeBudget] = "3600", [Background] = "false", ["unknown"] = "ignored",
         });
 
         MaintenancePolicyLoadResult result = MaintenancePolicy.Load(config);
 
-        result.Policy.Should().Be(new MaintenancePolicy(42, 0, 10000, 3600, false));
+        result.Policy.Should().Be(new MaintenancePolicy(42, 0, 50, 3600, false));
         result.IsValid.Should().BeTrue();
     }
 
@@ -42,7 +42,7 @@ public sealed class MaintenancePolicyTests
     [InlineData(MinimumAge, "0")]
     [InlineData(MinimumAge, "36500")]
     [InlineData(JournalBatch, "1")]
-    [InlineData(JournalBatch, "10000")]
+    [InlineData(JournalBatch, "50")]
     [InlineData(TimeBudget, "1")]
     [InlineData(TimeBudget, "3600")]
     public void Load_AcceptsInclusiveNumericBounds(string key, string value)
@@ -58,6 +58,8 @@ public sealed class MaintenancePolicyTests
     [InlineData(MinimumAge, "-1")]
     [InlineData(MinimumAge, "36501")]
     [InlineData(JournalBatch, "0")]
+    [InlineData(JournalBatch, "51")]
+    [InlineData(JournalBatch, "10000")]
     [InlineData(JournalBatch, "10001")]
     [InlineData(TimeBudget, "0")]
     [InlineData(TimeBudget, "3601")]

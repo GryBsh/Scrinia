@@ -49,7 +49,7 @@ internal static class MaintenancePolicyLoader
         var errors = new List<MaintenancePolicyError>();
         int? maxVersions = ParseInteger(maxArchivedVersions, MaxArchivedVersionsKey, 1, 100000, errors);
         int? minimumAge = ParseInteger(minimumAgeDays, MinimumAgeDaysKey, 0, 36500, errors);
-        int? journalBatch = ParseInteger(journalCleanupBatchSize, JournalCleanupBatchSizeKey, 1, 10000, errors);
+        int? journalBatch = ParseInteger(journalCleanupBatchSize, JournalCleanupBatchSizeKey, 1, 50, errors);
         int? timeBudget = ParseInteger(timeBudgetSeconds, TimeBudgetSecondsKey, 1, 3600, errors);
         bool? background = ParseBoolean(backgroundEnabled, BackgroundEnabledKey, errors);
 
