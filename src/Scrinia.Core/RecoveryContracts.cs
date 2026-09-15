@@ -118,11 +118,18 @@ internal sealed record RecoveryDiscoveryResult
 
 internal sealed record MaintenanceDiscoveryCursor
 {
-    internal MaintenanceDiscoveryCursor(string? afterRelativePath = null) => AfterRelativePath = afterRelativePath is null
-        ? null
-        : MaintenanceContractValidation.RequireRelativePath(afterRelativePath, nameof(afterRelativePath));
+    internal MaintenanceDiscoveryCursor(string? afterRelativePath = null, int unsafeCandidatesToSkip = 0)
+    {
+        AfterRelativePath = afterRelativePath is null
+            ? null
+            : MaintenanceContractValidation.RequireRelativePath(afterRelativePath, nameof(afterRelativePath));
+        if (unsafeCandidatesToSkip is < 0 or > 10000)
+            throw new ArgumentOutOfRangeException(nameof(unsafeCandidatesToSkip));
+        UnsafeCandidatesToSkip = unsafeCandidatesToSkip;
+    }
 
     internal string? AfterRelativePath { get; }
+    internal int UnsafeCandidatesToSkip { get; }
 }
 
 internal sealed record RecoveryMaintenanceDiscoveryPage(

@@ -192,6 +192,8 @@ internal sealed class RecoveryDiscoveryCoordinator
 
         var projected = new List<B2RecoveryMaintenanceProjection>(Math.Min(candidateBudget, 64));
         string? last = cursor.AfterRelativePath;
+        int unsafeCandidatesToSkip = cursor.UnsafeCandidatesToSkip;
+        int unsafeCandidatesSeen = 0;
         bool more = false;
         bool StopEnumeration() => DateTimeOffset.UtcNow - started >= deadline;
         foreach ((RecoveryOperation Operation, string Path, string Directory) candidate in EnumerateMaintenanceEvidence(
@@ -200,7 +202,11 @@ internal sealed class RecoveryDiscoveryCoordinator
             cancellationToken.ThrowIfCancellationRequested();
             if (DateTimeOffset.UtcNow - started >= deadline)
             {
-                last = B2RecoveryMaintenanceAdapter.SafeRelativePath(candidate.Path, root);
+                string deadlineRelative = B2RecoveryMaintenanceAdapter.SafeRelativePath(candidate.Path, root);
+                if (deadlineRelative == "recovery/unsafe")
+                    unsafeCandidatesToSkip++;
+                else
+                    last = deadlineRelative;
                 more = true;
                 break;
             }
@@ -208,21 +214,26 @@ internal sealed class RecoveryDiscoveryCoordinator
             string relative = B2RecoveryMaintenanceAdapter.SafeRelativePath(candidate.Path, root);
             if (cursor.AfterRelativePath is not null && string.CompareOrdinal(relative, cursor.AfterRelativePath) <= 0)
                 continue;
+            if (relative == "recovery/unsafe" && unsafeCandidatesSeen++ < unsafeCandidatesToSkip)
+                continue;
             B2RecoveryMaintenanceProjection view = InspectMaintenanceCandidate(candidate.Operation,
                 candidate.Path, candidate.Directory, scope, root);
             projected.Add(view);
-            last = relative;
+            if (relative == "recovery/unsafe")
+                unsafeCandidatesToSkip++;
+            else
+                last = relative;
             if (projected.Count == candidateBudget)
             {
                 more = true;
                 break;
             }
         }
-        bool canContinue = more && last is not null &&
-            !string.Equals(last, cursor.AfterRelativePath, StringComparison.Ordinal) &&
-            !string.Equals(last, "recovery/unsafe", StringComparison.Ordinal);
+        bool canContinue = more &&
+            (!string.Equals(last, cursor.AfterRelativePath, StringComparison.Ordinal) ||
+             unsafeCandidatesToSkip > cursor.UnsafeCandidatesToSkip);
         return new RecoveryMaintenanceDiscoveryPage(projected, null,
-            canContinue ? new MaintenanceDiscoveryCursor(last) : null, canContinue);
+            canContinue ? new MaintenanceDiscoveryCursor(last, unsafeCandidatesToSkip) : null, canContinue);
     }
 
     private IEnumerable<(RecoveryOperation Operation, string Path, string Directory)> EnumerateMaintenanceEvidence(

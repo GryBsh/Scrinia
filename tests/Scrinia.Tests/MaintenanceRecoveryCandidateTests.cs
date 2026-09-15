@@ -152,8 +152,9 @@ public sealed class MaintenanceRecoveryCandidateTests
             RecoveryMaintenanceDiscoveryPage page = coordinator.DiscoverForMaintenance(
                 "local", root, new MaintenanceDiscoveryCursor(), 10, TimeSpan.FromMilliseconds(100), CancellationToken.None);
 
-            page.HasMore.Should().BeFalse();
-            page.NextCursor.Should().BeNull();
+            page.HasMore.Should().BeTrue();
+            page.NextCursor.Should().NotBeNull();
+            page.NextCursor!.AfterRelativePath.Should().NotBe("recovery/unsafe");
         }
         finally
         {
@@ -164,6 +165,44 @@ public sealed class MaintenanceRecoveryCandidateTests
         {
             yield return path;
             Thread.Sleep(250);
+        }
+    }
+
+    [Fact]
+    public void UnsafeCandidateUsesSafeContinuationAndDoesNotHideLaterEvidence()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-maintenance-unsafe-followed-by-valid-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        string foreign = Path.Combine(Path.GetTempPath(), "foreign.recovery");
+        try
+        {
+            string valid = Path.Combine(skills, ".file-entity-valid.recovery");
+            RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills, operationId: "valid");
+            RecoveryDiscoveryCoordinator coordinator = new(
+                new Func<string, IEnumerable<string>>(_ => new[] { skills }),
+                new Func<string, IEnumerable<string>>(_ => new[] { foreign, valid }));
+
+            RecoveryMaintenanceDiscoveryPage first = coordinator.DiscoverForMaintenance(
+                "local", root, new MaintenanceDiscoveryCursor(), 1, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+            first.Recovery.Should().ContainSingle();
+            first.Recovery[0].IsPathSafe.Should().BeFalse();
+            first.Recovery[0].EvidencePath.Should().Be("recovery/unsafe");
+            first.HasMore.Should().BeTrue();
+            first.NextCursor.Should().NotBeNull();
+            first.NextCursor!.AfterRelativePath.Should().NotBe("recovery/unsafe");
+
+            RecoveryMaintenanceDiscoveryPage second = coordinator.DiscoverForMaintenance(
+                "local", root, first.NextCursor, 1, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+            second.Recovery.Should().ContainSingle();
+            second.Recovery[0].EvidencePath.Should().EndWith("skills/.file-entity-valid.recovery");
+            second.Recovery[0].IsPathSafe.Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 
