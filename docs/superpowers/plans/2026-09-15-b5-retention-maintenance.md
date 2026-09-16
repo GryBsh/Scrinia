@@ -1,7 +1,7 @@
 ---
 status: in-progress
 phase: 1
-updated: 2026-09-15
+updated: 2026-09-16
 ---
 
 # B5 Retention, Pruning, and Recovery Maintenance Implementation Plan
@@ -13,6 +13,52 @@ updated: 2026-09-15
 recovery evidence, shared by the local CLI and bounded background host adapter.
 
 **Authoritative design:** `docs/superpowers/specs/2026-09-15-b5-retention-maintenance-design.md`
+
+## Execution amendment — Task 4 is source-accurate (2026-09-16)
+
+The design's §§0 and 0.6 amendments are normative for this plan. Task 4 must begin by migrating the
+current source inventory, not by adding a verifier beside existing helpers. `MaintenanceLimits` in
+`src/Scrinia.Core/MaintenanceContracts.cs` is the sole limits owner: migrate its existing fields and
+all consumers to the exact hard contract of 16 MiB total bytes, 2-second monotonic deadline, 2 opens,
+8 stats, 257 reads including final zero-byte EOF, and a 64 KiB buffer. Remove
+`RecoveryVerificationLimits` and `.Hard`; do not add an alias, duplicate validator, or duplicate
+literals. Lower-only overrides and typed invalid-limit fail-fast behavior belong to `MaintenanceLimits`.
+
+Mandatory Task 4 order:
+
+1. Define the limits, typed request/result/outcome, owned `RecoveryVerificationContent`, metadata,
+   accounting, and injectable `IRecoveryEvidenceVerifier` in `RecoveryVerification.cs`.
+2. Implement `ParseVerifiedEnvelope` as the sole operation that parses bytes, parses JSON, and
+   validates an envelope, returning `RecoveryVerifiedEnvelope`. Rename the legacy consumers to
+   `AppendJournalCodec.ConsumeParsed`, `RestoreJournalCodec.ConsumeParsed`,
+   `FileEntityRecoveryAdapter.ConsumeParsed`, and `FileMemoryStore.GetOperationId` (plus the
+   discovery equivalent `RecoveryDiscoveryCoordinator.GetOperationId`). Each accepts the already
+   parsed envelope or typed metadata and performs no I/O, JSON parsing, or validation.
+3. Migrate every one-row operation in design §§0.3 and 0.6 across `FileMemoryStore.cs`, `RecoveryDiscovery.cs`,
+   `RecoveryEnvelope.cs`, `FileEntityTransactionCoordinator.cs`, and related coordinator/journal
+   helpers. Preserve the explicitly listed in-memory and non-recovery exclusions only.
+4. Thread the active cancellation token and one absolute deadline through discovery, replay, cleanup,
+   rollback, coordinator, and scheduler paths. No affected path may use `CancellationToken.None`.
+5. Add the exact member-allowlist source guard and per-row tests before Task 5 consumes typed results.
+
+The exact signatures are listed in design §§0.4 and 0.6. The verifier is store-owned; adapters consume its
+typed result but do not read paths, create a second parser, or collapse all failures to one generic
+block. `InvalidLimits` is zero-I/O fail-fast. Runtime protected outcomes retain evidence and map
+individually to the existing recovery/read-barrier vocabulary. Only `Verified` may advance recovery
+or authorize terminal cleanup.
+
+The §0.6 table is the execution ledger, not a representative sample: Task 4 creates one migration
+record and one focused test for every row, without combining operations under a slash or “and”. This
+includes each direct `B2RecoveryMaintenanceAdapter` operation (`VerifyTerminal`,
+`VerifyTerminalBounded`, `VerifyAppend`, `VerifyRestore`, `VerifyEntity`, `VerifyMember`,
+`VerifySnapshot`, `VerifyBytes`, and `DecodeBounded`). `RecoveryEnvelopeCodec.Parse` and
+`RecoveryEnvelopeCodec.ParseTypedBody` are removed/replaced legacy parser entry points; they are not
+retained as direct parser operations or migration targets. `ParseVerifiedEnvelope` remains the sole
+operation that parses bytes, parses JSON, and validates an envelope. Its typed consumers accept the
+already parsed result and perform no I/O, JSON parsing, or validation. The ledger also covers
+`NormalizeLegacy` and the decoded-payload hash exclusion. Each record repeats the row's owner,
+recovery mode, active token, single absolute deadline, and caller-`finally` disposal rule before the
+row is marked complete.
 
 ## Global constraints
 
@@ -127,7 +173,7 @@ the full class equations and `SafeInspected = Scanned - UnsafeScanned`, on every
 
 ### Task 1: Define contracts and fixed binary cursor
 
-**Create:** `src/Scrinia.Core/MaintenanceContracts.cs`,
+**Modify:** `src/Scrinia.Core/MaintenanceContracts.cs` (already exists and owns `MaintenanceLimits`),
 `src/Scrinia.Core/MaintenanceJsonContext.cs`, and
 `tests/Scrinia.Tests/MaintenanceContractTests.cs`.
 
@@ -207,7 +253,7 @@ not construct or decode a legacy payload.
 
 ## Phase 2 — typed recovery projections and deterministic planning
 
-### Task 4: Add B2/B3/B4 maintenance adapters
+### Task 4: Add B2/B3/B4 maintenance adapters and execute the recovery-verifier migration
 
 **Modify:** `src/Scrinia.Core/FileMemoryStore.cs`, `RecoveryContracts.cs`, `RecoveryDiscovery.cs`, `RecoveryEnvelope.cs`,
 `AppendJournal.cs`, `RestoreJournal.cs`, `FileEntityTransactionCoordinator.cs`,
@@ -219,10 +265,12 @@ not construct or decode a legacy payload.
 **Create:** `src/Scrinia.Core/RecoveryVerification.cs` and
 `tests/Scrinia.Tests/RecoveryEvidenceVerifierTests.cs`.
 
-**Production inventory (exhaustive):** Task 4 must migrate the named recovery sites in
+**Production inventory (exhaustive):** Task 4 must migrate every row in design §0.3, not merely
+the verifier helper. That inventory names exact current methods in
 `src/Scrinia.Core/FileMemoryStore.cs`: `CaptureRawMemberAsync` (`ReadAllBytesAsync`), publication
 and whole-member verification, `HasCommittedHash`, `MatchesAppendMember`/rollback state matching,
-`RecoverAppendUnsafeAsync` journal loading and `TryReadOperationId` fallback,
+`RecoverAppendUnsafeAsync` journal loading and `GetOperationId` fallback (renamed from
+`TryReadOperationId`),
 `PersistAppendJournal` existing-journal parsing, `VerifyJournalDestinationsUnsafe`/
 `VerifyJournalDestination`, and `ReadBoundedJournalStream`. It must also migrate
 `RecoveryDiscovery` journal parse/member hashes,
@@ -233,15 +281,34 @@ The exact current call-site map and replacement for each helper is in design §2
 exclusions are in-memory transaction-payload and decoded-envelope-payload hashes, ordinary
 bundle/configuration/migration reads, embedding/vector hashes, and workspace-file baselining. A
 source guard scans the complete recovery regions of all four production files and related helpers,
-fails on every unapproved whole-file read/hash/parser call, and proves excluded helpers are not
-called by recovery paths.
+fails on every unapproved whole-file read/hash/parser call, the four superseded consumer names, and
+any consumer that parses or validates after the envelope boundary; it proves excluded helpers are not
+called by recovery paths. Before Task 4 is complete, record each row's owner, recovery mode,
+replacement API, cancellation-token source, and focused test. No listed path may retain
+`ReadAllBytes`, `ReadAllText`, whole-file `SHA256.HashData`, an unbounded JSON parse, or
+`CancellationToken.None`.
+
+Task 4's guard and test work is a required dependency of Tasks 5 and 6: add the scan before wiring
+maintenance planning, then run it again after service integration. The scan covers the four primary
+files plus `MultiMemoryTransactionRecord.cs`, `AppendJournal.cs`, `RestoreJournal.cs`, and related
+recovery helpers. For every inventory row, tests assert one bounded reader/parser owner, exact
+open/stat/read/byte accounting, final zero-byte read behavior, shared deadline, cancellation
+propagation, typed outcome mapping, content disposal in `finally`, and no second whole-file read.
+Add explicit zero-I/O assertions for invalid limits and explicit retention/no-mutation assertions
+for every non-verified outcome.
 
 **Dependencies:** Consume the existing B2 recovery envelopes/adapters, B3 coordinator and
 participant contracts, B4 quarantine/admission state, `PathContainment`, incremental SHA-256, and
 the existing filesystem/cancellation abstractions. Produce one internal verifier used by all
 FileMemoryStore recovery paths and typed results consumed by the read barrier, recovery adapters,
-and later Task 5/Task 6 maintenance planning/execution. Do not make Task 4 depend on the maintenance
-cursor, an archive index, cache contents, plugin lifecycle, or a new public API.
+and later Task 5/Task 6 maintenance planning/execution. Do not make Task 4 depend at either the Core
+type/project or runtime level on the maintenance cursor, `MaintenanceCursorCodec`,
+`MaintenanceRunRegistry`, planner, policy, archive index, cache contents, plugin lifecycle, or a new
+public API. The verifier
+owns one bounded content read and parser handoff. `ParseVerifiedEnvelope` is the sole byte/JSON
+parser and validator and returns `RecoveryVerifiedEnvelope`; common-envelope metadata, typed body,
+journal, restore, file-entity, and operation-id consumers consume that object and never reopen,
+read, parse, or validate the file.
 
 Expose non-serialized typed projections and `RecoveryCleanupDecision` through the owning recovery
 adapters. B5 never parses raw JSON, envelopes, filenames, or exception messages. Cover every B2
@@ -259,6 +326,22 @@ internal interface IRecoveryEvidenceVerifier
 }
 ```
 
+`RecoveryVerificationResult` is authoritative for every outcome and contains
+`FinalZeroByteRead`, `DeadlineObserved`, and `CancellationObserved` alongside the numeric counters.
+Adapters and recovery barriers copy all three booleans unchanged when mapping results. The fields are
+observed facts: they are present on `Verified`, early protected failures, zero-I/O
+`ProtectedInvalidLimits`, timeout, and cancellation results, and may be independently or simultaneously
+true. No caller may omit, default, or infer them from `Outcome`.
+
+The minimum result-shape example is therefore complete even when no content is returned:
+
+```text
+{ Outcome = ProtectedInvalidLimits, BytesRead = 0, OpenOperations = 0,
+  StatOperations = 0, ReadOperations = 0, FinalZeroByteRead = false,
+  DeadlineObserved = false, CancellationObserved = false,
+  SourceContent = null, DestinationContent = null }
+```
+
 `FileMemoryStore` owns the verifier instance and is the only caller allowed to map its result into
 recovery progress, read-barrier exceptions, or maintenance protection. The verifier is limited to
 already-bound recovery evidence and its optional destination; it is not a general file reader and
@@ -266,11 +349,11 @@ does not own writes, deletes, journal rewrites, index/cache invalidation, CLI/MC
 callbacks, or ordinary workspace-file hashing. The exact request/result/limit types and outcome
 enum are the contract in spec §2.1.
 
-`RecoveryVerificationRequest` contains one `RecoveryVerificationLimits Limits` value only; duplicate
-`MaximumBytes`/`MaximumDuration` fields are forbidden. `RecoveryVerificationLimits.Hard` is the
-authoritative 16 MiB/2-second/2-open/8-stat/257-read/64 KiB ceiling. A validated override may only
-lower a field, with precedence hard ceiling → override → one monotonic deadline. Zero, negative,
-overflow, non-finite, above-hard, or mixed invalid values return `ProtectedInvalidLimits` before any
+`RecoveryVerificationRequest` contains one effective `MaintenanceLimits` value only; duplicate
+`MaximumBytes`/`MaximumDuration` fields are forbidden. `MaintenanceLimits` is the authoritative
+16 MiB/2-second/2-open/8-stat/257-read/64 KiB ceiling. A validated override may only lower a field,
+with precedence hard ceiling → override → one monotonic deadline. Zero, negative, overflow,
+non-finite, above-hard, or mixed invalid values return `ProtectedInvalidLimits` before any
 I/O and never clamp, default, retry, or partially apply. Adapters map it exactly to typed
 `InvalidVerificationLimits` and `RecoveryRequired`; no generic exception or success mapping is
 allowed.
@@ -278,13 +361,36 @@ allowed.
 The result carries caller-owned `RecoveryVerificationContent` for source and optional destination:
 bounded read-only memory plus verified length, hash, regular-file, containment, and post-read-
 stability metadata. Ownership transfers on return; the caller disposes each content value in
-`finally` after parsing, while parsers borrow and never retain or dispose it. `RecoveryEnvelopeCodec`,
-`AppendJournalCodec`, `RestoreJournalCodec`, `FileEntityRecoveryAdapter`, and `TryReadOperationId`
-consume verified content/metadata rather than a path, fresh `byte[]`, or long-lived stream. They do
-not reread the file. Retained content remains within 16 MiB total, in addition to the one fixed
+`finally` after parsing and typed consumption, while consumers borrow and never retain or dispose it.
+`ParseVerifiedEnvelope(in RecoveryVerificationContent, in RecoveryVerifiedFileMetadata)` is the
+sole parse-once boundary. The chosen option is rename, not delete: `AppendJournalCodec.ConsumeParsed`,
+`RestoreJournalCodec.ConsumeParsed`, `FileEntityRecoveryAdapter.ConsumeParsed`,
+`FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` consume its
+one parsed object or typed metadata. The old `AppendJournalCodec.ParseAndValidate`,
+`RestoreJournalCodec.ParseAndValidate`, `FileEntityRecoveryAdapter.ParseAndNormalize`, and
+`TryReadOperationId` names are forbidden. These consumers perform no I/O, JSON parsing, or
+validation and do not reread the file. Retained content remains within 16 MiB total, in addition to the one fixed
 64 KiB read buffer, and
-`ReadBoundedJournalStream` produces this same contract. Cite design §§2.1–2.2 and the bounded-read
+`ReadBoundedJournalStream` produces this same contract. Cite design §§0.6, 2.1–2.2 and the bounded-read
 precedent in `docs/superpowers/specs/2026-08-24-journaled-restore-recovery-design.md`.
+
+The exact typed-handoff signatures are fixed before migration:
+
+```csharp
+AppendJournalCodec.ConsumeParsed(in RecoveryVerifiedEnvelope envelope)
+RestoreJournalCodec.ConsumeParsed(in RecoveryVerifiedEnvelope envelope)
+MultiMemoryTransactionRecordCodec.ConsumeParsed(in RecoveryVerifiedEnvelope envelope)
+FileEntityRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope envelope)
+FileMemoryStore.GetOperationId(in RecoveryVerifiedEnvelope envelope)
+RecoveryDiscoveryCoordinator.GetOperationId(in RecoveryVerifiedEnvelope envelope)
+```
+
+The typed body consumers preserve their existing typed return values; operation-id consumers return the
+already parsed `OperationId`. The sole byte parser is
+`ParseVerifiedEnvelope(in RecoveryVerificationContent content,
+in RecoveryVerifiedFileMetadata metadata) -> RecoveryVerifiedEnvelope`. The source guard rejects
+the four superseded names and any typed consumer that accepts bytes/path/stream or performs I/O,
+JSON parsing, or validation.
 
 Implement hard ceilings of 16 MiB total bytes, a 2-second monotonic absolute deadline, 2 open
 operations, 8 stat operations, 257 `ReadAsync` attempts (including the final zero-byte read), and a 64 KiB fixed read buffer. Requests
@@ -297,28 +403,34 @@ Return typed `ProtectedOversized`, `RecoveryRequiredTimeout`, `RecoveryRequiredC
 `ProtectedIoFailure`, or `ProtectedInvalidLimits` for every non-verified condition. Only `Verified` may authorize recovery
 progress or completed-evidence cleanup; every other result retains evidence and performs no
 destination, journal, index, cache, or topic/facts mutation.
+Every result, including `Verified`, early failures, and zero-I/O `ProtectedInvalidLimits`, also
+contains `FinalZeroByteRead`, `DeadlineObserved`, and `CancellationObserved`. Tests assert these
+observed fields for every outcome and adapters preserve them unchanged; they are never defaulted or
+inferred from the outcome enum.
 
 Replace every unbounded FileMemoryStore recovery `ReadAllBytes`, `ReadAllText`, whole-file
 `SHA256.HashData`, and byte-buffer JSON parse path, including every inventory site above, capture, publication verification,
 committed-hash verification, member matching, archive reconciliation, rollback matching, journal
-parsing, and operation-id fallback. Route each through the shared verifier or a bounded typed parser
- that first obtains `RecoveryVerificationContent` and verified metadata. Do not replace ordinary non-recovery hashing
+ parsing, and operation-id fallback. Route each through the shared verifier followed by
+ `ParseVerifiedEnvelope` where parsing is needed; typed consumers receive only its
+ `RecoveryVerifiedEnvelope` and verified metadata. Do not replace ordinary non-recovery hashing
 such as workspace-file attribute baselining. Cancellation and deadline checks occur before each
 open, stat, and read and between read chunks; an in-flight OS filesystem call may finish, so document
 and test the cooperative-I/O limitation rather than claiming hard preemption. The verifier is
 internally injectable for tests only and adds no public surface or configuration key.
 
-**Task 4 test matrix:** Test each fixed B2/B3/B4 location and both source-only and
+**Task 4 test matrix:** Test every one-row operation in design §0.6, each fixed B2/B3/B4 location, and both source-only and
 source/destination verification; exact-limit success and one-byte/one-operation over-limit failures;
 missing source, missing destination, directory/reparse/containment rejection, sharing/permission
 blocked, source hash mismatch, destination hash mismatch, post-read replacement/length mismatch,
  malformed typed identity, generic I/O failure, every invalid-limits form and precedence case, timeout before first operation, timeout between
 chunks, cancellation before open, cancellation between chunks, and an in-flight read that completes
-before the typed cancellation/timeout result. Assert exact bytes/open/stat/read counters, 64 KiB
+before the typed cancellation/timeout result. Assert exact bytes/open/stat/read counters plus
+`FinalZeroByteRead`, `DeadlineObserved`, and `CancellationObserved` for every outcome, 64 KiB
 buffer use, shared deadline, no counter reset, no detached task, and no unbounded allocation. Assert
 that invalid limits perform zero opens/stats/reads and map exactly to `InvalidVerificationLimits`/
-`RecoveryRequired`; assert content ownership, `finally` disposal, bounded subviews, parser borrowing,
-and no second whole-file read. Assert
+`RecoveryRequired`; assert content ownership, `finally` disposal, bounded subviews, sole-parser
+ownership, typed-consumer borrowing, and no second whole-file read. Assert
 every non-verified outcome retains the journal/evidence and leaves destination, journal bytes, live
 pair, index, cache, topic/facts projections, and transaction state unchanged. Add a source scan test
 over the complete FileMemoryStore/RecoveryEnvelope/RecoveryDiscovery/FileEntityTransactionCoordinator
@@ -327,7 +439,12 @@ verifier and no unbounded read/hash/parser helper remains; separately prove appr
 ordinary workspace-file baselining remain out of scope. Add adapter tests proving only
 `Verified` can produce `RecoveryCleanupDecision` or advance recovery state, and that all typed
 failures map to the existing recovery-required/read-barrier vocabulary without path, content, or
-exception text.
+exception text. Add exact metadata accounting tests (`Exists`, attributes, length, and final
+stability: two stats for one member, four for a pair unless an earlier failure stops the path),
+source/destination/multi-member/partial-acquisition/exception disposal tests with mandatory
+`finally`, and a table-driven guard test for every current `CancellationToken.None` occurrence in
+design §0.6. The guard is an exact file/member/call-shape allowlist and rejects new unclassified
+occurrences.
 
 ### Task 5: Implement bounded candidate planning
 
@@ -449,7 +566,9 @@ trimmed publish, full solution tests, formatting/diff checks, and the final revi
 spec section. Record evidence separately; do not stage or commit this plan/spec or unrelated files.
 Require the complete Task 4 production-inventory scan, invalid-limit zero-I/O tests, exact typed
 `ProtectedInvalidLimits` → `InvalidVerificationLimits`/`RecoveryRequired` mapping, and
-`RecoveryVerificationContent` ownership/disposal/no-second-read tests. Cite design §§2.1–2.2 and
+`RecoveryVerificationContent` ownership/disposal/no-second-read tests, exact signatures for the sole
+parser and all renamed consumers, and a source guard proving the four superseded names are absent and
+no typed consumer performs I/O, JSON parsing, or validation. Cite design §§0.2, 0.6, and 2.1–2.2 and
 the bounded-read precedent in `docs/superpowers/specs/2026-08-24-journaled-restore-recovery-design.md`.
 Include the continuation ownership boundary: locally rejected framing/ASCII/canonical-base64url/size
 input has zero Core calls, while syntactically valid-looking bad-MAC/scope/expiry/semantic input
@@ -477,15 +596,25 @@ reaches Core.
   followed by the exact `b5c2.` prefix/base64url limit in the spec.
 - Within the B5 scope, legacy material appears only in the historical removal note and exact
   forbidden-literals inventory-table row; excluded existing embedding paths are not scanned.
-- Recovery verification has one authoritative `RecoveryVerificationLimits` source with no duplicate
-  byte/duration fields, lower-only override validation and exact invalid-limit mapping; the never-
-  raise rule is preserved.
+- Recovery verification has one authoritative `MaintenanceLimits` source; `RecoveryVerificationLimits`
+  and `.Hard` are absent, with no duplicate byte/duration fields, validators, or literals. Lower-only
+  override validation and exact invalid-limit mapping preserve the never-raise rule.
+- `ParseVerifiedEnvelope` is the sole operation that parses bytes/JSON and validates an envelope,
+  returning `RecoveryVerifiedEnvelope`; `AppendJournalCodec.ConsumeParsed`,
+  `RestoreJournalCodec.ConsumeParsed`, `FileEntityRecoveryAdapter.ConsumeParsed`,
+  `FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` accept only
+  the parsed object or typed metadata and perform no I/O, JSON parsing, or validation. The former
+  four legacy names are absent.
 - `RecoveryVerificationContent` is bounded to the shared 16 MiB total, caller-owned and disposed in
-  `finally`; named journal/envelope/file-entity parsers borrow verified content and cannot trigger a
-  second whole-file read.
-- The complete FileMemoryStore/RecoveryEnvelope/RecoveryDiscovery/FileEntityTransactionCoordinator
-  inventory and related helpers is enumerated in Task 4, with approved exclusions and a scan guard
-  proving every recovery path uses the shared verifier.
+  `finally` across source, destination, multi-member, partial-acquisition, and exception paths;
+  one parse-once verified-envelope object supplies operation ID and typed content without a second
+  whole-file read.
+- The complete one-row-per-operation FileMemoryStore/RecoveryEnvelope/RecoveryDiscovery/
+  MultiMemoryTransactionRecord/FileEntityTransactionCoordinator inventory is enumerated in design
+  §0.6, with source/destination/metadata owner, limits/token/disposal, approved exclusions, and a
+  scan guard proving every recovery path uses the shared verifier. Every current
+  `CancellationToken.None` is classified by exact file/member allowlist, and metadata counters are
+  exact (two stats per completed member, four per completed pair).
   No executable B5 legacy token or secret-key instruction remains.
 - Unresolved evidence remains indefinitely; work, memory, returned output, and scheduler activity
   remain bounded; no index, database, new policy key, format, or remote surface is introduced.
