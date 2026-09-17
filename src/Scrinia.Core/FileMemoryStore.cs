@@ -922,6 +922,218 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return MaintenanceContractValidation.RequireRelativePath(relative, nameof(path));
     }
 
+    // B5 Task 6 — single lock-scoped maintenance admission seam. The only
+    // production path that deletes maintenance candidates. Acquires the
+    // existing scope boundary once (which runs the recovery barrier), plans
+    // bounded work through MaintenancePlanner, revalidates each eligible
+    // candidate under the lock immediately before deletion, deletes only
+    // verified terminal recovery evidence with bounded retry, and invalidates
+    // derived state only after a successful archive deletion.
+    internal async Task<MaintenanceScopeExecution> ExecuteMaintenanceScopeAsync(
+        string scope,
+        Configuration.MaintenancePolicy policy,
+        int remainingJournalBudget,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        MaintenanceContractValidation.RequireSafeText(scope, nameof(scope));
+        ArgumentNullException.ThrowIfNull(policy);
+        if (remainingJournalBudget is < 1 or > MaintenanceLimits.JournalBudgetMaximum)
+            throw new ArgumentException("Remaining journal budget must be within 1..50.", nameof(remainingJournalBudget));
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTimeOffset.UtcNow >= deadlineUtc)
+            throw new TimeoutException("The maintenance deadline has expired.");
+
+        TimeSpan remaining = deadlineUtc - DateTimeOffset.UtcNow;
+        TimeSpan lockTimeout = remaining < TimeSpan.FromSeconds(5) ? remaining : TimeSpan.FromSeconds(5);
+        if (lockTimeout <= TimeSpan.Zero)
+            throw new TimeoutException("The maintenance deadline has expired.");
+
+        try
+        {
+            return await WithExclusiveScopeAdmissionAsync(
+                scope, lockTimeout,
+                () => Task.FromResult(ExecuteMaintenanceScopeUnderLock(
+                    scope, remainingJournalBudget, deadlineUtc, cancellationToken)),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (AppendStoreException)
+        {
+            return RecoveryRetainedExecution(scope);
+        }
+        catch (RestoreRecoveryException)
+        {
+            return RecoveryRetainedExecution(scope);
+        }
+    }
+
+    private MaintenanceScopeExecution ExecuteMaintenanceScopeUnderLock(
+        string scope,
+        int remainingJournalBudget,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (DateTimeOffset.UtcNow >= deadlineUtc)
+            throw new TimeoutException("The maintenance deadline has expired.");
+
+        string storeDir = GetStoreDirForScope(scope);
+        MaintenanceCandidate[] discovered = _recoveryDiscovery
+            .EnumerateMaintenanceCandidates(scope, storeDir, cancellationToken)
+            .OrderBy(static candidate => candidate.RelativePath, StringComparer.Ordinal)
+            .ToArray();
+
+        MaintenancePlannerCandidate[] plannerCandidates = new MaintenancePlannerCandidate[discovered.Length];
+        var byKey = new Dictionary<MaintenanceCandidateKey, MaintenanceCandidate>(discovered.Length);
+        for (int index = 0; index < discovered.Length; index++)
+        {
+            MaintenanceCandidate candidate = discovered[index];
+            MaintenancePlannerCandidate plannerCandidate = ToPlannerCandidate(scope, candidate, (ulong)index);
+            plannerCandidates[index] = plannerCandidate;
+            byKey[plannerCandidate.CandidateKey] = candidate;
+        }
+
+        MaintenancePlannerPage page = MaintenancePlanner.Plan(
+            plannerCandidates, remainingJournalBudget, deadlineUtc, cancellationToken: cancellationToken);
+
+        var warnings = new List<string>();
+        int deletedRecoveryEvidence = 0;
+        int retained = 0;
+        foreach (MaintenancePlannerProjection projection in page.Projections)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (DateTimeOffset.UtcNow >= deadlineUtc)
+                throw new TimeoutException("The maintenance deadline has expired.");
+            if (!projection.Eligible)
+            {
+                retained++;
+                continue;
+            }
+            if (!byKey.TryGetValue(projection.CandidateKey, out MaintenanceCandidate? candidate))
+            {
+                retained++;
+                continue;
+            }
+            if (!IsStillDeletable(storeDir, candidate.RelativePath))
+            {
+                retained++;
+                warnings.Add($"Scope '{scope}' retained a candidate: revalidation failed.");
+                continue;
+            }
+            if (!TryDeleteBounded(Path.GetFullPath(Path.Combine(storeDir, candidate.RelativePath)), cancellationToken))
+            {
+                retained++;
+                warnings.Add($"Scope '{scope}' retained a candidate: deletion failed.");
+            }
+            else
+            {
+                deletedRecoveryEvidence++;
+            }
+        }
+
+        var scopeResult = new MaintenanceScopeResult(
+            scope, page.Scanned, 0, deletedRecoveryEvidence, retained,
+            false, false, null,
+            Array.Empty<MaintenanceCandidateResult>(),
+            warnings);
+        return new MaintenanceScopeExecution(scopeResult, page.JournalInspected);
+    }
+
+    private static MaintenanceScopeExecution RecoveryRetainedExecution(string scope) =>
+        new(new MaintenanceScopeResult(
+            scope, 0, 0, 0, 1, false, false, null,
+            Array.Empty<MaintenanceCandidateResult>(),
+            new[] { $"Scope '{scope}' retained recovery evidence." }),
+            0, true);
+
+    private static MaintenancePlannerCandidate ToPlannerCandidate(
+        string scope, MaintenanceCandidate candidate, ulong entryOrdinal)
+    {
+        byte[] subjectBytes = System.Text.Encoding.UTF8.GetBytes(scope + "\0" + candidate.Subject);
+        byte[] identityBytes = System.Text.Encoding.UTF8.GetBytes(
+            candidate.Kind + "\0" + scope + "\0" + candidate.Subject + "\0" + candidate.RelativePath + "\0" + candidate.OperationId);
+        byte[] keyBytes = System.Security.Cryptography.SHA256.HashData(identityBytes)[..16];
+        bool verified = candidate.VerificationOutcome == RecoveryVerificationOutcome.Verified;
+        bool terminal = candidate.LifecycleState is RecoveryLifecycleState.Committed
+            or RecoveryLifecycleState.CleanupPending or RecoveryLifecycleState.RolledBack;
+        bool eligible = candidate.Protection is null && verified && terminal;
+        return new MaintenancePlannerCandidate(
+            0,
+            candidate.Kind,
+            new MaintenanceCandidateKey(new Guid(keyBytes)),
+            new MaintenanceHash256(System.Security.Cryptography.SHA256.HashData(subjectBytes)),
+            entryOrdinal,
+            true,
+            candidate.Protection is not null,
+            candidate.Protection,
+            eligible,
+            eligible,
+            true,
+            false,
+            false);
+    }
+
+    private static bool IsStillDeletable(string storeDir, string relativePath)
+    {
+        string root;
+        string fullPath;
+        try
+        {
+            root = Path.GetFullPath(storeDir);
+            fullPath = Path.GetFullPath(Path.Combine(root, relativePath));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+        if (string.Equals(root, fullPath, OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!PathContainment.IsWithin(root, fullPath))
+            return false;
+        try
+        {
+            FileAttributes attributes = File.GetAttributes(fullPath);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+                return false;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+        return File.Exists(fullPath);
+    }
+
+    private static bool TryDeleteBounded(string fullPath, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                File.Delete(fullPath);
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return false;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Task.Delay(10 * attempt, cancellationToken).GetAwaiter().GetResult();
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
     private Task<IMultiMemoryParticipantAdapter> ResolveMultiMemoryParticipantAsync(
         string scope, MultiMemoryParticipantManifest manifest, CancellationToken cancellationToken)
     {
