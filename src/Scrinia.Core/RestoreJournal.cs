@@ -108,6 +108,12 @@ internal static class RestoreJournalCodec
     private const long DocumentJsonOverheadBytes = 4_096;
     private const string FormatName = "scrinia.restore-journal";
 
+    internal static RestoreJournal ConsumeParsed(in RecoveryVerifiedEnvelope envelope) =>
+        envelope.TypedBody as RestoreRecoveryBody is { } body
+            ? new RestoreJournal(FormatName, DurableFormats.RestoreJournal.Current, body.State,
+                body.TransactionId, envelope.Document.Scope, body.Entries)
+            : throw new ArgumentException("Verified envelope does not contain a restore body.", nameof(envelope));
+
     /// <summary>Test-only observation seam proving decode happens after global admission.</summary>
     internal static AsyncLocal<Action?> DecodeObserver { get; } = new();
 
@@ -168,38 +174,10 @@ internal static class RestoreJournalCodec
     internal static RecoveryEnvelopeDocument ToEnvelope(RestoreJournal journal) =>
         RecoveryEnvelopeCodec.FromRestore(journal);
 
-    internal static RestoreJournal ParseAndValidate(ReadOnlySpan<byte> json, string expectedScope, string journalPath)
+    internal static void ValidateLegacyParsed(RestoreJournal journal, string expectedScope, string journalPath)
     {
-        if (!IsJournalDocumentLengthAdmitted(json.Length))
-            throw Malformed(expectedScope, journalPath, "Restore journal exceeds the maximum document size.");
-        if (json.StartsWith(System.Text.Encoding.UTF8.Preamble))
-            throw Malformed(expectedScope, journalPath, "Restore journal must not include a UTF-8 byte-order mark.");
-        try
-        {
-            if (!HasExplicitStateProperty(json))
-                throw Malformed(expectedScope, journalPath, "Restore journal state is required.");
-        }
-        catch (JsonException exception)
-        {
-            throw Malformed(expectedScope, journalPath, "Restore journal is not valid JSON.", exception);
-        }
-
-        RestoreJournal? journal;
-        try
-        {
-            journal = JsonSerializer.Deserialize(json, RestoreJournalJsonContext.Default.RestoreJournal);
-        }
-        catch (JsonException exception)
-        {
-            throw Malformed(expectedScope, journalPath, "Restore journal is not valid JSON.", exception);
-        }
-
-        if (journal is null)
-            throw Malformed(expectedScope, journalPath, "Restore journal must be a JSON object.");
-
         ValidateAdmission(journal, expectedScope, journalPath);
         VerifyAllPayloads(journal, expectedScope, journalPath);
-        return journal;
     }
 
     private static bool HasExplicitStateProperty(ReadOnlySpan<byte> json)

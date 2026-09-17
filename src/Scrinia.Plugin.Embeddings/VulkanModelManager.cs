@@ -14,19 +14,21 @@ namespace Scrinia.Plugin.Embeddings;
 public static class VulkanModelManager
 {
     /// <summary>Logical identifier scoping this model under <c>SCRINIA_HOME/models</c>.</summary>
-    public const string Identifier = "all-MiniLM-L6-v2";
+    public const string Identifier = VulkanModelAssets.Identifier;
 
     /// <summary>HuggingFace URL for the GGUF model file.</summary>
     public const string DefaultModelUrl =
-        "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf";
+        VulkanModelAssets.ModelUrl;
 
     /// <summary>GGUF model filename.</summary>
-    public const string DefaultModelFile = "all-MiniLM-L6-v2-Q8_0.gguf";
+    public const string DefaultModelFile = VulkanModelAssets.ModelFilename;
 
     private static readonly DownloadableAsset[] Assets =
     [
-        new(Identifier, DefaultModelUrl, DefaultModelFile, ExpectedSha256: "263215c3cadd6e16740741a7624ab4cbb6c8e777688bd5331ecfbf5681c2f8ed"),
+        VulkanModelAssets.DefaultAsset,
     ];
+
+    internal static IReadOnlyList<DownloadableAsset> AssetDefinitions => Assets;
 
     /// <summary>Whether the GGUF model file is published (directly or at its verified digest path). A
     /// <c>.tmp</c> or partial file never counts as available.</summary>
@@ -35,7 +37,10 @@ public static class VulkanModelManager
 
     /// <summary>Gets the path to the default GGUF model.</summary>
     public static string GetModelPath(string modelDir)
-        => Path.Combine(modelDir, DefaultModelFile);
+        => GetModelPath(modelDir, Assets[0]);
+
+    internal static string GetModelPath(string modelDir, DownloadableAsset asset)
+        => VerifiedModelDownloader.ResolveAssetPath(modelDir, asset);
 
     /// <summary>Downloads the GGUF model if not already verified in place.</summary>
     public static Task EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)

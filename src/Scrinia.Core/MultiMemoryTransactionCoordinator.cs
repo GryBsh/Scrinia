@@ -260,7 +260,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             return Rejected("recovery", scope, MultiMemoryFailure.ReplayIoFailed, "No coordinator decision record exists.");
 
         MultiMemoryTransactionRecord record;
-        try { record = MultiMemoryTransactionRecordCodec.Read(directory, scope); }
+        try { record = MultiMemoryTransactionRecordCodec.Read(directory, scope, cancellationToken); }
         catch (MultiMemoryTransactionRecordException exception)
         {
             return new MultiMemoryAggregateResult(exception.TransactionId ?? "unknown", scope,

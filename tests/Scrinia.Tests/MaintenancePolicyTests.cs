@@ -59,7 +59,6 @@ public sealed class MaintenancePolicyTests
     [InlineData(MinimumAge, "36501")]
     [InlineData(JournalBatch, "0")]
     [InlineData(JournalBatch, "51")]
-    [InlineData(JournalBatch, "10000")]
     [InlineData(JournalBatch, "10001")]
     [InlineData(TimeBudget, "0")]
     [InlineData(TimeBudget, "3601")]

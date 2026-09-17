@@ -125,7 +125,7 @@ public sealed class MultiMemoryTransactionRecoveryTests
                 string evidencePath = Path.Combine(directory, "versions", AppendJournal.FileName);
                 Directory.CreateDirectory(Path.GetDirectoryName(evidencePath)!);
                 byte[] evidence = AppendJournalCodec.Serialize(journal);
-                AppendJournalCodec.ParseAndValidate(evidence, "local:notes", evidencePath, directory);
+                AppendJournalCodec.ParseLegacyJournal(evidence, "local:notes", evidencePath, directory);
                 await File.WriteAllBytesAsync(evidencePath, evidence);
 
                 recordPath = WriteCompletionProof(initial, "append-real-proof", "target",
@@ -167,7 +167,7 @@ public sealed class MultiMemoryTransactionRecoveryTests
                 const string restoreJournalFileName = ".restore-journal.json";
                 string evidencePath = Path.Combine(directory, restoreJournalFileName);
                 byte[] evidence = RestoreJournalCodec.Serialize(journal);
-                RestoreJournalCodec.ParseAndValidate(evidence, "local:notes", evidencePath);
+                RestoreJournalCodec.ParseLegacyJournal(evidence, "local:notes", evidencePath);
                 await File.WriteAllBytesAsync(evidencePath, evidence);
 
                 recordPath = WriteCompletionProof(initial, "restore-real-proof", "target",

@@ -33,12 +33,13 @@ for (int i = 0; i < args.Length; i++)
 PluginConfigProtocol.ApplySecretEnvironment(configValues, Environment.GetEnvironmentVariable);
 
 string scriniaHome = UserHome.Resolve();
+
+modelsDir ??= Path.Combine(scriniaHome, "models");
+VerifiedModelDownloader.PrepareModelDirectory(modelsDir);
+
 dataDir ??= Path.Combine(scriniaHome, "plugins", "scri-plugin-embeddings", "data");
 dataDir = Path.GetFullPath(dataDir);
 Directory.CreateDirectory(dataDir);
-
-modelsDir ??= Path.Combine(scriniaHome, "models");
-Directory.CreateDirectory(modelsDir);
 
 // -- Initialize Vulkan embeddings --
 ILogger logger = NullLogger.Instance;

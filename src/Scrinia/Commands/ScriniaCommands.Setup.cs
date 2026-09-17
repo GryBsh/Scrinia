@@ -7,6 +7,7 @@ using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Configuration;
@@ -84,20 +85,19 @@ public partial class ScriniaCommands
         AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
 
         string modelDir = Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2");
-        Directory.CreateDirectory(modelDir);
+        VerifiedModelDownloader.PrepareModelDirectory(modelDir);
 
-        string[] files = ["model.safetensors", "vocab.txt"];
-        string baseUrl = Model2VecModelManager.ModelBaseUrl;
-
-        bool allExist = files.All(f => File.Exists(Path.Combine(modelDir, f)));
-        if (allExist)
+        if (Model2VecModelManager.IsModelAvailable(modelDir))
         {
             AnsiConsole.MarkupLine("[green]  Model already downloaded.[/]");
             AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(modelDir)}[/]");
         }
         else
         {
-            await DownloadFilesAsync(baseUrl, files, modelDir, cancellationToken);
+            AnsiConsole.MarkupLine("  Downloading verified Model2Vec assets...");
+            await EnsureVerifiedModelAssetsWithProgressAsync(
+                modelDir, Model2VecModelManager.AssetDefinitions, static () => new HttpClient(),
+                NullLogger.Instance, cancellationToken);
             AnsiConsole.MarkupLine($"[green]  Model ready at:[/] {Markup.Escape(modelDir)}");
         }
 
@@ -113,19 +113,21 @@ public partial class ScriniaCommands
             AnsiConsole.MarkupLine("[bold]Vulkan plugin (GPU acceleration)[/]");
 
             string vulkanModelsDir = Path.Combine(UserHome.Resolve(), "models");
-            Directory.CreateDirectory(vulkanModelsDir);
+            VerifiedModelDownloader.PrepareModelDirectory(vulkanModelsDir);
 
-            const string ggufFile = "all-MiniLM-L6-v2-Q8_0.gguf";
-            const string ggufUrl = "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf";
+            DownloadableAsset gguf = VulkanModelAssets.DefaultAsset;
 
-            if (File.Exists(Path.Combine(vulkanModelsDir, ggufFile)))
+            if (VerifiedModelDownloader.IsAssetAvailable(vulkanModelsDir, gguf))
             {
                 AnsiConsole.MarkupLine("[green]  GGUF model already downloaded.[/]");
                 AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(vulkanModelsDir)}[/]");
             }
             else
             {
-                await DownloadFilesAsync(ggufUrl.Replace($"/{ggufFile}", ""), [ggufFile], vulkanModelsDir, cancellationToken);
+                AnsiConsole.MarkupLine("  Downloading verified Vulkan asset...");
+                await EnsureVerifiedModelAssetsWithProgressAsync(
+                    vulkanModelsDir, [gguf], static () => new HttpClient(),
+                    NullLogger.Instance, cancellationToken);
                 AnsiConsole.MarkupLine($"[green]  GGUF model ready at:[/] {Markup.Escape(vulkanModelsDir)}");
             }
         }
@@ -572,13 +574,10 @@ public partial class ScriniaCommands
     private static async Task EnsureEmbeddingModelAsync(CancellationToken ct)
     {
         string modelDir = Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2");
-        string safetensors = Path.Combine(modelDir, "model.safetensors");
-        string vocab = Path.Combine(modelDir, "vocab.txt");
-
-        if (File.Exists(safetensors) && File.Exists(vocab))
+        if (Model2VecModelManager.IsModelAvailable(modelDir))
             return;
 
-        try { Directory.CreateDirectory(modelDir); }
+        try { VerifiedModelDownloader.PrepareModelDirectory(modelDir); }
         catch (Exception ex)
         {
             await Console.Error.WriteLineAsync($"[scrinia] auto-setup: cannot create {modelDir}: {ex.Message} — semantic search disabled");
@@ -587,91 +586,77 @@ public partial class ScriniaCommands
 
         await Console.Error.WriteLineAsync("[scrinia] first-run: downloading embedding model (~50MB)…");
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        string baseUrl = Model2VecModelManager.ModelBaseUrl;
-        foreach (string file in new[] { "model.safetensors", "vocab.txt" })
+        try
         {
-            string target = Path.Combine(modelDir, file);
-            if (File.Exists(target)) continue;
-
-            string tmp = target + ".tmp";
-            try
-            {
-                using var resp = await http.GetAsync($"{baseUrl}/{file}", HttpCompletionOption.ResponseHeadersRead, ct);
-                resp.EnsureSuccessStatusCode();
-                await using (var fs = File.Create(tmp))
-                    await resp.Content.CopyToAsync(fs, ct);
-                File.Move(tmp, target, overwrite: true);
-                await Console.Error.WriteLineAsync($"[scrinia] downloaded {file}");
-            }
-            catch (Exception ex)
-            {
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-                await Console.Error.WriteLineAsync($"[scrinia] auto-setup failed ({file}): {ex.Message} — semantic search disabled, run `scri setup` to retry");
-                return;
-            }
+            await EnsureVerifiedModelAssetsAsync(
+                modelDir, Model2VecModelManager.AssetDefinitions, static () => new HttpClient(),
+                NullLogger.Instance, ct);
+        }
+        catch (Exception ex)
+        {
+            await Console.Error.WriteLineAsync($"[scrinia] auto-setup failed: {ex.Message} — semantic search disabled, run `scri setup` to retry");
+            return;
         }
         await Console.Error.WriteLineAsync("[scrinia] embedding model ready");
     }
 
-    private static async Task DownloadFilesAsync(string baseUrl, string[] files, string targetDir, CancellationToken ct)
+    internal static Task EnsureVerifiedModelAssetsAsync(
+        string modelDir, IReadOnlyList<DownloadableAsset> assets,
+        Func<HttpClient> httpClientFactory, ILogger logger, CancellationToken ct)
+        => EnsureVerifiedModelAssetsCoreAsync(modelDir, assets, httpClientFactory, logger, ct);
+
+    private static async Task EnsureVerifiedModelAssetsWithProgressAsync(
+        string modelDir, IReadOnlyList<DownloadableAsset> assets,
+        Func<HttpClient> httpClientFactory, ILogger logger, CancellationToken ct)
     {
-        using var http = new HttpClient();
-        http.Timeout = TimeSpan.FromMinutes(10);
+        await AnsiConsole.Progress()
+            .AutoClear(true)
+            .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
+            .StartAsync(async context =>
+            {
+                var task = context.AddTask("verified model assets");
+                task.IsIndeterminate = true;
+                await EnsureVerifiedModelAssetsAsync(modelDir, assets, httpClientFactory, logger, ct);
+                task.IsIndeterminate = false;
+                task.Value = task.MaxValue;
+            });
+    }
 
-        foreach (string file in files)
+    private static async Task EnsureVerifiedModelAssetsCoreAsync(
+        string modelDir, IReadOnlyList<DownloadableAsset> assets,
+        Func<HttpClient> httpClientFactory, ILogger logger, CancellationToken ct)
+    {
+        try
         {
-            string filePath = Path.Combine(targetDir, file);
-            if (File.Exists(filePath))
-            {
-                AnsiConsole.MarkupLine($"  [dim]{file} already exists, skipping.[/]");
-                continue;
-            }
-
-            string url = $"{baseUrl}/{file}";
-            AnsiConsole.MarkupLine($"  Downloading [blue]{file}[/]...");
-
-            string tmpPath = filePath + ".tmp";
-            using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
-
-            long? totalBytes = response.Content.Headers.ContentLength;
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-
-            await AnsiConsole.Progress()
-                .AutoClear(true)
-                .Columns(
-                    new TaskDescriptionColumn(),
-                    new ProgressBarColumn(),
-                    new PercentageColumn(),
-                    new TransferSpeedColumn(),
-                    new RemainingTimeColumn())
-                .StartAsync(async ctx =>
-                {
-                    var task = ctx.AddTask(file, maxValue: totalBytes ?? 0);
-                    if (totalBytes is null) task.IsIndeterminate = true;
-
-                    await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                    byte[] buffer = new byte[81920];
-                    int bytesRead;
-                    while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
-                    {
-                        await fs.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
-                        task.Increment(bytesRead);
-                    }
-                });
-
-            File.Move(tmpPath, filePath, overwrite: true);
-
-            long size = new FileInfo(filePath).Length;
-            string sizeStr = size switch
-            {
-                < 1024 => $"{size} B",
-                < 1024 * 1024 => $"{size / 1024.0:F1} KB",
-                _ => $"{size / (1024.0 * 1024):F1} MB",
-            };
-            AnsiConsole.MarkupLine($"  [green]Downloaded {file} ({sizeStr})[/]");
+            await VerifiedAssetResolver.ResolveAsync(modelDir, assets, ct).ConfigureAwait(false);
+            return;
         }
+        catch (FileNotFoundException)
+        {
+        }
+        catch (ModelDownloadException)
+        {
+            bool nestedLayout = VerifiedAssetResolver.DetermineNestedLayout(modelDir, assets);
+            foreach (DownloadableAsset asset in assets)
+            {
+                string path = nestedLayout
+                    ? Path.Combine(modelDir, asset.ExpectedSha256!.ToLowerInvariant(), asset.Filename)
+                    : Path.Combine(modelDir, asset.Filename);
+                if (!File.Exists(path)) continue;
+
+                try
+                {
+                    await VerifiedAssetResolver.ResolveAsync(modelDir, [asset], ct).ConfigureAwait(false);
+                }
+                catch (ModelDownloadException)
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+
+        await VerifiedModelDownloader.EnsureModelAsync(modelDir, logger, assets, httpClientFactory, ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>Get or set workspace configuration.</summary>

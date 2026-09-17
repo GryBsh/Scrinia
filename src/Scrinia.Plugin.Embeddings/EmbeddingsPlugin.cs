@@ -143,7 +143,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             Directory.CreateDirectory(dataDir);
 
             string modelsDir = Path.Combine(scriniaHome, "models");
-            Directory.CreateDirectory(modelsDir);
+            VerifiedModelDownloader.PrepareModelDirectory(modelsDir);
 
             // Initialize the provider FIRST so the store can be signed with its signature.
             try

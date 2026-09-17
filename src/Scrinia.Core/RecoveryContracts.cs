@@ -51,7 +51,20 @@ internal sealed record RecoveryCandidate(
     string CanonicalSubject,
     string OperationId,
     RecoveryEnvelopeDocument Envelope,
-    bool IsLegacy);
+    bool IsLegacy)
+{
+    internal RecoveryVerificationAccounting? Verification { get; init; }
+}
+
+internal readonly record struct RecoveryVerificationAccounting(
+    RecoveryVerificationOutcome Outcome,
+    long BytesRead,
+    int OpenOperations,
+    int StatOperations,
+    int ReadOperations,
+    bool FinalZeroByteRead,
+    bool DeadlineObserved,
+    bool CancellationObserved);
 
 internal enum RecoveryBlockReason
 {
@@ -124,6 +137,14 @@ internal sealed record B2RecoveryMaintenanceProjection(
     bool IsAmbiguous, bool IsPathSafe)
 {
     internal MaintenanceProtectionReason? Protection { get; init; }
+    internal RecoveryVerificationOutcome VerificationOutcome { get; init; } = RecoveryVerificationOutcome.ProtectedIoFailure;
+    internal long VerificationBytesRead { get; init; }
+    internal int VerificationOpenOperations { get; init; }
+    internal int VerificationStatOperations { get; init; }
+    internal int VerificationReadOperations { get; init; }
+    internal bool VerificationFinalZeroByteRead { get; init; }
+    internal bool VerificationDeadlineObserved { get; init; }
+    internal bool VerificationCancellationObserved { get; init; }
 }
 
 internal interface IB2RecoveryMaintenanceAdapter
@@ -186,8 +207,7 @@ internal interface IRecoveryAdapter
 {
     RecoveryOperation Operation { get; }
     bool IsCandidateFile(string fileName);
-    RecoveryEnvelopeDocument ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath,
-        string expectedEvidenceDirectory);
+    RecoveryEnvelopeDocument ConsumeParsed(in RecoveryVerifiedEnvelope envelope);
     RecoveryEnvelopeDocument ValidateForMutation(
         RecoveryEnvelopeDocument envelope,
         string expectedScope,

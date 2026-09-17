@@ -27,10 +27,30 @@ public static class Model2VecModelManager
         new(Identifier, $"{ModelBaseUrl}/vocab.txt", "vocab.txt", ExpectedSha256: "eef2f6b6ea4166090d7e6c1feec524b17a105c621847f3f99c9af20291d3cee1"),
     ];
 
+    internal static IReadOnlyList<DownloadableAsset> AssetDefinitions => Assets;
+
     /// <summary>Whether every model file is published (directly or at its verified digest path). A
     /// <c>.tmp</c> or partial file never counts as available.</summary>
     public static bool IsModelAvailable(string modelDir)
-        => Assets.All(a => VerifiedModelDownloader.IsAssetAvailable(modelDir, a));
+    {
+        try
+        {
+            Model2VecAssetResolver.Resolve(modelDir, Assets);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+        catch (ModelDownloadException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Downloads the model files if not already verified in place.</summary>
     public static Task EnsureModelAsync(string modelDir, ILogger logger, CancellationToken ct = default)

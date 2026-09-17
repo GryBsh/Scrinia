@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using System.Security.Cryptography;
 
 namespace Scrinia.Tests;
 

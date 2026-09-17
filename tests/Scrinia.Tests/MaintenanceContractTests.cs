@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using FluentAssertions;
 using Scrinia.Core;
 using Xunit;
@@ -27,6 +28,93 @@ public sealed class MaintenanceContractTests
         registry.Remove(run);
         MaintenanceCursorCodec.TryDecode(token, registry, out _, out string? error).Should().BeFalse();
         error.Should().Be("Invalid continuation.");
+    }
+
+    [Fact]
+    public void Registry_bound_decode_does_not_use_a_key_after_remove_revokes_the_binding()
+    {
+        using var registry = new MaintenanceRunRegistry();
+        MaintenanceRunId run = new(Guid.NewGuid());
+        MaintenanceWorkspaceKey workspace = new(Guid.NewGuid());
+        MaintenanceSnapshotId snapshot = new(Guid.NewGuid());
+        MaintenanceScopeBinding scope = new(Guid.NewGuid());
+        MaintenanceHash256 policy = new(new byte[32]);
+        registry.Create(workspace, run, snapshot, scope, policy, DateTimeOffset.UtcNow.AddMinutes(5));
+        var cursor = new MaintenanceCursor(2, workspace, run, snapshot, scope, 0,
+            MaintenanceCursorPhase.Discover, new MaintenanceCandidateKey(Guid.Empty), 0, policy,
+            (ulong)DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+        string token = MaintenanceCursorCodec.Encode(cursor, registry);
+
+        registry.TryAcquire(run, out MaintenanceRunLease? lease).Should().BeTrue();
+        using (lease!)
+        {
+            registry.Remove(run).Should().BeTrue();
+            MaintenanceCursorCodec.TryDecode(token, registry, out _, out string? error).Should().BeFalse();
+            error.Should().Be("Invalid continuation.");
+            lease.SigningKey.Length.Should().Be(32);
+            lease.SigningKey.ToArray().Should().NotBeEquivalentTo(new byte[32]);
+        }
+
+        MaintenanceCursorCodec.TryDecode(token, registry, out _, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Registry_bound_decode_and_remove_have_a_single_revocation_boundary()
+    {
+        using var registry = new MaintenanceRunRegistry();
+        string token = CreateToken(registry, out MaintenanceRunId run);
+        using var started = new ManualResetEventSlim();
+        using var removed = new ManualResetEventSlim();
+        var results = new ConcurrentBag<bool>();
+
+        Task decode = Task.Run(() =>
+        {
+            started.Set();
+            while (!removed.IsSet)
+                results.Add(MaintenanceCursorCodec.TryDecode(token, registry, out _, out _));
+        });
+        Task revoke = Task.Run(() =>
+        {
+            started.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            registry.Remove(run).Should().BeTrue();
+            removed.Set();
+        });
+
+        await Task.WhenAll(decode, revoke);
+        MaintenanceCursorCodec.TryDecode(token, registry, out _, out _).Should().BeFalse();
+        results.Should().OnlyContain(result => result);
+    }
+
+    [Fact]
+    public void Expired_and_disposed_bindings_fail_closed_for_direct_codec_consumers()
+    {
+        using var expiredRegistry = new MaintenanceRunRegistry();
+        string expiredToken = CreateToken(expiredRegistry, out _,
+            DateTimeOffset.UtcNow.AddSeconds(1.1));
+        Thread.Sleep(1200);
+        expiredRegistry.EvictExpired().Should().Be(1);
+        MaintenanceCursorCodec.TryDecode(expiredToken, expiredRegistry, out _, out _).Should().BeFalse();
+
+        var disposedRegistry = new MaintenanceRunRegistry();
+        string disposedToken = CreateToken(disposedRegistry, out _);
+        disposedRegistry.Dispose();
+        MaintenanceCursorCodec.TryDecode(disposedToken, disposedRegistry, out _, out _).Should().BeFalse();
+    }
+
+    private static string CreateToken(MaintenanceRunRegistry registry, out MaintenanceRunId run,
+        DateTimeOffset? expiresAt = null)
+    {
+        MaintenanceWorkspaceKey workspace = new(Guid.NewGuid());
+        run = new MaintenanceRunId(Guid.NewGuid());
+        MaintenanceSnapshotId snapshot = new(Guid.NewGuid());
+        MaintenanceScopeBinding scope = new(Guid.NewGuid());
+        MaintenanceHash256 policy = new(new byte[32]);
+        DateTimeOffset expiry = expiresAt ?? DateTimeOffset.UtcNow.AddMinutes(5);
+        registry.Create(workspace, run, snapshot, scope, policy, expiry);
+        var cursor = new MaintenanceCursor(2, workspace, run, snapshot, scope, 0,
+            MaintenanceCursorPhase.Discover, new MaintenanceCandidateKey(Guid.Empty), 0, policy,
+            (ulong)expiry.ToUnixTimeSeconds());
+        return MaintenanceCursorCodec.Encode(cursor, registry);
     }
 
     [Fact]

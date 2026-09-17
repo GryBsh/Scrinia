@@ -187,6 +187,15 @@ internal static class AppendJournalCodec
 {
     private const string FormatName = "scrinia.append-journal";
 
+    internal static AppendJournal ConsumeParsed(in RecoveryVerifiedEnvelope envelope) =>
+        envelope.TypedBody as AppendRecoveryBody is { } body
+            ? new AppendJournal(FormatName, DurableFormats.AppendJournal.Current, envelope.Document.OperationId,
+                envelope.Document.Address!, envelope.Document.Scope, body.State, body.IsCreate, body.OldArtifact,
+                body.OldSidecar, body.NewArtifact, body.NewSidecar, body.ArchiveArtifactPath,
+                body.ArchiveSidecarPath, body.ArchiveArtifactStatus, body.ArchiveSidecarStatus,
+                body.PruneCandidates, envelope.Document.CreatedAt, body.CommittedHash, body.Detail)
+            : throw new ArgumentException("Verified envelope does not contain an append body.", nameof(envelope));
+
     internal static AppendJournal CreatePrepared(AppendTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
@@ -221,38 +230,13 @@ internal static class AppendJournalCodec
         return JsonSerializer.SerializeToUtf8Bytes(journal, AppendJournalJsonContext.Default.AppendJournal);
     }
 
-    internal static AppendJournal ParseAndValidate(ReadOnlySpan<byte> json, string expectedScope,
+    internal static void ValidateLegacyParsed(AppendJournal journal, string expectedScope,
         string journalPath, string? expectedStoreDirectory = null)
     {
-        if (json.IsEmpty)
-            throw Invalid("Append journal is empty", journalPath);
-        if (!RestoreJournalCodec.IsJournalDocumentLengthAdmitted(json.Length))
-            throw Invalid("Append journal exceeds the maximum admitted size", journalPath);
-
-        AppendJournal? journal;
-        try
-        {
-            journal = JsonSerializer.Deserialize(json, AppendJournalJsonContext.Default.AppendJournal);
-        }
-        catch (JsonException exception)
-        {
-            throw Invalid("Append journal is malformed", journalPath, exception);
-        }
-
-        if (journal is null)
-            throw Invalid("Append journal must be a JSON object", journalPath);
-        try
-        {
-            Validate(journal, expectedScope, journalPath);
-            if (expectedStoreDirectory is not null)
-                ValidateLayout(journal, expectedStoreDirectory, journalPath);
-            ValidatePayloads(journal, journalPath);
-        }
-        catch (AppendJournalException exception)
-        {
-            throw exception.WithOperationId(journal.OperationId);
-        }
-        return journal;
+        Validate(journal, expectedScope, journalPath);
+        if (expectedStoreDirectory is not null)
+            ValidateLayout(journal, expectedStoreDirectory, journalPath);
+        ValidatePayloads(journal, journalPath);
     }
 
     internal static AppendJournal WithState(AppendJournal journal, AppendJournalState state,

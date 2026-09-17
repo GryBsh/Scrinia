@@ -522,7 +522,7 @@ public class JournaledRestoreRecoveryTests
 
         RestoreJournal journal = RestoreJournalCodec.CreatePrepared(Scope, [payload]);
         byte[] json = RestoreJournalCodec.Serialize(journal);
-        RestoreJournal parsed = RestoreJournalCodec.ParseAndValidate(json, Scope, JournalPath);
+        RestoreJournal parsed = RestoreJournalCodec.ParseLegacyJournal(json, Scope, JournalPath);
         RestoreJournalEntry entry = parsed.Entries.Should().ContainSingle().Subject;
 
         Convert.FromBase64String(entry.BodyBase64).Should().Equal(body);
@@ -573,11 +573,11 @@ public class JournaledRestoreRecoveryTests
         var adapter = new RestoreRecoveryAdapter();
         byte[] legacyBytes = RestoreJournalCodec.Serialize(journal);
 
-        RecoveryEnvelopeDocument legacy = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+        RecoveryEnvelopeDocument legacy = ((IRecoveryAdapter)adapter).ConsumeParsed(
             legacyBytes, Scope, evidencePath, Path.GetDirectoryName(evidencePath)!);
         RecoveryEnvelopeDocument common = RestoreJournalCodec.ToEnvelope(journal);
         byte[] commonBytes = RecoveryEnvelopeCodec.Serialize(common);
-        RecoveryEnvelopeDocument parsedCommon = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+        RecoveryEnvelopeDocument parsedCommon = ((IRecoveryAdapter)adapter).ConsumeParsed(
             commonBytes, Scope, evidencePath, Path.GetDirectoryName(evidencePath)!);
 
         legacy.IsLegacy.Should().BeTrue();
@@ -640,7 +640,7 @@ public class JournaledRestoreRecoveryTests
     {
         byte[] json = SerializeHandcraftedJournal(state: state, stateIsJsonNumber: state == "1");
 
-        Action parse = () => RestoreJournalCodec.ParseAndValidate(json, Scope, JournalPath);
+        Action parse = () => RestoreJournalCodec.ParseLegacyJournal(json, Scope, JournalPath);
 
         parse.Should().Throw<RestoreRecoveryException>().Which.Failure
              .Should().Be(RestoreRecoveryFailure.MalformedOrIntegrityFailed);
@@ -673,7 +673,7 @@ public class JournaledRestoreRecoveryTests
     [InlineData("{\"format\":\"scrinia.restore-journal\",\"version\":2}", false)]
     public void ParseAndValidate_RejectsInvalidJournalDocuments(string json, bool isUnsupportedVersion)
     {
-        Action parse = () => RestoreJournalCodec.ParseAndValidate(Encoding.UTF8.GetBytes(json), Scope, JournalPath);
+        Action parse = () => RestoreJournalCodec.ParseLegacyJournal(Encoding.UTF8.GetBytes(json), Scope, JournalPath);
 
         parse.Should().Throw<RestoreRecoveryException>().Which.Failure.Should().Be(
             isUnsupportedVersion
@@ -689,7 +689,7 @@ public class JournaledRestoreRecoveryTests
     {
         byte[] json = SerializeHandcraftedJournal(bodyFile: bodyFile);
 
-        Action parse = () => RestoreJournalCodec.ParseAndValidate(json, Scope, JournalPath);
+        Action parse = () => RestoreJournalCodec.ParseLegacyJournal(json, Scope, JournalPath);
 
         parse.Should().Throw<RestoreRecoveryException>().Which.Failure
              .Should().Be(RestoreRecoveryFailure.MalformedOrIntegrityFailed);
@@ -736,7 +736,7 @@ public class JournaledRestoreRecoveryTests
         RestoreJournalCodec.DecodeObserver.Value = () => decodeAttempts++;
         try
         {
-            Action parse = () => RestoreJournalCodec.ParseAndValidate(journal, Scope, JournalPath);
+            Action parse = () => RestoreJournalCodec.ParseLegacyJournal(journal, Scope, JournalPath);
 
             parse.Should().Throw<RestoreRecoveryException>().Which.Failure
                 .Should().Be(RestoreRecoveryFailure.MalformedOrIntegrityFailed);
@@ -778,7 +778,7 @@ public class JournaledRestoreRecoveryTests
         RestoreJournalCodec.DecodeObserver.Value = () => decodeAttempts++;
         try
         {
-            Action parse = () => RestoreJournalCodec.ParseAndValidate(json, Scope, JournalPath);
+        Action parse = () => RestoreJournalCodec.ParseLegacyJournal(json, Scope, JournalPath);
 
             parse.Should().Throw<RestoreRecoveryException>().Which.Failure
                 .Should().Be(RestoreRecoveryFailure.MalformedOrIntegrityFailed);
@@ -801,7 +801,7 @@ public class JournaledRestoreRecoveryTests
         RestoreJournalCodec.DecodeObserver.Value = () => decodeAttempts++;
         try
         {
-            Action parse = () => RestoreJournalCodec.ParseAndValidate(json, Scope, JournalPath);
+        Action parse = () => RestoreJournalCodec.ParseLegacyJournal(json, Scope, JournalPath);
 
             if (shouldReject)
             {
@@ -893,7 +893,7 @@ public class JournaledRestoreRecoveryTests
             RestoreJournalCodec.DecodeObserver.Value = () => decodeAttempts++;
             try
             {
-                Action parse = () => RestoreJournalCodec.ParseAndValidate(journal, Scope, JournalPath);
+                Action parse = () => RestoreJournalCodec.ParseLegacyJournal(journal, Scope, JournalPath);
 
                 parse.Should().Throw<RestoreRecoveryException>().Which.Failure
                     .Should().Be(RestoreRecoveryFailure.MalformedOrIntegrityFailed);
@@ -914,7 +914,7 @@ public class JournaledRestoreRecoveryTests
             .Replace("\"version\":1", "\"version\":2", StringComparison.Ordinal));
         byte[] original = journal.ToArray();
 
-        Action parse = () => RestoreJournalCodec.ParseAndValidate(journal, Scope, JournalPath);
+        Action parse = () => RestoreJournalCodec.ParseLegacyJournal(journal, Scope, JournalPath);
 
         parse.Should().Throw<RestoreRecoveryException>().Which.Failure
             .Should().Be(RestoreRecoveryFailure.UnsupportedVersion);
@@ -1053,7 +1053,7 @@ public class JournaledRestoreRecoveryTests
     private static RestoreJournal ReadRestoreEvidence(string journalPath)
     {
         var adapter = new RestoreRecoveryAdapter();
-        RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
+        RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(
             File.ReadAllBytes(journalPath), Scope, journalPath, Path.GetDirectoryName(journalPath)!);
         return adapter.FromEnvelope(envelope, journalPath);
     }
@@ -1124,7 +1124,7 @@ public class JournaledRestoreRecoveryTests
         RestoreJournalCodec.DecodeObserver.Value = () => decodeAttempts++;
         try
         {
-            Action parse = () => RestoreJournalCodec.ParseAndValidate(journal, Scope, JournalPath);
+            Action parse = () => RestoreJournalCodec.ParseLegacyJournal(journal, Scope, JournalPath);
 
             parse.Should().Throw<RestoreRecoveryException>().Which.Failure
                 .Should().Be(RestoreRecoveryFailure.MalformedOrIntegrityFailed);

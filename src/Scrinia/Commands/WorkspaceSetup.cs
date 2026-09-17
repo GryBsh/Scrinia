@@ -663,7 +663,7 @@ internal static class WorkspaceSetup
         // Models are mutable runtime state and live only under SCRINIA_HOME/models; the immutable
         // global tool package (AppContext.BaseDirectory) is never written at runtime.
         string modelsDir = Path.Combine(UserHome.Resolve(), "models");
-        Directory.CreateDirectory(modelsDir);
+        VerifiedModelDownloader.PrepareModelDirectory(modelsDir);
 
         try
         {

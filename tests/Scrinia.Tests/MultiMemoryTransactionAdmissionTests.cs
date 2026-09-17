@@ -343,6 +343,19 @@ public sealed class MultiMemoryTransactionAdmissionTests
         await first;
     }
 
+    [Fact]
+    public async Task AdmitAsync_DoesNotChargeScopeMaterializationAgainstTheLockBudget()
+    {
+        using FileMemoryStore store = CreateStore();
+        var request = new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-1")]);
+
+        MultiMemoryAdmissionResult result = await new MultiMemoryTransactionCoordinator(store,
+            TimeSpan.FromMilliseconds(1)).AdmitAsync(request, (_, _) =>
+            Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-1")));
+
+        result.IsAdmitted.Should().BeTrue();
+    }
+
     private static MultiMemoryParticipantRequest Participant(string address, string operationId) =>
         new(MemoryAddress.Parse(address), operationId, "memory");
 

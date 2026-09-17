@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
 using FluentAssertions;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Process;
 using Scrinia.TestDoubles;
 
@@ -225,8 +226,8 @@ public sealed class GlobalToolInstallTests : IDisposable
 
         AssertPackageTreeUnchanged(CapturePackageTree(_toolPath), _baselinePackageTree,
             "setup must not create or mutate any file in the complete tool root, including .stage");
-        File.Exists(Path.Combine(_home, "models", "m2v-MiniLM-L6-v2", "model.safetensors")).Should().BeTrue(
-            "the built-in model resolves under SCRINIA_HOME, never AppContext.BaseDirectory/models");
+        Model2VecModelManager.IsModelAvailable(modelDir).Should().BeTrue(
+            "the built-in model resolves under SCRINIA_HOME with verified assets, never AppContext.BaseDirectory/models");
 
         // ── update from the second package, then restart both servers against the updated payload ───
         int update = runner.RunAsync(

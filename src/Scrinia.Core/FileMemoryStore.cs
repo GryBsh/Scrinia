@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -120,6 +122,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     /// <summary>Test-only crash seam around journal durable transitions.</summary>
     internal static AsyncLocal<Func<RestoreJournalTransition, string, Exception?>?> RestoreJournalFailureInjector { get; } = new();
+    internal Action? MaintenancePageServiceCreationBarrierForTest { get; set; }
     /// <summary>Test-only seam receiving the exact bytes successfully written to a derived file.</summary>
     private static readonly object WriteObserverGate = new();
     private static Action<string, byte[]>? WriteObserverSlot;
@@ -143,9 +146,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly MultiMemoryTransactionCoordinator _multiMemoryTransactions;
     private readonly IMultiMemoryParticipantAdapterFactory? _participantAdapterFactory;
     private readonly RecoveryDiscoveryCoordinator _recoveryDiscovery = new();
+    private readonly MaintenanceRunRegistry _maintenanceRuns = new();
+    private readonly ConcurrentDictionary<string, MaintenanceDiscoveryPageService> _maintenancePages = new(StringComparer.Ordinal);
+    private readonly object _maintenanceLifecycleGate = new();
+    private bool _maintenanceDisposed;
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, AdmissionGate> _admissionLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _admissionLifecycleGate = new();
+    private bool _admissionDisposed;
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
@@ -802,23 +812,115 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true)
     {
         ArgumentNullException.ThrowIfNull(body);
-        EnsureMaterialized(scope);
-        using FileLock fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout, cancellationToken);
-        ReaderWriterLockSlim indexLock = GetIndexLock(scope);
-        indexLock.EnterWriteLock();
+        AdmissionGate admissionGate = AcquireAdmissionGate(scope);
+        bool admitted = false;
+        Stopwatch admissionTimer = Stopwatch.StartNew();
         try
         {
-            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), recoverCoordinator);
+            bool acquired = await admissionGate.Semaphore.WaitAsync(timeout, cancellationToken)
+                .ConfigureAwait(false);
+            if (!acquired)
+                throw new FileLockTimeoutException(GetLockPath(scope), timeout);
+            admitted = true;
+            TimeSpan remaining = timeout - admissionTimer.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+                throw new FileLockTimeoutException(GetLockPath(scope), timeout);
+            EnsureMaterialized(scope);
+            using FileLock fileLock = FileLock.AcquireExclusive(GetLockPath(scope), remaining, cancellationToken);
+            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), recoverCoordinator, cancellationToken);
             return await body().ConfigureAwait(false);
         }
         finally
         {
-            indexLock.ExitWriteLock();
+            if (admitted)
+                admissionGate.Semaphore.Release();
+            ReleaseAdmissionGate(scope, admissionGate);
         }
     }
 
-    internal RecoveryDiscoveryResult DiscoverRecoveryForScope(string scope, string storeDirectory) =>
-        _recoveryDiscovery.Discover(scope, storeDirectory);
+    private AdmissionGate AcquireAdmissionGate(string scope)
+    {
+        lock (_admissionLifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(_admissionDisposed, this);
+            AdmissionGate gate = _admissionLocks.GetOrAdd(scope, _ => new AdmissionGate());
+            gate.Leases++;
+            return gate;
+        }
+    }
+
+    private void ReleaseAdmissionGate(string scope, AdmissionGate gate)
+    {
+        lock (_admissionLifecycleGate)
+        {
+            gate.Leases--;
+            if (gate.Leases != 0)
+                return;
+
+            _admissionLocks.TryGetValue(scope, out AdmissionGate? current);
+            if (ReferenceEquals(current, gate))
+                _admissionLocks.TryRemove(scope, out _);
+            gate.Dispose();
+        }
+    }
+
+    private sealed class AdmissionGate : IDisposable
+    {
+        internal SemaphoreSlim Semaphore { get; } = new(1, 1);
+        internal int Leases { get; set; }
+
+        public void Dispose() => Semaphore.Dispose();
+    }
+
+    internal RecoveryDiscoveryResult DiscoverRecoveryForScope(string scope, string storeDirectory,
+        CancellationToken cancellationToken = default) =>
+        _recoveryDiscovery.Discover(scope, storeDirectory, cancellationToken: cancellationToken);
+
+    internal MaintenanceDiscoveryPage DiscoverRecoveryPage(string scope, string storeDirectory,
+        MaintenanceWorkspaceKey workspace, CancellationToken cancellationToken = default) =>
+        GetMaintenancePageService(scope, storeDirectory).ReadFirstPage(workspace, scope, cancellationToken);
+
+    internal MaintenanceDiscoveryPage ContinueRecoveryPage(MaintenanceCursor cursor,
+        string scope, string storeDirectory, CancellationToken cancellationToken = default) =>
+        GetMaintenancePageService(scope, storeDirectory).ReadNextPage(cursor, cancellationToken);
+
+    internal MaintenanceLifecyclePage DiscoverMaintenancePage(string scope, string storeDirectory,
+        MaintenanceWorkspaceKey workspace, CancellationToken cancellationToken = default) =>
+        new MaintenanceDiscoveryLifecycle(GetMaintenancePageService(scope, storeDirectory), _maintenanceRuns)
+            .Start(workspace, scope, cancellationToken);
+
+    internal MaintenanceLifecyclePage ContinueMaintenancePage(string scope, string storeDirectory,
+        string continuationToken, CancellationToken cancellationToken = default) =>
+        new MaintenanceDiscoveryLifecycle(GetMaintenancePageService(scope, storeDirectory), _maintenanceRuns)
+            .Continue(continuationToken, cancellationToken);
+
+    private MaintenanceDiscoveryPageService GetMaintenancePageService(string scope, string storeDirectory)
+    {
+        MaintenancePageServiceCreationBarrierForTest?.Invoke();
+        string key = $"{Path.GetFullPath(storeDirectory)}\0{scope}";
+        lock (_maintenanceLifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(_maintenanceDisposed, this);
+            if (_maintenancePages.TryGetValue(key, out MaintenanceDiscoveryPageService? existing))
+                return existing;
+
+            var created = new MaintenanceDiscoveryPageService(cancellationToken =>
+                _recoveryDiscovery.EnumerateMaintenanceCandidates(scope, storeDirectory, cancellationToken), _maintenanceRuns);
+            if (!_maintenancePages.TryAdd(key, created))
+            {
+                created.Dispose();
+                return _maintenancePages[key];
+            }
+
+            return created;
+        }
+    }
+
+    private static string SafeRecoveryRelativePath(string root, string path)
+    {
+        string relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+        return MaintenanceContractValidation.RequireRelativePath(relative, nameof(path));
+    }
 
     private Task<IMultiMemoryParticipantAdapter> ResolveMultiMemoryParticipantAsync(
         string scope, MultiMemoryParticipantManifest manifest, CancellationToken cancellationToken)
@@ -826,10 +928,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         string storeDirectory = GetStoreDirForScope(scope);
         RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDirectory,
-            includeCoordinator: false);
+            includeCoordinator: false, cancellationToken: cancellationToken);
         if (discovery.BlockingEvidence is not null)
             throw new MultiMemoryParticipantMismatchException();
-        MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(storeDirectory, scope);
+        MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(storeDirectory, scope, cancellationToken);
         foreach (MultiMemoryParticipantManifest persistedManifest in record.Participants)
             _ = ResolveCandidate(discovery, persistedManifest);
 
@@ -1055,14 +1157,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // migration has been triggered. See
         // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
         //
-        // RULING (the-sweep, Task 1, G4): this EnterReadLock/ExitReadLock pair is deliberately
+        // RULING (the-sweep, Task 1, G4): this synchronization pair is deliberately
         // NOT pinned by a test, after a real attempt to write one — but it is not dead code, and
         // the race the paragraph above names is real and present-day, not a hypothetical future
         // one. This ruling does not weaken that claim; it explains why nothing here can pin it.
         //
-        // What it protects: every write runs inside WithExclusiveLock, which holds EnterWriteLock
+        // What it protects: every write runs inside WithExclusiveLock, which holds the gate
         // across the write's ENTIRE body — sidecar I/O, the copy-on-write rebuild, and the final
-        // `_indexCache[scope] = new CachedIndex(...)`. Because a reader takes EnterReadLock here,
+        // `_indexCache[scope] = new CachedIndex(...)`. Because a reader takes the gate here,
         // a same-process reader on another thread blocks until that write finishes and therefore
         // always observes the post-write cache. Without this lock, the reader's lock-free
         // `_indexCache.TryGetValue` can run at ANY point during that write — not only the narrow
@@ -1094,7 +1196,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // not evidence the race is safe — it is evidence the probes were the wrong instrument.
         // Deleted rather than kept, so the suite does not claim coverage it never had.
         //
-        // This lock must not be removed as dead code. It is the only thing keeping a same-process
+        // This gate must not be removed as dead code. It is the only thing keeping a same-process
         // racing reader's answer sequenced after any write already in flight against the same
         // scope, and EntityTypingEventHandler.PromoteAsync depends on that today.
         lk.EnterReadLock();
@@ -2301,7 +2403,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
+        RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), cancellationToken: cancellationToken);
         await RecoverAppendUnsafeAsync(scope, "store-recovery", cancellationToken).ConfigureAwait(false);
 
         ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope)
@@ -2364,8 +2466,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             InjectWholeFault(WholeMemoryFaultPoint.LiveSidecarWrite, transaction.NewSidecar.Path);
             UpsertForAppend(entry, scope, transaction.OperationId);
             InjectWholeFault(WholeMemoryFaultPoint.VerificationRead, transaction.NewArtifact.Path);
-            VerifyWholeMember(transaction.NewArtifact);
-            VerifyWholeMember(transaction.NewSidecar);
+            // Publication verification is compensation-safe: once the live pair is visible,
+            // cancellation must not turn a committed write into a rollback.
+            VerifyWholeMember(transaction.NewArtifact, CancellationToken.None);
+            VerifyWholeMember(transaction.NewSidecar, CancellationToken.None);
         }, cancellationToken).ConfigureAwait(false);
         transactionResult?.Invoke(result);
 
@@ -2432,20 +2536,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string path, WholeMemoryFaultPoint faultPoint, CancellationToken cancellationToken)
     {
         InjectWholeFault(faultPoint, path);
-        if (!File.Exists(path))
+        RecoveryVerificationResult verification = await RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("workspace", _workspaceRoot), RecoveryEvidenceKind.AppendJournal,
+            path, default, MaintenanceLimits.Hard, cancellationToken).ConfigureAwait(false);
+        if (verification.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
             return RawMemberSnapshot.Capture(path, false, []);
-        return RawMemberSnapshot.Capture(path, true, await File.ReadAllBytesAsync(path, cancellationToken)
-            .ConfigureAwait(false));
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+            throw new IOException($"Whole-memory member could not be captured safely: {path}");
+        using (verification.SourceContent)
+            return RawMemberSnapshot.Capture(path, true, verification.SourceContent.Bytes.ToArray());
     }
 
-    private static void VerifyWholeMember(RawMemberSnapshot expected)
+    private void VerifyWholeMember(RawMemberSnapshot expected, CancellationToken cancellationToken)
     {
-        if (!File.Exists(expected.Path))
-            throw new IOException($"Expected whole-memory member is missing: {expected.Path}");
-        byte[] actual = File.ReadAllBytes(expected.Path);
-        string hash = Convert.ToHexStringLower(SHA256.HashData(actual));
-        if (!hash.Equals(expected.Sha256, StringComparison.OrdinalIgnoreCase))
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("workspace", _workspaceRoot), RecoveryEvidenceKind.AppendJournal,
+            expected.Path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,
+            cancellationToken).AsTask().GetAwaiter().GetResult();
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified)
             throw new IOException($"Whole-memory member verification failed: {expected.Path}");
+        verification.SourceContent?.Dispose();
     }
 
     /// <inheritdoc/>
@@ -2495,7 +2605,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // Append admission shares the persistent scope with the restore journal.  Recover
             // that journal before deciding whether this is a create or an append; otherwise a
             // missing live artifact can enter StoreAsyncCore and bypass the recovery barrier.
-            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope));
+            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), cancellationToken: ct);
             await RecoverAppendUnsafeAsync(scope, operationId, ct);
             ArtifactEntry? canonicalEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
                 entry => entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -2683,12 +2793,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             if (ct.IsCancellationRequested)
             {
+                // Compensation is the documented cancellation allowlist: recovery reads must
+                // finish even though the originating operation token is already cancelled.
                 string journalPath = AppendJournalCodec.GetJournalPath(
                     Path.Combine(GetStoreDirForScope(scope), "versions"));
                 AppendTransaction? rollbackTransaction = TryReadAppendTransactionForRollback(
                     journalPath, scope);
                 bool archivesReconciled = rollbackTransaction is not null &&
-                    TryRemoveCreatedArchiveMembers(rollbackTransaction);
+                    TryRemoveCreatedArchiveMembers(rollbackTransaction, CancellationToken.None);
                 bool liveMembersRestored = rollbackTransaction is not null &&
                     TryRestoreAppendTransaction(rollbackTransaction);
                 if (!archivesReconciled || !liveMembersRestored)
@@ -2860,11 +2972,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (injected is not null)
             throw injected;
 
-        if (!File.Exists(path))
+        RecoveryVerificationResult verification = await RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("workspace", _workspaceRoot), RecoveryEvidenceKind.AppendJournal,
+            path, default, MaintenanceLimits.Hard, ct).ConfigureAwait(false);
+        if (verification.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
             return RawMemberSnapshot.Capture(path, false, []);
-
-        byte[] bytes = await File.ReadAllBytesAsync(path, ct);
-        return RawMemberSnapshot.Capture(path, true, bytes);
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+            throw new IOException($"Append member could not be captured safely: {path}");
+        using (verification.SourceContent)
+            return RawMemberSnapshot.Capture(path, true, verification.SourceContent.Bytes.ToArray());
     }
 
     internal ArchivePlan BuildArchivePlanForTest(string subject, string scope, bool required, DateTimeOffset startedAt) =>
@@ -2912,14 +3028,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string versionsDirectory = Path.GetDirectoryName(plan.ArtifactArchivePath!)!;
         Directory.CreateDirectory(versionsDirectory);
         ArchiveMemberStatus artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!, transaction.OperationId,
-            AppendFaultPoint.ArchiveArtifactWrite, AppendFaultPoint.ArchiveArtifactFlush);
+            AppendFaultPoint.ArchiveArtifactWrite, AppendFaultPoint.ArchiveArtifactFlush, ct);
             transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
         PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
 
         ArchiveMemberStatus sidecarStatus = ArchiveMemberStatus.NotRequired;
         if (transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null)
             sidecarStatus = WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
-                AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush);
+                AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush, ct);
 
         transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, sidecarStatus) };
         PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
@@ -2928,7 +3044,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private static ArchiveMemberStatus WriteArchiveMember(
         string memberName, RawMemberSnapshot member, string destination, string operationId,
-        AppendFaultPoint writePoint, AppendFaultPoint flushPoint)
+        AppendFaultPoint writePoint, AppendFaultPoint flushPoint, CancellationToken cancellationToken)
     {
         if (!member.Existed)
             return ArchiveMemberStatus.NotRequired;
@@ -2941,9 +3057,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             if (File.Exists(destination))
             {
-                byte[] existingBytes = File.ReadAllBytes(destination);
-                string existingHash = Convert.ToHexStringLower(SHA256.HashData(existingBytes));
-                if (string.Equals(existingHash, member.Sha256, StringComparison.OrdinalIgnoreCase))
+                string root = Path.GetDirectoryName(Path.GetDirectoryName(destination)!)!;
+                RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+                    new RecoveryScopeBinding("workspace", root), RecoveryEvidenceKind.AppendJournal,
+                    destination, new RecoveryExpectedHash(member.Sha256), MaintenanceLimits.Hard,
+                     cancellationToken).AsTask().GetAwaiter().GetResult();
+                verification.SourceContent?.Dispose();
+                if (verification.Outcome == RecoveryVerificationOutcome.Verified)
                     return ArchiveMemberStatus.AlreadyPresentVerified;
 
                 throw new AppendStoreException(
@@ -3062,7 +3182,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         EnsureMaterialized(scope);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), TimeSpan.FromSeconds(5), cancellationToken);
         await RecoverAppendUnsafeAsync(scope, "recovery", cancellationToken);
     }
 
@@ -3086,19 +3206,28 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ct.ThrowIfCancellationRequested();
         string storeDirectory = GetStoreDirForScope(scope);
         string journalPath = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
-        if (!File.Exists(journalPath))
+        RecoveryVerificationResult journalVerification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding(scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
+            journalPath, default, MaintenanceLimits.Hard, ct).AsTask().GetAwaiter().GetResult();
+        if (journalVerification.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
             return Task.FromResult(false);
 
         AppendJournal journal;
         try
         {
-            byte[] journalBytes = File.ReadAllBytes(journalPath);
+            if (journalVerification.Outcome != RecoveryVerificationOutcome.Verified ||
+                journalVerification.SourceContent is null)
+                throw new IOException("Append journal could not be verified.");
+            using RecoveryVerificationContent verifiedJournal = journalVerification.SourceContent;
             Exception? parseFailure = InjectAppendFault(AppendFaultPoint.JournalParse, operationId, journalPath);
             if (parseFailure is not null)
                 throw parseFailure;
             var adapter = new AppendRecoveryAdapter();
-            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
-                journalBytes, scope, journalPath, storeDirectory);
+            RecoveryVerifiedFileMetadata metadata = verifiedJournal.Metadata;
+            RecoveryScopeBinding scopeBinding = new(scope, storeDirectory);
+            RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
+                in verifiedJournal, in scopeBinding, journalPath, storeDirectory, RecoveryEvidenceKind.AppendJournal, in metadata);
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope);
             journal = adapter.FromEnvelope(envelope, journalPath);
         }
         catch (Exception exception) when (exception is AppendJournalException or RecoveryEnvelopeException or IOException)
@@ -3106,7 +3235,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             string recoveryOperationId = exception is AppendJournalException journalException
                 ? journalException.OperationId ?? operationId
                 : exception is RecoveryEnvelopeException
-                    ? TryReadOperationId(journalPath) ?? operationId
+                    ? ((exception as RecoveryEnvelopeException)?.OperationId ?? operationId)
                     : operationId;
             throw RecoveryRequired(journalPath, "The append journal failed integrity verification.", exception,
                 recoveryOperationId);
@@ -3121,8 +3250,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             try
             {
-                transaction = ReplayArchiveMembers(transaction, journalPath);
+                transaction = ReplayArchiveMembers(transaction, journalPath, ct);
                 PersistAppendJournal(transaction, AppendJournalState.Archived,
+                    cancellationToken: ct,
                     detail: "Recorded archive members were deterministically completed.");
             }
             catch (Exception exception)
@@ -3132,7 +3262,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             }
         }
 
-        bool publicationWasVisible = AreAppendMembersCurrent(transaction);
+        bool publicationWasVisible = AreAppendMembersCurrent(transaction, ct);
         if (journal.State is AppendJournalState.Committed or AppendJournalState.CleanupPending)
         {
             Exception? verificationFailure = InjectAppendFault(
@@ -3141,14 +3271,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 throw RecoveryRequired(journalPath, "Committed append verification could not be completed.",
                     verificationFailure, journal.OperationId);
 
-            bool currentMembers = AreAppendMembersCurrent(transaction);
-            if (currentMembers && !HasCommittedHash(transaction, journal.CommittedHash))
+            bool currentMembers = AreAppendMembersCurrent(transaction, ct);
+            if (currentMembers && !HasCommittedHash(transaction, journal.CommittedHash, ct))
                 throw RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
                     operationId: operationId);
 
             if (currentMembers)
             {
-                ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, CancellationToken.None);
+                ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, ct);
                 if (cleanup.Failed)
                     throw RecoveryRequired(journalPath,
                         cleanup.Detail,
@@ -3190,7 +3320,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return Task.FromResult(publicationWasVisible);
     }
 
-    private AppendTransaction ReplayArchiveMembers(AppendTransaction transaction, string journalPath)
+    private AppendTransaction ReplayArchiveMembers(AppendTransaction transaction, string journalPath,
+        CancellationToken cancellationToken)
     {
         ArchivePlan plan = transaction.Archive;
         if (!plan.Required)
@@ -3200,7 +3331,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (artifactStatus is not (ArchiveMemberStatus.AlreadyPresentVerified or ArchiveMemberStatus.Created))
             artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!,
                 transaction.OperationId, AppendFaultPoint.ArchiveArtifactWrite,
-                AppendFaultPoint.ArchiveArtifactFlush);
+                AppendFaultPoint.ArchiveArtifactFlush, cancellationToken);
         transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
         PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
 
@@ -3209,7 +3340,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             sidecarStatus = transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null
                 ? WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
-                    AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush)
+                    AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush, cancellationToken)
                 : ArchiveMemberStatus.NotRequired;
         }
 
@@ -3233,16 +3364,32 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     private void PersistAppendJournal(AppendTransaction transaction, AppendJournalState state,
-        string? committedHash = null, string? detail = null)
+        string? committedHash = null, string? detail = null, CancellationToken? cancellationToken = null)
     {
         string storeDirectory = GetStoreDirForScope(transaction.Scope);
         Directory.CreateDirectory(Path.Combine(storeDirectory, "versions"));
         string path = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
         var adapter = new AppendRecoveryAdapter();
-        AppendJournal current = File.Exists(path)
-            ? adapter.FromEnvelope(((IRecoveryAdapter)adapter).ParseAndNormalize(
-                File.ReadAllBytes(path), transaction.Scope, path, storeDirectory), path)
-            : AppendJournalCodec.CreatePrepared(transaction);
+        AppendJournal current;
+        if (!File.Exists(path))
+        {
+            current = AppendJournalCodec.CreatePrepared(transaction);
+        }
+        else
+        {
+            // Compensation is deliberately non-cancellable so rollback can establish a safe state.
+            RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+                new RecoveryScopeBinding(transaction.Scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
+                path, default, MaintenanceLimits.Hard, cancellationToken.GetValueOrDefault()).AsTask().GetAwaiter().GetResult();
+            if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+                throw new IOException("Existing append journal could not be verified.");
+            using RecoveryVerificationContent verifiedJournal = verification.SourceContent;
+            RecoveryVerifiedFileMetadata metadata = verifiedJournal.Metadata;
+            RecoveryScopeBinding scopeBinding = new(transaction.Scope, storeDirectory);
+            RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
+                in verifiedJournal, in scopeBinding, path, storeDirectory, RecoveryEvidenceKind.AppendJournal, in metadata);
+            current = adapter.FromEnvelope(((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope), path);
+        }
         current = current with
         {
             ArchiveArtifactStatus = transaction.Archive.ArtifactStatus,
@@ -3274,59 +3421,51 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         Exception? failure = InjectAppendFault(AppendFaultPoint.VerificationRead, operationId, expected.Path);
         if (failure is not null)
             throw failure;
-        if (!File.Exists(expected.Path))
-            throw new IOException($"Append member is missing after publication: {expected.Path}");
-
-        var options = new FileStreamOptions
-        {
-            Access = FileAccess.Read,
-            Mode = FileMode.Open,
-            Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-            Share = FileShare.ReadWrite | FileShare.Delete
-        };
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(MaintenanceLimits.TerminalVerificationMaximumMilliseconds);
-        await using FileStream stream = new(expected.Path, options);
-        if (stream.Length > MaintenanceLimits.TerminalVerificationMaximumBytes)
-            throw new IOException("Append member exceeds the bounded verification size.");
-
-        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        byte[] buffer = new byte[64 * 1024];
-        int read;
-        long total = 0;
-        while ((read = await stream.ReadAsync(buffer.AsMemory(), timeout.Token)) != 0)
-        {
-            total += read;
-            if (total > MaintenanceLimits.TerminalVerificationMaximumBytes)
-                throw new IOException("Append member exceeds the bounded verification size.");
-            hash.AppendData(buffer, 0, read);
-        }
-
-        if (!string.Equals(Convert.ToHexStringLower(hash.GetHashAndReset()), expected.Sha256,
-                StringComparison.Ordinal))
-            throw new IOException($"Append member hash mismatch after publication: {expected.Path}");
+        RecoveryVerificationResult verification = await RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("append", Path.GetDirectoryName(expected.Path)!),
+            RecoveryEvidenceKind.AppendJournal, expected.Path,
+            new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard, cancellationToken)
+            .ConfigureAwait(false);
+        verification.SourceContent?.Dispose();
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified)
+            throw new IOException($"Append member verification failed after publication: {expected.Path}");
     }
 
-    private static bool AreAppendMembersCurrent(AppendTransaction transaction) =>
-        MatchesAppendMember(transaction.NewArtifact) && MatchesAppendMember(transaction.NewSidecar);
+    private static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
+        MatchesAppendMember(transaction.NewArtifact, cancellationToken) && MatchesAppendMember(transaction.NewSidecar, cancellationToken);
 
-    private static bool HasCommittedHash(AppendTransaction transaction, string? committedHash)
+    private static bool HasCommittedHash(AppendTransaction transaction, string? committedHash,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(committedHash))
             return false;
 
-        byte[] artifact = File.ReadAllBytes(transaction.NewArtifact.Path);
-        byte[] sidecar = File.ReadAllBytes(transaction.NewSidecar.Path);
-        string actualHash = Convert.ToHexStringLower(SHA256.HashData(artifact.Concat(sidecar).ToArray()));
+        RecoveryVerificationResult artifact = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("append", Path.GetDirectoryName(transaction.NewArtifact.Path)!),
+            RecoveryEvidenceKind.AppendJournal, transaction.NewArtifact.Path,
+            new RecoveryExpectedHash(transaction.NewArtifact.Sha256), MaintenanceLimits.Hard,
+            cancellationToken).AsTask().GetAwaiter().GetResult();
+        RecoveryVerificationResult sidecar = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("append", Path.GetDirectoryName(transaction.NewSidecar.Path)!),
+            RecoveryEvidenceKind.AppendJournal, transaction.NewSidecar.Path,
+            new RecoveryExpectedHash(transaction.NewSidecar.Sha256), MaintenanceLimits.Hard,
+            cancellationToken).AsTask().GetAwaiter().GetResult();
+        string actualHash = Convert.ToHexStringLower(SHA256.HashData(
+            (artifact.SourceContent?.Bytes.ToArray() ?? []).Concat(sidecar.SourceContent?.Bytes.ToArray() ?? []).ToArray()));
+        artifact.SourceContent?.Dispose(); sidecar.SourceContent?.Dispose();
         return string.Equals(actualHash, committedHash, StringComparison.Ordinal);
     }
 
-    private static bool MatchesAppendMember(RawMemberSnapshot expected)
+    private static bool MatchesAppendMember(RawMemberSnapshot expected, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(expected.Path))
             return false;
-        return string.Equals(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(expected.Path))),
-            expected.Sha256, StringComparison.Ordinal);
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("append", Path.GetDirectoryName(expected.Path)!), RecoveryEvidenceKind.AppendJournal,
+            expected.Path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,
+             cancellationToken).AsTask().GetAwaiter().GetResult();
+        verification.SourceContent?.Dispose();
+        return verification.Outcome == RecoveryVerificationOutcome.Verified;
     }
 
     private static bool TryRestoreAppendTransaction(AppendTransaction transaction)
@@ -3339,13 +3478,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             MatchesAppendState(transaction.OldArtifact) && MatchesAppendState(transaction.OldSidecar);
     }
 
-    private static bool TryRemoveCreatedArchiveMembers(AppendTransaction transaction)
+    private static bool TryRemoveCreatedArchiveMembers(AppendTransaction transaction,
+        CancellationToken cancellationToken = default)
     {
         ArchivePlan plan = transaction.Archive;
         return ReconcileArchiveMember(plan.ArtifactStatus, plan.ArtifactArchivePath,
-                   transaction.OldArtifact, transaction.OperationId) &&
+                   transaction.OldArtifact, transaction.OperationId, cancellationToken) &&
                ReconcileArchiveMember(plan.SidecarStatus, plan.SidecarArchivePath,
-                   transaction.OldSidecar, transaction.OperationId);
+                transaction.OldSidecar, transaction.OperationId, cancellationToken);
     }
 
     private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope)
@@ -3353,9 +3493,20 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try
         {
             var adapter = new AppendRecoveryAdapter();
-            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
-                File.ReadAllBytes(journalPath), scope, journalPath,
-                Path.GetDirectoryName(Path.GetDirectoryName(journalPath))!);
+            string storeDirectory = Path.GetDirectoryName(Path.GetDirectoryName(journalPath))!;
+            // Compensation is deliberately non-cancellable so rollback can establish a safe state.
+            RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+                new RecoveryScopeBinding(scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
+                journalPath, default, MaintenanceLimits.Hard, CancellationToken.None)
+                .AsTask().GetAwaiter().GetResult();
+            if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+                return null;
+            using RecoveryVerificationContent verifiedJournal = verification.SourceContent;
+            RecoveryVerifiedFileMetadata metadata = verifiedJournal.Metadata;
+            RecoveryScopeBinding scopeBinding = new(scope, storeDirectory);
+            RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
+                in verifiedJournal, in scopeBinding, journalPath, storeDirectory, RecoveryEvidenceKind.AppendJournal, in metadata);
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope);
             return adapter.FromEnvelope(envelope, journalPath).ToTransaction();
         }
         catch
@@ -3364,22 +3515,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private static string? TryReadOperationId(string journalPath)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(journalPath));
-            return document.RootElement.TryGetProperty("operationId", out JsonElement operationId) &&
-                operationId.ValueKind == JsonValueKind.String ? operationId.GetString() : null;
-        }
-        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            return null;
-        }
-    }
-
     private static bool ReconcileArchiveMember(
-        ArchiveMemberStatus status, string? destination, RawMemberSnapshot expected, string operationId)
+        ArchiveMemberStatus status, string? destination, RawMemberSnapshot expected, string operationId,
+        CancellationToken cancellationToken = default)
     {
         if (status is ArchiveMemberStatus.NotRequired or ArchiveMemberStatus.AlreadyPresentVerified)
             return true;
@@ -3395,11 +3533,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 // A planned member may already be present from an earlier operation. Matching
                 // bytes make it safe to retain; a mismatch is evidence that ownership cannot be
                 // established, so the journal must remain for recovery.
-                return MatchesArchiveBytes(destination, expected);
+                return MatchesArchiveBytes(destination, expected, cancellationToken);
             }
             if (!File.Exists(destination))
                 return true;
-            if (!MatchesArchiveBytes(destination, expected))
+            if (!MatchesArchiveBytes(destination, expected, cancellationToken))
                 return false;
 
             Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, destination);
@@ -3414,9 +3552,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private static bool MatchesArchiveBytes(string path, RawMemberSnapshot expected) =>
-        string.Equals(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path))), expected.Sha256,
-            StringComparison.Ordinal);
+    private static bool MatchesArchiveBytes(string path, RawMemberSnapshot expected,
+        CancellationToken cancellationToken = default)
+    {
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("append", Path.GetDirectoryName(path)!), RecoveryEvidenceKind.AppendJournal,
+            path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,
+            cancellationToken).AsTask().GetAwaiter().GetResult();
+        verification.SourceContent?.Dispose();
+        return verification.Outcome == RecoveryVerificationOutcome.Verified;
+    }
 
     private static bool RestoreAppendMember(RawMemberSnapshot oldMember, RawMemberSnapshot newMember,
         string operationId)
@@ -4372,16 +4517,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// <para>completed | none | hash every destination | invalidate, delete</para>
     /// <para>invalid/newer | none | none | retain and throw recovery-blocked</para>
     /// </summary>
-    private bool RecoverScopeUnsafe(string scope, string storeDir, bool recoverCoordinator = true)
+    private bool RecoverScopeUnsafe(string scope, string storeDir, bool recoverCoordinator = true,
+        CancellationToken cancellationToken = default)
     {
-        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
+        cancellationToken.ThrowIfCancellationRequested();
+        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir,
+            cancellationToken: cancellationToken);
         if (discovery.BlockingEvidence is not null)
             throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
 
         if (recoverCoordinator && discovery.CoordinatorRecord is not null)
         {
             MultiMemoryAggregateResult coordinatorRecovery = _multiMemoryTransactions
-                .RecoverUnderLockAsync(scope, CancellationToken.None).GetAwaiter().GetResult();
+                .RecoverUnderLockAsync(scope, cancellationToken).GetAwaiter().GetResult();
             if (coordinatorRecovery.Outcome == MultiMemoryOutcome.RecoveryRequired)
                 throw CreateCoordinatorRecoveryException(scope, storeDir, coordinatorRecovery);
             if (coordinatorRecovery.Outcome == MultiMemoryOutcome.CommittedCleanupPending)
@@ -4391,7 +4539,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         RecoveryOutcome admission;
         try
         {
-            admission = _recoveryDiscovery.AdmitNext(scope, storeDir, discovery, CancellationToken.None);
+            admission = _recoveryDiscovery.AdmitNext(scope, storeDir, discovery, cancellationToken);
         }
         catch (RecoveryEnvelopeException exception) when (discovery.Candidates.Count > 0 &&
             discovery.Candidates[0].Operation == RecoveryOperation.Restore)
@@ -4419,9 +4567,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try
         {
             var adapter = new RestoreRecoveryAdapter();
-            byte[] journalBytes = ReadJournalBytesUnsafe(journalPath, scope);
-            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
-                journalBytes, scope, journalPath, storeDir);
+            RecoveryVerifiedEnvelope verifiedEnvelope = ReadJournalBytesUnsafe(journalPath, scope, cancellationToken);
+            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope);
             journal = adapter.FromEnvelope(envelope, journalPath);
             parsed = new RestoreEnvelopeAdapterResult(adapter, envelope);
         }
@@ -4437,9 +4584,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try
         {
             if (journal.State == RestoreJournalState.Prepared)
-                ApplyPreparedJournalUnsafe(journal, storeDir, parsed);
+                ApplyPreparedJournalUnsafe(journal, storeDir, parsed, cancellationToken);
             else
-                VerifyJournalDestinationsUnsafe(journal, storeDir);
+                VerifyJournalDestinationsUnsafe(journal, storeDir, cancellationToken);
         }
         catch (RestoreRecoveryException)
         {
@@ -4455,7 +4602,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     private void ApplyPreparedJournalUnsafe(RestoreJournal journal, string storeDir,
-        RestoreEnvelopeAdapterResult parsed)
+        RestoreEnvelopeAdapterResult parsed, CancellationToken cancellationToken = default)
     {
         string journalPath = GetRestoreJournalPath(storeDir);
         var payloads = journal.Entries.Select(entry => (Entry: entry,
@@ -4473,7 +4620,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
 
         ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterReplayDestinations, journalPath);
-        VerifyJournalDestinationsUnsafe(journal, storeDir);
+        VerifyJournalDestinationsUnsafe(journal, storeDir, cancellationToken);
         ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeCompletedWrite, journalPath);
         RestoreJournal completed = RestoreJournalCodec.WithCompleted(journal);
         byte[] completedBytes = parsed.Envelope.IsLegacy
@@ -4483,10 +4630,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterCompletedWrite, journalPath);
     }
 
-    private static byte[] ReadJournalBytesUnsafe(string journalPath, string scope)
+    private static RecoveryVerifiedEnvelope ReadJournalBytesUnsafe(string journalPath, string scope,
+        CancellationToken cancellationToken)
     {
-        using var stream = new FileStream(journalPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        return ReadBoundedJournalStream(stream, RestoreJournalCodec.MaxJournalJsonBytes, scope, journalPath);
+        string storeDirectory = Path.GetDirectoryName(journalPath)!;
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding(scope, storeDirectory), RecoveryEvidenceKind.RestoreJournal,
+            journalPath, default, MaintenanceLimits.Hard, cancellationToken)
+            .AsTask().GetAwaiter().GetResult();
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+            throw new RestoreRecoveryException(scope, journalPath,
+                RestoreRecoveryFailure.MalformedOrIntegrityFailed,
+                "Restore journal could not be verified.");
+        using (verification.SourceContent)
+        {
+            RecoveryVerificationContent content = verification.SourceContent;
+            RecoveryVerifiedFileMetadata metadata = content.Metadata;
+            RecoveryScopeBinding scopeBinding = new(scope, storeDirectory);
+            return RecoveryEnvelopeCodec.ParseVerifiedEnvelope(in content, in scopeBinding,
+                journalPath, storeDirectory, RecoveryEvidenceKind.RestoreJournal, in metadata);
+        }
     }
 
     /// <summary>Materializes a restore journal while enforcing its byte cap as each stream read
@@ -4513,22 +4676,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private static void VerifyJournalDestinationsUnsafe(RestoreJournal journal, string storeDir)
+    private static void VerifyJournalDestinationsUnsafe(RestoreJournal journal, string storeDir,
+        CancellationToken cancellationToken)
     {
         string journalPath = GetRestoreJournalPath(storeDir);
         foreach (RestoreJournalEntry entry in journal.Entries)
         {
-            VerifyJournalDestination(Path.Combine(storeDir, entry.BodyFile), entry.BodySha256, journal, journalPath);
-            VerifyJournalDestination(Path.Combine(storeDir, entry.SidecarFile), entry.SidecarSha256, journal, journalPath);
+            VerifyJournalDestination(Path.Combine(storeDir, entry.BodyFile), entry.BodySha256, journal, journalPath, storeDir, cancellationToken);
+            VerifyJournalDestination(Path.Combine(storeDir, entry.SidecarFile), entry.SidecarSha256, journal, journalPath, storeDir, cancellationToken);
         }
     }
 
     private static void VerifyJournalDestination(string path, string expectedHash, RestoreJournal journal,
-        string journalPath)
+        string journalPath, string storeDir, CancellationToken cancellationToken)
     {
-        byte[] bytes = File.ReadAllBytes(path);
-        string actualHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
-        if (string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding(journal.Scope, storeDir), RecoveryEvidenceKind.RestoreJournal,
+            path, new RecoveryExpectedHash(expectedHash), MaintenanceLimits.Hard, cancellationToken)
+            .AsTask().GetAwaiter().GetResult();
+        verification.SourceContent?.Dispose();
+        if (verification.Outcome == RecoveryVerificationOutcome.Verified)
             return;
 
         throw new RestoreRecoveryException(journal.Scope, journalPath, RestoreRecoveryFailure.MalformedOrIntegrityFailed,
@@ -4688,10 +4855,55 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void Dispose()
     {
-        _factMaterializer.Dispose();
+        MaintenanceDiscoveryPageService[] maintenancePages;
+        lock (_maintenanceLifecycleGate)
+        {
+            if (_maintenanceDisposed) return;
+            _maintenanceDisposed = true;
+            maintenancePages = _maintenancePages.Values.ToArray();
+            _maintenancePages.Clear();
+        }
+
+        AdmissionGate[] admissionGatesToDispose;
+        lock (_admissionLifecycleGate)
+        {
+            _admissionDisposed = true;
+            admissionGatesToDispose = _admissionLocks.Values
+                .Where(gate => gate.Leases == 0)
+                .ToArray();
+            foreach (AdmissionGate gate in admissionGatesToDispose)
+            {
+                foreach (var pair in _admissionLocks.Where(pair => ReferenceEquals(pair.Value, gate)).ToArray())
+                    _admissionLocks.TryRemove(pair.Key, out _);
+                gate.Dispose();
+            }
+        }
+
+        Exception? firstFailure = null;
+        try { _factMaterializer.Dispose(); }
+        catch (Exception exception) { firstFailure = exception; }
+
+        foreach (MaintenanceDiscoveryPageService service in maintenancePages)
+        {
+            try { service.Dispose(); }
+            catch (Exception exception) { firstFailure ??= exception; }
+        }
+
+        try { _maintenanceRuns.Dispose(); }
+        catch (Exception exception) { firstFailure ??= exception; }
+
         foreach (var lk in _indexLocks.Values)
-            lk.Dispose();
+        {
+            try { lk.Dispose(); }
+            catch (Exception exception) { firstFailure ??= exception; }
+        }
         _indexLocks.Clear();
+
+        // Admission gates are managed-only and may still be released by an async operation that
+        // was already admitted when disposal began. Letting those gates become unreachable avoids
+        // turning a valid in-flight completion into ObjectDisposedException.
+        if (firstFailure is not null)
+            ExceptionDispatchInfo.Capture(firstFailure).Throw();
     }
 
     public bool Remove(MemoryAddress address)

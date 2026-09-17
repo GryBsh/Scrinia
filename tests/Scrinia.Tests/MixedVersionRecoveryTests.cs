@@ -65,7 +65,7 @@ public sealed class MixedVersionRecoveryTests
         {
             string path = RecoveryTestFixtures.AppendJournalPath(root);
             RecoveryEnvelopeDocument supported = new AppendRecoveryAdapter().ToEnvelope(
-                AppendJournalCodec.ParseAndValidate(json: RecoveryTestFixtures.BuildLegacyAppendJournal(),
+                AppendJournalCodec.ParseLegacyJournal(json: RecoveryTestFixtures.BuildLegacyAppendJournal(),
                     expectedScope: RecoveryTestFixtures.LocalNotesScope, journalPath: path));
             string body = Encoding.UTF8.GetString(RecoveryEnvelopeCodec.Serialize(supported));
             File.WriteAllText(path, body.Replace("\"bodyVersion\":1", "\"bodyVersion\":2", StringComparison.Ordinal));
@@ -200,7 +200,7 @@ public sealed class MixedVersionRecoveryTests
         {
             File.WriteAllBytes(artifactPath, RecoveryTestFixtures.NewArtifact);
             File.WriteAllBytes(sidecarPath, RecoveryTestFixtures.NewSidecar);
-            AppendJournal journal = AppendJournalCodec.ParseAndValidate(
+            AppendJournal journal = AppendJournalCodec.ParseLegacyJournal(
                 RecoveryTestFixtures.BuildLegacyAppendJournal(), RecoveryTestFixtures.LocalNotesScope, path);
             string committedHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
                 RecoveryTestFixtures.NewArtifact.Concat(RecoveryTestFixtures.NewSidecar).ToArray()));

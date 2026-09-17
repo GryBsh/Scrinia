@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Diagnostics;
 using System.Security.Cryptography;
 
@@ -9,6 +8,7 @@ internal sealed class RecoveryDiscoveryCoordinator
 {
     private const string RestoreFileName = ".restore-journal.json";
     private const string CoordinatorFileName = MultiMemoryTransactionRecordCodec.FileName;
+    private const int EntityEvidenceScanLimit = MaintenanceLimits.JournalBudgetMaximum;
     private static readonly string[] FileEntityDirectoryNames = ["agent", "skills"];
     private readonly Dictionary<RecoveryOperation, IRecoveryAdapter> _adapters;
     private readonly Func<string, IEnumerable<string>> _directoryEnumerator;
@@ -33,11 +33,12 @@ internal sealed class RecoveryDiscoveryCoordinator
         _evidenceEnumerator = evidenceEnumerator ?? (directory => Directory.EnumerateFiles(directory, ".file-entity-*.recovery", SearchOption.TopDirectoryOnly));
     }
 
-    internal RecoveryDiscoveryResult Discover(string scope, string storeDirectory, bool includeCoordinator = true)
+    internal RecoveryDiscoveryResult Discover(string scope, string storeDirectory,
+        bool includeCoordinator = true, CancellationToken cancellationToken = default)
     {
         try
         {
-            return DiscoverCore(scope, storeDirectory, includeCoordinator);
+            return DiscoverCore(scope, storeDirectory, includeCoordinator, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -52,7 +53,105 @@ internal sealed class RecoveryDiscoveryCoordinator
         }
     }
 
-    private RecoveryDiscoveryResult DiscoverCore(string scope, string storeDirectory, bool includeCoordinator)
+    internal IEnumerable<MaintenanceCandidate> EnumerateMaintenanceCandidates(
+        string scope, string storeDirectory, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+            throw new ArgumentException("Recovery scope is required.", nameof(scope));
+        if (string.IsNullOrWhiteSpace(storeDirectory))
+            throw new ArgumentException("Recovery store directory is required.", nameof(storeDirectory));
+
+        string root = PathContainment.ResolveCanonical(storeDirectory);
+        RejectReparsePoint(root);
+        int evidenceScanned = 0;
+
+        foreach (MaintenanceCandidate candidate in EnumerateFixedMaintenanceCandidate(
+            RecoveryOperation.Restore, Path.Combine(root, RestoreFileName), root, scope, cancellationToken))
+            yield return candidate;
+        if (File.Exists(Path.Combine(root, RestoreFileName)))
+            yield break;
+
+        foreach (MaintenanceCandidate candidate in EnumerateFixedMaintenanceCandidate(
+            RecoveryOperation.Append, Path.Combine(root, "versions", AppendJournal.FileName), root, scope, cancellationToken))
+            yield return candidate;
+        if (File.Exists(Path.Combine(root, "versions", AppendJournal.FileName)))
+            yield break;
+
+        foreach (string entityDirectory in EnumerateMaintenanceEntityDirectories(root, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (string evidencePath in OrderMaintenanceEvidencePaths(
+                _evidenceEnumerator(entityDirectory).Take(EntityEvidenceScanLimit + 1)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (++evidenceScanned > EntityEvidenceScanLimit)
+                {
+                    yield return CreateBlockedMaintenanceCandidate(scope, entityDirectory,
+                        RecoveryOperation.FileEntity, "unknown", RecoveryBlockReason.ReplayIoFailed);
+                    yield break;
+                }
+
+                foreach (MaintenanceCandidate candidate in InspectMaintenanceCandidate(
+                    RecoveryOperation.FileEntity, evidencePath, entityDirectory, scope, cancellationToken))
+                    yield return candidate;
+            }
+        }
+    }
+
+    internal static IReadOnlyList<string> OrderMaintenanceEvidencePaths(IEnumerable<string> paths) =>
+        paths.OrderBy(path => path, StringComparer.Ordinal).ToArray();
+
+    private IEnumerable<MaintenanceCandidate> EnumerateFixedMaintenanceCandidate(
+        RecoveryOperation operation, string evidencePath, string evidenceDirectory, string scope,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(evidencePath))
+            yield break;
+
+        foreach (MaintenanceCandidate candidate in InspectMaintenanceCandidate(
+            operation, evidencePath, evidenceDirectory, scope, cancellationToken))
+            yield return candidate;
+    }
+
+    private IEnumerable<MaintenanceCandidate> InspectMaintenanceCandidate(
+        RecoveryOperation operation, string evidencePath, string evidenceDirectory, string scope,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<RecoveryCandidate>(1);
+        RecoveryBlock? block = InspectCandidate(operation, evidencePath, evidenceDirectory, scope,
+            candidates, cancellationToken);
+        if (block is not null)
+        {
+            yield return CreateBlockedMaintenanceCandidate(scope, block.EvidencePath,
+                operation, block.OperationId, block.Reason);
+            yield break;
+        }
+
+        foreach (RecoveryCandidate candidate in candidates)
+            yield return new MaintenanceCandidate(scope, candidate.CanonicalSubject,
+                MaintenanceCandidateKind.CompletedRecoveryEvidence,
+                Path.GetRelativePath(evidenceDirectory, candidate.EvidencePath).Replace('\\', '/'), null,
+                candidate.Envelope.UpdatedAt, candidate.OperationId, null,
+                Path.GetRelativePath(evidenceDirectory, candidate.EvidencePath).Replace('\\', '/'))
+            {
+                VerificationOutcome = candidate.Verification?.Outcome ?? RecoveryVerificationOutcome.ProtectedIoFailure,
+                LifecycleState = candidate.Envelope.State
+            };
+    }
+
+    private static MaintenanceCandidate CreateBlockedMaintenanceCandidate(
+        string scope, string evidencePath, RecoveryOperation operation, string operationId,
+        RecoveryBlockReason reason)
+    {
+        string relative = Path.GetFileName(evidencePath).Length == 0 ? "blocked" : Path.GetFileName(evidencePath);
+        return new MaintenanceCandidate(scope, evidencePath,
+            MaintenanceCandidateKind.CompletedRecoveryEvidence, relative, null, null, operationId,
+            reason == RecoveryBlockReason.UnsupportedVersion ? MaintenanceProtectionReason.UnsupportedVersion
+                : MaintenanceProtectionReason.UnresolvedRecovery, relative);
+    }
+
+    private RecoveryDiscoveryResult DiscoverCore(string scope, string storeDirectory,
+        bool includeCoordinator, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(scope))
             throw new ArgumentException("Recovery scope is required.", nameof(scope));
@@ -63,26 +162,35 @@ internal sealed class RecoveryDiscoveryCoordinator
         RejectReparsePoint(root);
         var candidates = new List<RecoveryCandidate>();
 
-        RecoveryDiscoveryResult? coordinator = includeCoordinator ? InspectCoordinator(root, scope) : null;
+        RecoveryDiscoveryResult? coordinator = includeCoordinator ? InspectCoordinator(root, scope, cancellationToken) : null;
         if (coordinator is not null)
             return coordinator;
 
         RecoveryBlock? blocking = InspectFixedCandidate(RecoveryOperation.Restore,
-            Path.Combine(root, RestoreFileName), root, scope, candidates);
+            Path.Combine(root, RestoreFileName), root, scope, candidates, cancellationToken);
         if (blocking is not null)
             return new RecoveryDiscoveryResult(candidates, blocking);
 
         blocking = InspectFixedCandidate(RecoveryOperation.Append,
-            Path.Combine(root, "versions", AppendJournal.FileName), root, scope, candidates);
+            Path.Combine(root, "versions", AppendJournal.FileName), root, scope, candidates, cancellationToken);
         if (blocking is not null)
             return new RecoveryDiscoveryResult(candidates, blocking);
 
-        foreach (string entityDirectory in EnumerateEntityDirectories(root))
+        int evidenceScanned = 0;
+        foreach (string entityDirectory in EnumerateEntityDirectories(root, cancellationToken))
         {
-            foreach (string evidencePath in _evidenceEnumerator(entityDirectory)
-                         .OrderBy(path => path, StringComparer.Ordinal))
+            int remainingEvidence = EntityEvidenceScanLimit - evidenceScanned;
+            foreach (string evidencePath in OrderMaintenanceEvidencePaths(
+                _evidenceEnumerator(entityDirectory).Take(remainingEvidence + 1)))
             {
-                blocking = InspectCandidate(RecoveryOperation.FileEntity, evidencePath, entityDirectory, scope, candidates);
+                cancellationToken.ThrowIfCancellationRequested();
+                evidenceScanned++;
+                if (evidenceScanned > EntityEvidenceScanLimit)
+                    return new RecoveryDiscoveryResult(candidates, new RecoveryBlock(scope, entityDirectory,
+                        RecoveryOperation.FileEntity, "unknown", RecoveryBlockReason.ReplayIoFailed,
+                        "Recovery evidence scan exceeded its bounded admission limit."));
+
+                blocking = InspectCandidate(RecoveryOperation.FileEntity, evidencePath, entityDirectory, scope, candidates, cancellationToken);
                 if (blocking is not null)
                     return new RecoveryDiscoveryResult(candidates, blocking);
             }
@@ -105,13 +213,14 @@ internal sealed class RecoveryDiscoveryCoordinator
         return new RecoveryDiscoveryResult(ordered, duplicate);
     }
 
-    private static RecoveryDiscoveryResult? InspectCoordinator(string root, string scope)
+    private static RecoveryDiscoveryResult? InspectCoordinator(string root, string scope,
+        CancellationToken cancellationToken)
     {
         string path = Path.Combine(root, CoordinatorFileName);
         try
         {
             RejectReparsePoint(path);
-            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(root, scope);
+            MultiMemoryTransactionRecord record = MultiMemoryTransactionRecordCodec.Read(root, scope, cancellationToken);
             return new RecoveryDiscoveryResult([], null, record);
         }
         catch (MultiMemoryTransactionRecordException exception)
@@ -170,39 +279,46 @@ internal sealed class RecoveryDiscoveryCoordinator
     }
 
     private RecoveryBlock? InspectFixedCandidate(RecoveryOperation operation, string evidencePath,
-        string evidenceDirectory, string scope, List<RecoveryCandidate> candidates)
+        string evidenceDirectory, string scope, List<RecoveryCandidate> candidates,
+        CancellationToken cancellationToken)
     {
         if (!File.Exists(evidencePath))
             return null;
         RejectReparsePoint(evidencePath);
-        return InspectCandidate(operation, evidencePath, evidenceDirectory, scope, candidates);
+        return InspectCandidate(operation, evidencePath, evidenceDirectory, scope, candidates, cancellationToken);
     }
 
     private RecoveryBlock? InspectCandidate(RecoveryOperation operation, string evidencePath,
-        string evidenceDirectory, string scope, List<RecoveryCandidate> candidates)
+        string evidenceDirectory, string scope, List<RecoveryCandidate> candidates,
+        CancellationToken cancellationToken)
     {
         IRecoveryAdapter adapter = _adapters[operation];
-        byte[]? bytes = null;
+        RecoveryVerifiedEnvelope? verified = null;
+        RecoveryVerificationAccounting? verifiedAccounting = null;
         try
         {
             RejectReparsePoint(evidencePath);
-            bytes = ReadBounded(evidencePath);
-            RecoveryEnvelopeDocument envelope = adapter.ParseAndNormalize(bytes, scope, evidencePath, evidenceDirectory);
+            RecoveryVerifiedEvidence evidence = ReadVerified(operation, evidencePath, evidenceDirectory, scope, cancellationToken);
+            verified = evidence.Envelope;
+            verifiedAccounting = evidence.Accounting;
+            RecoveryEnvelopeDocument envelope = adapter.ConsumeParsed(in verified);
             string subject = SubjectOf(envelope);
             envelope = adapter.ValidateForMutation(envelope, scope, evidencePath, subject, evidenceDirectory);
             candidates.Add(new RecoveryCandidate(operation, evidencePath, scope, subject,
-                envelope.OperationId, envelope, envelope.IsLegacy));
+                envelope.OperationId, envelope, envelope.IsLegacy)
+            { Verification = verifiedAccounting });
             return null;
         }
         catch (RecoveryEnvelopeException exception)
         {
-            return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(operation, evidencePath, bytes),
+            return new RecoveryBlock(scope, evidencePath, operation,
+                exception.OperationId ?? verified?.Document.OperationId ?? TryFileEntityOperationId(evidencePath),
                 Classify(exception.Failure),
                 exception.Message, exception.UnsupportedVersion);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            return new RecoveryBlock(scope, evidencePath, operation, TryOperationId(operation, evidencePath, bytes),
+            return new RecoveryBlock(scope, evidencePath, operation, verified?.Document.OperationId ?? TryFileEntityOperationId(evidencePath),
                 exception is ArgumentException or RecoveryUnsafePathException
                     ? RecoveryBlockReason.Unsafe : RecoveryBlockReason.ReplayIoFailed, exception.Message);
         }
@@ -216,15 +332,41 @@ internal sealed class RecoveryDiscoveryCoordinator
         _ => throw new InvalidDataException("Recovery evidence has no canonical subject.")
     };
 
-    private IEnumerable<string> EnumerateEntityDirectories(string root)
+    internal static IReadOnlyList<string> OrderMaintenanceDirectories(IEnumerable<string> paths)
+    {
+        string[] bounded = paths.Take(MaintenanceLimits.UnsafeScanLimit + 1)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        if (bounded.Length > MaintenanceLimits.UnsafeScanLimit)
+            throw new IOException("Recovery directory enumeration exceeded its bounded admission limit.");
+        return bounded;
+    }
+
+    private IEnumerable<string> EnumerateEntityDirectories(string root, CancellationToken cancellationToken)
     {
         if (!Directory.Exists(root))
             yield break;
-        foreach (string directory in _directoryEnumerator(root)
-                     .Where(path => FileEntityDirectoryNames.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))
-                     .Where(Directory.Exists)
-                     .OrderBy(path => path, StringComparer.Ordinal))
+        foreach (string directory in OrderMaintenanceDirectories(_directoryEnumerator(root)))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!FileEntityDirectoryNames.Contains(Path.GetFileName(directory), StringComparer.OrdinalIgnoreCase) ||
+                !Directory.Exists(directory))
+                continue;
+            RejectReparsePoint(directory);
+            yield return directory;
+        }
+    }
+
+    private static IEnumerable<string> EnumerateMaintenanceEntityDirectories(
+        string root, CancellationToken cancellationToken)
+    {
+        foreach (string directoryName in FileEntityDirectoryNames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string directory = Path.Combine(root, directoryName);
+            if (!Directory.Exists(directory))
+                continue;
             RejectReparsePoint(directory);
             yield return directory;
         }
@@ -236,22 +378,43 @@ internal sealed class RecoveryDiscoveryCoordinator
             throw new RecoveryUnsafePathException($"Recovery evidence path uses a reparse point: {path}");
     }
 
-    private static byte[] ReadBounded(string path)
+    private readonly record struct RecoveryVerifiedEvidence(
+        RecoveryVerifiedEnvelope Envelope, RecoveryVerificationAccounting Accounting);
+
+    private static RecoveryVerifiedEvidence ReadVerified(RecoveryOperation operation, string path, string scopeDirectory, string scope,
+        CancellationToken cancellationToken)
     {
-        using var stream = File.OpenRead(path);
-        const int maximumBytes = 128 * 1024 * 1024;
-        if (stream.Length > maximumBytes)
-            throw new IOException("Recovery evidence exceeds the maximum document size.");
-        using var bytes = new MemoryStream();
-        byte[] buffer = new byte[81_920];
-        int read;
-        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+        string relativeName = Path.GetRelativePath(scopeDirectory, path).Replace(Path.DirectorySeparatorChar, '/');
+        var verifier = new RecoveryEvidenceVerifier(new RecoveryScopeBinding(scope, scopeDirectory));
+        var request = new RecoveryVerificationRequest(
+            new RecoveryScopeBinding(scope, scopeDirectory), operation switch
+            {
+                RecoveryOperation.Append => RecoveryEvidenceKind.AppendJournal,
+                RecoveryOperation.Restore => RecoveryEvidenceKind.RestoreJournal,
+                RecoveryOperation.FileEntity => RecoveryEvidenceKind.FileEntityJournal,
+                _ => throw new ArgumentOutOfRangeException(nameof(operation))
+            },
+            relativeName, null, default, null, MaintenanceLimits.Hard);
+        RecoveryVerificationResult result = verifier.VerifyAsync(request, cancellationToken)
+            .AsTask().GetAwaiter().GetResult();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (result.Outcome != RecoveryVerificationOutcome.Verified || result.SourceContent is null)
+            throw new IOException($"Recovery evidence verification failed: {result.Outcome}.");
+        using (result.SourceContent)
         {
-            bytes.Write(buffer, 0, read);
-            if (bytes.Length > maximumBytes)
-                throw new IOException("Recovery evidence exceeds the maximum document size.");
+            RecoveryVerificationContent content = result.SourceContent;
+            RecoveryVerifiedFileMetadata metadata = content.Metadata;
+            RecoveryScopeBinding scopeBinding = new(scope, scopeDirectory);
+            RecoveryVerifiedEnvelope envelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(in content, in scopeBinding,
+                path, scopeDirectory, operation switch
+                {
+                    RecoveryOperation.Append => RecoveryEvidenceKind.AppendJournal,
+                    RecoveryOperation.Restore => RecoveryEvidenceKind.RestoreJournal,
+                    RecoveryOperation.FileEntity => RecoveryEvidenceKind.FileEntityJournal,
+                    _ => throw new ArgumentOutOfRangeException(nameof(operation))
+                }, in metadata);
+            return new RecoveryVerifiedEvidence(envelope, result.Accounting());
         }
-        return bytes.ToArray();
     }
 
     private static int Precedence(RecoveryOperation operation) => operation switch
@@ -262,14 +425,6 @@ internal sealed class RecoveryDiscoveryCoordinator
         _ => throw new ArgumentOutOfRangeException(nameof(operation))
     };
 
-    private static string TryOperationId(RecoveryOperation operation, string evidencePath, byte[]? bytes) =>
-        operation switch
-        {
-            RecoveryOperation.Append or RecoveryOperation.Restore => TryJsonOperationId(bytes),
-            RecoveryOperation.FileEntity => TryFileEntityOperationId(evidencePath),
-            _ => "unknown"
-        };
-
     private static RecoveryBlockReason Classify(RecoveryEnvelopeFailure failure) => failure switch
     {
         RecoveryEnvelopeFailure.UnsupportedVersion => RecoveryBlockReason.UnsupportedVersion,
@@ -278,21 +433,6 @@ internal sealed class RecoveryDiscoveryCoordinator
         RecoveryEnvelopeFailure.Inconsistent => RecoveryBlockReason.Inconsistent,
         _ => RecoveryBlockReason.Malformed
     };
-
-    private static string TryJsonOperationId(byte[]? bytes)
-    {
-        if (bytes is null) return "unknown";
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(bytes);
-            foreach (string name in new[] { "operationId", "transactionId" })
-                if (document.RootElement.TryGetProperty(name, out JsonElement value) &&
-                    value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString()))
-                    return value.GetString()!;
-        }
-        catch (JsonException) { }
-        return "unknown";
-    }
 
     private static string TryFileEntityOperationId(string evidencePath)
     {
@@ -327,14 +467,27 @@ internal sealed class B2RecoveryMaintenanceAdapter : IB2RecoveryMaintenanceAdapt
             if (candidate.Envelope.TypedBody is null)
                 throw new ArgumentException("Recovery candidate has no typed body.", nameof(discovery));
 
+            RecoveryVerificationAccounting verification = candidate.Verification ?? default;
             bool terminal = candidate.Envelope.State is RecoveryLifecycleState.Committed or RecoveryLifecycleState.RolledBack;
+            bool verified = verification.Outcome == RecoveryVerificationOutcome.Verified;
             string evidenceRoot = _evidenceRoot ?? EvidenceRoot(candidate);
             bool pathSafe = IsSafeEvidencePath(candidate.EvidencePath, evidenceRoot);
             return new B2RecoveryMaintenanceProjection(candidate.Operation, candidate.Scope,
                 pathSafe ? SafeRelativePath(candidate.EvidencePath, evidenceRoot) : "recovery/unsafe",
                 candidate.CanonicalSubject, candidate.OperationId, candidate.Envelope.State,
-                candidate.Envelope.CreatedAt, candidate.Envelope.UpdatedAt, terminal && pathSafe && VerifyTerminal(candidate, evidenceRoot),
-                false, false, false, pathSafe);
+                candidate.Envelope.CreatedAt, candidate.Envelope.UpdatedAt,
+                terminal && verified,
+                false, false, false, pathSafe)
+            {
+                VerificationOutcome = verification.Outcome,
+                VerificationBytesRead = verification.BytesRead,
+                VerificationOpenOperations = verification.OpenOperations,
+                VerificationStatOperations = verification.StatOperations,
+                VerificationReadOperations = verification.ReadOperations,
+                VerificationFinalZeroByteRead = verification.FinalZeroByteRead,
+                VerificationDeadlineObserved = verification.DeadlineObserved,
+                VerificationCancellationObserved = verification.CancellationObserved
+            };
         }).ToArray();
 
         if (discovery.BlockingEvidence is not null)
@@ -381,128 +534,6 @@ internal sealed class B2RecoveryMaintenanceAdapter : IB2RecoveryMaintenanceAdapt
         RecoveryBlockReason.ReplayIoFailed => MaintenanceProtectionReason.Inaccessible,
         _ => MaintenanceProtectionReason.UnresolvedRecovery
     };
-
-    internal static bool VerifyTerminal(RecoveryCandidate candidate, string evidenceRoot)
-        => VerifyTerminalBounded(candidate, evidenceRoot, CancellationToken.None).IsVerified;
-
-    internal static MaintenanceVerificationResult VerifyTerminalBounded(RecoveryCandidate candidate,
-        string evidenceRoot, CancellationToken cancellationToken)
-    {
-        var budget = new TerminalVerificationBudget(MaintenanceLimits.TerminalVerificationMaximumBytes,
-            TimeSpan.FromMilliseconds(MaintenanceLimits.TerminalVerificationMaximumMilliseconds), cancellationToken);
-        try
-        {
-            if (!IsSafeEvidencePath(candidate.EvidencePath, evidenceRoot)) return ProtectedVerification();
-            bool verified = candidate.Envelope.TypedBody switch
-            {
-                AppendRecoveryBody append => VerifyAppend(append, evidenceRoot, candidate.Envelope.State, budget),
-                RestoreRecoveryBody restore => VerifyRestore(restore, candidate.Envelope.Scope, candidate.EvidencePath, evidenceRoot, candidate.Envelope.State, budget),
-                FileEntityRecoveryBody entity => VerifyEntity(entity, evidenceRoot, candidate.Envelope.State, budget),
-                _ => false
-            };
-            return verified ? new(MaintenanceVerificationStatus.Verified, MaintenanceProtectionReason.UnresolvedRecovery) : ProtectedVerification();
-        }
-        catch (OperationCanceledException) { return ProtectedVerification(MaintenanceProtectionReason.VerificationBudgetExceeded); }
-        catch (MaintenanceVerificationBudgetException) { return ProtectedVerification(MaintenanceProtectionReason.VerificationBudgetExceeded); }
-        catch (Exception) { return ProtectedVerification(); }
-    }
-
-    private static MaintenanceVerificationResult ProtectedVerification(
-        MaintenanceProtectionReason reason = MaintenanceProtectionReason.Unverifiable) =>
-        new(MaintenanceVerificationStatus.ProtectedEvidence, reason);
-
-    private static bool VerifyAppend(AppendRecoveryBody body, string root, RecoveryLifecycleState state, TerminalVerificationBudget budget)
-    {
-        if (state == RecoveryLifecycleState.RolledBack)
-            return VerifyMember(body.OldArtifact, root, budget) && VerifyMember(body.OldSidecar, root, budget);
-        return VerifyMember(body.NewArtifact, root, budget) && VerifyMember(body.NewSidecar, root, budget);
-    }
-
-    private static bool VerifyRestore(RestoreRecoveryBody body, string scope, string evidencePath, string root, RecoveryLifecycleState state, TerminalVerificationBudget budget)
-    {
-        if (state != RecoveryLifecycleState.Committed) return false;
-        foreach (RestoreJournalEntry entry in body.Entries)
-        {
-            budget.ThrowIfExceeded();
-            (byte[] bodyBytes, byte[] sidecarBytes) = DecodeBounded(entry, scope, evidencePath, budget);
-            if (!VerifyBytes(Path.Combine(root, entry.BodyFile), bodyBytes, root, budget) ||
-                !VerifyBytes(Path.Combine(root, entry.SidecarFile), sidecarBytes, root, budget)) return false;
-        }
-        return body.Entries.Count > 0;
-    }
-
-    private static bool VerifyEntity(FileEntityRecoveryBody body, string root, RecoveryLifecycleState state, TerminalVerificationBudget budget)
-    {
-        if (state == RecoveryLifecycleState.RolledBack)
-            return VerifySnapshot(body.OldBody, root, budget) && VerifySnapshot(body.OldMeta, root, budget);
-        return body.CommittedBody is not null && body.CommittedMeta is not null &&
-            VerifySnapshot(body.CommittedBody, root, budget) && VerifySnapshot(body.CommittedMeta, root, budget);
-    }
-
-    private static bool VerifyMember(AppendJournalMember member, string root, TerminalVerificationBudget budget) =>
-        VerifyBytes(Path.Combine(root, member.Path), member.ToSnapshot(member.Path).Bytes, root, budget);
-
-    private static bool VerifySnapshot(RecoveryMemberSnapshot snapshot, string root, TerminalVerificationBudget budget)
-    {
-        if (!snapshot.Existed || snapshot.Payload is null) return false;
-        byte[] bytes = DecodeBase64Bounded(snapshot.Payload, budget);
-        return VerifyBytes(snapshot.Path, bytes, root, budget);
-    }
-
-    private static bool VerifyBytes(string path, byte[] expected, string root, TerminalVerificationBudget budget)
-    {
-        if (!PathContainment.IsWithin(root, path) || !File.Exists(path) || !budget.TryReserve(expected.Length)) return false;
-        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
-        byte[] buffer = new byte[64 * 1024];
-        int offset = 0;
-        while (offset < expected.Length)
-        {
-            budget.ThrowIfExceeded();
-            int read = stream.Read(buffer, 0, Math.Min(buffer.Length, expected.Length - offset));
-            if (read == 0 || !buffer.AsSpan(0, read).SequenceEqual(expected.AsSpan(offset, read))) return false;
-            offset += read;
-        }
-        return stream.ReadByte() == -1;
-    }
-
-    private static (byte[] Body, byte[] Sidecar) DecodeBounded(RestoreJournalEntry entry, string scope, string evidencePath, TerminalVerificationBudget budget)
-    {
-        budget.ThrowIfExceeded();
-        byte[] body = DecodeBase64Bounded(entry.BodyBase64, budget);
-        byte[] sidecar = DecodeBase64Bounded(entry.SidecarBase64, budget);
-        if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(body)), entry.BodySha256, StringComparison.Ordinal) ||
-            !string.Equals(Convert.ToHexStringLower(SHA256.HashData(sidecar)), entry.SidecarSha256, StringComparison.Ordinal))
-            throw new InvalidDataException("Invalid verification evidence.");
-        return (body, sidecar);
-    }
-
-    private static byte[] DecodeBase64Bounded(string payload, TerminalVerificationBudget budget)
-    {
-        if (payload.Length > ((MaintenanceLimits.TerminalVerificationMaximumBytes + 2) / 3) * 4)
-            throw new MaintenanceVerificationBudgetException();
-        int length = payload.Length / 4 * 3;
-        byte[] decoded = new byte[length];
-        if (!Convert.TryFromBase64String(payload, decoded, out int written)) throw new InvalidDataException("Invalid verification evidence.");
-        Array.Resize(ref decoded, written);
-        if (!budget.TryReserve(written)) throw new MaintenanceVerificationBudgetException();
-        return decoded;
-    }
-
-    private sealed class TerminalVerificationBudget
-    {
-        private readonly Stopwatch _clock = Stopwatch.StartNew();
-        private readonly CancellationToken _cancellationToken;
-        private readonly int _maximumBytes;
-        private readonly TimeSpan _deadline;
-        private int _bytes;
-        internal TerminalVerificationBudget(int maxBytes, TimeSpan deadline, CancellationToken cancellationToken)
-        { _maximumBytes = maxBytes; _deadline = deadline; _cancellationToken = cancellationToken; }
-        internal bool TryReserve(int bytes) => bytes >= 0 && _bytes <= _maximumBytes - bytes && (_bytes += bytes) >= 0;
-        internal void ThrowIfExceeded()
-        { _cancellationToken.ThrowIfCancellationRequested(); if (_clock.Elapsed > _deadline) throw new MaintenanceVerificationBudgetException(); }
-    }
-
-    private sealed class MaintenanceVerificationBudgetException : Exception;
 
     internal static string SafeRelativePath(string evidencePath)
     {
@@ -563,7 +594,7 @@ internal sealed class B3CoordinatorMaintenanceAdapter : IB3CoordinatorMaintenanc
                 RecoveryBlockReason.Ambiguous => MaintenanceProtectionReason.Ambiguous,
                 RecoveryBlockReason.Inconsistent => MaintenanceProtectionReason.Unverifiable,
                 RecoveryBlockReason.WrongScope => MaintenanceProtectionReason.Unsafe,
-                RecoveryBlockReason.Unsafe => MaintenanceProtectionReason.Unsafe,
+        RecoveryBlockReason.Unsafe => MaintenanceProtectionReason.Unsafe,
                 _ => MaintenanceProtectionReason.Inaccessible
             } };
 

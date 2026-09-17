@@ -24,7 +24,7 @@ public sealed partial class MultiMemoryTransactionContractTests
             transactionalParticipants: [participant]);
 
         var json = MultiMemoryTransactionRecordCodec.Serialize(record);
-        var parsed = MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        var parsed = MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
             json, "local-topic:notes", "scope/.multi-memory-transaction.json");
 
         parsed.TransactionalParticipants.Should().ContainSingle();
@@ -49,7 +49,7 @@ public sealed partial class MultiMemoryTransactionContractTests
             [new MultiMemoryParticipantManifest("notes/a", "op-1", "memory")], timestamp, timestamp,
             transactionalParticipants: [participant]);
 
-        var parsed = MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        var parsed = MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
             MultiMemoryTransactionRecordCodec.Serialize(record), "local-topic:notes",
             "scope/.multi-memory-transaction.json");
 
@@ -104,7 +104,7 @@ public sealed partial class MultiMemoryTransactionContractTests
     {
         var json = Encoding.UTF8.GetString(MultiMemoryTransactionRecordCodec.Serialize(NewRecord()));
         json = json.Replace("\"prepared\"", "\"Prepared\"", StringComparison.Ordinal);
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/.multi-memory-transaction.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
     }

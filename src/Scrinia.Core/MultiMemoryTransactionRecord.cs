@@ -160,7 +160,7 @@ internal static class MultiMemoryTransactionRecordCodec
         return JsonSerializer.SerializeToUtf8Bytes(record, MultiMemoryTransactionJsonContext.Default.MultiMemoryTransactionRecord);
     }
 
-    internal static MultiMemoryTransactionRecord ParseAndValidate(
+    internal static MultiMemoryTransactionRecord ParseVerifiedRecord(
         ReadOnlySpan<byte> json,
         string expectedScope,
         string recordPath,
@@ -267,13 +267,14 @@ internal static class MultiMemoryTransactionRecordCodec
         DurableFile.AtomicWriteAllBytes(path, Serialize(replacement));
     }
 
-    internal static MultiMemoryTransactionRecord Read(string scopeDirectory, string expectedScope)
+    internal static MultiMemoryTransactionRecord Read(string scopeDirectory, string expectedScope,
+        CancellationToken cancellationToken = default)
     {
         string path;
         try
         {
             path = GetPath(scopeDirectory);
-            return ParseAndValidate(ReadBounded(path), expectedScope, path, scopeDirectory);
+            return ParseVerifiedRecord(ReadVerified(path, expectedScope, scopeDirectory, cancellationToken), expectedScope, path, scopeDirectory);
         }
         catch (MultiMemoryTransactionRecordException)
         {
@@ -444,19 +445,27 @@ internal static class MultiMemoryTransactionRecordCodec
         path.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
             StringSplitOptions.None).Any(segment => segment is "." or "..");
 
-    private static byte[] ReadBounded(string path)
+    private static byte[] ReadVerified(string path, string expectedScope, string scopeDirectory,
+        CancellationToken cancellationToken)
     {
-        using var stream = File.OpenRead(path);
-        using var bytes = new MemoryStream();
-        byte[] buffer = new byte[16 * 1024];
-        int read;
-        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
-        {
-            if (bytes.Length + read > MaximumDocumentBytes)
-                throw new MultiMemoryTransactionRecordException("Coordinator record exceeds its size bound.", MultiMemoryFailure.Malformed);
-            bytes.Write(buffer, 0, read);
-        }
-        return bytes.ToArray();
+        string relativeName = Path.GetRelativePath(scopeDirectory, path).Replace(Path.DirectorySeparatorChar, '/');
+        var verifier = new RecoveryEvidenceVerifier(new RecoveryScopeBinding(expectedScope, scopeDirectory));
+        var request = new RecoveryVerificationRequest(
+            new RecoveryScopeBinding(expectedScope, scopeDirectory), RecoveryEvidenceKind.MultiMemoryTransactionRecord,
+            relativeName, null, default, null, MaintenanceLimits.Hard);
+        RecoveryVerificationResult result = verifier.VerifyAsync(request, cancellationToken)
+            .AsTask().GetAwaiter().GetResult();
+        if (result.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
+            throw new FileNotFoundException("Coordinator record is missing.", path);
+        if (result.Outcome != RecoveryVerificationOutcome.Verified || result.SourceContent is null)
+            throw new MultiMemoryTransactionRecordException(
+                result.Outcome == RecoveryVerificationOutcome.ProtectedOversized
+                    ? "Coordinator record exceeds its size bound."
+                    : "Coordinator record could not be verified.",
+                result.Outcome == RecoveryVerificationOutcome.ProtectedOversized
+                    ? MultiMemoryFailure.Malformed : MultiMemoryFailure.ReplayIoFailed);
+        using (result.SourceContent)
+            return result.SourceContent.Bytes.ToArray();
     }
 }
 

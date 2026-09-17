@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core.Configuration;
+using Scrinia.Core.Embeddings;
 using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
@@ -201,8 +202,8 @@ public sealed class ModelRelocationTests : IDisposable
         // directory — and the pre-seeded built-in files are the ones setup confirmed present.
         Path.Combine(UserHome.Resolve(), "models", "m2v-MiniLM-L6-v2")
             .Should().Be(_homeModelsDir);
-        File.Exists(Path.Combine(_homeModelsDir, "model.safetensors")).Should().BeTrue();
-        File.Exists(Path.Combine(_homeModelsDir, "vocab.txt")).Should().BeTrue();
+        Model2VecModelManager.IsModelAvailable(_homeModelsDir).Should().BeTrue(
+            "setup must repair the pre-seeded files and publish verified assets");
 
         // The pre-fix code resolved under AppContext.BaseDirectory/models; the fix must never create
         // or populate that executable-relative path.
@@ -229,8 +230,8 @@ public sealed class ModelRelocationTests : IDisposable
                 int exit = await new ScriniaCommands().Setup(workspaceRoot: workspace, noOllama: true);
 
                 exit.Should().Be(0, $"isolated repetition {repetition + 1} should complete cleanly");
-                File.Exists(Path.Combine(modelDir, "model.safetensors")).Should().BeTrue();
-                File.Exists(Path.Combine(modelDir, "vocab.txt")).Should().BeTrue();
+                Model2VecModelManager.IsModelAvailable(modelDir).Should().BeTrue(
+                    "setup must publish verified assets in the isolated home");
                 Directory.Exists(Path.Combine(home, "plugins")).Should().BeFalse(
                     "a model-only setup must not create a plugin hierarchy");
             }

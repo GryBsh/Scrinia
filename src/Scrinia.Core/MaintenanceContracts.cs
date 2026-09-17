@@ -1,5 +1,4 @@
 using System.Collections.Frozen;
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Buffers.Binary;
@@ -66,7 +65,13 @@ internal readonly record struct MaintenanceCandidateIdentity(
     MaintenanceHash256 SubjectIdentity,
     ulong ImmutableEntryOrdinal);
 
-internal static class MaintenanceLimits
+internal readonly record struct MaintenanceLimits(
+    long MaximumBytes,
+    TimeSpan MaximumDuration,
+    int MaximumOpenOperations,
+    int MaximumStatOperations,
+    int MaximumReadOperations,
+    int ReadBufferBytes)
 {
     internal const int CandidatePageSize = 128;
     internal const int UnsafeScanLimit = 32;
@@ -74,8 +79,27 @@ internal static class MaintenanceLimits
     internal const int MetadataReadLimit = CandidatePageSize;
     internal const int ReturnedProjectionLimit = 64;
     internal const int JournalBudgetMaximum = 50;
-    internal const int TerminalVerificationMaximumBytes = 8 * 1024 * 1024;
-    internal const int TerminalVerificationMaximumMilliseconds = 250;
+    internal static MaintenanceLimits Hard { get; } = new(
+        16 * 1024 * 1024, TimeSpan.FromSeconds(2), 2, 8, 257, 64 * 1024);
+
+    internal static MaintenanceLimits CreateLowerOverride(
+        long maximumBytes, TimeSpan maximumDuration, int maximumOpenOperations,
+        int maximumStatOperations, int maximumReadOperations, int readBufferBytes)
+    {
+        var limits = new MaintenanceLimits(maximumBytes, maximumDuration, maximumOpenOperations,
+            maximumStatOperations, maximumReadOperations, readBufferBytes);
+        if (!IsValid(limits))
+            throw new ArgumentException("Recovery verification limits must be positive and no greater than the hard limits.");
+        return limits;
+    }
+
+    internal static bool IsValid(MaintenanceLimits limits) =>
+        limits.MaximumBytes > 0 && limits.MaximumBytes <= Hard.MaximumBytes &&
+        limits.MaximumDuration > TimeSpan.Zero && limits.MaximumDuration <= Hard.MaximumDuration &&
+        limits.MaximumOpenOperations > 0 && limits.MaximumOpenOperations <= Hard.MaximumOpenOperations &&
+        limits.MaximumStatOperations > 0 && limits.MaximumStatOperations <= Hard.MaximumStatOperations &&
+        limits.MaximumReadOperations > 0 && limits.MaximumReadOperations <= Hard.MaximumReadOperations &&
+        limits.ReadBufferBytes > 0 && limits.ReadBufferBytes <= Hard.ReadBufferBytes;
 }
 
 internal enum MaintenanceVerificationStatus { Verified, ProtectedEvidence }
@@ -189,9 +213,14 @@ internal static class MaintenanceCursorCodec
     internal static string Encode(MaintenanceCursor cursor, MaintenanceRunRegistry registry)
     {
         ArgumentNullException.ThrowIfNull(registry);
-        if (!registry.TryGet(cursor.Run, out MaintenanceRunBinding? binding) || binding is null || !binding.Matches(cursor))
+        if (!registry.TryAcquire(cursor.Run, out MaintenanceRunLease? lease) || lease is null)
             throw new InvalidOperationException("Invalid continuation.");
-        return Encode(cursor, binding.SigningKey.Span);
+        using (lease)
+        {
+            if (!lease.Binding.Matches(cursor))
+                throw new InvalidOperationException("Invalid continuation.");
+            return Encode(cursor, lease.SigningKey.Span);
+        }
     }
 
     internal static bool TryDecode(string token, MaintenanceRunRegistry registry,
@@ -201,16 +230,17 @@ internal static class MaintenanceCursorCodec
         error = null;
         if (!TryReadRunId(token, out MaintenanceRunId runId))
             return Fail(out error, "Invalid continuation.");
-        if (!registry.TryGet(runId, out MaintenanceRunBinding? binding) || binding is null)
+        if (!registry.TryAcquire(runId, out MaintenanceRunLease? lease) || lease is null)
             return Fail(out error, "Invalid continuation.");
-        if (!TryDecode(token, binding.SigningKey.Span, out cursor, out _))
-            return Fail(out error, "Invalid continuation.");
-        if (!binding.Matches(cursor))
+        using (lease)
         {
-            cursor = default;
-            return Fail(out error, "Invalid continuation.");
+            if (!TryDecode(token, lease.SigningKey.Span, out cursor, out _) || !lease.Binding.Matches(cursor))
+            {
+                cursor = default;
+                return Fail(out error, "Invalid continuation.");
+            }
+            return true;
         }
-        return true;
     }
 
     private static bool TryReadRunId(string token, out MaintenanceRunId runId)
@@ -278,6 +308,9 @@ internal static class MaintenanceCursorCodec
 internal sealed class MaintenanceRunBinding
 {
     private readonly byte[] _signingKey;
+    private readonly object _keyGate = new();
+    private int _leases;
+    private bool _revoked;
 
     internal MaintenanceRunBinding(MaintenanceWorkspaceKey workspace, MaintenanceRunId run,
         MaintenanceSnapshotId snapshot, MaintenanceScopeBinding scopes, MaintenanceHash256 policyHash,
@@ -298,19 +331,59 @@ internal sealed class MaintenanceRunBinding
     internal MaintenanceScopeBinding Scopes { get; }
     internal MaintenanceHash256 PolicyHash { get; }
     internal ulong ExpiresUnixSeconds { get; }
-    internal ReadOnlyMemory<byte> SigningKey => _signingKey.ToArray();
+    internal ReadOnlyMemory<byte> SigningKey
+    {
+        get
+        {
+            lock (_keyGate)
+                return _signingKey.ToArray();
+        }
+    }
+
+    internal MaintenanceRunLease AcquireLease()
+    {
+        lock (_keyGate)
+        {
+            if (_revoked)
+                throw new InvalidOperationException("The maintenance run is revoked.");
+            _leases++;
+            return new MaintenanceRunLease(this);
+        }
+    }
+
+    internal void Revoke()
+    {
+        lock (_keyGate)
+        {
+            _revoked = true;
+            if (_leases == 0)
+                CryptographicOperations.ZeroMemory(_signingKey);
+        }
+    }
+
+    internal void ReleaseLease()
+    {
+        lock (_keyGate)
+        {
+            if (_leases <= 0)
+                throw new InvalidOperationException("The maintenance run lease count is invalid.");
+            _leases--;
+            if (_revoked && _leases == 0)
+                CryptographicOperations.ZeroMemory(_signingKey);
+        }
+    }
 
     internal bool Matches(MaintenanceCursor cursor) =>
         cursor.Workspace == Workspace && cursor.Run == Run && cursor.Snapshot == Snapshot &&
         cursor.Scopes == Scopes && cursor.PolicyHash.Equals(PolicyHash) &&
         cursor.ExpiresUnixSeconds == ExpiresUnixSeconds;
 
-    internal void Clear() => CryptographicOperations.ZeroMemory(_signingKey);
 }
 
 internal sealed class MaintenanceRunRegistry : IDisposable
 {
-    private readonly ConcurrentDictionary<MaintenanceRunId, MaintenanceRunBinding> _runs = new();
+    private readonly Dictionary<MaintenanceRunId, MaintenanceRunBinding> _runs = [];
+    private readonly object _lifecycleGate = new();
     private readonly byte[] _processKey = RandomNumberGenerator.GetBytes(32);
     private int _disposed;
 
@@ -318,57 +391,93 @@ internal sealed class MaintenanceRunRegistry : IDisposable
         MaintenanceSnapshotId snapshot, MaintenanceScopeBinding scopes, MaintenanceHash256 policyHash,
         DateTimeOffset expiresAt)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        ulong expiry = checked((ulong)expiresAt.ToUnixTimeSeconds());
-        if (expiry <= (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
-            throw new ArgumentException("Maintenance run expiry must be in the future.", nameof(expiresAt));
-        byte[] input = new byte[16];
-        run.Value.TryWriteBytes(input, bigEndian: true, out _);
-        byte[] key = HMACSHA256.HashData(_processKey, input);
-        var binding = new MaintenanceRunBinding(workspace, run, snapshot, scopes, policyHash, expiry, key);
-        _runs.AddOrUpdate(run, binding, (_, replaced) =>
+        lock (_lifecycleGate)
         {
-            replaced.Clear();
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+            ulong expiry = checked((ulong)expiresAt.ToUnixTimeSeconds());
+            if (expiry <= (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+                throw new ArgumentException("Maintenance run expiry must be in the future.", nameof(expiresAt));
+            byte[] input = new byte[16];
+            run.Value.TryWriteBytes(input, bigEndian: true, out _);
+            byte[] key = HMACSHA256.HashData(_processKey, input);
+            var binding = new MaintenanceRunBinding(workspace, run, snapshot, scopes, policyHash, expiry, key);
+            if (_runs.Remove(run, out MaintenanceRunBinding? replaced))
+                replaced.Revoke();
+            _runs.Add(run, binding);
             return binding;
-        });
-        return binding;
+        }
     }
 
-    internal bool TryGet(MaintenanceRunId run, out MaintenanceRunBinding? binding)
+    internal bool TryAcquire(MaintenanceRunId run, out MaintenanceRunLease? lease)
     {
-        binding = null;
-        if (Volatile.Read(ref _disposed) != 0) return false;
-        if (!_runs.TryGetValue(run, out MaintenanceRunBinding? found)) return false;
-        if (found.ExpiresUnixSeconds <= (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+        lock (_lifecycleGate)
         {
-            Remove(run);
-            return false;
+            lease = null;
+            if (_disposed != 0 || !_runs.TryGetValue(run, out MaintenanceRunBinding? found)) return false;
+            if (found.ExpiresUnixSeconds <= (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+            {
+                _runs.Remove(run);
+                found.Revoke();
+                return false;
+            }
+            lease = found.AcquireLease();
+            return true;
         }
-        binding = found;
-        return true;
     }
 
     internal bool Remove(MaintenanceRunId run)
     {
-        if (!_runs.TryRemove(run, out MaintenanceRunBinding? removed)) return false;
-        removed.Clear();
-        return true;
+        lock (_lifecycleGate)
+        {
+            if (!_runs.Remove(run, out MaintenanceRunBinding? removed)) return false;
+            removed.Revoke();
+            return true;
+        }
     }
 
     internal int EvictExpired()
     {
-        ulong now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        int removed = 0;
-        foreach ((MaintenanceRunId run, MaintenanceRunBinding binding) in _runs)
-            if (binding.ExpiresUnixSeconds <= now && Remove(run)) removed++;
-        return removed;
+        lock (_lifecycleGate)
+        {
+            ulong now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            int removed = 0;
+            foreach ((MaintenanceRunId run, MaintenanceRunBinding binding) in _runs.ToArray())
+            {
+                if (binding.ExpiresUnixSeconds > now) continue;
+                _runs.Remove(run);
+                binding.Revoke();
+                removed++;
+            }
+            return removed;
+        }
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        foreach (MaintenanceRunId run in _runs.Keys) Remove(run);
-        CryptographicOperations.ZeroMemory(_processKey);
+        lock (_lifecycleGate)
+        {
+            if (_disposed != 0) return;
+            _disposed = 1;
+            foreach (MaintenanceRunBinding binding in _runs.Values)
+                binding.Revoke();
+            _runs.Clear();
+            CryptographicOperations.ZeroMemory(_processKey);
+        }
+    }
+}
+
+internal sealed class MaintenanceRunLease : IDisposable
+{
+    private MaintenanceRunBinding? _binding;
+
+    internal MaintenanceRunLease(MaintenanceRunBinding binding) => _binding = binding;
+    internal MaintenanceRunBinding Binding => _binding ?? throw new ObjectDisposedException(nameof(MaintenanceRunLease));
+    internal ReadOnlyMemory<byte> SigningKey => Binding.SigningKey;
+
+    public void Dispose()
+    {
+        MaintenanceRunBinding? binding = Interlocked.Exchange(ref _binding, null);
+        binding?.ReleaseLease();
     }
 }
 
@@ -664,6 +773,8 @@ internal sealed record MaintenanceCandidate
         CandidateTimestamp = candidateTimestamp;
         OperationId = operationId is null ? null : MaintenanceContractValidation.RequireSafeText(operationId, nameof(operationId));
         Protection = protection;
+        VerificationOutcome = RecoveryVerificationOutcome.ProtectedIoFailure;
+        LifecycleState = RecoveryLifecycleState.RecoveryRequired;
         RelativePath = MaintenanceContractValidation.RequireRelativePath(relativePath, nameof(relativePath));
     }
 
@@ -675,6 +786,8 @@ internal sealed record MaintenanceCandidate
     public DateTimeOffset? CandidateTimestamp { get; }
     public string? OperationId { get; }
     public MaintenanceProtectionReason? Protection { get; }
+    public RecoveryVerificationOutcome VerificationOutcome { get; init; }
+    public RecoveryLifecycleState LifecycleState { get; init; }
     public string RelativePath { get; }
 }
 

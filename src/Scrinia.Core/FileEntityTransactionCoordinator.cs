@@ -37,14 +37,14 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
 
         FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory,
-            mutation.EntityKind, mutation.Name);
+            mutation.EntityKind, mutation.Name, cancellationToken);
         if (recovery is not null)
             return recovery;
 
         RawMemberSnapshot oldBody = sidecarOnly
             ? RawMemberSnapshot.Capture(bodySnapshotPath, false, [])
-            : Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead);
-        RawMemberSnapshot oldMeta = Capture(mutation.MetaPath, FileEntityFaultPoint.RawMetaRead);
+            : Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead, cancellationToken);
+        RawMemberSnapshot oldMeta = Capture(mutation.MetaPath, FileEntityFaultPoint.RawMetaRead, cancellationToken);
         bool metadataMutation = mutation.DeleteMeta || mutation.NewMeta is not null;
         string? evidencePath = null;
         string? archiveBody = null;
@@ -70,9 +70,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
             ThrowIfFault(FileEntityFaultPoint.VerificationRead);
             if (!sidecarOnly)
-                Verify(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody);
+                Verify(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, cancellationToken);
             if (metadataMutation)
-                Verify(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!);
+                Verify(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!, cancellationToken);
 
             RawMemberSnapshot committedBody = ExpectedSnapshot(
                 bodySnapshotPath, sidecarOnly || mutation.DeleteBody, mutation.NewBody);
@@ -143,12 +143,19 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             throw new ArgumentException("File-entity paths must remain within the workspace root.", nameof(mutation));
     }
 
-    private RawMemberSnapshot Capture(string path, FileEntityFaultPoint point)
+    private RawMemberSnapshot Capture(string path, FileEntityFaultPoint point, CancellationToken cancellationToken)
     {
         ThrowIfFault(point);
-        if (!File.Exists(path))
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("workspace", _workspaceRoot), RecoveryEvidenceKind.FileEntityJournal,
+            path, default, MaintenanceLimits.Hard, cancellationToken)
+            .AsTask().GetAwaiter().GetResult();
+        if (verification.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
             return RawMemberSnapshot.Capture(path, false, []);
-        return RawMemberSnapshot.Capture(path, true, File.ReadAllBytes(path));
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+            throw new IOException($"File-entity member could not be captured safely: {path}");
+        using (verification.SourceContent)
+            return RawMemberSnapshot.Capture(path, true, verification.SourceContent.Bytes.ToArray());
     }
 
     private void Archive(RawMemberSnapshot snapshot, string? path, FileEntityFaultPoint point)
@@ -173,7 +180,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         DurableFile.AtomicWriteAllBytes(path, bytes);
     }
 
-    private static void Verify(string path, bool deleted, byte[] expected)
+    private static void Verify(string path, bool deleted, byte[] expected, CancellationToken cancellationToken)
     {
         if (deleted)
         {
@@ -182,11 +189,13 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             return;
         }
 
-        if (!File.Exists(path))
-            throw new IOException($"File-entity member is missing: {path}");
-        string actualHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)));
         string expectedHash = Convert.ToHexStringLower(SHA256.HashData(expected));
-        if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+            new RecoveryScopeBinding("workspace", Path.GetFullPath(Path.GetDirectoryName(path)!)),
+            RecoveryEvidenceKind.FileEntityJournal, Path.GetFullPath(path),
+            new RecoveryExpectedHash(expectedHash), MaintenanceLimits.Hard, cancellationToken)
+            .AsTask().GetAwaiter().GetResult();
+        if (verification.Outcome != RecoveryVerificationOutcome.Verified)
             throw new IOException($"File-entity member verification failed: {path}");
     }
 
@@ -289,7 +298,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         DurableFile.AtomicWriteAllBytes(path, RecoveryEnvelopeCodec.Serialize(envelope));
     }
 
-    private FileEntityMutationResult? RecoverPendingEvidence(string directory, string entityKind, string entityName)
+    private FileEntityMutationResult? RecoverPendingEvidence(string directory, string entityKind, string entityName,
+        CancellationToken cancellationToken)
     {
         string[] evidencePaths = Directory.EnumerateFiles(directory, ".file-entity-*.recovery")
             .OrderBy(path => path, StringComparer.Ordinal).ToArray();
@@ -302,8 +312,18 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             try
             {
                 var adapter = new FileEntityRecoveryAdapter();
-                RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ParseAndNormalize(
-                    File.ReadAllBytes(evidencePath), ScopeForEntity(directory), evidencePath, directory);
+                RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
+                    new RecoveryScopeBinding(ScopeForEntity(directory), directory), RecoveryEvidenceKind.FileEntityJournal,
+                    evidencePath, default, MaintenanceLimits.Hard, cancellationToken)
+                    .AsTask().GetAwaiter().GetResult();
+                if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
+                    throw new IOException("File-entity recovery evidence could not be verified.");
+                using RecoveryVerificationContent verifiedContent = verification.SourceContent;
+                RecoveryVerifiedFileMetadata metadata = verifiedContent.Metadata;
+                RecoveryScopeBinding scopeBinding = new(ScopeForEntity(directory), directory);
+                RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
+                    in verifiedContent, in scopeBinding, evidencePath, directory, RecoveryEvidenceKind.FileEntityJournal, in metadata);
+                RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope);
                 if (envelope.TypedBody is not FileEntityRecoveryBody body)
                     throw new InvalidDataException("File-entity recovery body is missing.");
                 bool kindMatches = string.Equals(body.EntityKind, entityKind, StringComparison.OrdinalIgnoreCase) ||
@@ -334,7 +354,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         try
         {
             RecoverFileEntity(matches[0].Envelope, matches[0].Path, ScopeForEntity(directory), directory,
-                CancellationToken.None);
+                cancellationToken);
             return null;
         }
         catch (Exception failure)
@@ -364,9 +384,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             if (body.CommittedBody is null && body.CommittedMeta is null)
                 throw new InvalidDataException("Committed recovery evidence is missing post-commit snapshots.");
             if (body.CommittedBody is not null)
-                VerifySnapshot(ToRawSnapshot(body.CommittedBody));
+                VerifySnapshot(ToRawSnapshot(body.CommittedBody), cancellationToken);
             if (body.CommittedMeta is not null)
-                VerifySnapshot(ToRawSnapshot(body.CommittedMeta));
+                VerifySnapshot(ToRawSnapshot(body.CommittedMeta), cancellationToken);
         }
         else
         {
@@ -403,8 +423,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         return new RawMemberSnapshot(snapshot.Path, snapshot.Existed, bytes, snapshot.Sha256);
     }
 
-    private static void VerifySnapshot(RawMemberSnapshot expected) =>
-        Verify(expected.Path, !expected.Existed, expected.Bytes);
+    private static void VerifySnapshot(RawMemberSnapshot expected, CancellationToken cancellationToken) =>
+        Verify(expected.Path, !expected.Existed, expected.Bytes, cancellationToken);
 
     private static RawMemberSnapshot ExpectedSnapshot(string path, bool deleted, byte[] bytes) =>
         RawMemberSnapshot.Capture(path, !deleted, deleted ? [] : bytes);

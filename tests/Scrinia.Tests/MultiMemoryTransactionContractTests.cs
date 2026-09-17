@@ -112,7 +112,7 @@ public sealed partial class MultiMemoryTransactionContractTests
             .Should().Equal("subject", "operationId", "kind");
         json.Should().NotContain("payload").And.NotContain("artifact").And.NotContain("sidecar").And.NotContain("hash");
 
-        MultiMemoryTransactionRecord parsed = MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        MultiMemoryTransactionRecord parsed = MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
             Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/.multi-memory-transaction.json");
         parsed.Should().BeEquivalentTo(record);
     }
@@ -129,7 +129,7 @@ public sealed partial class MultiMemoryTransactionContractTests
 
         FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.Serialize(record))
             .Should().Throw<MultiMemoryTransactionRecordException>();
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes("{}"), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
     }
@@ -138,7 +138,7 @@ public sealed partial class MultiMemoryTransactionContractTests
     public void CoordinatorRecord_NewerVersionIsRejectedWithoutRewrite()
     {
         const string json = "{\"format\":\"scrinia.multi-memory-transaction\",\"version\":2,\"transactionId\":\"tx-1\",\"scope\":\"local-topic:notes\",\"state\":\"prepared\",\"participants\":[{\"subject\":\"notes/a\",\"operationId\":\"op-1\",\"kind\":\"memory\"}],\"createdAt\":\"2026-09-12T00:00:00Z\",\"updatedAt\":\"2026-09-12T00:00:00Z\"}";
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be(MultiMemoryFailure.UnsupportedVersion);
@@ -199,7 +199,7 @@ public sealed partial class MultiMemoryTransactionContractTests
             _ => json.Replace("\"kind\":\"memory\"", "\"kind\":\"memory\",\"unknown\":true", StringComparison.Ordinal)
         };
 
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be((MultiMemoryFailure)failure);
@@ -212,22 +212,22 @@ public sealed partial class MultiMemoryTransactionContractTests
             "{\"subject\":\"notes/a\",\"operationId\":\"op-1\",\"kind\":\"memory\"}",
             "{\"subject\":\"notes/a\",\"operationId\":\"op-1\",\"kind\":\"memory\"},{\"subject\":\"notes/b\",\"operationId\":\"op-1\",\"kind\":\"memory\"}",
             StringComparison.Ordinal);
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(duplicate), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
 
         string blank = RecordJson().Replace("\"tx-1\"", "\" \"", StringComparison.Ordinal);
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(blank), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
 
         string oversized = RecordJson().Replace("\"tx-1\"", $"\"{new string('x', 513)}\"", StringComparison.Ordinal);
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(oversized), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
 
         string invalidTimestamp = RecordJson().Replace("2026-09-12T00:00:00Z", "2026-09-12T00:00:01Z", StringComparison.Ordinal);
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(invalidTimestamp), "local-topic:notes", "record.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>();
     }
@@ -236,7 +236,7 @@ public sealed partial class MultiMemoryTransactionContractTests
     public void CoordinatorRecord_RejectsTraversalAndOutOfScopeRecordPaths()
     {
         string json = RecordJson();
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/../.multi-memory-transaction.json"))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
@@ -244,18 +244,18 @@ public sealed partial class MultiMemoryTransactionContractTests
         string root = Path.Combine(Path.GetTempPath(), "scrinia-b3-containment", Guid.NewGuid().ToString("N"));
         string foreign = Path.Combine(Path.GetTempPath(), "scrinia-b3-foreign", Guid.NewGuid().ToString("N"),
             MultiMemoryTransactionRecordCodec.FileName);
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", foreign, root))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
 
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes",
                 Path.Combine(Path.GetTempPath(), MultiMemoryTransactionRecordCodec.FileName)))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);
 
-        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseAndValidate(
+        FluentActions.Invoking(() => MultiMemoryTransactionRecordCodec.ParseVerifiedRecord(
                 Encoding.UTF8.GetBytes(json), "local-topic:notes", "scope/not-the-coordinator.json", root))
             .Should().Throw<MultiMemoryTransactionRecordException>()
             .Which.Failure.Should().Be(MultiMemoryFailure.Unsafe);

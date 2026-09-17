@@ -14,7 +14,7 @@ public sealed class AppendJournalTests
         var transaction = CreateTransaction();
 
         AppendJournal journal = AppendJournalCodec.CreatePrepared(transaction);
-        AppendJournal parsed = AppendJournalCodec.ParseAndValidate(
+        AppendJournal parsed = AppendJournalCodec.ParseLegacyJournal(
             AppendJournalCodec.Serialize(journal), transaction.Scope, "journal.json");
 
         parsed.State.Should().Be(AppendJournalState.Prepared);
@@ -41,7 +41,7 @@ public sealed class AppendJournalTests
         AppendJournal journal = AppendJournalCodec.CreatePrepared(CreateTransaction());
         var adapter = new AppendRecoveryAdapter();
 
-        RecoveryEnvelopeDocument envelope = adapter.NormalizeLegacy(
+        RecoveryEnvelopeDocument envelope = adapter.ConsumeLegacy(
             AppendJournalCodec.Serialize(journal), "local", "versions/.append-journal.json", ".");
 
         envelope.IsLegacy.Should().BeTrue();
@@ -101,7 +101,7 @@ public sealed class AppendJournalTests
         string document = System.Text.Encoding.UTF8.GetString(AppendJournalCodec.Serialize(journal));
         byte[] json = System.Text.Encoding.UTF8.GetBytes(document.Replace("AQID", "AQIE", StringComparison.Ordinal));
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(json, transaction.Scope, "journal.json");
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(json, transaction.Scope, "journal.json");
 
         parse.Should().Throw<AppendJournalException>()
             .Which.Failure.Should().Be(AppendJournalFailure.IntegrityFailed);
@@ -151,7 +151,7 @@ public sealed class AppendJournalTests
     {
         byte[] oversized = new byte[checked((int)RestoreJournalCodec.MaxJournalJsonBytes + 1)];
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(oversized, "local", "journal.json");
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(oversized, "local", "journal.json");
 
         parse.Should().Throw<AppendJournalException>()
             .Which.Failure.Should().Be(AppendJournalFailure.Malformed);
@@ -167,7 +167,7 @@ public sealed class AppendJournalTests
         };
 
         AppendJournal journal = AppendJournalCodec.CreatePrepared(transaction);
-        Action parse = () => AppendJournalCodec.ParseAndValidate(
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(
             AppendJournalCodec.Serialize(journal), "local", "journal.json", storeDirectory);
 
         parse.Should().Throw<AppendJournalException>()
@@ -182,7 +182,7 @@ public sealed class AppendJournalTests
             Address = "not a logical address"
         };
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(
             AppendJournalCodec.Serialize(journal), "local", "journal.json");
 
         parse.Should().Throw<AppendJournalException>()
@@ -199,7 +199,7 @@ public sealed class AppendJournalTests
         string document = System.Text.Encoding.UTF8.GetString(AppendJournalCodec.Serialize(journal));
         byte[] json = System.Text.Encoding.UTF8.GetBytes(document.Replace(original, replacement, StringComparison.Ordinal));
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(json, "local", "journal.json");
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(json, "local", "journal.json");
 
         parse.Should().Throw<AppendJournalException>()
             .Which.Failure.Should().Be(AppendJournalFailure.Malformed);
@@ -212,7 +212,7 @@ public sealed class AppendJournalTests
         string document = System.Text.Encoding.UTF8.GetString(AppendJournalCodec.Serialize(journal));
         document = document.Replace("\"payload\":\"AQID\"", "\"payload\":\"not-base64\"", StringComparison.Ordinal);
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(
             System.Text.Encoding.UTF8.GetBytes(document), "local", "journal.json");
 
         parse.Should().Throw<AppendJournalException>()
@@ -226,7 +226,7 @@ public sealed class AppendJournalTests
         string document = System.Text.Encoding.UTF8.GetString(AppendJournalCodec.Serialize(journal))
             .Replace($"\"sha256\":\"{journal.OldArtifact.Sha256}\"", "\"sha256\":\"invalid-hash\"", StringComparison.Ordinal);
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(
             System.Text.Encoding.UTF8.GetBytes(document), "local", "journal.json");
 
         parse.Should().Throw<AppendJournalException>()
@@ -243,7 +243,7 @@ public sealed class AppendJournalTests
         string document = System.Text.Encoding.UTF8.GetString(AppendJournalCodec.Serialize(journal))
             .Replace("[\"stale.nmp2\"]", $"[{candidate}]", StringComparison.Ordinal);
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(
             System.Text.Encoding.UTF8.GetBytes(document), "local", "journal.json", "store");
 
         parse.Should().Throw<AppendJournalException>()
@@ -257,7 +257,7 @@ public sealed class AppendJournalTests
         string document = System.Text.Encoding.UTF8.GetString(AppendJournalCodec.Serialize(journal))
             .Replace($"\"sha256\":\"{journal.OldArtifact.Sha256}\"", "\"sha256\":null", StringComparison.Ordinal);
 
-        Action parse = () => AppendJournalCodec.ParseAndValidate(
+        Action parse = () => AppendJournalCodec.ParseLegacyJournal(
             System.Text.Encoding.UTF8.GetBytes(document), "local", "journal.json");
 
         parse.Should().Throw<AppendJournalException>()

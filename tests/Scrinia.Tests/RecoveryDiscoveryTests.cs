@@ -284,4 +284,62 @@ public sealed class RecoveryDiscoveryTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public void Discover_stops_before_inspecting_more_than_the_journal_scan_ceiling()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        try
+        {
+            int inspected = 0;
+            string validPath = RecoveryTestFixtures.WriteLegacyFileEntityRecovery(skills);
+            IEnumerable<string> files = Enumerable.Repeat(validPath, MaintenanceLimits.JournalBudgetMaximum + 1);
+
+            RecoveryDiscoveryResult result = new RecoveryDiscoveryCoordinator(
+                _ => [skills],
+                _ => files.Select(path =>
+                {
+                    inspected++;
+                    return path;
+                }))
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root);
+
+            result.BlockingEvidence.Should().NotBeNull();
+            result.BlockingEvidence!.Reason.Should().Be(RecoveryBlockReason.ReplayIoFailed);
+            inspected.Should().Be(MaintenanceLimits.JournalBudgetMaximum + 1);
+            result.Candidates.Should().HaveCount(MaintenanceLimits.JournalBudgetMaximum);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discover_propagates_cancellation_during_entity_enumeration()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scrinia-recovery-discovery-" + Guid.NewGuid().ToString("N"));
+        string skills = Path.Combine(root, "skills");
+        Directory.CreateDirectory(skills);
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            IEnumerable<string> Enumerate(string _)
+            {
+                cancellation.Cancel();
+                yield return Path.Combine(skills, ".file-entity-cancelled.recovery");
+            }
+
+            Action discover = () => new RecoveryDiscoveryCoordinator(_ => [skills], Enumerate)
+                .Discover(RecoveryTestFixtures.LocalNotesScope, root, cancellationToken: cancellation.Token);
+
+            discover.Should().Throw<OperationCanceledException>();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

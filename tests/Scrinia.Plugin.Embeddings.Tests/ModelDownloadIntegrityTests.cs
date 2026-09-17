@@ -178,6 +178,368 @@ public sealed class ModelDownloadIntegrityTests : IDisposable
         VerifiedModelDownloader.IsAssetAvailable(modelDir, asset).Should().BeTrue("the promoted asset is visible after retry");
     }
 
+    [Fact]
+    public async Task CancellationAfterHashCompletion_LeavesNoVisibleModelOrTemp()
+    {
+        const string identifier = "m2v-test";
+        byte[] body = Encoding.UTF8.GetBytes("cancel after hash");
+        var asset = Asset(identifier, body);
+        string modelDir = Path.Combine(ModelsRoot, identifier);
+        string digest = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+        using var cancel = new CancellationTokenSource();
+        using var handler = new FakeHttpHandler(body);
+
+        Action cancelAfterHash = cancel.Cancel;
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler), cancelAfterHash, cancel.Token);
+
+        await download.Should().ThrowAsync<OperationCanceledException>();
+
+        File.Exists(Path.Combine(modelDir, digest, asset.Filename)).Should().BeFalse(
+            "cancellation between hashing and promotion must not publish the model");
+        TempFiles(modelDir).Should().BeEmpty("cancellation must clean the validated temp");
+    }
+
+    [Fact]
+    public async Task PromotionRace_WithValidWinner_IsSuccessfulAndCleansLoserTemp()
+    {
+        const string identifier = "m2v-test";
+        byte[] body = Encoding.UTF8.GetBytes("valid cross-process winner");
+        var asset = Asset(identifier, body);
+        string modelDir = Path.Combine(ModelsRoot, identifier);
+        string digest = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+        string destination = Path.Combine(modelDir, digest, asset.Filename);
+
+        void PublishWinnerThenLose(string source, string target)
+        {
+            File.Copy(source, target);
+            throw new IOException("simulated promotion race loss");
+        }
+
+        using var handler = new FakeHttpHandler(body);
+
+        await VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            afterHashCompleted: null, PublishWinnerThenLose, CancellationToken.None);
+
+        File.ReadAllBytes(destination).Should().BeEquivalentTo(body);
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PromotionRace_WithInvalidWinner_FailsAndCleansLoserTemp()
+    {
+        const string identifier = "m2v-test";
+        byte[] body = Encoding.UTF8.GetBytes("expected payload");
+        var asset = Asset(identifier, body);
+        string modelDir = Path.Combine(ModelsRoot, identifier);
+        string digest = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+        string destination = Path.Combine(modelDir, digest, asset.Filename);
+
+        void PublishInvalidWinnerThenLose(string source, string target)
+        {
+            File.WriteAllText(target, "invalid winner");
+            throw new IOException("simulated promotion race loss");
+        }
+
+        using var handler = new FakeHttpHandler(body);
+
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            afterHashCompleted: null, PublishInvalidWinnerThenLose, CancellationToken.None);
+
+        await download.Should().ThrowAsync<ModelDownloadException>();
+
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, asset).Should().BeFalse();
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExistingInvalidDestination_IsReplacedByVerifiedContent()
+    {
+        const string identifier = "m2v-test";
+        byte[] body = Encoding.UTF8.GetBytes("verified replacement");
+        var asset = Asset(identifier, body);
+        string modelDir = Path.Combine(ModelsRoot, identifier);
+        string destination = Path.Combine(modelDir, asset.ExpectedSha256!, asset.Filename);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        File.WriteAllText(destination, "tampered destination");
+
+        using var handler = new FakeHttpHandler(body);
+        await DownloadM2V([asset], modelDir, () => new HttpClient(handler), CancellationToken.None);
+
+        File.ReadAllBytes(destination).Should().BeEquivalentTo(body);
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, asset).Should().BeTrue();
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReparseNestedDestination_IsRejectedWithoutExternalPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("reparse nested");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsideDir = Path.Combine(_home, "outside-nested");
+        string outsidePath = Path.Combine(outsideDir, asset.Filename);
+        Directory.CreateDirectory(outsideDir);
+        File.WriteAllBytes(outsidePath, body);
+
+        string nestedLink = Path.Combine(modelDir, asset.ExpectedSha256!);
+        if (!TryCreateDirSymlink(nestedLink, outsideDir)) return;
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => DownloadM2V(
+            [asset], modelDir, () => new HttpClient(handler), CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        File.ReadAllBytes(outsidePath).Should().BeEquivalentTo(body);
+        Directory.GetFiles(outsideDir, "*.tmp", SearchOption.AllDirectories).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReparseDirectDestination_IsRejectedWithoutExternalPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("reparse direct");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsidePath = Path.Combine(_home, "outside-direct.bin");
+        Directory.CreateDirectory(modelDir);
+        File.WriteAllBytes(outsidePath, body);
+
+        string directLink = Path.Combine(modelDir, asset.Filename);
+        if (!TryCreateFileSymlink(directLink, outsidePath)) return;
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => DownloadM2V(
+            [asset], modelDir, () => new HttpClient(handler), CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        File.ReadAllBytes(outsidePath).Should().BeEquivalentTo(body);
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReparseDownloadParent_IsRejectedWithoutExternalPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("reparse temp parent");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsideDir = Path.Combine(_home, "outside-downloads");
+        Directory.CreateDirectory(outsideDir);
+        Directory.CreateDirectory(modelDir);
+
+        string downloadsLink = Path.Combine(modelDir, ".downloads");
+        if (!TryCreateDirSymlink(downloadsLink, outsideDir)) return;
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => DownloadM2V(
+            [asset], modelDir, () => new HttpClient(handler), CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        Directory.GetFiles(outsideDir, "*", SearchOption.AllDirectories).Should().BeEmpty();
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, asset).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ReparseModelAncestor_IsRejectedBeforeAnyDirectoryCreation()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("reparse model ancestor");
+        var asset = Asset("m2v-test", body);
+        string outsideDir = Path.Combine(_home, "outside-model-root");
+        Directory.CreateDirectory(outsideDir);
+        string modelParent = Path.Combine(_home, "models");
+        if (!TryCreateDirSymlink(modelParent, outsideDir)) return;
+
+        string modelDir = Path.Combine(modelParent, asset.Identifier);
+        using var handler = new FakeHttpHandler(body);
+
+        Func<Task> download = () => DownloadM2V(
+            [asset], modelDir, () => new HttpClient(handler), CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        Directory.GetFileSystemEntries(outsideDir).Should().BeEmpty(
+            "a reparse-point ancestor must be rejected before model directories are created");
+    }
+
+    [Fact]
+    public async Task ReplacedTempAfterHash_IsRejectedWithoutPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("replaced temp");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsidePath = Path.Combine(_home, "outside-temp.bin");
+        Directory.CreateDirectory(_home);
+        File.WriteAllBytes(outsidePath, body);
+
+        void ReplaceTempWithLink()
+        {
+            string temp = Directory.GetFiles(
+                Path.Combine(modelDir, ".downloads"), "*.tmp", SearchOption.TopDirectoryOnly).Single();
+            File.Delete(temp);
+            if (!TryCreateFileSymlink(temp, outsidePath))
+                throw new Xunit.Sdk.XunitException("File symlinks are required for this regression test.");
+        }
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            ReplaceTempWithLink, promote: null, CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        File.Exists(Path.Combine(modelDir, asset.ExpectedSha256!, asset.Filename)).Should().BeFalse();
+        File.ReadAllBytes(outsidePath).Should().BeEquivalentTo(body);
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReplacedDestinationAncestorBeforeCreate_IsRejectedWithoutExternalPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("replaced destination ancestor");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsideDir = Path.Combine(_home, "outside-destination");
+        Directory.CreateDirectory(outsideDir);
+        bool replaced = false;
+
+        void ReplaceDestinationAncestor()
+        {
+            if (replaced) return;
+            replaced = true;
+            string digestDir = Path.Combine(modelDir, asset.ExpectedSha256!);
+            if (!TryCreateDirSymlink(digestDir, outsideDir))
+                throw new Xunit.Sdk.XunitException("Directory symlinks are required for this regression test.");
+        }
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            afterHashCompleted: null, beforeDirectoryCreate: ReplaceDestinationAncestor,
+            promote: null, CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        Directory.GetFileSystemEntries(outsideDir).Should().BeEmpty();
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TempReplacedWithIdenticalBytes_IsRejectedOnIdentityMismatch()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("identical replacement");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+
+        void ReplaceTempWithIdenticalBytes()
+        {
+            string temp = Directory.GetFiles(
+                Path.Combine(modelDir, ".downloads"), "*.tmp", SearchOption.TopDirectoryOnly).Single();
+            File.Delete(temp);
+            File.WriteAllBytes(temp, body);
+            // Guarantee identity drift even on filesystems with coarse timestamp granularity.
+            File.SetLastWriteTimeUtc(temp, DateTime.UtcNow.AddHours(1));
+        }
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            ReplaceTempWithIdenticalBytes, beforeDirectoryCreate: null,
+            promote: null, beforePublish: null, CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        File.Exists(Path.Combine(modelDir, asset.ExpectedSha256!, asset.Filename)).Should().BeFalse(
+            "a replaced temp must never publish even when its bytes still verify");
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TempContentMutatedAfterHash_IsRejectedWithoutPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("original verified bytes");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+
+        void MutateTempContent()
+        {
+            string temp = Directory.GetFiles(
+                Path.Combine(modelDir, ".downloads"), "*.tmp", SearchOption.TopDirectoryOnly).Single();
+            File.WriteAllBytes(temp, Encoding.UTF8.GetBytes("mutated after hash completed!!"));
+        }
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            MutateTempContent, beforeDirectoryCreate: null,
+            promote: null, beforePublish: null, CancellationToken.None);
+
+        await download.Should().ThrowAsync<Exception>();
+        File.Exists(Path.Combine(modelDir, asset.ExpectedSha256!, asset.Filename)).Should().BeFalse();
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task MaliciousPromoteWritingOutside_IsRejectedWithoutTrustingMove()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("malicious promote");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsideDir = Path.Combine(_home, "outside-promote");
+        Directory.CreateDirectory(outsideDir);
+        string outsidePath = Path.Combine(outsideDir, "evil.bin");
+
+        void MaliciousPromote(string source, string target)
+        {
+            File.Copy(source, outsidePath, overwrite: true);
+        }
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            afterHashCompleted: null, beforeDirectoryCreate: null,
+            MaliciousPromote, beforePublish: null, CancellationToken.None);
+
+        await download.Should().ThrowAsync<Exception>();
+        File.Exists(Path.Combine(modelDir, asset.ExpectedSha256!, asset.Filename)).Should().BeFalse(
+            "a move that does not publish the verified destination must be rejected");
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DestinationAncestrySwappedBeforePublish_IsRejectedWithoutExternalPublication()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("swapped before publish");
+        var asset = Asset("m2v-test", body);
+        string modelDir = Path.Combine(ModelsRoot, asset.Identifier);
+        string outsideDir = Path.Combine(_home, "outside-swap");
+        Directory.CreateDirectory(outsideDir);
+        bool swapped = false;
+
+        void SwapAncestry()
+        {
+            if (swapped) return;
+            swapped = true;
+            string digestDir = Path.Combine(modelDir, asset.ExpectedSha256!);
+            try { Directory.Delete(digestDir, recursive: true); } catch { /* may not exist yet */ }
+            if (!TryCreateDirSymlink(digestDir, outsideDir))
+                throw new Xunit.Sdk.XunitException("Directory symlinks are required for this regression test.");
+        }
+
+        using var handler = new FakeHttpHandler(body);
+        Func<Task> download = () => VerifiedModelDownloader.EnsureModelAsync(
+            modelDir, _logger, [asset], () => new HttpClient(handler),
+            afterHashCompleted: null, beforeDirectoryCreate: null,
+            promote: null, SwapAncestry, CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>();
+        Directory.GetFileSystemEntries(outsideDir).Should().BeEmpty();
+        TempFiles(modelDir).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void VulkanManager_UsesCanonicalAssetDefinition()
+    {
+        VulkanModelManager.AssetDefinitions.Should().ContainSingle()
+            .Which.Should().Be(VulkanModelAssets.DefaultAsset);
+    }
+
     [Theory]
     [InlineData("m2v-test")]
     public async Task StreamFailure_LeavesNoVisibleModel_AndRetrySucceeds(string identifier)
@@ -254,6 +616,114 @@ public sealed class ModelDownloadIntegrityTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Model2VecDownloader_RejectsMixedLayoutLikeProvider()
+    {
+        (DownloadableAsset model, DownloadableAsset vocab) = PairAssets();
+        string modelDir = Path.Combine(ModelsRoot, model.Identifier);
+        Directory.CreateDirectory(modelDir);
+        File.WriteAllBytes(Path.Combine(modelDir, model.Filename), Encoding.UTF8.GetBytes("model"));
+        Directory.CreateDirectory(Path.Combine(modelDir, vocab.ExpectedSha256!));
+        File.WriteAllBytes(
+            Path.Combine(modelDir, vocab.ExpectedSha256!, vocab.Filename), Encoding.UTF8.GetBytes("vocab"));
+
+        Func<Task> download = () => DownloadM2V([model, vocab], modelDir,
+            () => new HttpClient(new FakeHttpHandler([])), CancellationToken.None);
+
+        await download.Should().ThrowAsync<InvalidDataException>().WithMessage("*mixed*");
+    }
+
+    [Fact]
+    public async Task Model2VecDownloader_RejectsTamperedDirectAssetLikeProvider()
+    {
+        (DownloadableAsset model, DownloadableAsset vocab) = PairAssets();
+        string modelDir = Path.Combine(ModelsRoot, model.Identifier);
+        Directory.CreateDirectory(modelDir);
+        File.WriteAllText(Path.Combine(modelDir, model.Filename), "tampered");
+        File.WriteAllText(Path.Combine(modelDir, vocab.Filename), "vocab");
+
+        Func<Task> download = () => DownloadM2V([model, vocab], modelDir,
+            () => new HttpClient(new FakeHttpHandler([])), CancellationToken.None);
+
+        await download.Should().ThrowAsync<ModelDownloadException>().WithMessage("*model.safetensors*");
+    }
+
+    [Fact]
+    public void VulkanModelPath_ResolvesDigestNestedAsset()
+    {
+        string modelDir = Path.Combine(ModelsRoot, VulkanModelManager.Identifier);
+        byte[] body = Encoding.UTF8.GetBytes("vulkan");
+        var asset = new DownloadableAsset(
+            VulkanModelManager.Identifier, "https://example.test/model", VulkanModelManager.DefaultModelFile,
+            Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant());
+        string digest = asset.ExpectedSha256!;
+        string expectedPath = Path.Combine(modelDir, digest, VulkanModelManager.DefaultModelFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(expectedPath)!);
+        File.WriteAllBytes(expectedPath, body);
+
+        VulkanModelManager.GetModelPath(modelDir, asset).Should().Be(expectedPath);
+    }
+
+    [Fact]
+    public async Task Model2VecDownloader_CompletesMissingAssetInExistingDirectLayout()
+    {
+        (DownloadableAsset model, DownloadableAsset vocab) = PairAssets();
+        string modelDir = Path.Combine(ModelsRoot, model.Identifier);
+        Directory.CreateDirectory(modelDir);
+        File.WriteAllText(Path.Combine(modelDir, model.Filename), "model");
+
+        using var handler = new PathMappedFakeHttpHandler(
+            new Dictionary<string, byte[]>(StringComparer.Ordinal)
+            {
+                [model.Filename] = Encoding.UTF8.GetBytes("model"),
+                [vocab.Filename] = Encoding.UTF8.GetBytes("vocab"),
+            });
+
+        await DownloadM2V([model, vocab], modelDir,
+            () => new HttpClient(handler), CancellationToken.None);
+
+        File.Exists(Path.Combine(modelDir, model.Filename)).Should().BeTrue();
+        File.Exists(Path.Combine(modelDir, vocab.Filename)).Should().BeTrue();
+        Directory.Exists(Path.Combine(modelDir, vocab.ExpectedSha256!)).Should().BeFalse();
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, model).Should().BeTrue();
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, vocab).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Model2VecDownloader_CompletesMissingAssetInExistingNestedLayout()
+    {
+        (DownloadableAsset model, DownloadableAsset vocab) = PairAssets();
+        string modelDir = Path.Combine(ModelsRoot, model.Identifier);
+        string modelPath = Path.Combine(modelDir, model.ExpectedSha256!, model.Filename);
+        Directory.CreateDirectory(Path.GetDirectoryName(modelPath)!);
+        File.WriteAllText(modelPath, "model");
+
+        using var handler = new PathMappedFakeHttpHandler(
+            new Dictionary<string, byte[]>(StringComparer.Ordinal)
+            {
+                [model.Filename] = Encoding.UTF8.GetBytes("model"),
+                [vocab.Filename] = Encoding.UTF8.GetBytes("vocab"),
+            });
+
+        await DownloadM2V([model, vocab], modelDir,
+            () => new HttpClient(handler), CancellationToken.None);
+
+        File.Exists(Path.Combine(modelDir, vocab.ExpectedSha256!, vocab.Filename)).Should().BeTrue();
+        File.Exists(Path.Combine(modelDir, vocab.Filename)).Should().BeFalse();
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, model).Should().BeTrue();
+        VerifiedModelDownloader.IsAssetAvailable(modelDir, vocab).Should().BeTrue();
+    }
+
+    private static (DownloadableAsset Model, DownloadableAsset Vocab) PairAssets()
+    {
+        static string Digest(string text) =>
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+
+        return (
+            new DownloadableAsset("m2v-parity", "https://example.test/model/model.safetensors", "model.safetensors", Digest("model")),
+            new DownloadableAsset("m2v-parity", "https://example.test/vocab/vocab.txt", "vocab.txt", Digest("vocab")));
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────────────────────────
 
     private static DownloadableAsset Asset(string identifier, byte[] body)
@@ -264,6 +734,32 @@ public sealed class ModelDownloadIntegrityTests : IDisposable
         => Directory.GetFiles(modelDir, "*.tmp", SearchOption.AllDirectories);
 
     private bool NoTempFiles(string modelDir) => TempFiles(modelDir).Any() == false;
+
+    private static bool TryCreateDirSymlink(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryCreateFileSymlink(string link, string target)
+    {
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+    }
 
     private static async Task ThrowAsync<TException>(Func<Task> invocation)
         where TException : Exception => await invocation.Should().ThrowAsync<TException>();
@@ -286,6 +782,19 @@ public sealed class ModelDownloadIntegrityTests : IDisposable
 
         protected override HttpResponseMessage Build(HttpRequestMessage request)
             => Ok(new DelayingStream(_body, _delayMs, failAfter: 0, _concurrency));
+    }
+
+    private sealed class PathMappedFakeHttpHandler : DisposableHttpMessageHandler
+    {
+        private readonly IReadOnlyDictionary<string, byte[]> _bodies;
+
+        public PathMappedFakeHttpHandler(IReadOnlyDictionary<string, byte[]> bodies) => _bodies = bodies;
+
+        protected override HttpResponseMessage Build(HttpRequestMessage request)
+        {
+            string filename = Path.GetFileName(request.RequestUri!.AbsolutePath);
+            return Ok(new MemoryStream(_bodies[filename], writable: false));
+        }
     }
 
     /// <summary>Serves a body with a start gate, an optional release gate, a per-read delay, a
