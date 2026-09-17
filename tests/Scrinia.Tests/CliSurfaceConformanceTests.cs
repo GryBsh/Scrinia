@@ -188,14 +188,15 @@ public sealed class CliSurfaceConformanceTests
     public void Entrypoints_AreFound()
     {
         // Guards the other three tests against passing vacuously if the reflection filter breaks.
-        // Exact, not a loose floor: 22 existing entrypoints plus 8 Task 7 entrypoints.
+        // Exact, not a loose floor: 22 existing entrypoints plus 8 Task 7 entrypoints plus the
+        // B5 maintenance entrypoint.
         // A loose ">15" threshold caught a total filter break but not a partial one — e.g.
         // dropping BundleCommands entirely still leaves 20 > 15, so a real command class (and
         // any --workspace/bool-default regression on it) could fall out of every rule below
         // without this test noticing. Adding or removing a command must restate this number
         // deliberately — that restatement is the point of the guard.
-        Entrypoints().Should().HaveCount(31,
-            because: "the CLI has exactly 31 command entrypoints across all registered command types; a filter that stops seeing some of them — even not all — " +
+        Entrypoints().Should().HaveCount(32,
+            because: "the CLI has exactly 32 command entrypoints across all registered command types; a filter that stops seeing some of them — even not all — " +
                      "would make the rules below pass without checking what it silently dropped");
     }
 

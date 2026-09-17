@@ -26,6 +26,8 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliMigrateOutput))]
 [JsonSerializable(typeof(CliStoreMigrateOutput))]
 [JsonSerializable(typeof(CliHintOutput))]
+[JsonSerializable(typeof(CliMaintenanceOutput))]
+[JsonSerializable(typeof(CliMaintenanceScopeOutput))]
 [JsonSerializable(typeof(ConfigurationJsonResult))]
 [JsonSerializable(typeof(SharedBaseJsonItem))]
 [JsonSerializable(typeof(MemoryAddress))]
@@ -123,3 +125,33 @@ internal sealed record CliStoreMigrateOutput(
 internal sealed record CliHintOutput(int Count, CliHintMatch[] Matches);
 
 internal sealed record CliHintMatch(string Scope, string Name, double Score);
+
+/// <summary>Structured output of <c>scri maintenance --json</c> — the shared Core
+/// maintenance result projected to safe operational diagnostics only. Carries counts,
+/// per-scope summaries, warnings, and the opaque continuation token; it never carries
+/// cursor internals, keys, identities, or projections.</summary>
+internal sealed record CliMaintenanceOutput(
+    int Inspected,
+    int DeletedArchives,
+    int DeletedRecoveryEvidence,
+    bool Completed,
+    bool MoreWork,
+    bool RecoveryRetained,
+    bool LockContended,
+    bool PolicyInvalid,
+    bool PartialFailure,
+    string? ContinuationToken,
+    CliMaintenanceScopeOutput[] Scopes,
+    string[] Warnings,
+    string? PolicyError);
+
+internal sealed record CliMaintenanceScopeOutput(
+    string Scope,
+    int Inspected,
+    int DeletedArchives,
+    int DeletedRecoveryEvidence,
+    int Retained,
+    bool LockContended,
+    bool MoreWork,
+    string? ContinuationToken,
+    string[] Warnings);
