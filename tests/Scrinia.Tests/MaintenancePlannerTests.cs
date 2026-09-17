@@ -470,4 +470,269 @@ public sealed class MaintenancePlannerTests
             return fallback;
         throw new FileNotFoundException("MaintenancePlanner.cs was not found.");
     }
+
+    // B5 Task 7 — 50-journal boundary: exactly 50 admitted without a cap, the
+    // 51st trips JournalCapReached with no deferred proof and no HasMore.
+    [Fact]
+    public void Planner_admits_exactly_50_journals_then_trips_cap()
+    {
+        static MaintenancePlannerCandidate Journal(int index) =>
+            Candidate(
+                kind: MaintenanceCandidateKind.CompletedRecoveryEvidence,
+                keyGuid: $"00000000-0000-0000-0000-{index:D12}",
+                digestFill: (byte)(index % 250 + 1),
+                isJournal: true);
+
+        MaintenancePlannerPage exact = MaintenancePlanner.Plan(
+            Enumerable.Range(1, 50).Select(Journal).ToArray(), 50,
+            cancellationToken: CancellationToken.None);
+
+        exact.JournalInspected.Should().Be(50);
+        exact.JournalBudgetConsumed.Should().Be(50);
+        exact.JournalCapReached.Should().BeFalse();
+        exact.JournalDeferred.Should().Be(0);
+        exact.HasMore.Should().BeFalse();
+
+        MaintenancePlannerPage over = MaintenancePlanner.Plan(
+            Enumerable.Range(1, 51).Select(Journal).ToArray(), 50,
+            cancellationToken: CancellationToken.None);
+
+        over.JournalInspected.Should().Be(50);
+        over.JournalBudgetConsumed.Should().Be(50);
+        over.JournalCapReached.Should().BeTrue();
+        over.JournalDeferred.Should().Be(0);
+        over.HasMore.Should().BeFalse();
+    }
+
+    // B5 Task 7 — UnsafeScanLimit=32 is exactly 32 invocation-wide: 40 unsafe
+    // candidates admit 32 and charge one shared admission each.
+    [Fact]
+    public void Planner_bounds_unsafe_scans_at_exactly_32()
+    {
+        var candidates = Enumerable.Range(1, 40).Select(i =>
+            Candidate(keyGuid: $"00000000-0000-0000-0000-{i:D12}", digestFill: (byte)(i % 250 + 1), isUnsafe: true)).ToArray();
+        MaintenancePlannerPage page = MaintenancePlanner.Plan(candidates, 50, cancellationToken: CancellationToken.None);
+
+        page.UnsafeScanned.Should().Be(32);
+        page.Scanned.Should().Be(32);
+        page.Returned.Should().Be(0);
+        page.Lookahead.Should().Be(0);
+        page.HasMore.Should().BeFalse();
+    }
+
+    // B5 Task 7 — mixed admission arithmetic: 32 unsafe plus 70 safe admit
+    // exactly 97 with the full class equations holding.
+    [Fact]
+    public void Planner_mixes_unsafe_and_safe_with_exact_equations()
+    {
+        var unsafeCandidates = Enumerable.Range(1, 32).Select(i =>
+            Candidate(keyGuid: $"00000000-0000-0000-0000-{i:D12}", digestFill: (byte)(i % 250 + 1), isUnsafe: true));
+        var safeCandidates = Enumerable.Range(33, 70).Select(i =>
+            Candidate(keyGuid: $"00000000-0000-0000-0000-{i:D12}", digestFill: (byte)(i % 250 + 1)));
+        MaintenancePlannerPage page = MaintenancePlanner.Plan(
+            [.. unsafeCandidates, .. safeCandidates], 50, cancellationToken: CancellationToken.None);
+
+        page.UnsafeScanned.Should().Be(32);
+        page.Returned.Should().Be(64);
+        page.Lookahead.Should().Be(1);
+        page.Scanned.Should().Be(97);
+        page.MetadataReads.Should().Be(97);
+        page.Projected.Should().Be(65);
+        page.HasMore.Should().BeTrue();
+        page.Scanned.Should().Be(page.JournalInspected + page.NonJournalInspected);
+        (page.SafeJournalInspected + page.UnsafeJournalScanned + page.SafeNonJournalInspected + page.UnsafeNonJournalScanned).Should().Be(page.Scanned);
+        (page.SafeJournalInspected + page.SafeNonJournalInspected).Should().Be(page.Scanned - page.UnsafeScanned);
+        page.JournalBudgetConsumed.Should().Be(page.JournalInspected);
+        page.NonJournalInspected.Should().BeLessThanOrEqualTo(128 - page.JournalInspected);
+    }
+
+    // B5 Task 7 — lookahead suppression: an unsafe tail is skipped for free
+    // after Returned fills, so it never becomes lookahead and never sets HasMore.
+    [Fact]
+    public void Planner_skips_unsafe_tail_for_lookahead_without_has_more()
+    {
+        var safe = Enumerable.Range(1, 64).Select(i =>
+            Candidate(keyGuid: $"00000000-0000-0000-0000-{i:D12}", digestFill: (byte)(i % 250 + 1)));
+        var unsafeTail = Enumerable.Range(65, 10).Select(i =>
+            Candidate(keyGuid: $"00000000-0000-0000-0000-{i:D12}", digestFill: (byte)(i % 250 + 1), isUnsafe: true));
+        MaintenancePlannerPage page = MaintenancePlanner.Plan(
+            [.. safe, .. unsafeTail], 50, cancellationToken: CancellationToken.None);
+
+        page.Returned.Should().Be(64);
+        page.Lookahead.Should().Be(0);
+        page.HasMore.Should().BeFalse();
+        page.Scanned.Should().Be(64);
+        page.UnsafeScanned.Should().Be(0);
+    }
+
+    // B5 Task 7 — empty page: no work, no cap, no deferred proof, no HasMore.
+    [Fact]
+    public void Planner_empty_page_has_no_work_and_no_continuation()
+    {
+        MaintenancePlannerPage page = MaintenancePlanner.Plan(
+            Array.Empty<MaintenancePlannerCandidate>(), 50, cancellationToken: CancellationToken.None);
+
+        page.Scanned.Should().Be(0);
+        page.Returned.Should().Be(0);
+        page.Lookahead.Should().Be(0);
+        page.HasMore.Should().BeFalse();
+        page.JournalCapReached.Should().BeFalse();
+        page.JournalDeferred.Should().Be(0);
+        page.Projections.Should().BeEmpty();
+    }
+
+    // B5 Task 7 — sequence/convergence/idempotency: repeated plans over the
+    // same input reproduce the same order without mutating the input.
+    [Fact]
+    public void Planner_is_deterministic_and_pure_across_repeated_plans()
+    {
+        var candidates = new[]
+        {
+            Candidate(keyGuid: "00000000-0000-0000-0000-000000000003", digestFill: 3, entryOrdinal: 2),
+            Candidate(keyGuid: "00000000-0000-0000-0000-000000000001", digestFill: 1, entryOrdinal: 1, isJournal: true),
+            Candidate(keyGuid: "00000000-0000-0000-0000-000000000002", digestFill: 2, isUnsafe: true),
+        };
+
+        MaintenancePlannerPage first = MaintenancePlanner.Plan(candidates, 50, cancellationToken: CancellationToken.None);
+        MaintenancePlannerPage second = MaintenancePlanner.Plan(candidates, 50, cancellationToken: CancellationToken.None);
+
+        first.Projections.Select(p => p.CandidateKey).Should().Equal(second.Projections.Select(p => p.CandidateKey));
+        first.Scanned.Should().Be(second.Scanned);
+        first.JournalInspected.Should().Be(second.JournalInspected);
+        candidates.Should().HaveCount(3);
+    }
+
+    // B5 Task 7 — indefinite unresolved retention: an unresolved candidate
+    // stays protected across repeated plans (restart safety).
+    [Fact]
+    public void Planner_retains_unresolved_evidence_indefinitely()
+    {
+        var candidate = Candidate(protection: MaintenanceProtectionReason.UnresolvedRecovery, adapterEligible: false);
+
+        MaintenancePlannerPage first = MaintenancePlanner.Plan([candidate], 50, cancellationToken: CancellationToken.None);
+        MaintenancePlannerPage second = MaintenancePlanner.Plan([candidate], 50, cancellationToken: CancellationToken.None);
+
+        first.Projections.Should().ContainSingle();
+        second.Projections.Should().ContainSingle();
+        first.Projections[0].Eligible.Should().BeFalse();
+        second.Projections[0].Eligible.Should().BeFalse();
+        first.Projections[0].Protection.Should().Be(MaintenanceProtectionReason.UnresolvedRecovery);
+        second.Projections[0].Protection.Should().Be(MaintenanceProtectionReason.UnresolvedRecovery);
+    }
+
+    // B5 Task 7 — every verifier outcome maps to exactly one planner protection.
+    [Fact]
+    public void Planner_maps_every_verification_outcome_to_protection()
+    {
+        static MaintenanceProtectionReason? Map(RecoveryVerificationOutcome outcome) =>
+            MaintenancePlanner.MapVerification(
+                new RecoveryVerificationResult(outcome, 0, 0, 0, 0, false, false, false, null, null), null);
+
+        Map(RecoveryVerificationOutcome.Verified).Should().BeNull();
+        Map(RecoveryVerificationOutcome.ProtectedUnsafe).Should().Be(MaintenanceProtectionReason.Unsafe);
+        Map(RecoveryVerificationOutcome.ProtectedMissing).Should().Be(MaintenanceProtectionReason.MissingExpectedMember);
+        Map(RecoveryVerificationOutcome.ProtectedInvalidLimits).Should().Be(MaintenanceProtectionReason.Unverifiable);
+        Map(RecoveryVerificationOutcome.ProtectedOversized).Should().Be(MaintenanceProtectionReason.Unverifiable);
+        Map(RecoveryVerificationOutcome.ProtectedBlocked).Should().Be(MaintenanceProtectionReason.Inaccessible);
+        Map(RecoveryVerificationOutcome.ProtectedHashMismatch).Should().Be(MaintenanceProtectionReason.Unverifiable);
+        Map(RecoveryVerificationOutcome.ProtectedIoFailure).Should().Be(MaintenanceProtectionReason.Inaccessible);
+        Map(RecoveryVerificationOutcome.RecoveryRequiredTimeout).Should().Be(MaintenanceProtectionReason.UnresolvedRecovery);
+        Map(RecoveryVerificationOutcome.RecoveryRequiredCancellation).Should().Be(MaintenanceProtectionReason.UnresolvedRecovery);
+    }
+
+    // B5 Task 7 — JournalBoundaryProof negative: the validator rejects every
+    // remaining non-conforming input. NonJournalSyntax, MalformedMetadata, and
+    // NonMetadataProvenance are unreachable post-capture by construction (the
+    // enumerator-only factory refuses them), so they are covered by the
+    // factory-rejection test above; InvalidPresence has no validator check.
+    [Fact]
+    public void Planner_rejects_wrong_snapshot_enumerator_boundary_key_and_root()
+    {
+        var run = new MaintenanceRunId(Guid.NewGuid());
+        var snapshot = new MaintenanceSnapshotId(Guid.NewGuid());
+        var root = new MaintenanceScopeBinding(Guid.NewGuid());
+        var key = new MaintenanceCandidateKey(Guid.NewGuid());
+
+        using var enumerator = JournalBoundaryEnumerator.Create(run, snapshot, root, 0, 0, null);
+        var boundary = enumerator.BufferJournal(1, key, JournalBoundaryLocation.Restore, JournalBoundaryNameClass.RestoreJournal, JournalDirectoryEntryKind.File)!;
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(boundary, out JournalBoundaryProof? proof).Should().BeTrue();
+        JournalBoundaryValidationContext Base() => new(run, snapshot, root, enumerator.Id, 0, null, 0, key, JournalDirectoryEntryKind.File, 0);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, Base() with { ActiveSnapshotId = new MaintenanceSnapshotId(Guid.NewGuid()) }, out JournalBoundaryRejection rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.WrongSnapshot);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, Base() with { ActiveEnumeratorId = new MaintenanceEnumeratorId(Guid.NewGuid()) }, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.WrongEnumerator);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, Base() with { ActiveScopeOrdinal = 9 }, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.BoundaryMismatch);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, Base() with { ExpectedCanonicalEntryKey = new MaintenanceCandidateKey(Guid.NewGuid()) }, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.CanonicalEntryKeyMismatch);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, Base() with { ActiveScopeBinding = new MaintenanceScopeBinding(Guid.NewGuid()) }, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.UnsafeOrMismatchedSafeRoot);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, Base() with { ExpectedEntryKind = JournalDirectoryEntryKind.Directory }, out rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.WrongEntryKind);
+    }
+
+    // B5 Task 7 — JournalBoundaryProof stale ordinal: a proof at or behind
+    // the recorded directory ordinal is rejected.
+    [Fact]
+    public void Planner_rejects_stale_directory_ordinal()
+    {
+        var run = new MaintenanceRunId(Guid.NewGuid());
+        var snapshot = new MaintenanceSnapshotId(Guid.NewGuid());
+        var root = new MaintenanceScopeBinding(Guid.NewGuid());
+        var key = new MaintenanceCandidateKey(Guid.NewGuid());
+        using var enumerator = JournalBoundaryEnumerator.Create(run, snapshot, root, 0, 0, null);
+        var boundary = enumerator.BufferJournal(1, key, JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal, JournalDirectoryEntryKind.File)!;
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(boundary, out JournalBoundaryProof? proof).Should().BeTrue();
+        var context = new JournalBoundaryValidationContext(run, snapshot, root, enumerator.Id, 0, null, 0, key, JournalDirectoryEntryKind.File, 0, LastDirectoryEntryOrdinal: 1);
+
+        JournalBoundaryProof.ValidateJournalBoundaryProof(proof!, context, out JournalBoundaryRejection rejection).Should().BeFalse();
+        rejection.Should().Be(JournalBoundaryRejection.StaleOrdinal);
+    }
+
+    // B5 Task 7 — non-journal capacity: JournalInspected plus
+    // NonJournalInspected share the 128-admission page with exact equations.
+    [Fact]
+    public void Planner_enforces_non_journal_capacity_on_mixed_page()
+    {
+        var journals = new[]
+        {
+            Candidate(scopeOrdinal: 0, kind: MaintenanceCandidateKind.CompletedRecoveryEvidence,
+                keyGuid: "00000000-0000-0000-0000-000000000001", digestFill: 1, isJournal: true),
+            Candidate(scopeOrdinal: 0, kind: MaintenanceCandidateKind.CompletedRecoveryEvidence,
+                keyGuid: "00000000-0000-0000-0000-000000000002", digestFill: 2, isJournal: true),
+        };
+        var safeNonJournals = Enumerable.Range(100, 64).Select(i =>
+            Candidate(scopeOrdinal: 1, kind: MaintenanceCandidateKind.ArchivePair,
+                keyGuid: $"00000000-0000-0000-0000-{i:D12}", digestFill: (byte)(i % 200 + 1))).ToArray();
+        MaintenancePlannerPage page = MaintenancePlanner.Plan([.. journals, .. safeNonJournals], 1, cancellationToken: CancellationToken.None);
+
+        page.JournalInspected.Should().Be(1);
+        page.NonJournalInspected.Should().Be(64);
+        page.NonJournalInspected.Should().BeLessThanOrEqualTo(128 - page.JournalInspected);
+        page.Scanned.Should().Be(page.JournalInspected + page.NonJournalInspected);
+        page.JournalBudgetConsumed.Should().Be(page.JournalInspected);
+        (page.SafeJournalInspected + page.SafeNonJournalInspected).Should().Be(page.Scanned - page.UnsafeScanned);
+    }
+
+    // B5 Task 7 — no per-candidate tasks: the planner creates no parallel
+    // work and no unbounded queue.
+    [Fact]
+    public void Planner_source_creates_no_per_candidate_tasks_or_unbounded_queues()
+    {
+        string source = File.ReadAllText(FindPlannerSource());
+
+        source.Should().NotContain("Task.Run");
+        source.Should().NotContain("Task.Factory");
+        source.Should().NotContain("Parallel.");
+        source.Should().NotContain("new Thread");
+        source.Should().NotContain("ThreadPool.");
+        source.Should().NotContain("Channel.");
+        source.Should().NotContain("TaskCompletionSource");
+    }
 }
