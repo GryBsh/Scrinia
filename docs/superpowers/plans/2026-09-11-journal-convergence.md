@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-journal-convergence-design.md`
 
+> **Scope status (2026-09-17):** This remains an implementation plan. The current B2
+> reconciliation is documentation-only: it neither changes source or tests nor establishes new
+> verification results. Fixture completeness, deterministic reparse-point coverage, envelope
+> hygiene, and the implementation/test work described below remain planned for a later
+> implementation phase.
+
 ## Global Constraints
 
 - Append evidence remains `.append-journal.json`; restore evidence remains `.restore-journal.json`; file-entity evidence remains in `.file-entity-*.recovery` files in the existing scope directory.
@@ -35,10 +41,10 @@ The implementation should add focused files rather than turning the existing ope
 
 | File | Responsibility |
 |---|---|
-| `src/Scrinia.Core/RecoveryEnvelope.cs` | Common `RecoveryEnvelopeDocument`, discriminators, lowercase lifecycle converter, envelope version constants, structural validation, and source-generated Core metadata for envelope DTOs. |
+| `src/Scrinia.Core/RecoveryEnvelope.cs` | Historical B2 envelope wire-model location. Its former `RecoveryEnvelopeDocument`/`JsonElement Body` parser boundary is superseded by the B5 verified-envelope boundary described below. |
 | `src/Scrinia.Core/RecoveryContracts.cs` | Typed candidate, classification, blocking, cleanup-warning, retry, and adapter interfaces/results shared by store operations. |
 | `src/Scrinia.Core/RecoveryDiscovery.cs` | Exact-location enumeration, filename/operation checks, candidate qualification, deterministic sorting, ambiguity detection, and scope-local admission orchestration. |
-| `src/Scrinia.Core/AppendJournal.cs` | Existing append body codec plus `IRecoveryAdapter` implementation and legacy-to-envelope normalization; preserve append-specific state and payload/path/hash validation. |
+| `src/Scrinia.Core/AppendJournal.cs` | Existing append body codec and typed verified-envelope consumer; preserve append-specific state and payload/path/hash validation. |
 | `src/Scrinia.Core/RestoreJournal.cs` | Existing restore body codec plus restore adapter, staging/snapshot protection, replay verification, and legacy-to-envelope normalization. |
 | `src/Scrinia.Core/FileEntityTransactionCoordinator.cs` | File-entity adapter and JSON envelope evidence publication/recovery while retaining `.file-entity-*.recovery` locations and pair semantics. |
 | `src/Scrinia.Core/WholeMemoryTransaction.cs` | Shared internal result/error contracts and interface declarations where existing whole-memory callers already depend on them; add only typed recovery fields required by the common coordinator. |
@@ -61,95 +67,15 @@ The implementation should add focused files rather than turning the existing ope
 | `tests/Scrinia.Tests/RecoveryFacadeMappingTests.cs` | MCP and CLI typed mapping for all blocked, required-recovery, and post-commit-warning classes. |
 | `tests/Scrinia.Tests/RecoverySerializationTests.cs` | Round trips, invalid wire values/types, unsupported versions, unknown members, and trimming-safe metadata use. |
 
-## Exact Shared Interfaces
+## Exact Shared Interfaces — B5 Reconciliation
 
-Task 1 must establish these names and signatures before adapters are implemented. Internal types are intentional: these are Core seams, not new public CLI/MCP surfaces.
+> **Historical-plan amendment (2026-09-17).** The original interface listing in this section is superseded. It described a B2-owned `RecoveryEnvelopeDocument` / `JsonElement Body` boundary and `IRecoveryAdapter.ParseAndNormalize` / `ParseAndValidate` shapes that do not represent HEAD. It must not be used to reintroduce those interfaces.
 
-```csharp
-internal enum RecoveryOperation
-{
-    Restore,
-    Append,
-    FileEntity
-}
+B5 owns the sole parse-and-validate boundary. `RecoveryEnvelopeCodec.ParseVerifiedEnvelope` takes exactly six inputs: verified content, expected scope, evidence path, expected evidence directory, evidence kind, and verified metadata. It performs the bounded byte/JSON parse and validates scope, location, kind, metadata, and envelope, returning `RecoveryVerifiedEnvelope`.
 
-internal enum RecoveryLifecycleState
-{
-    Prepared,
-    Applying,
-    Committed,
-    CleanupPending,
-    Cleaned,
-    RecoveryRequired,
-    RolledBack
-}
+B2 consumes that returned value. `AppendJournalCodec.ConsumeParsed`, `RestoreJournalCodec.ConsumeParsed`, `FileEntityRecoveryAdapter.ConsumeParsed`, `MultiMemoryTransactionRecordCodec.ConsumeParsed`, `FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` borrow the parsed envelope or its typed metadata. They perform no I/O, JSON parsing, or duplicate validation. `RecoveryEnvelopeCodec.Parse` and `ParseTypedBody` are removed/replaced legacy entry points, not retained parser operations.
 
-internal sealed record RecoveryEnvelopeDocument(
-    string Format,
-    int Version,
-    RecoveryOperation Operation,
-    int BodyVersion,
-    string OperationId,
-    string Scope,
-    string? Address,
-    RecoveryLifecycleState State,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt,
-    JsonElement Body);
-
-internal sealed record RecoveryCandidate(
-    RecoveryOperation Operation,
-    string EvidencePath,
-    string Scope,
-    string CanonicalSubject,
-    string OperationId,
-    RecoveryEnvelopeDocument Envelope,
-    bool IsLegacy);
-
-internal enum RecoveryBlockReason
-{
-    Malformed,
-    Unsafe,
-    UnsupportedVersion,
-    Ambiguous,
-    Inconsistent,
-    ReplayIoFailed
-}
-
-internal sealed record RecoveryBlock(
-    string Scope,
-    string EvidencePath,
-    RecoveryOperation? Operation,
-    string OperationId,
-    RecoveryBlockReason Reason,
-    string Detail);
-
-internal sealed record RecoveryDiscoveryResult(
-    IReadOnlyList<RecoveryCandidate> Candidates,
-    RecoveryBlock? BlockingEvidence);
-
-internal interface IRecoveryAdapter
-{
-    RecoveryOperation Operation { get; }
-    bool IsCandidateFile(string fileName);
-    RecoveryEnvelopeDocument ParseAndNormalize(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath);
-    RecoveryEnvelopeDocument ValidateForMutation(RecoveryEnvelopeDocument envelope, string expectedScope, string evidencePath,
-        string expectedSubject);
-    RecoveryOutcome RecoverOrCleanup(RecoveryEnvelopeDocument envelope, string evidencePath, CancellationToken cancellationToken);
-}
-
-internal sealed record RecoveryOutcome(
-    bool IsBlocked,
-    bool IsCommitted,
-    bool CleanupPending,
-    string Scope,
-    string EvidencePath,
-    string OperationId,
-    RecoveryBlock? Block,
-    string? Warning);
-```
-
-`RecoveryEnvelopeDocument.Body` is a `JsonElement` only at the parser boundary. The concrete implementation must dispatch it immediately by `RecoveryOperation` into generated `AppendRecoveryBody`, `RestoreRecoveryBody`, or `FileEntityRecoveryBody` metadata, and adapters must never reserialize an untyped body. The document is a wire-model boundary, not an operation state model.
+The operation-specific payload, containment, state-transition, rollback, and cleanup invariants in the remainder of this plan remain frozen. This amendment changes only ownership of the parser handoff; it does not change B2 behavior, evidence locations, precedence, or public MCP/CLI contracts. See B5 design §§0.4, 0.6, 0.7, and 2.1–2.2.
 
 ## Task 1: Baseline Fixtures and Contracts
 
@@ -211,19 +137,8 @@ internal sealed record RecoveryOutcome(
 - Modify: `tests/Scrinia.Tests/FileEntityTransactionTests.cs`
 
 **Interfaces:**
-- Consumes: Task 1 contracts and existing operation codecs/transaction snapshots.
-- Produces: typed `RecoveryEnvelopeDocument`, `AppendRecoveryBody`, `RestoreRecoveryBody`, `FileEntityRecoveryBody`, `RecoveryEnvelopeCodec.Serialize`, `RecoveryEnvelopeCodec.Parse`, and `IRecoveryAdapter` implementations with exact signatures:
-
-  ```csharp
-  internal static byte[] Serialize(RecoveryEnvelopeDocument document);
-  internal static RecoveryEnvelopeDocument Parse(ReadOnlySpan<byte> json, string expectedScope, string evidencePath);
-  internal static RecoveryEnvelopeDocument FromAppend(AppendJournal journal);
-  internal static RecoveryEnvelopeDocument FromRestore(RestoreJournal journal);
-   internal static RecoveryEnvelopeDocument FromFileEntity(
-       FileEntityRecoveryBody body, string scope, string? address, string operationId,
-       RecoveryLifecycleState state, DateTimeOffset createdAt, DateTimeOffset updatedAt);
-  internal RecoveryEnvelopeDocument NormalizeLegacy(ReadOnlySpan<byte> bytes, string expectedScope, string evidencePath);
-  ```
+- Consumes: existing operation codecs/transaction snapshots and the B5-owned verified-envelope handoff in [Exact Shared Interfaces — B5 Reconciliation](#exact-shared-interfaces--b5-reconciliation).
+- Produces: typed operation bodies and consumers only. The former B2 `RecoveryEnvelopeCodec.Parse` and adapter parser signatures are superseded; parsing and common validation occur once in `ParseVerifiedEnvelope`, then typed `ConsumeParsed` consumers receive the resulting `RecoveryVerifiedEnvelope`.
 
 - [ ] **Step 1: Write failing wire-shape tests before changing the codecs.**
 
@@ -237,7 +152,7 @@ internal sealed record RecoveryOutcome(
 
 - [ ] **Step 3: Implement generated envelope and body DTOs.**
 
-  Use a `JsonSerializerContext` in `RecoveryEnvelope.cs` with `[JsonSerializable]` entries for the document, every envelope scalar enum, all three body DTOs, path/member snapshot DTOs, and typed block/outcome DTOs. Use a `JsonConverter<RecoveryOperation>` and `JsonConverter<RecoveryLifecycleState>` that accept only the documented exact lowercase strings. Parse the outer document with generated `JsonTypeInfo<RecoveryEnvelopeDocument>`, dispatch `body` by `operation`, then deserialize the selected concrete body using generated type info. Never call a contextless `JsonSerializer` overload.
+   Use source-generated metadata for durable DTOs and exact lowercase wire spellings. The B5-owned `ParseVerifiedEnvelope` performs the sole bounded parse and common validation; typed consumers receive its already parsed result and never call a contextless `JsonSerializer` overload.
 
 - [ ] **Step 4: Implement common validation without absorbing operation invariants.**
 
@@ -337,14 +252,7 @@ internal sealed record RecoveryOutcome(
 
 **Interfaces:**
 - Consumes: Task 2 envelope codec and Task 3 qualified candidate admission; existing `AppendTransaction`, `AppendJournalCodec`, append fault injector, append lock, and `RecoverAppendAsync` seam.
-- Produces: append adapter methods:
-
-  ```csharp
-  internal RecoveryEnvelopeDocument ToEnvelope(AppendJournal journal);
-  internal AppendJournal FromEnvelope(RecoveryEnvelopeDocument document, string evidencePath);
-  internal RecoveryOutcome RecoverAppend(RecoveryEnvelopeDocument document, string evidencePath,
-      string expectedScope, CancellationToken cancellationToken);
-  ```
+- Produces: append-specific typed consumption and replay behavior. The historical envelope-conversion signatures are superseded by B5's parse-once handoff: `AppendJournalCodec.ConsumeParsed(in RecoveryVerifiedEnvelope)` consumes an already parsed envelope and performs no I/O, JSON parsing, or duplicate validation.
 
 - [ ] **Step 1: Add failing tests for append envelope state mapping.**
 
@@ -393,14 +301,7 @@ internal sealed record RecoveryOutcome(
 
 **Interfaces:**
 - Consumes: Task 2 restore body DTO/adapter and Task 3 scope-local coordinator; existing bundle import staging, `RestoreJournalTransition`, `ReadBoundedJournalStream`, cache invalidation, and snapshot logic.
-- Produces:
-
-  ```csharp
-  internal RecoveryEnvelopeDocument ToEnvelope(RestoreJournal journal);
-  internal RestoreJournal FromEnvelope(RecoveryEnvelopeDocument document, string evidencePath);
-  internal RecoveryOutcome RecoverRestore(RecoveryEnvelopeDocument document, string evidencePath,
-      string expectedScope, string storeDirectory, CancellationToken cancellationToken);
-  ```
+- Produces: restore-specific typed consumption, replay, and cleanup behavior. The historical envelope-conversion signatures are superseded by B5's parse-once handoff: `RestoreJournalCodec.ConsumeParsed(in RecoveryVerifiedEnvelope)` consumes an already parsed envelope and performs no I/O, JSON parsing, or duplicate validation.
 
 - [ ] **Step 1: Add failing restore adapter tests for legacy and B2 documents.**
 
@@ -450,15 +351,7 @@ internal sealed record RecoveryOutcome(
 
 **Interfaces:**
 - Consumes: Task 2 typed file-entity body and Task 3 qualified discovery; existing `FileEntityMutation`, `IFileEntityTransactionCoordinator`, `DurableFile`, `PathContainment`, and cache invalidation.
-- Produces:
-
-  ```csharp
-  internal RecoveryEnvelopeDocument CreateEnvelope(
-      FileEntityMutation mutation, RawMemberSnapshot oldBody, RawMemberSnapshot oldMeta,
-      string operationId, string evidencePath, string? archiveBody, string? archiveMeta);
-  internal RecoveryOutcome RecoverFileEntity(RecoveryEnvelopeDocument document, string evidencePath,
-      string expectedScope, string expectedEntityDirectory, CancellationToken cancellationToken);
-  ```
+- Produces: file-entity-specific typed consumption, pair recovery, and cleanup behavior. The historical envelope-conversion signatures are superseded by B5's parse-once handoff: `FileEntityRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope)` consumes an already parsed envelope and performs no I/O, JSON parsing, or duplicate validation.
 
 - [ ] **Step 1: Add failing file-entity envelope and path tests.**
 
@@ -681,6 +574,6 @@ The implementation must not modify NMP/2 encoding or decoding, ordinary artifact
 
 - **Spec coverage:** Tasks 1-2 cover the common envelope, versions, exact wire strings, source generation, typed contracts, and all three operation bodies. Task 3 covers exact locations, qualification, deterministic precedence, ambiguity, scope-local blocking, and B1 contamination. Tasks 4-6 cover append, restore, and file-entity invariants, rollback, cache invalidation, and preserved locations. Task 7 covers legacy/mixed-version parsing, newer evidence, cleanup retry, and retained bytes. Task 8 covers MCP/CLI mappings and public compatibility. Task 9 covers all ten acceptance gates, build, full tests, source generation, and whitespace checks.
 - **Placeholder scan:** No step delegates unspecified behavior to a future decision; every error class, path, state, command, expected result, and review gate is specified here.
-- **Type consistency:** The adapter signatures use `RecoveryEnvelopeDocument`, `RecoveryOutcome`, `RecoveryBlock`, `AppendJournal`, `RestoreJournal`, and `FileEntityMutation` consistently across tasks. `JsonElement Body` is confined to the parser boundary and generated typed body dispatch is required before adapter integration; no later task depends on untyped serialization.
+- **Type consistency:** The former B2 `RecoveryEnvelopeDocument` / `JsonElement Body` and adapter parser signatures are historical only. HEAD uses B5's single six-argument `ParseVerifiedEnvelope` and B2 typed `ConsumeParsed` consumers; no later task depends on untyped serialization or a second parser.
 - **Boundary check:** The common layer owns discovery and coarse lifecycle only; append, restore, and file-entity adapters retain their own payload, path, snapshot, state, staging, archive, and pair invariants. No ordinary sidecar or NMP/2 migration is hidden in an adapter.
 - **Location check:** `.append-journal.json`, `.restore-journal.json`, and `.file-entity-*.recovery` are preserved exactly, including the append `versions/` location already used by B1.
