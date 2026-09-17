@@ -69,13 +69,50 @@ The implementation should add focused files rather than turning the existing ope
 
 ## Exact Shared Interfaces — B5 Reconciliation
 
-> **Historical-plan amendment (2026-09-17).** The original interface listing in this section is superseded. It described a B2-owned `RecoveryEnvelopeDocument` / `JsonElement Body` boundary and `IRecoveryAdapter.ParseAndNormalize` / `ParseAndValidate` shapes that do not represent HEAD. It must not be used to reintroduce those interfaces.
+> **Historical-plan amendment (2026-09-17).** The original interface listing in this section described a B2-owned `RecoveryEnvelopeDocument` / `JsonElement Body` parser boundary and `IRecoveryAdapter.ParseAndNormalize` / `ParseAndValidate` shapes that do not represent HEAD; it must not be used to reintroduce those interfaces. The section was again reconciled to HEAD on 2026-09-17 — see [Interface reconciliation to HEAD (2026-09-17, B2 gap-closure)](#interface-reconciliation-to-head-2026-09-17-b2-gap-closure).
 
-B5 owns the sole parse-and-validate boundary. `RecoveryEnvelopeCodec.ParseVerifiedEnvelope` takes exactly six inputs: verified content, expected scope, evidence path, expected evidence directory, evidence kind, and verified metadata. It performs the bounded byte/JSON parse and validates scope, location, kind, metadata, and envelope, returning `RecoveryVerifiedEnvelope`.
+B5 owns the sole parse-and-validate boundary. `RecoveryEnvelopeCodec.ParseVerifiedEnvelope` takes exactly six inputs: verified content, expected scope, evidence path, expected evidence directory, evidence kind, and verified metadata. It performs the bounded byte/JSON parse and validates scope, location, kind, metadata, and envelope, returning `RecoveryVerifiedEnvelope`. Legacy append/restore/file-entity evidence is normalized into the envelope in memory inside `ParseVerifiedEnvelope`'s legacy parse paths; there is no separate B2 `NormalizeLegacy` step.
 
-B2 consumes that returned value. `AppendJournalCodec.ConsumeParsed`, `RestoreJournalCodec.ConsumeParsed`, `FileEntityRecoveryAdapter.ConsumeParsed`, `MultiMemoryTransactionRecordCodec.ConsumeParsed`, `FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` borrow the parsed envelope or its typed metadata. They perform no I/O, JSON parsing, or duplicate validation. `RecoveryEnvelopeCodec.Parse` and `ParseTypedBody` are removed/replaced legacy entry points, not retained parser operations.
+`RecoveryVerifiedEnvelope` exposes the parsed document and its typed body via the `TypedBody` accessor (`RecoveryEnvelopeDocument.TypedBody`), which the consumers borrow. `RecoveryEnvelopeDocument` retains a live, intentional `JsonElement Body` (the raw wire body) alongside the parsed `TypedBody`; the raw body is preserved for containment and re-serialization checks and is not a historical artifact.
 
-The operation-specific payload, containment, state-transition, rollback, and cleanup invariants in the remainder of this plan remain frozen. This amendment changes only ownership of the parser handoff; it does not change B2 behavior, evidence locations, precedence, or public MCP/CLI contracts. See B5 design §§0.4, 0.6, 0.7, and 2.1–2.2.
+B2 consumes that returned value through I/O-, parse-, and validation-free consumers that borrow the already-parsed envelope:
+
+- `AppendJournalCodec.ConsumeParsed(in RecoveryVerifiedEnvelope)` and `RestoreJournalCodec.ConsumeParsed(in RecoveryVerifiedEnvelope)` reconstruct the typed append/restore journal from the parsed body.
+- `AppendRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope)`, `RestoreRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope)`, and `FileEntityRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope)` implement the `IRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope)` boundary; each borrows the parsed body and performs no I/O, JSON parsing, or duplicate validation.
+- There is no `GetOperationId` method at HEAD; operation identity flows through the validated `RecoveryEnvelopeDocument.OperationId`. `MultiMemoryTransactionRecordCodec` is a record codec, not a `ConsumeParsed` consumer.
+
+The `IRecoveryAdapter` boundary at HEAD is:
+
+```csharp
+RecoveryEnvelopeDocument ConsumeParsed(in RecoveryVerifiedEnvelope envelope);
+RecoveryEnvelopeDocument ValidateForMutation(
+    RecoveryEnvelopeDocument envelope,
+    string expectedScope,
+    string evidencePath,
+    string expectedSubject,
+    string expectedEvidenceDirectory);
+RecoveryOutcome RecoverOrCleanup(
+    RecoveryEnvelopeDocument envelope,
+    string evidencePath,
+    CancellationToken cancellationToken);
+RecoveryOutcome Admit(RecoveryEnvelopeDocument envelope, string evidencePath);
+```
+
+`ValidateForMutation` takes five arguments (the fourth is `expectedSubject`, the fifth is `expectedEvidenceDirectory`), not the four-argument shape listed in the original plan. `RecoverOrCleanup` and `Admit` are unchanged. `RecoveryEnvelopeCodec.Parse` (a contextless legacy entry point) is removed and `ParseTypedBody` was renamed to the private `ParseTypedBodyDocument`; `Serialize`, `FromAppend`, `FromRestore`, and `FromFileEntity` remain the envelope's construction/serialization seams, not parse entry points.
+
+The operation-specific payload, containment, state-transition, rollback, and cleanup invariants in the remainder of this plan remain frozen. This reconciliation changes only the documented interface signatures; it does not change B2 behavior, evidence locations, precedence, or public MCP/CLI contracts. See B5 design §§0.4, 0.6, 0.7, and 2.1–2.2.
+
+### Interface reconciliation to HEAD (2026-09-17, B2 gap-closure)
+
+This subsection closes the gap between the 2026-09-11 interface listing and HEAD. It is documentation-only; it changes no source or test and establishes no new verification result.
+
+- Sole parser: `RecoveryEnvelopeCodec.ParseVerifiedEnvelope(in RecoveryVerificationContent content, in RecoveryScopeBinding expectedScope, string evidencePath, string expectedEvidenceDirectory, RecoveryEvidenceKind evidenceKind, in RecoveryVerifiedFileMetadata metadata)` — six arguments, in `src/Scrinia.Core/RecoveryVerification.cs` (~line 299). Replaces the original B2-owned `RecoveryEnvelopeDocument` / `JsonElement Body` parse boundary and the removed `RecoveryEnvelopeCodec.Parse`.
+- Typed consumers (all I/O/parse/validation-free, borrow the parsed envelope): `AppendJournalCodec.ConsumeParsed`, `RestoreJournalCodec.ConsumeParsed`, `FileEntityRecoveryAdapter.ConsumeParsed`, `AppendRecoveryAdapter.ConsumeParsed`, `RestoreRecoveryAdapter.ConsumeParsed`, and the `RecoveryVerifiedEnvelope.TypedBody` accessor. The original plan's `MultiMemoryTransactionRecordCodec.ConsumeParsed`, `FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` entries are removed — there is no `GetOperationId` at HEAD, and `MultiMemoryTransactionRecordCodec` is a record codec, not a `ConsumeParsed` consumer.
+- `IRecoveryAdapter.ConsumeParsed(in RecoveryVerifiedEnvelope)` replaces the original `ParseAndNormalize`. `ValidateForMutation(envelope, expectedScope, evidencePath, expectedSubject, expectedEvidenceDirectory)` gains the fifth `expectedEvidenceDirectory` argument over the original four-argument listing. `RecoverOrCleanup(envelope, evidencePath, ct)` and `Admit(envelope, evidencePath)` are unchanged.
+- `RecoveryEnvelopeDocument` retains a live intentional `JsonElement Body` (raw wire body) alongside the parsed `TypedBody`; the original plan's treatment of that boundary as historical is corrected.
+- Legacy entry points `RecoveryEnvelopeCodec.Parse` and `ParseTypedBody` are removed; `ParseTypedBody` is now the private `ParseTypedBodyDocument`. `NormalizeLegacy` is gone — legacy normalization lives inside `ParseVerifiedEnvelope`'s legacy parse paths.
+
+Behavior, deterministic precedence (restore → append → file entity), scope-local blocking, the B1 contamination ruling, legacy/mixed-version compatibility, committed-cleanup retry, and public MCP/CLI mappings in the remainder of this plan are unchanged. See B5 design §§0.4, 0.6, 0.7, and 2.1–2.2.
 
 ## Task 1: Baseline Fixtures and Contracts
 
@@ -574,6 +611,6 @@ The implementation must not modify NMP/2 encoding or decoding, ordinary artifact
 
 - **Spec coverage:** Tasks 1-2 cover the common envelope, versions, exact wire strings, source generation, typed contracts, and all three operation bodies. Task 3 covers exact locations, qualification, deterministic precedence, ambiguity, scope-local blocking, and B1 contamination. Tasks 4-6 cover append, restore, and file-entity invariants, rollback, cache invalidation, and preserved locations. Task 7 covers legacy/mixed-version parsing, newer evidence, cleanup retry, and retained bytes. Task 8 covers MCP/CLI mappings and public compatibility. Task 9 covers all ten acceptance gates, build, full tests, source generation, and whitespace checks.
 - **Placeholder scan:** No step delegates unspecified behavior to a future decision; every error class, path, state, command, expected result, and review gate is specified here.
-- **Type consistency:** The former B2 `RecoveryEnvelopeDocument` / `JsonElement Body` and adapter parser signatures are historical only. HEAD uses B5's single six-argument `ParseVerifiedEnvelope` and B2 typed `ConsumeParsed` consumers; no later task depends on untyped serialization or a second parser.
+- **Type consistency:** `RecoveryEnvelopeDocument` and its live `JsonElement Body` are retained at HEAD, not historical; only the original adapter `ParseAndNormalize` parser signature is historical only. HEAD uses B5's single six-argument `ParseVerifiedEnvelope` and I/O-, parse-, validation-free `ConsumeParsed` consumers (the typed codec `ConsumeParsed` and the `IRecoveryAdapter.ConsumeParsed` adapter boundary); there is no `GetOperationId` at HEAD, and no later task depends on untyped serialization or a second parser.
 - **Boundary check:** The common layer owns discovery and coarse lifecycle only; append, restore, and file-entity adapters retain their own payload, path, snapshot, state, staging, archive, and pair invariants. No ordinary sidecar or NMP/2 migration is hidden in an adapter.
 - **Location check:** `.append-journal.json`, `.restore-journal.json`, and `.file-entity-*.recovery` are preserved exactly, including the append `versions/` location already used by B1.
