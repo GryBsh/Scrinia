@@ -1,7 +1,7 @@
 ---
-status: in-progress
+status: complete
 phase: 1
-updated: 2026-09-16
+updated: 2026-09-17
 ---
 
 # B5 Retention, Pruning, and Recovery Maintenance Implementation Plan
@@ -28,8 +28,10 @@ Mandatory Task 4 order:
 
 1. Define the limits, typed request/result/outcome, owned `RecoveryVerificationContent`, metadata,
    accounting, and injectable `IRecoveryEvidenceVerifier` in `RecoveryVerification.cs`.
-2. Implement `ParseVerifiedEnvelope` as the sole operation that parses bytes, parses JSON, and
-   validates an envelope, returning `RecoveryVerifiedEnvelope`. Rename the legacy consumers to
+2. Construct `RecoveryScopeBinding` and canonical evidence-directory inputs at the store/path
+   boundary. Implement the exact six-argument `ParseVerifiedEnvelope` as the sole operation that
+   parses bytes, parses JSON, and validates scope, location, kind, metadata, and envelope, returning
+   `RecoveryVerifiedEnvelope`. Rename the legacy consumers to
    `AppendJournalCodec.ConsumeParsed`, `RestoreJournalCodec.ConsumeParsed`,
    `FileEntityRecoveryAdapter.ConsumeParsed`, and `FileMemoryStore.GetOperationId` (plus the
    discovery equivalent `RecoveryDiscoveryCoordinator.GetOperationId`). Each accepts the already
@@ -41,7 +43,7 @@ Mandatory Task 4 order:
    rollback, coordinator, and scheduler paths. No affected path may use `CancellationToken.None`.
 5. Add the exact member-allowlist source guard and per-row tests before Task 5 consumes typed results.
 
-The exact signatures are listed in design §§0.4 and 0.6. The verifier is store-owned; adapters consume its
+The exact signatures are listed in design §§0.4, 0.6, and 0.7. The verifier is store-owned; adapters consume its
 typed result but do not read paths, create a second parser, or collapse all failures to one generic
 block. `InvalidLimits` is zero-I/O fail-fast. Runtime protected outcomes retain evidence and map
 individually to the existing recovery/read-barrier vocabulary. Only `Verified` may advance recovery
@@ -57,8 +59,68 @@ retained as direct parser operations or migration targets. `ParseVerifiedEnvelop
 operation that parses bytes, parses JSON, and validates an envelope. Its typed consumers accept the
 already parsed result and perform no I/O, JSON parsing, or validation. The ledger also covers
 `NormalizeLegacy` and the decoded-payload hash exclusion. Each record repeats the row's owner,
-recovery mode, active token, single absolute deadline, and caller-`finally` disposal rule before the
-row is marked complete.
+   recovery mode, active token, single absolute deadline, and caller-`finally` disposal rule before the
+   row is marked complete. Every parser row also records `expectedScope`, `evidencePath`,
+   `expectedEvidenceDirectory`, `evidenceKind`, and verified `metadata`; omission of any input is a
+   failed migration, not an implementation choice.
+
+### Parser-contract blocker resolution (2026-09-16)
+
+Task 4 uses these authoritative shapes from design §0.7; do not invent aliases or narrower local
+records:
+
+```csharp
+internal readonly record struct RecoveryScopeBinding(
+    string Scope,
+    string CanonicalScopeDirectory);
+
+internal enum RecoveryEvidenceKind : byte
+{
+    AppendJournal = 1,
+    RestoreJournal = 2,
+    FileEntityJournal = 3,
+    MultiMemoryTransactionRecord = 4
+}
+```
+
+The sole parser contract is exactly:
+
+```csharp
+internal static RecoveryVerifiedEnvelope ParseVerifiedEnvelope(
+    in RecoveryVerificationContent content,
+    in RecoveryScopeBinding expectedScope,
+    string evidencePath,
+    string expectedEvidenceDirectory,
+    RecoveryEvidenceKind evidenceKind,
+    in RecoveryVerifiedFileMetadata metadata);
+```
+
+The store/path boundary supplies canonical logical scope, canonical absolute evidence paths, the
+expected evidence directory, kind, and verified metadata. The parser performs the one bounded
+byte/JSON parse and validates scope, canonical path containment, kind, and metadata without I/O;
+typed consumers do none of that work. `evidencePath` must be a regular-file location strictly
+inside `expectedEvidenceDirectory`, which must itself be inside the bound scope directory; lexical
+canonicalization and the repository's ordinal platform-aware comparer are used, with directory
+equality rejected. Symlink/reparse, existence, regular-file, and stability facts come from metadata.
+The parser borrows content and never copies, retains, disposes, reopens, or rereads it. The caller
+disposes every verifier-returned content object in the outer `finally`, including partial and
+exception paths; typed consumers borrow only the returned envelope and cannot outlive that content.
+No reduced-argument overload, path reader, duplicate validator, or second byte/JSON parser is
+permitted.
+
+Required call-site shape:
+
+```csharp
+RecoveryVerifiedEnvelope envelope = ParseVerifiedEnvelope(
+    in sourceContent,
+    in expectedScope,
+    evidencePath,
+    expectedEvidenceDirectory,
+    RecoveryEvidenceKind.AppendJournal,
+    in sourceContent.Metadata);
+AppendJournalCodec.ConsumeParsed(in envelope);
+// The enclosing finally disposes sourceContent; neither call owns it.
+```
 
 ## Global constraints
 
@@ -297,6 +359,12 @@ propagation, typed outcome mapping, content disposal in `finally`, and no second
 Add explicit zero-I/O assertions for invalid limits and explicit retention/no-mutation assertions
 for every non-verified outcome.
 
+The source guard must additionally assert exactly one declaration of `RecoveryScopeBinding` and
+`RecoveryEvidenceKind`, exactly one six-argument `ParseVerifiedEnvelope`, and zero overloads or
+helpers that parse bytes/JSON, validate scope/location/kind/metadata, or perform evidence I/O.
+Guard fixtures must include omitted-input parser attempts, duplicate-read attempts, and typed
+consumer attempts to access paths or validation options.
+
 **Dependencies:** Consume the existing B2 recovery envelopes/adapters, B3 coordinator and
 participant contracts, B4 quarantine/admission state, `PathContainment`, incremental SHA-256, and
 the existing filesystem/cancellation abstractions. Produce one internal verifier used by all
@@ -362,7 +430,7 @@ The result carries caller-owned `RecoveryVerificationContent` for source and opt
 bounded read-only memory plus verified length, hash, regular-file, containment, and post-read-
 stability metadata. Ownership transfers on return; the caller disposes each content value in
 `finally` after parsing and typed consumption, while consumers borrow and never retain or dispose it.
-`ParseVerifiedEnvelope(in RecoveryVerificationContent, in RecoveryVerifiedFileMetadata)` is the
+the exact six-argument `ParseVerifiedEnvelope` contract in the parser-contract amendment is the
 sole parse-once boundary. The chosen option is rename, not delete: `AppendJournalCodec.ConsumeParsed`,
 `RestoreJournalCodec.ConsumeParsed`, `FileEntityRecoveryAdapter.ConsumeParsed`,
 `FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` consume its
@@ -386,9 +454,8 @@ RecoveryDiscoveryCoordinator.GetOperationId(in RecoveryVerifiedEnvelope envelope
 ```
 
 The typed body consumers preserve their existing typed return values; operation-id consumers return the
-already parsed `OperationId`. The sole byte parser is
-`ParseVerifiedEnvelope(in RecoveryVerificationContent content,
-in RecoveryVerifiedFileMetadata metadata) -> RecoveryVerifiedEnvelope`. The source guard rejects
+already parsed `OperationId`. The sole byte parser is the exact six-argument signature in the
+parser-contract amendment. The source guard rejects
 the four superseded names and any typed consumer that accepts bytes/path/stream or performs I/O,
 JSON parsing, or validation.
 
@@ -567,8 +634,12 @@ spec section. Record evidence separately; do not stage or commit this plan/spec 
 Require the complete Task 4 production-inventory scan, invalid-limit zero-I/O tests, exact typed
 `ProtectedInvalidLimits` → `InvalidVerificationLimits`/`RecoveryRequired` mapping, and
 `RecoveryVerificationContent` ownership/disposal/no-second-read tests, exact signatures for the sole
-parser and all renamed consumers, and a source guard proving the four superseded names are absent and
-no typed consumer performs I/O, JSON parsing, or validation. Cite design §§0.2, 0.6, and 2.1–2.2 and
+parser and all renamed consumers, including the exact `RecoveryScopeBinding`, `RecoveryEvidenceKind`,
+and six parser inputs (`expectedScope`, `evidencePath`, `expectedEvidenceDirectory`, kind, and
+metadata), and a source guard proving the four superseded names are absent, no reduced parser
+overload exists, no duplicate byte/JSON parser or evidence read exists, and no typed consumer
+performs I/O, JSON parsing, scope/location/kind/metadata validation. Cite design §§0.2, 0.6, 0.7,
+and 2.1–2.2 and
 the bounded-read precedent in `docs/superpowers/specs/2026-08-24-journaled-restore-recovery-design.md`.
 Include the continuation ownership boundary: locally rejected framing/ASCII/canonical-base64url/size
 input has zero Core calls, while syntactically valid-looking bad-MAC/scope/expiry/semantic input
@@ -605,6 +676,11 @@ reaches Core.
   `FileMemoryStore.GetOperationId`, and `RecoveryDiscoveryCoordinator.GetOperationId` accept only
   the parsed object or typed metadata and perform no I/O, JSON parsing, or validation. The former
   four legacy names are absent.
+- `RecoveryScopeBinding` and `RecoveryEvidenceKind` have one authoritative definition, and the
+  sole parser has exactly six inputs: borrowed content, `expectedScope`, `evidencePath`,
+  `expectedEvidenceDirectory`, `evidenceKind`, and verified metadata. The parser alone validates
+  canonical containment, scope, kind, and metadata without I/O; typed consumers cannot validate or
+  read, and caller-owned content is disposed in the outer `finally`.
 - `RecoveryVerificationContent` is bounded to the shared 16 MiB total, caller-owned and disposed in
   `finally` across source, destination, multi-member, partial-acquisition, and exception paths;
   one parse-once verified-envelope object supplies operation ID and typed content without a second
@@ -631,3 +707,15 @@ reaches Core.
   syntactically valid-looking tokens go through Core for MAC, scope/run binding, expiry, and other
   semantic validation. Both paths disclose neither paths nor secrets and share the valid-request
   Core service path.
+
+## Completion record (2026-09-17)
+
+All ten tasks are complete. The Task 4–10 implementation/test commits, in order, are `3a297e5`
+(Task 4), `aef3e6e` (Task 5), `f933acd` (Task 6), `334a544` (Task 7), `62d9d0d` (Task 8),
+`0142ad7` (Task 9), and `02cfcad` (Task 10).
+
+Final verification: full solution **3577 passed, 19 skipped, 0 failed** (plugin lane 63 passed,
+retrieval lane 272 passed); release build **0 errors**; self-contained trimmed publish **passed**.
+Final gate disposition: **APPROVE**. No files were staged or committed by this housekeeping
+update. The acceptance detail is recorded in
+`docs/superpowers/ledgers/2026-09-17-b5-final-acceptance.md`.
