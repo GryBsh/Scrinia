@@ -46,6 +46,14 @@ public partial class ScriniaCommands
         // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
+        // B5 bounded background adapter: one single-flight Core maintenance
+        // invocation via BackgroundWork.Fire. Scheduler shutdown is inner
+        // (close admission, cancel and await its active invocation here);
+        // the outer single global drain stays in Program.
+        // The adapter never drains unrelated work and never touches plugins.
+        // It is tracked on WorkspaceSetup so shutdown stays ordered.
+        WorkspaceSetup.StartMaintenanceScheduler();
+
         var builder = Host.CreateApplicationBuilder();
 
         // MCP servers communicate via stdio; keep the log channel quiet so protocol
@@ -67,7 +75,17 @@ public partial class ScriniaCommands
             .WithResources<ScriniaMcpResources>();
 
         var host = builder.Build();
-        await host.RunAsync(cancellationToken);
-        return 0;
+        try
+        {
+            await host.RunAsync(cancellationToken);
+            return 0;
+        }
+        finally
+        {
+            // Inner shutdown first: stop the bounded adapter (cancel and
+            // await its active invocation) before Program's outer global
+            // drain waits for unrelated background work.
+            await WorkspaceSetup.StopMaintenanceSchedulerAsync();
+        }
     }
 }
