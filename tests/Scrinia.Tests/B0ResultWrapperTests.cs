@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Xunit;
 
@@ -131,5 +132,48 @@ public class ImportMemoryResultWrapperTests
     {
         Assert.Equal(B0Outcome.RecoveryRequired, B0ResultWrappers.MapWholeMemoryCode(WholeMemoryErrorCode.RecoveryRequired));
         Assert.Equal(B0Outcome.RecoveryRequired, B0ResultWrappers.MapWholeMemoryCode(WholeMemoryErrorCode.Internal));
+    }
+}
+
+public class FromMigrationWrapperTests
+{
+    private const string Quarantine = ".scrinia-conflicts-20260918-000000";
+
+    [Fact]
+    public void FromMigration_RanFalse_IsCommittedWithNoFailure()
+    {
+        StoreLayoutMigration.Result result = new(0, 0, Ran: false, BackupPath: null);
+        B0Result b0 = B0ResultWrappers.FromMigration(result, null);
+
+        Assert.Equal(B0Outcome.Committed, b0.Outcome);
+        Assert.Null(b0.Failure);
+        Assert.Null(b0.Recovery);
+        Assert.Null(b0.Warning);
+    }
+
+    [Fact]
+    public void FromMigration_RanTrueNoConflicts_IsCommitted()
+    {
+        StoreLayoutMigration.Result result = new(3, 0, Ran: true, BackupPath: ".scrinia-backup-20260918-000000");
+        B0Result b0 = B0ResultWrappers.FromMigration(result, null);
+
+        Assert.Equal(B0Outcome.Committed, b0.Outcome);
+        Assert.Null(b0.Failure);
+        Assert.NotNull(b0.Warning);
+    }
+
+    [Fact]
+    public void FromMigration_RanTrueWithConflicts_IsSuccessWithWarningAndQuarantineRecovery()
+    {
+        StoreLayoutMigration.Result result = new(2, 1, Ran: true, BackupPath: null);
+        B0Result b0 = B0ResultWrappers.FromMigration(result, Quarantine);
+
+        Assert.Equal(B0Outcome.SuccessWithWarning, b0.Outcome);
+        Assert.NotNull(b0.Failure);
+        Assert.Equal(B0FailureTaxonomy.WholeMemory, b0.Failure!.Taxonomy); // borrowed: B1 adds no Migration taxonomy
+        Assert.Equal("Conflict", b0.Failure.Code);
+        Assert.Equal(Quarantine, b0.Failure.Detail);
+        Assert.Equal(Quarantine, b0.Recovery!.EvidencePath);
+        Assert.Equal("resolve conflict losers in .scrinia-conflicts-*/", b0.Recovery.Action);
     }
 }

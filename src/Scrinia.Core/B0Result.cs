@@ -52,6 +52,35 @@ internal static class B0ResultWrappers
         result.Recovery,
         result.Warning);
 
+    // design Section 10 - aggregate layout-migration mapping at the result boundary only.
+    // Ran == false and Ran && Conflicts == 0 both commit; a conflict quarantines a loser to
+    // .scrinia-conflicts-*/ and surfaces as a typed warning. The taxonomy is borrowed from
+    // WholeMemory because B1 may not add a new B0FailureTaxonomy member (design Section 9).
+    internal static B0Result FromMigration(StoreLayoutMigration.Result result, string? quarantineDir)
+    {
+        bool hasConflicts = result.Ran && result.Conflicts > 0;
+        string? warning = hasConflicts
+            ? $"Store layout migration quarantined {result.Conflicts} conflict(s) to {quarantineDir}."
+            : result.Ran
+                ? $"Store layout migration moved {result.Moved} memory(ies) to memories/."
+                : null;
+        return new B0Result(
+            result.Ran is false || result.Conflicts == 0
+                ? B0Outcome.Committed
+                : B0Outcome.SuccessWithWarning,
+            hasConflicts
+                ? new B0Failure(B0FailureTaxonomy.WholeMemory, "Conflict", quarantineDir)
+                : null,
+            null,
+            string.Empty,
+            string.Empty,
+            hasConflicts && quarantineDir is not null
+                ? new RecoveryInfo(quarantineDir, "conflictQuarantined",
+                    "resolve conflict losers in .scrinia-conflicts-*/", "conflict loser quarantined")
+                : null,
+            warning);
+    }
+
     internal static B0Result FromMulti(MultiMemoryAggregateResult result) => new(
         MapMultiOutcome(result.Outcome),
         result.Failure is null
