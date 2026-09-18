@@ -491,10 +491,16 @@ public static class BundleFormatService
         // path and should not become one.
         foreach (var (topicScope, topic, entries, artifactBytes) in toWrite)
         {
-            store.ImportTopicEntries(topicScope, entries, artifactBytes, overwrite);
+            // The interface keeps the void contract; the per-memory outcome flows through the
+            // concrete store method. Captured for the FromImport boundary mapping but deliberately
+            // NOT folded into the summary below — the multi-topic summary and its facade envelope
+            // stay byte-identical to pre-B1.
+            ImportMemoryResult importResult = ((FileMemoryStore)store).ImportTopicEntries(
+                topicScope, entries, artifactBytes, overwrite);
             importedTopics++;
             importedEntries += entries.Count;
             importedTopicNames.Add(topic);
+            _ = importResult;
         }
 
         WriteFileEntities(fileEntityWrites);

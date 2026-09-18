@@ -4597,12 +4597,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private const string ImportStagingSuffix = ".staging";
     private const string RestoreJournalFileName = ".restore-journal.json";
 
-    public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
+    /// <summary>
+    /// The <see cref="IMemoryStore"/> contract stays <c>void</c>: the interface is public and must
+    /// not surface the internal <see cref="ImportMemoryResult"/> at its surface. This explicit
+    /// implementation preserves that void contract (and its lock-timeout translation) for interface
+    /// callers; the result-returning entry point is the internal method below, which the bundle write
+    /// pass and the import-result tests drive directly.
+    /// </summary>
+    void IMemoryStore.ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
+        Dictionary<string, byte[]> artifactBytes, bool overwrite)
+    {
+        _ = ImportTopicEntries(topicScope, entries, artifactBytes, overwrite);
+    }
+
+    internal ImportMemoryResult ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite)
     {
         try
         {
-            ImportTopicEntriesCore(topicScope, entries, artifactBytes, overwrite);
+            return ImportTopicEntriesCore(topicScope, entries, artifactBytes, overwrite);
         }
         catch (FileLockTimeoutException ex)
         {
@@ -4615,7 +4628,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private void ImportTopicEntriesCore(string topicScope, List<ArtifactEntry> entries,
+    private ImportMemoryResult ImportTopicEntriesCore(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite)
     {
         // Import bypasses MemoryWrite, so reject every unsafe durable leaf before materializing
@@ -4623,6 +4636,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // must not leave residue for a later recovery sweep to interpret.
         foreach (var entry in entries)
             MemoryWrite.ValidatePersistentSubject(entry.Name);
+
+        // Defaulted so the lock-free path (no candidates) reports Created with an empty operation id;
+        // the exclusive-lock action always assigns a real result before it returns or throws.
+        ImportMemoryResult result = new ImportMemoryResult(
+            WholeMemoryOutcome.Created, null, string.Empty, "No candidates to import.", null);
 
         WithExclusiveLock(topicScope, () =>
         {
@@ -4683,7 +4701,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             List<RestoreJournalPayload> payloads = BuildRestorePayloadsUnsafe(topicScope, candidates, artifactBytes, overwrite);
             if (payloads.Count == 0)
+            {
+                result = new ImportMemoryResult(WholeMemoryOutcome.Created, null, string.Empty,
+                    "No candidates to import.", null);
                 return;
+            }
+
+            // Pre-import existence is judged against this snapshot, taken BEFORE the mutation loop
+            // merges the incoming candidates in — comparing against the mutated list would report
+            // every import as a replace rather than a create.
+            HashSet<string> preImportNames = new(
+                existingEntries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
 
             foreach (RestoreJournalPayload payload in payloads)
             {
@@ -4711,8 +4739,28 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             ApplyPreparedJournalUnsafe(journal, storeDir,
                 new RestoreEnvelopeAdapterResult(restoreAdapter, restoreAdapter.ToEnvelope(journal)));
             InvalidateRecoveredScopeUnsafe(topicScope);
-            TryDeleteCompletedJournalUnsafe(GetRestoreJournalPath(storeDir));
+            bool cleanupDeferred = !TryDeleteCompletedJournalUnsafe(GetRestoreJournalPath(storeDir));
+            bool anyCreated = candidates.Any(c => !preImportNames.Contains(c.Name));
+            ArtifactEntry? importedEntry = candidates.Count > 0 ? candidates[0] : null;
+            WholeMemoryOutcome outcome = anyCreated ? WholeMemoryOutcome.Created : WholeMemoryOutcome.Replaced;
+            string? warning = cleanupDeferred
+                ? "Import committed; completed-journal cleanup deferred."
+                : null;
+            RecoveryInfo? recovery = cleanupDeferred
+                ? new RecoveryInfo(GetRestoreJournalPath(storeDir), "cleanupPending",
+                    "resolve retained completed journal", "completed-journal cleanup deferred")
+                : null;
+            if (cleanupDeferred)
+                outcome = WholeMemoryOutcome.SuccessWithWarning;
+            result = new ImportMemoryResult(
+                outcome,
+                importedEntry,
+                journal.TransactionId,
+                warning,
+                recovery);
         }, ImportLockTimeout);
+
+        return result;
     }
 
     /// <summary>
