@@ -65,3 +65,70 @@ public class B0ResultFacadeMappingTests
     private static string GoldenPath(string outcomeTag, [CallerFilePath] string thisFile = "") =>
         Path.Combine(Path.GetDirectoryName(thisFile)!, "Golden", $"remember-{outcomeTag}.yaml");
 }
+
+/// <summary>Proves the B1 compact-facade refactor is behaviour-preserving. The golden-render case
+/// pins the single <c>compact</c> <c>success_with_warning</c> envelope to its pre-B1 baseline; the
+/// mapping case pins <see cref="B0ResultWrappers.FromWhole"/> to the shared whole-memory outcome
+/// mapper that the success_with_warning promotion reads. B1 only re-routes the promotion through
+/// <c>FromWhole</c> — every rendered field must stay byte-identical to the captured baseline.</summary>
+public class CompactFacadeMappingTests
+{
+    /// <summary>The whole-memory success_with_warning outcome must map through FromWhole to the B0
+    /// outcome the compact promotion checks, with the recovery state intact — this is the mapping
+    /// the promotion relies on, so it fails if FromWhole drops or rewrites it.</summary>
+    [Fact]
+    public void Compact_SuccessWithWarning_B0Outcome_MapsThroughFromWhole()
+    {
+        WholeMemoryResult result = new(
+            WholeMemoryOutcome.SuccessWithWarning, null, "op-compact",
+            "Whole-memory commit succeeded, but archive cleanup requires attention.",
+            new RecoveryInfo("/scope/.append-journal.json", "cleanupPending",
+                "resolve retained evidence", "archive cleanup did not complete"));
+        B0Result b0 = B0ResultWrappers.FromWhole(result);
+        Assert.Equal(B0Outcome.SuccessWithWarning, b0.Outcome);
+        Assert.NotNull(b0.Recovery);
+        Assert.Equal("cleanupPending", b0.Recovery!.State);
+    }
+
+    /// <summary>The live compact facade must still render the success_with_warning envelope exactly
+    /// as captured pre-B1. The volatile operationId GUID and temp workspace path are normalised so
+    /// the pin is structural, not machine-dependent — the same rule the remember golden test uses.</summary>
+    [Fact]
+    public async Task Compact_Envelope_UnchangedAfterB0Routing()
+    {
+        string golden = File.ReadAllText(GoldenPath());
+        McpResponse rendered = await CompactEnvelopeFixture.DriveSuccessWithWarningAsync();
+        string actual = GoldenNormalizer.Normalize(rendered.ToYaml());
+        string expected = GoldenNormalizer.Normalize(golden);
+
+        Assert.Equal(expected, actual);
+    }
+
+    /// <summary>Goldens live next to the source, not in bin/ — they are committed artifacts.</summary>
+    private static string GoldenPath([CallerFilePath] string thisFile = "") =>
+        Path.Combine(Path.GetDirectoryName(thisFile)!, "Golden", "compact-success-with-warning.yaml");
+}
+
+/// <summary>
+/// Drives the <c>compact</c> whole-memory <c>SuccessWithWarning</c> outcome through the live internal
+/// <see cref="ScriniaMcpTools.Compact"/> facade so its golden envelope can be captured and pinned.
+///
+/// Reuses the whole-memory fault seam exactly as <c>McpWholeMemoryTransactionTests</c> and the
+/// existing compact success_with_warning test model it: a two-chunk write, then an <c>ArchiveCleanup</c>
+/// prune failure on the compaction so the whole-memory commit lands but the facade promotes it to
+/// success_with_warning. No new fault logic is invented here — the seam is reused.
+/// </summary>
+internal static class CompactEnvelopeFixture
+{
+    public static async Task<McpResponse> DriveSuccessWithWarningAsync()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var tools = new ScriniaMcpTools();
+        await tools.Remember(["old one", "old two"], MemoryAddress.Parse("/b1/compact-warning"));
+        // Post-commit prune/archive cleanup fails: the whole-memory commit still lands, but the
+        // facade promotes the compaction to success_with_warning.
+        store.FailOnceAt(WholeMemoryFaultPoint.ArchiveCleanup);
+        return await tools.Compact(MemoryAddress.Parse("/b1/compact-warning"));
+    }
+}

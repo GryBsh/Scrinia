@@ -1,0 +1,10 @@
+status: success_with_warning
+action: compacted
+operationId: <OPERATION_ID>
+scope: "local:b1"
+journalPath: .append-journal.json
+info:
+  - Whole-memory commit succeeded, but archive cleanup requires attention.
+content: |
+  Compacted /b1/compact-warning: 2 -> 1 chunk (1 dropped). Original archived.
+  Files in .scrinia/ were updated — these are your changes.

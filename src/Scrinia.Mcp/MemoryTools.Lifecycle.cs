@@ -297,20 +297,28 @@ public sealed partial class ScriniaMcpTools
         string archived = hadIndexedEntry ? " Original archived." : "";
         string summary = $"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}";
 
-        if (transactionResult?.Outcome == WholeMemoryOutcome.SuccessWithWarning)
+        if (transactionResult is not null)
         {
-            var warningResponse = ResponseBuilder.SuccessWithWarning(summary)
-                .WithAction("compacted")
-                .WithOperationId(transactionResult.OperationId)
-                .WithInfo(transactionResult.Warning ?? "Whole-memory commit completed with a warning.");
-            if (transactionResult.Recovery is not null)
-                warningResponse = warningResponse.WithRecovery(
-                    scope, SafeRecoveryEvidencePath(transactionResult.Recovery.EvidencePath));
-            if (!ephemeral)
-                warningResponse = warningResponse.WithFileChanges();
-            await FireEventSinkAsync(sink => sink.OnStoredAsync(
-                stored.Address, write.RawContent, store, cancellationToken));
-            return warningResponse;
+            // Route the promotion through the shared B0 result — the single FromWhole mapping reused
+            // by every whole-memory facade. FromWhole is a behaviour-preserving pass of OperationId /
+            // Warning / Recovery and SuccessWithWarning -> SuccessWithWarning, so the envelope below
+            // renders byte-identical to the pre-B1 golden.
+            B0Result b0 = B0ResultWrappers.FromWhole(transactionResult);
+            if (b0.Outcome == B0Outcome.SuccessWithWarning)
+            {
+                var warningResponse = ResponseBuilder.SuccessWithWarning(summary)
+                    .WithAction("compacted")
+                    .WithOperationId(b0.OperationId)
+                    .WithInfo(b0.Warning ?? "Whole-memory commit completed with a warning.");
+                if (b0.Recovery is not null)
+                    warningResponse = warningResponse.WithRecovery(
+                        scope, SafeRecoveryEvidencePath(b0.Recovery.EvidencePath));
+                if (!ephemeral)
+                    warningResponse = warningResponse.WithFileChanges();
+                await FireEventSinkAsync(sink => sink.OnStoredAsync(
+                    stored.Address, write.RawContent, store, cancellationToken));
+                return warningResponse;
+            }
         }
 
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
