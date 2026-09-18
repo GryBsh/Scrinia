@@ -1,0 +1,9 @@
+status: error
+operationId: <OPERATION_ID>
+scope: "local:b1"
+journalPath: .append-journal.json
+error: Whole-memory publication failed and byte-for-byte rollback could not be proved.
+errorCode: RECOVERY_REQUIRED
+actionNeeded:
+  - resolve retained evidence
+  - Resolve the retained whole-memory transaction evidence, then retry.

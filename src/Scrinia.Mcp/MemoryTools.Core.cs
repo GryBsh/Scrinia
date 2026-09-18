@@ -380,16 +380,23 @@ public sealed partial class ScriniaMcpTools
             await FireEventSinkAsync(sink => sink.OnStoredAsync(
                 entry.Address, write.RawContent, store, cancellationToken));
             McpResponse response = StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
-            if (transactionResult?.Outcome == WholeMemoryOutcome.SuccessWithWarning)
+            if (transactionResult is not null)
             {
-                response = response with
+                // Route the success_with_warning promotion through B0Result so the remember facade's
+                // outcome mapping is the single FromWhole mapping shared with compact/sidecar — the
+                // rendered envelope is unchanged (OperationId/Warning/Recovery carry through verbatim).
+                B0Result b0 = B0ResultWrappers.FromWhole(transactionResult);
+                if (b0.Outcome == B0Outcome.SuccessWithWarning)
                 {
-                    Status = "success_with_warning",
-                    OperationId = transactionResult.OperationId,
-                    Info = [transactionResult.Warning ?? "Whole-memory commit completed with a warning."]
-                };
-                if (transactionResult.Recovery is not null)
-                    response = response.WithRecovery(scope, Path.GetFileName(transactionResult.Recovery.EvidencePath));
+                    response = response with
+                    {
+                        Status = "success_with_warning",
+                        OperationId = b0.OperationId,
+                        Info = [b0.Warning ?? "Whole-memory commit completed with a warning."]
+                    };
+                    if (b0.Recovery is not null)
+                        response = response.WithRecovery(scope, Path.GetFileName(b0.Recovery.EvidencePath));
+                }
             }
             return response;
         }
