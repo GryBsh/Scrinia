@@ -62,7 +62,6 @@ namespace Scrinia.Mcp;
 [JsonSerializable(typeof(B0Outcome))]
 [JsonSerializable(typeof(B0Failure))]
 [JsonSerializable(typeof(B0FailureTaxonomy))]
-[JsonSerializable(typeof(B0Exception))]
 [JsonSerializable(typeof(RecoveryMember))]
 internal partial class ScriniaMcpJsonContext : JsonSerializerContext;
 
