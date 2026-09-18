@@ -51,7 +51,20 @@ namespace Scrinia.Mcp;
 [JsonSerializable(typeof(AppendRecoveryInfo))]
 [JsonSerializable(typeof(AppendStoreOutcome))]
 [JsonSerializable(typeof(AppendWarningCode))]
-public partial class ScriniaMcpJsonContext : JsonSerializerContext;
+// B0 facade roots (Task 7, additive). B0Result and its vocabulary live in Scrinia.Core; the MCP
+// project references Core, so source generation emits these roots alongside AppendStoreResult
+// without touching any existing registration or public contract. The context is internal: the B0
+// facade types are internal, and a source-generated context only permits internal roots when its
+// generated members are internal (a public context exposing an internal JsonTypeInfo<T> is a
+// CS0053). The `scri` CLI and Scrinia.Tests reach these roots through InternalsVisibleTo, and the
+// underlying types keep their own accessibility.
+[JsonSerializable(typeof(B0Result))]
+[JsonSerializable(typeof(B0Outcome))]
+[JsonSerializable(typeof(B0Failure))]
+[JsonSerializable(typeof(B0FailureTaxonomy))]
+[JsonSerializable(typeof(B0Exception))]
+[JsonSerializable(typeof(RecoveryMember))]
+internal partial class ScriniaMcpJsonContext : JsonSerializerContext;
 
 
 public sealed partial class ScriniaMcpTools
