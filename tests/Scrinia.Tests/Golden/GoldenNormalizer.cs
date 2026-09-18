@@ -16,6 +16,12 @@ internal static class GoldenNormalizer
     private static readonly Regex Score = new(@"score=\d+(\.\d+)?", RegexOptions.Compiled);
     private static readonly Regex TempDir = new(@"scrinia_test_[0-9a-fA-F]{32}", RegexOptions.Compiled);
     private static readonly Regex OperationId = new(@"(?<=operationId: )[0-9a-fA-F]{32}", RegexOptions.Compiled);
+    // The file-entity coordinator names its retained recovery evidence <operationId>.recovery, so a
+    // sidecar/skill/agent success_with_warning or recovery_required envelope embeds a volatile GUID
+    // in journalPath (".file-entity-<32hex>.recovery"). The operationId: field is already normalised
+    // above; this catches the same GUID wherever it survives in the path so the sidecar goldens stay
+    // structural, not machine-dependent — exactly the same rule the remember/compact goldens rely on.
+    private static readonly Regex FileEntityEvidence = new(@".file-entity-[0-9a-fA-F]{32}\.recovery", RegexOptions.Compiled);
     private static readonly Regex IsoTimestamp = new(@"\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+\-]\d{2}:\d{2})", RegexOptions.Compiled);
     private static readonly Regex BareDate = new(@"\d{4}-\d{2}-\d{2}", RegexOptions.Compiled);
 
@@ -39,6 +45,7 @@ internal static class GoldenNormalizer
         s = Score.Replace(s, "score=<SCORE>");
         s = TempDir.Replace(s, "<WORKSPACE>");
         s = OperationId.Replace(s, "<OPERATION_ID>");
+        s = FileEntityEvidence.Replace(s, ".file-entity-<EVIDENCE>");
         s = IsoTimestamp.Replace(s, "<TIMESTAMP>");
         s = BareDate.Replace(s, "<DATE>");
         return s.TrimEnd('\n');

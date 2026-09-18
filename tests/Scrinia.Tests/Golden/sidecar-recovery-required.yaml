@@ -1,0 +1,9 @@
+status: error
+path: /skill/sidecarrecovery
+operationId: <OPERATION_ID>
+scope: skill/sidecarrecovery
+journalPath: .file-entity-<EVIDENCE>
+error: File-entity publication requires recovery.
+errorCode: RECOVERY_REQUIRED
+actionNeeded:
+  - Resolve the retained file-entity recovery evidence, then retry.

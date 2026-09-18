@@ -1,0 +1,11 @@
+status: success_with_warning
+action: created
+path: /skill/sidecarwarning
+operationId: <OPERATION_ID>
+scope: skill/sidecarwarning
+journalPath: .file-entity-<EVIDENCE>
+info:
+  - File-entity publication committed, but recovery evidence cleanup requires attention.
+content: |
+  Stored as .scrinia/skills/sidecarwarning.md.
+  Files in .scrinia/ were updated — these are your changes.

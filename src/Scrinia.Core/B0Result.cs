@@ -32,14 +32,23 @@ internal static class B0ResultWrappers
             : new RecoveryInfo(result.Recovery.JournalPath, result.Recovery.State, result.Recovery.Action, result.Recovery.Detail),
         result.Warning is null ? null : $"{result.Warning.Code}:{result.Warning.Message}");
 
-    internal static B0Result FromWhole(WholeMemoryResult result) => new(
-        MapWholeOutcome(result.Outcome),
+    // design Section 8 - file-entity sidecar writes reuse WholeMemoryOutcome; map it through the
+    // SAME outcome mapper FromWhole uses so remember and sidecar cannot diverge.
+    internal static B0Result FromFileEntity(FileEntityMutationResult result) =>
+        BuildFromWholeOutcome(result.Outcome, null, result.OperationId, result.Warning, result.Recovery);
+
+    private static B0Result BuildFromWholeOutcome(
+        WholeMemoryOutcome outcome, ArtifactEntry? entry, string operationId, string? warning, RecoveryInfo? recovery) => new(
+        MapWholeOutcome(outcome),
         null,
-        result.Entry,
-        result.OperationId,
-        result.OperationId,
-        result.Recovery,
-        result.Warning);
+        entry,
+        operationId,
+        operationId,
+        recovery,
+        warning);
+
+    internal static B0Result FromWhole(WholeMemoryResult result) =>
+        BuildFromWholeOutcome(result.Outcome, result.Entry, result.OperationId, result.Warning, result.Recovery);
 
     // design Section 6.2 - structurally identical to FromWhole; the reused WholeMemoryOutcome
     // routes through the same MapWholeOutcome, OperationId/Warning/Recovery carry unchanged.
