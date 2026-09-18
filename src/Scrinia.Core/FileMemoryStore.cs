@@ -79,40 +79,32 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     ];
 
     internal void FailOnceAt(AppendFaultPoint point) =>
-        AppendFaultInjector = (faultPoint, _, _) =>
-        {
-            if (faultPoint != point)
-                return null;
-            AppendFaultInjector = null;
-            return new IOException($"Injected append fault at {point}.");
-        };
+        B0FaultSeam.FailOnceAt(B0FaultSeam.MapAppendFaultPoint(point), point.ToString());
 
     internal void FailOnceAt(WholeMemoryFaultPoint point) =>
-        WholeMemoryFaultInjector = (faultPoint, _) =>
-        {
-            if (faultPoint != point)
-                return null;
-            WholeMemoryFaultInjector = null;
-            return new IOException($"Injected whole-memory fault at {point}.");
-        };
+        B0FaultSeam.FailOnceAt(B0FaultSeam.MapWholeMemoryFaultPoint(point), point.ToString());
 
     internal void FailPersistentlyAt(AppendFaultPoint point) =>
-        AppendFaultInjector = (faultPoint, _, _) => faultPoint == point
-            ? new IOException($"Injected append fault at {point}.")
-            : null;
+        B0FaultSeam.FailPersistentlyAt(B0FaultSeam.MapAppendFaultPoint(point), point.ToString());
 
     internal void ClearFaults()
     {
+        B0FaultSeam.ClearFaults();
         AppendFaultInjector = null;
         WholeMemoryFaultInjector = null;
     }
 
     internal static Exception? InjectAppendFault(AppendFaultPoint point, string operationId, string path) =>
-        AppendFaultInjector?.Invoke(point, operationId, path);
+        B0FaultSeam.ThrowIfInjectedOrNull(B0FaultSeam.MapAppendFaultPoint(point), point.ToString())
+        ?? AppendFaultInjector?.Invoke(point, operationId, path);
 
     internal static void InjectWholeFault(WholeMemoryFaultPoint point, string path)
     {
-        Exception? failure = WholeMemoryFaultInjector?.Invoke(point, path);
+        Exception? failure = B0FaultSeam.ThrowIfInjectedOrNull(
+            B0FaultSeam.MapWholeMemoryFaultPoint(point), point.ToString());
+        if (failure is not null)
+            throw failure;
+        failure = WholeMemoryFaultInjector?.Invoke(point, path);
         if (failure is not null)
             throw failure;
     }
@@ -2709,7 +2701,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     internal string[] PruneWholeArchives(IReadOnlyList<string> candidates, string operationId)
     {
         var failures = new List<string>();
-        Exception? injected = WholeMemoryFaultInjector?.Invoke(WholeMemoryFaultPoint.ArchiveCleanup, operationId);
+        Exception? injected = B0FaultSeam.ThrowIfInjectedOrNull(
+                B0FaultSeam.MapWholeMemoryFaultPoint(WholeMemoryFaultPoint.ArchiveCleanup),
+                WholeMemoryFaultPoint.ArchiveCleanup.ToString())
+            ?? WholeMemoryFaultInjector?.Invoke(WholeMemoryFaultPoint.ArchiveCleanup, operationId);
         if (injected is not null)
             return [$"archive cleanup: {injected.Message}"];
 

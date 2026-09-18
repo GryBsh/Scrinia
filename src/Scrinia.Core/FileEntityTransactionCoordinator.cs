@@ -7,19 +7,14 @@ namespace Scrinia.Core;
 internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionCoordinator
 {
     private readonly string _workspaceRoot;
-    private readonly object _faultGate = new();
-    private readonly Queue<FileEntityFaultPoint> _faultPoints = new();
 
     internal FileEntityTransactionCoordinator(string workspaceRoot)
     {
         _workspaceRoot = Path.GetFullPath(workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot)));
     }
 
-    internal void FailOnceAt(FileEntityFaultPoint point)
-    {
-        lock (_faultGate)
-            _faultPoints.Enqueue(point);
-    }
+    internal void FailOnceAt(FileEntityFaultPoint point) =>
+        B0FaultSeam.FailOnceAt(B0FaultSeam.MapFileEntityFaultPoint(point), point.ToString());
 
     public async Task<FileEntityMutationResult> ExecuteAsync(
         FileEntityMutation mutation,
@@ -431,13 +426,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
     private void ThrowIfFault(FileEntityFaultPoint point)
     {
-        lock (_faultGate)
-        {
-            if (_faultPoints.Count == 0 || _faultPoints.Peek() != point)
-                return;
-            _faultPoints.Dequeue();
-        }
-
-        throw new IOException($"Injected file-entity fault at {point}.");
+        Exception? failure = B0FaultSeam.ThrowIfInjectedOrNull(
+            B0FaultSeam.MapFileEntityFaultPoint(point), point.ToString());
+        if (failure is not null)
+            throw failure;
     }
 }

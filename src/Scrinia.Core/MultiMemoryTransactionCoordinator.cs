@@ -926,7 +926,11 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
 
     private static void ThrowIfInjected(MultiMemoryTransactionTransition transition, string path)
     {
-        Exception? failure = FailureInjector.Value?.Invoke(transition, path);
+        Exception? failure = B0FaultSeam.ThrowIfInjectedOrNull(
+            B0FaultSeam.MapMultiMemoryTransition(transition), transition.ToString());
+        if (failure is not null)
+            throw failure;
+        failure = FailureInjector.Value?.Invoke(transition, path);
         if (failure is not null)
             throw failure;
     }

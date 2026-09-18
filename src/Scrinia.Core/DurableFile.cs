@@ -126,7 +126,10 @@ internal static class DurableFile
 
     private static void ThrowInjected(DurableWritePhase phase, string destination)
     {
-        Exception? failure = FailureInjector?.Invoke(phase, destination);
+        Exception? failure = B0FaultSeam.ThrowIfInjectedOrNull(B0FaultSeam.MapDurableWritePhase(phase), destination);
+        if (failure is not null)
+            throw failure;
+        failure = FailureInjector?.Invoke(phase, destination);
         if (failure is not null)
             throw failure;
     }
