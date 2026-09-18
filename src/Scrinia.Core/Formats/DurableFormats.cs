@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace Scrinia.Core.Formats;
 
 /// <summary>
@@ -112,4 +114,12 @@ public static class DurableFormats
         ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta,
         RestoreJournal, AppendJournal, RecoveryEnvelope, MultiMemoryTransaction
     ];
+
+    /// <summary>Sole source of truth for every durable format name and version contract. Derived
+    /// from <see cref="All"/> so the twelve formats are declared exactly once: <see cref="All"/>
+    /// is the single canonical declaration and <see cref="Registry"/> is a keyed view over it.
+    /// Every consumer imports this Registry; no consumer declares a second copy or hard-codes a
+    /// version disposition.</summary>
+    public static readonly ImmutableDictionary<string, FormatContract> Registry =
+        All.ToImmutableDictionary(contract => contract.Name, StringComparer.Ordinal);
 }
