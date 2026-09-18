@@ -41,6 +41,17 @@ internal static class B0ResultWrappers
         result.Recovery,
         result.Warning);
 
+    // design Section 6.2 - structurally identical to FromWhole; the reused WholeMemoryOutcome
+    // routes through the same MapWholeOutcome, OperationId/Warning/Recovery carry unchanged.
+    internal static B0Result FromImport(ImportMemoryResult result) => new(
+        MapWholeOutcome(result.Outcome),
+        null,
+        result.Entry,
+        result.OperationId,
+        result.OperationId,
+        result.Recovery,
+        result.Warning);
+
     internal static B0Result FromMulti(MultiMemoryAggregateResult result) => new(
         MapMultiOutcome(result.Outcome),
         result.Failure is null
@@ -99,5 +110,14 @@ internal static class B0ResultWrappers
         MultiMemoryOutcome.Rejected => B0Outcome.Rejected,
         MultiMemoryOutcome.RecoveryRequired => B0Outcome.RecoveryRequired,
         _ => throw new ArgumentOutOfRangeException(nameof(o), o, "Unknown multi-memory outcome.")
+    };
+
+    // design Section 5 - the WholeMemoryTransactionException classification for remember/compact.
+    // Both existing codes (RecoveryRequired, Internal) classify as RecoveryRequired at the boundary.
+    internal static B0Outcome MapWholeMemoryCode(WholeMemoryErrorCode code) => code switch
+    {
+        WholeMemoryErrorCode.RecoveryRequired => B0Outcome.RecoveryRequired,
+        WholeMemoryErrorCode.Internal => B0Outcome.RecoveryRequired,
+        _ => throw new ArgumentOutOfRangeException(nameof(code), code, "Unknown whole-memory error code.")
     };
 }

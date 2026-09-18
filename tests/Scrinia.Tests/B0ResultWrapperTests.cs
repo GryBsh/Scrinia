@@ -73,3 +73,63 @@ public class B0ResultWrapperTests
         Assert.Equal("nope", b0ex.Source.Message);
     }
 }
+
+public class ImportMemoryResultWrapperTests
+{
+    [Fact]
+    public void ImportMemoryResult_UsesWholeMemoryOutcomeAndCarriesRecovery()
+    {
+        var recovery = new RecoveryInfo("/scope/.restore-journal.json", "recoveryRequired",
+            "resolve retained restore journal", "completed-journal cleanup deferred");
+        ImportMemoryResult import = new(
+            WholeMemoryOutcome.Replaced,
+            new ArtifactEntry(MemoryAddress.Parse("/api/flow"), "artifacts/api/flow.nmp2", 1, 12, DateTimeOffset.UtcNow),
+            "47bf1102-0000-0000-0000-000000000000",
+            "Import committed; completed-journal cleanup deferred.",
+            recovery);
+
+        Assert.Equal(WholeMemoryOutcome.Replaced, import.Outcome);
+        Assert.Equal("47bf1102-0000-0000-0000-000000000000", import.OperationId);
+        Assert.Same(recovery, import.Recovery);
+    }
+
+    [Theory]
+    [InlineData((int)WholeMemoryOutcome.Created, (int)B0Outcome.Created)]
+    [InlineData((int)WholeMemoryOutcome.Replaced, (int)B0Outcome.Replaced)]
+    [InlineData((int)WholeMemoryOutcome.SuccessWithWarning, (int)B0Outcome.SuccessWithWarning)]
+    [InlineData((int)WholeMemoryOutcome.RecoveryRequired, (int)B0Outcome.RecoveryRequired)]
+    public void FromImport_MapsThroughMapWholeOutcomeExactlyLikeFromWhole(
+        int outcomeValue, int expectedValue)
+    {
+        var outcome = (WholeMemoryOutcome)outcomeValue;
+        var expected = (B0Outcome)expectedValue;
+        ImportMemoryResult import = new(outcome, null, "op-import", null, null);
+        B0Result b0 = B0ResultWrappers.FromImport(import);
+
+        Assert.Equal(expected, b0.Outcome);
+        Assert.Null(b0.Failure);            // FromImport mirrors FromWhole: Failure stays null
+        Assert.Equal("op-import", b0.OperationId);
+        Assert.Equal("op-import", b0.CorrelationId);
+    }
+
+    [Fact]
+    public void FromImport_CarriesWarningAndRecoveryUnchanged()
+    {
+        var recovery = new RecoveryInfo("/scope/.restore-journal.json", "cleanupPending",
+            "resolve retained evidence", "deferred");
+        ImportMemoryResult import = new(
+            WholeMemoryOutcome.SuccessWithWarning, null, "op-warn", "cleanup deferred", recovery);
+        B0Result b0 = B0ResultWrappers.FromImport(import);
+
+        Assert.Equal(B0Outcome.SuccessWithWarning, b0.Outcome);
+        Assert.Equal("cleanup deferred", b0.Warning);
+        Assert.Equal("/scope/.restore-journal.json", b0.Recovery!.EvidencePath);
+    }
+
+    [Fact]
+    public void MapWholeMemoryCode_ClassifiesEveryExceptionCodeAsRecoveryRequired()
+    {
+        Assert.Equal(B0Outcome.RecoveryRequired, B0ResultWrappers.MapWholeMemoryCode(WholeMemoryErrorCode.RecoveryRequired));
+        Assert.Equal(B0Outcome.RecoveryRequired, B0ResultWrappers.MapWholeMemoryCode(WholeMemoryErrorCode.Internal));
+    }
+}
