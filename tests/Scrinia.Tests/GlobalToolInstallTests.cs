@@ -565,9 +565,70 @@ public sealed class GlobalToolInstallTests : IDisposable
             throw new AggregateException("Failed scri serve probe cleanup was incomplete; marker cleanup is unsafe.", failures);
     }
 
-    [Fact]
+    /// <summary>
+    /// Fast, conservative probe: can a child <c>powershell.exe</c> execute a command and write a marker
+    /// file within a short window? Used to gate <see cref="CloseAndExitAsync_KillsAndAwaitsTimedOutProcessTree"/>
+    /// in environments where detached PowerShell execution is blocked (most sandboxes). Returns false —
+    /// i.e. skip — on launch failure, a timeout, or an absent marker, and never leaves a stray process or
+    /// marker behind so the suite stays clean.
+    /// </summary>
+    private static bool DetachedPowerShellCanWriteMarker()
+    {
+        string marker = Path.Combine(Path.GetTempPath(), $"scrinia-ps-probe-{Guid.NewGuid():N}.txt");
+        string command = $"Set-Content -LiteralPath '{marker}' -Value 'scrinia-ps-probe'";
+        var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-NoProfile");
+        psi.ArgumentList.Add("-NonInteractive");
+        psi.ArgumentList.Add("-Command");
+        psi.ArgumentList.Add(command);
+
+        try
+        {
+            using System.Diagnostics.Process? process = System.Diagnostics.Process.Start(psi);
+            if (process is null)
+                return false;
+
+            // The marker is written synchronously before powershell exits; bound the wait so a hung
+            // probe can never stall the suite, and fail closed rather than trust an unexited process.
+            if (!process.WaitForExit(3000))
+            {
+                process.Kill(entireProcessTree: true);
+                return false;
+            }
+
+            return File.Exists(marker);
+        }
+        catch
+        {
+            // powershell.exe missing (Win32Exception), blocked, or otherwise unrunnable: skip.
+            return false;
+        }
+        finally
+        {
+            try { File.Delete(marker); }
+            catch { /* a leftover probe marker is harmless and outside the test's own artifact set */ }
+        }
+    }
+
+    /// <summary>
+    /// Exercises <c>CloseAndExitAsync</c> against a three-level detached process chain, but only when this
+    /// host can actually run a child <c>powershell.exe</c> that writes its marker — the deepest
+    /// <c>powershell.exe</c> must create the marker within a short window for the precondition below to be
+    /// meaningful. Environments that block detached PowerShell execution (most sandboxes) skip here, before
+    /// any production <c>CloseAndExitAsync</c>/<c>ProcessRunner</c> code runs, so the suite never fails a
+    /// process-lifecycle assertion it never reached.
+    /// </summary>
+    [SkippableFact]
     public async Task CloseAndExitAsync_KillsAndAwaitsTimedOutProcessTree()
     {
+        Skip.If(!DetachedPowerShellCanWriteMarker(),
+            "detached PowerShell cannot write its marker file in this environment; the process-tree "
+            + "precondition is unmet, so CloseAndExitAsync was never reached");
+
         string marker = Path.Combine(Path.GetTempPath(), $"scrinia-child-marker-{Guid.NewGuid():N}.txt");
         string eventName = $"scrinia-child-liveness-{Guid.NewGuid():N}";
         string parentScript = Path.Combine(Path.GetTempPath(), $"scrinia-parent-{Guid.NewGuid():N}.cmd");
