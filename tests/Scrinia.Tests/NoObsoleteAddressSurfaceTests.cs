@@ -73,8 +73,10 @@ public sealed class NoObsoleteAddressSurfaceTests
             ["tests/Scrinia.Tests/SearchCandidatesHintTests.cs"] = "legacy compatibility fixtures",
             ["tests/Scrinia.Tests/Store/JournaledRestoreRecoveryTests.cs"] = "legacy compatibility fixtures",
             ["tests/Scrinia.Tests/Store/TransactionalRestoreTests.cs"] = "legacy compatibility fixtures",
-            ["tests/Scrinia.Tests/StoreLayoutMigrationTests.cs"] = "legacy compatibility fixtures"
-         };
+            ["tests/Scrinia.Tests/StoreLayoutMigrationTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/ImportFacadeMappingTests.cs"] = "legacy compatibility fixtures",
+            ["tests/Scrinia.Tests/ImportFixture.cs"] = "legacy compatibility fixtures"
+        };
 
     [Fact]
     public void Forbidden_address_surface_is_absent_outside_classified_historical_text()
