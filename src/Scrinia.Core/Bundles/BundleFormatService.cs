@@ -53,14 +53,77 @@ public static class BundleFormatService
     };
 
     /// <summary>
-    /// Write topics to a zip archive. Caller manages the ZipArchive lifecycle.
+    /// Write topics to a zip archive. Caller manages the ZipArchive lifecycle. Builds every topic
+    /// (index, body, manifest) BEFORE opening any entry, so a malformed topic, oversized body or
+    /// unsafe subject fails the build and no topic is published; the publish order and wire format
+    /// are otherwise unchanged.
     /// </summary>
     /// <returns>Tuple of (exported topic names, total entry count).</returns>
     public static (List<string> Topics, int EntryCount) ExportTopicsToZip(
         ZipArchive zip, IMemoryStore store, string[] topics)
     {
-        int totalEntries = 0;
+        var (staged, exportedTopics, totalEntries) = BuildExportStaging(store, topics);
+        PublishStaging(zip, staged, totalEntries, store);
+        return (exportedTopics, totalEntries);
+    }
+
+    /// <summary>
+    /// Write topics to a bundle at <paramref name="bundlePath"/>. Builds every topic into an
+    /// in-memory staging structure BEFORE the bundle file exists, so a malformed topic, oversized
+    /// body or unsafe subject fails the build and no bundle is written. The assembled archive is
+    /// then published atomically with <see cref="DurableFile.AtomicWriteAllBytes"/> — the single
+    /// durable boundary of the export — and any failure (a build refuse or a failed publish) removes
+    /// the target so a failed export leaves no half-created bundle.
+    /// </summary>
+    /// <returns>Tuple of (exported topic names, total entry count).</returns>
+    public static (List<string> Topics, int EntryCount) ExportTopicsToZip(
+        string bundlePath, IMemoryStore store, string[] topics)
+    {
+        var (staged, exportedTopics, totalEntries) = BuildExportStaging(store, topics);
+
+        // Nothing to publish: leave no bundle behind. Zero exported topics means nothing was staged,
+        // so there is nothing to remove — this mirrors the facade's empty-export delete without
+        // ever creating the file.
+        if (staged.Count == 0)
+            return (exportedTopics, 0);
+
+        try
+        {
+            using var archiveBytes = new MemoryStream();
+            using (var zip = new ZipArchive(archiveBytes, ZipArchiveMode.Create, leaveOpen: true))
+                PublishStaging(zip, staged, totalEntries, store);
+
+            DurableFile.AtomicWriteAllBytes(bundlePath, archiveBytes.ToArray());
+        }
+        catch
+        {
+            // cleanup-on-failure: refuse-before-write never created the file, and a failed atomic
+            // publish removed its own temp — either way nothing half-created may remain.
+            try { File.Delete(bundlePath); } catch { }
+            throw;
+        }
+
+        return (exportedTopics, totalEntries);
+    }
+
+    private sealed record StagedExportTopic(
+        string BundleTopic,
+        IReadOnlyList<ArtifactEntry> Entries,
+        List<(string Name, string Content)> Artifacts,
+        int ArtifactCount);
+
+    /// <summary>
+    /// Builds every requested topic into an in-memory staging structure BEFORE any archive entry is
+    /// written. This is the refuse-before-write gate: <see cref="MemoryNaming.BuildScopedTopicScope"/>
+    /// throws on a malformed topic (a trailing dot, a bare ".", a NUL), so a bad topic aborts the
+    /// whole build and no topic is published. Topics with no entries are skipped, exactly as before.
+    /// </summary>
+    private static (List<StagedExportTopic> Staged, List<string> ExportedTopics, int TotalEntries)
+        BuildExportStaging(IMemoryStore store, string[] topics)
+    {
+        var staged = new List<StagedExportTopic>();
         var exportedTopics = new List<string>();
+        int totalEntries = 0;
 
         foreach (string topic in topics)
         {
@@ -85,18 +148,31 @@ public static class BundleFormatService
             // the scope cannot drift. Zip entry names use '/' as their separator already, so a
             // hierarchical topic round-trips as a nested path rather than being flattened.
             string bundleTopic = MemoryNaming.FormatScopeLabel(topicScope);
-            exportedTopics.Add(bundleTopic);
+            var contents = artifacts.Select(a => (a.Name, File.ReadAllText(a.FilePath))).ToList();
 
-            WriteTopic(zip, store, bundleTopic, entries,
-                artifacts.Select(a => (a.Name, File.ReadAllText(a.FilePath))));
+            staged.Add(new StagedExportTopic(bundleTopic, entries, contents, artifacts.Count));
+            exportedTopics.Add(bundleTopic);
             totalEntries += artifacts.Count;
         }
 
+        return (staged, exportedTopics, totalEntries);
+    }
+
+    /// <summary>
+    /// Publishes a fully built staging set to an open archive: one topic per <see cref="WriteTopic"/>
+    /// call, then the disk-based file entities and the manifest. This is the only place the bundle
+    /// layout is written, so export and the CLI's <c>scri bundle</c> (which shares <see cref="WriteTopic"/>
+    /// and <see cref="WriteManifest"/>) cannot drift.
+    /// </summary>
+    private static void PublishStaging(
+        ZipArchive zip, List<StagedExportTopic> staged, int totalEntries, IMemoryStore store)
+    {
+        foreach (var topic in staged)
+            WriteTopic(zip, store, topic.BundleTopic, topic.Entries, topic.Artifacts);
+
         // Export disk-based file entities (skills, agent)
         var fileEntities = ExportFileEntities(zip, store);
-        WriteManifest(zip, exportedTopics, totalEntries, fileEntities);
-
-        return (exportedTopics, totalEntries);
+        WriteManifest(zip, staged.Select(t => t.BundleTopic).ToList(), totalEntries, fileEntities);
     }
 
     /// <summary>

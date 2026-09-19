@@ -50,19 +50,18 @@ public sealed partial class ScriniaMcpTools
         List<string> exportedTopics;
         int totalEntries;
 
-        using (var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write))
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
-        {
-            (exportedTopics, totalEntries) = Scrinia.Core.Bundles.BundleFormatService.ExportTopicsToZip(zip, store, topics);
+        // Build-before-write + atomic publish + cleanup-on-failure live in ExportTopicsToZip: a
+        // malformed topic never reaches here, and a failed publish removes the target. The bundle is
+        // only on disk when the export fully succeeds.
+        (exportedTopics, totalEntries) = Scrinia.Core.Bundles.BundleFormatService.ExportTopicsToZip(bundlePath, store, topics);
 
-            if (exportedTopics.Count == 0)
-            {
-                try { File.Delete(bundlePath); } catch { }
-                return Task.FromResult(ResponseBuilder.Error(
-                    "No entries found in the specified topics.",
-                    ErrorCodes.NotFound,
-                    "list() to see available topics with entry counts"));
-            }
+        if (exportedTopics.Count == 0)
+        {
+            try { File.Delete(bundlePath); } catch { }
+            return Task.FromResult(ResponseBuilder.Error(
+                "No entries found in the specified topics.",
+                ErrorCodes.NotFound,
+                "list() to see available topics with entry counts"));
         }
 
         long fileSize = new FileInfo(bundlePath).Length;
