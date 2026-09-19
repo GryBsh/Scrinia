@@ -48,4 +48,14 @@
     <EmbeddedResource Include="TestData\mmlu_sample.txt" />
     <EmbeddedResource Include="TestData\quality_article.txt" />
   </ItemGroup>
+
+  <!-- B1 Task 9: the B1CompatibilityHarness reads its bundle golden via the relative path
+       "Golden/bundle-success.yaml", but the test host runs from bin/, so this golden must be
+       copied next to the assembly (preserving the Golden/ subfolder) rather than living only
+       beside the source. All other goldens are located via [CallerFilePath] and need no copy. -->
+  <ItemGroup>
+    <None Include="Golden\bundle-success.yaml"
+          Link="Golden\bundle-success.yaml"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
