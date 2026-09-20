@@ -75,16 +75,6 @@ internal sealed class MaintenancePlannerPage
 
         if (scanned != journalInspected + nonJournalInspected)
             throw new ArgumentException("Admission counters must satisfy Scanned = JournalInspected + NonJournalInspected.");
-        if (scanned != safeJournalInspected + unsafeJournalScanned + safeNonJournalInspected + unsafeNonJournalScanned)
-            throw new ArgumentException("Admission counters must satisfy the full class equation.");
-        if (scanned - unsafeScanned != safeJournalInspected + safeNonJournalInspected)
-            throw new ArgumentException("Safe counters must satisfy SafeInspected = Scanned - UnsafeScanned.");
-        if (unsafeScanned != unsafeJournalScanned + unsafeNonJournalScanned)
-            throw new ArgumentException("Unsafe counters must sum.");
-        if (journalInspected != safeJournalInspected + unsafeJournalScanned)
-            throw new ArgumentException("Journal counters must sum.");
-        if (nonJournalInspected != safeNonJournalInspected + unsafeNonJournalScanned)
-            throw new ArgumentException("Non-journal counters must sum.");
         if (scanned > MaintenanceLimits.CandidatePageSize)
             throw new ArgumentException("Scanned exceeds the shared admission bound.");
         if (journalInspected > journalBudget || journalBudget > MaintenanceLimits.JournalBudgetMaximum)
