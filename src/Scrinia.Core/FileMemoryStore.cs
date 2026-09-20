@@ -40,7 +40,7 @@ internal enum RestoreJournalTransition
 /// to this ~subject form at the surfaces — MemoryTools.cs and ScriniaCommands.Memory.cs — before
 /// the store is ever reached; this store only ever sees the ~subject spelling.
 /// </summary>
-public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
+public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddressResolver
 {
     private static readonly AsyncLocal<Func<AppendFaultPoint, string, string, Exception?>?> AppendFaultInjectorContext = new();
     private static readonly AsyncLocal<Func<WholeMemoryFaultPoint, string, Exception?>?> WholeMemoryFaultInjectorContext = new();

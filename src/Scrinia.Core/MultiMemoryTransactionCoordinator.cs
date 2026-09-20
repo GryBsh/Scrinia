@@ -1160,13 +1160,18 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
         _ => throw new MultiMemoryParticipantMismatchException()
     };
 
-    private static string ResolveCandidateSubject(FileMemoryStore store, RecoveryCandidate candidate)
+    // Route the recovery candidate's subject through the narrow IAddressResolver port to keep the
+    // FileMemoryStore <-> coordinator coupling acyclic. CA1859 prefers the concrete type for
+    // performance; the decoupling at this production transaction boundary is intentional.
+#pragma warning disable CA1859 // Keep the transaction boundary interface-typed.
+    private static string ResolveCandidateSubject(IAddressResolver store, RecoveryCandidate candidate)
     {
         if (candidate.Operation == RecoveryOperation.Append && candidate.Envelope.Address is not null)
             return store.ResolveAddress(MemoryAddress.Parse(candidate.Envelope.Address)).Subject;
         int slash = candidate.CanonicalSubject.LastIndexOf('/');
         return slash < 0 ? candidate.CanonicalSubject : candidate.CanonicalSubject[(slash + 1)..];
     }
+#pragma warning restore CA1859
 }
 
 internal sealed class CompletedProofParticipantAdapter : IMultiMemoryParticipantAdapter
