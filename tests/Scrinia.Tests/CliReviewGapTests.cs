@@ -141,7 +141,7 @@ public sealed class CliReviewGapTests
     public async Task Reindex_JsonSerializesTheRevisedGeneratedSchema()
     {
         using var scope = new TestHelpers.StoreScope();
-        using var provider = WorkspaceSetup.OverrideEmbeddingProviderForTest(new TestEmbeddingProvider());
+        using var provider = EmbeddingsHost.OverrideEmbeddingProviderForTest(new TestEmbeddingProvider());
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Reindex(scope.WorkspaceDir, json: true));
@@ -161,7 +161,7 @@ public sealed class CliReviewGapTests
     public async Task Reindex_WithoutAnEmbeddingProvider_EmitsStructuredErrorAndExitsOne()
     {
         using var scope = new TestHelpers.StoreScope();
-        using var provider = WorkspaceSetup.OverrideEmbeddingProviderForTest(null);
+        using var provider = EmbeddingsHost.OverrideEmbeddingProviderForTest(null);
 
         var (exit, json) = await RunJsonAsync(() =>
             new ScriniaCommands().Reindex(scope.WorkspaceDir, json: true));

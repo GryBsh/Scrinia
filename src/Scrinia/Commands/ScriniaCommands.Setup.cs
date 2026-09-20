@@ -65,7 +65,7 @@ public partial class ScriniaCommands
         if (ollamaConfigured)
         {
             // Reindex any existing vectors against the new Ollama provider signature.
-            await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+            await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine(
@@ -105,7 +105,7 @@ public partial class ScriniaCommands
         // The embeddings plugin is discovered only through the mandatory
         // SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/ hierarchy — never the executable-relative
         // plugins tree a pre-SCRINIA_HOME package scanned, and never a flat fallback.
-        string? pluginExe = WorkspaceSetup.ResolveEmbeddingsPluginExe();
+        string? pluginExe = EmbeddingsHost.ResolveEmbeddingsPluginExe();
 
         if (pluginExe is not null)
         {
@@ -793,9 +793,9 @@ public partial class ScriniaCommands
     /// <summary>
     /// Reload the active embedding pipeline against the just-written config and trigger a
     /// reindex. If <paramref name="forceReindex"/> is true (provider key changed), runs an
-    /// unconditional rebuild via <see cref="WorkspaceSetup.ForceReindexAsync"/> so the new
+    /// unconditional rebuild via <see cref="EmbeddingsHost.ForceReindexAsync"/> so the new
     /// provider — including plugin-owned ones — gets a clean vector set. Otherwise relies on
-    /// the in-process signature-mismatch path inside <see cref="WorkspaceSetup.LoadPluginsAsync"/>.
+    /// the in-process signature-mismatch path inside <see cref="EmbeddingsHost.LoadPluginsAsync"/>.
     /// Errors are surfaced as warnings so a reindex failure doesn't fail the config command itself.
     /// </summary>
     private static async Task TryReindexAfterConfigChangeAsync(bool forceReindex, CancellationToken ct)
@@ -804,10 +804,10 @@ public partial class ScriniaCommands
         {
             // Configure must have already run by the caller — workspace root and
             // MemoryStoreContext.Current are populated.
-            await WorkspaceSetup.LoadPluginsAsync(ct);
+            await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, ct);
 
             if (forceReindex)
-                await WorkspaceSetup.ForceReindexAsync(ct);
+                await EmbeddingsHost.ForceReindexAsync(WorkspaceSetup.Root, ct);
         }
         catch (Exception ex)
         {
@@ -831,9 +831,9 @@ public partial class ScriniaCommands
         // runs the signature-mismatch auto-reindex (a no-op when signatures match), then we
         // override with an unconditional pass so the command does what its name says even on
         // a "vectors are stale, I just want them rebuilt" recovery flow.
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
-        var result = await WorkspaceSetup.ForceReindexAsync(cancellationToken);
+        var result = await EmbeddingsHost.ForceReindexAsync(WorkspaceSetup.Root, cancellationToken);
 
         if (result is null)
         {

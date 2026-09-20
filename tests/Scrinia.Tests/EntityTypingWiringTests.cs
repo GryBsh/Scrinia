@@ -68,7 +68,7 @@ public class EntityTypingWiringTests
             var order = new List<string>();
             var downstream = new RecordingSink("downstream", order);
 
-            WorkspaceSetup.InstallEmbeddingEventSinks(
+EmbeddingsHost.InstallEmbeddingEventSinks(
                 downstream,
                 new RecordingSink("entity-typing", order));
 
@@ -81,7 +81,7 @@ public class EntityTypingWiringTests
                          + "continue to the downstream handler");
 
             order.Clear();
-            WorkspaceSetup.InstallEmbeddingEventSinks(downstream, new ThrowingSink());
+            EmbeddingsHost.InstallEmbeddingEventSinks(downstream, new ThrowingSink());
             await MemoryEventSinkContext.Default!.OnStoredAsync(
                 MemoryAddress.Parse("/findings/wiring"), ["content"], tmp.Store, CancellationToken.None);
 

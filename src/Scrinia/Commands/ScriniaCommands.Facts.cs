@@ -31,7 +31,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         string normalizedOp = op.Trim().ToLowerInvariant();
         string? entity = normalizedOp == "profile" ? target : null;

@@ -86,7 +86,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         // Parse the CLI's comma-separated topic filter at this local command boundary before
         // dispatching to the MCP implementation.

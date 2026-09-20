@@ -87,7 +87,7 @@ public partial class ScriniaCommands
     /// handler constructs the shared <see cref="FileMemoryMaintenanceService"/>; tests
     /// install a counting delegate to prove the CLI/local ownership boundary without
     /// cross-test process-wide state (AsyncLocal, mirroring
-    /// <c>WorkspaceSetup.OverrideEmbeddingProviderForTest</c>).
+    /// <c>EmbeddingsHost.OverrideEmbeddingProviderForTest</c>).
     /// </summary>
     internal delegate Task<MaintenanceResult> MaintenanceServiceInvoker(
         IMemoryStore store, IWorkspaceConfig config, MaintenanceRequest request,

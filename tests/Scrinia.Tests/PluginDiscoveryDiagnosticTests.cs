@@ -16,7 +16,7 @@ namespace Scrinia.Tests;
 /// stays inside <c>SCRINIA_HOME</c> via <see cref="PathContainment.IsWithin"/>, and never accepts a
 /// flat <c>plugins/&lt;plugin&gt;&lt;ext&gt;</c> or a <c>plugins/&lt;plugin&gt;/&lt;plugin&gt;</c> layout.</para>
 ///
-/// <para>These tests drive the internal <see cref="WorkspaceSetup.ResolvePluginDirectory"/> directly with
+/// <para>These tests drive the internal <see cref="EmbeddingsHost.ResolvePluginDirectory"/> directly with
 /// controlled plugin-name/version inputs and an isolated <c>SCRINIA_HOME</c>, so they assert exactly
 /// which version and RID are selected, the missing-version/missing-RID fallbacks, the containment
 /// rejections, and the diagnostic text — without starting a plugin process.</para>
@@ -73,7 +73,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         string expected = Path.Combine(_home, "plugins", PluginName, version, CurrentRid());
         CreateMandatoryPlugin(version, CurrentRid());
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, version);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, version);
 
         result.PluginDir.Should().Be(expected);
         result.Degraded.Should().BeFalse();
@@ -89,7 +89,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         CreateMandatoryPlugin(configured, CurrentRid());
         CreateMandatoryPlugin(higher, CurrentRid());
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, configured);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, configured);
 
         result.PluginDir.Should().Be(Path.Combine(_home, "plugins", PluginName, configured, CurrentRid()));
     }
@@ -104,7 +104,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         Directory.CreateDirectory(otherDir);
         File.WriteAllText(Path.Combine(otherDir, $"{PluginName}.exe"), "other-rid-exe");
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, version);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, version);
 
         result.PluginDir.Should().Be(Path.Combine(_home, "plugins", PluginName, version, CurrentRid()));
         result.Degraded.Should().BeFalse();
@@ -120,7 +120,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         CreateMandatoryPlugin(installedLower, CurrentRid());
         CreateMandatoryPlugin(installedHigher, CurrentRid());
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, missing);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, missing);
 
         result.PluginDir.Should().Be(Path.Combine(_home, "plugins", PluginName, installedHigher, CurrentRid()));
     }
@@ -134,7 +134,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         Directory.CreateDirectory(otherDir);
         File.WriteAllText(Path.Combine(otherDir, $"{PluginName}.exe"), "other-rid-exe");
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, version);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, version);
 
         result.PluginDir.Should().Be(otherDir);
         result.Degraded.Should().BeTrue("a missing current RID degrades to the single available RID");
@@ -143,7 +143,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
     [Fact]
     public void ReturnsNull_WhenPluginNotInstalled_NamingHierarchyAndHomeInDiagnostics()
     {
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, null);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, null);
 
         result.PluginDir.Should().BeNull("no plugin hierarchy is installed under SCRINIA_HOME");
         result.Diagnostics.Should().Contain("SCRINIA_HOME");
@@ -161,7 +161,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         Directory.CreateDirectory(flatDir);
         File.WriteAllText(Path.Combine(flatDir, $"{PluginName}.exe"), "flat-exe");
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, null);
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, null);
 
         result.PluginDir.Should().BeNull("the flat plugins/<plugin>/<plugin> layout is not a valid version/RID path");
     }
@@ -175,7 +175,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         Directory.CreateDirectory(appVersionDir);
         File.WriteAllText(Path.Combine(appVersionDir, $"{PluginName}.exe"), "app-exe");
 
-        var result = WorkspaceSetup.ResolvePluginDirectory(PluginName, "1.2.3");
+        var result = EmbeddingsHost.ResolvePluginDirectory(PluginName, "1.2.3");
 
         result.PluginDir.Should().BeNull("plugin discovery is rooted at SCRINIA_HOME, never AppContext.BaseDirectory");
     }
@@ -185,7 +185,7 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
     {
         CreateMandatoryPlugin("1.2.3", CurrentRid());
 
-        var result = WorkspaceSetup.ResolvePluginDirectory("../../../../etc", "1.2.3");
+        var result = EmbeddingsHost.ResolvePluginDirectory("../../../../etc", "1.2.3");
 
         result.PluginDir.Should().BeNull("a plugin name that escapes SCRINIA_HOME is rejected");
     }

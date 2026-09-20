@@ -341,7 +341,7 @@ public partial class ScriniaCommands
         bool json = false, CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         // Route through the same scoring pipeline as the MCP `search` tool so the CLI ranks with
         // the embeddings + entity-graph contributors it just loaded (not BM25-only) and surfaces
@@ -482,7 +482,7 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         string content;
         if (string.IsNullOrEmpty(file) || file == "-")
@@ -635,7 +635,7 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
         McpResponse response;
@@ -681,7 +681,7 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         string content;
         if (string.IsNullOrEmpty(file) || file == "-")
@@ -736,7 +736,7 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
         McpResponse response;
@@ -769,7 +769,7 @@ public partial class ScriniaCommands
         if (!TryGetPersistentAddress(from, json, out MemoryAddress fromAddress)) return 1;
         if (!TryGetPersistentAddress(to, json, out MemoryAddress toAddress)) return 1;
         WorkspaceSetup.WarnOnOrphanStores();
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
         McpResponse response;

@@ -322,7 +322,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
         WorkspaceSetup.WarnOnOrphanStores();
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
         McpResponse response;

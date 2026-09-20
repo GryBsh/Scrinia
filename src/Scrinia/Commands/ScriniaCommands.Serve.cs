@@ -44,7 +44,7 @@ public partial class ScriniaCommands
             await EnsureEmbeddingModelAsync(cancellationToken);
 
         // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         // B5 bounded background adapter: one single-flight Core maintenance
         // invocation via BackgroundWork.Fire. Scheduler shutdown is inner

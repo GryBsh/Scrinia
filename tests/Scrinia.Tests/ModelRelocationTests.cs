@@ -306,7 +306,7 @@ public sealed class ModelRelocationTests : IDisposable
             appTrapCreated = !File.Exists(appFlatExe);
             if (appTrapCreated) File.WriteAllText(appFlatExe, "app-relative-exe");
 
-            string? exe = WorkspaceSetup.ResolveEmbeddingsPluginExe();
+            string? exe = EmbeddingsHost.ResolveEmbeddingsPluginExe();
 
             exe.Should().Be(installedExe, "the exe resolves at SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/<plugin>.exe");
             exe!.StartsWith(_home, StringComparison.Ordinal).Should().BeTrue(

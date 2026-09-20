@@ -211,7 +211,7 @@ public partial class ScriniaCommands
             // otherwise vectors stay keyed to the pre-compaction chunk layout (stale/orphaned).
             IMemoryStore store = WorkspaceSetup.Store;
             if (compactionCandidates.Count > 0)
-                await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+                await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
             foreach (var item in compactionCandidates)
             {
@@ -289,7 +289,7 @@ public partial class ScriniaCommands
     /// per-scope write lock and to re-embed the merged entry.</param>
     /// <param name="ct">Cancellation token for the re-embed call.</param>
     /// <remarks>Internal (rather than private) so tests can exercise the re-embed wiring directly
-    /// without going through <c>WorkspaceSetup.LoadPluginsAsync</c>'s real provider discovery,
+    // without going through <c>EmbeddingsHost.LoadPluginsAsync</c>'s real provider discovery,
     /// which is environment-dependent (model files may or may not be present on disk).</remarks>
     internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)
     {
