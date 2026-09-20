@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Scrinia.Core.Models;
+using static Scrinia.Core.TransactionalRetryDefaults;
 
 namespace Scrinia.Plugin.Abstractions;
 
@@ -38,7 +39,7 @@ public sealed record TransactionalParticipantDescriptor
 
 public sealed record TransactionalRetryPolicy
 {
-    public TransactionalRetryPolicy(int maxAttempts = 3, TimeSpan? maxElapsed = null,
+    public TransactionalRetryPolicy(int maxAttempts = DefaultMaxAttempts, TimeSpan? maxElapsed = null,
         TimeSpan? initialDelay = null, TimeSpan? maximumDelay = null)
     {
         if (maxAttempts is < 1 or > 8) throw new ArgumentException("Max attempts must be between 1 and 8.", nameof(maxAttempts));

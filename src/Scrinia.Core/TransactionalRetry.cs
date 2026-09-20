@@ -1,4 +1,12 @@
+using static Scrinia.Core.TransactionalRetryDefaults;
+
 namespace Scrinia.Core;
+
+/// <summary>Shared default transactional-retry attempt count across Core and Abstractions.</summary>
+public static class TransactionalRetryDefaults
+{
+    public const int DefaultMaxAttempts = 3;
+}
 
 internal interface IMonotonicClock
 {
@@ -7,7 +15,7 @@ internal interface IMonotonicClock
 
 internal sealed record TransactionalRetryPolicy
 {
-    internal TransactionalRetryPolicy(int maxAttempts = 3, TimeSpan? maxElapsed = null,
+    internal TransactionalRetryPolicy(int maxAttempts = DefaultMaxAttempts, TimeSpan? maxElapsed = null,
         TimeSpan? initialDelay = null, TimeSpan? maximumDelay = null)
     {
         if (maxAttempts is < 1 or > 8) throw new ArgumentException("Max attempts must be between 1 and 8.", nameof(maxAttempts));
