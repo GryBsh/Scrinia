@@ -4,8 +4,9 @@ namespace Scrinia.Core;
 
 /// <summary>
 /// Plugins implement this to react to store/append/forget events on the MCP code path.
-/// The REST path uses <c>IMemoryOperationHook</c> via <c>PluginPipeline</c> instead.
-/// Both paths should delegate to the same plugin logic internally to avoid duplication.
+/// The removed REST path used <c>IMemoryOperationHook</c> instead; that interface is now invoked
+/// only as a backward-compatibility bridge on the append path. Both are meant to delegate to the
+/// same plugin logic internally to avoid duplication.
 /// </summary>
 public interface IMemoryEventSink
 {
