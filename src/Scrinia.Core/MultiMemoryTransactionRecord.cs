@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Formats;
+using static Scrinia.Core.RequireTextHelper;
 
 namespace Scrinia.Core;
 
@@ -62,10 +63,7 @@ internal sealed record MultiMemoryTransactionRecord
     public DateTimeOffset CreatedAt { get; }
     public DateTimeOffset UpdatedAt { get; }
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 
     private static DateTimeOffset RequireUtc(DateTimeOffset value, string parameterName) =>
         value.Offset == TimeSpan.Zero
@@ -90,10 +88,7 @@ internal sealed record MultiMemoryParticipantCompletion
     public string Kind { get; }
     public string EvidencePath { get; }
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 [JsonSourceGenerationOptions(

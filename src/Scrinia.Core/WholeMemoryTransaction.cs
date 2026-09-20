@@ -1,4 +1,5 @@
 using Scrinia.Core.Models;
+using static Scrinia.Core.RequireTextHelper;
 
 namespace Scrinia.Core;
 
@@ -56,10 +57,7 @@ internal sealed record WholeMemoryTransaction
         (OperationId, Scope, Target, IsEphemeral, OldArtifact, OldSidecar, NewArtifact,
             NewSidecar, Archive, StartedAt);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 /// <summary>Frozen archive destinations and cleanup candidates for one memory write.</summary>
@@ -211,10 +209,6 @@ internal sealed record RecoveryInfo
         out string detail) =>
         (evidencePath, state, action, detail) = (EvidencePath, State, Action, Detail);
 
-    private static string RequireText(string value, string name) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", name)
-            : value;
 }
 
 internal interface IWholeMemoryTransactionCoordinator
@@ -276,10 +270,7 @@ internal sealed record FileEntityMutation
         (entityKind, name, bodyPath, metaPath, versionsDirectory, newBody, newMeta, deleteBody, deleteMeta) =
         (EntityKind, Name, BodyPath, MetaPath, VersionsDirectory, NewBody, NewMeta, DeleteBody, DeleteMeta);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 internal interface IFileEntityTransactionCoordinator

@@ -1,5 +1,6 @@
 using Scrinia.Core.Models;
 using System.Collections.ObjectModel;
+using static Scrinia.Core.RequireTextHelper;
 
 namespace Scrinia.Core;
 
@@ -120,10 +121,7 @@ internal sealed record MultiMemoryParticipantRequest
     internal void Deconstruct(out MemoryAddress address, out string operationId, out string kind) =>
         (address, operationId, kind) = (Address, OperationId, Kind);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 internal sealed record MultiMemoryTransactionRequest
@@ -192,10 +190,7 @@ internal sealed record MultiMemoryTransactionRequest
         out IReadOnlyList<MultiMemoryParticipantRequest> participants) =>
         (scope, participants) = (Scope, Participants);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 internal sealed record MultiMemoryTransactionalParticipantRequest
@@ -292,10 +287,7 @@ internal sealed record MultiMemoryParticipantManifest
     internal void Deconstruct(out string subject, out string operationId, out string kind) =>
         (subject, operationId, kind) = (Subject, OperationId, Kind);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 internal sealed record MultiMemoryParticipantOutcome
@@ -345,10 +337,7 @@ internal sealed record MultiMemoryParticipantOutcome
         (subject, operationId, kind, evidencePath, committed, rolledBack, reason) =
         (Subject, OperationId, Kind, EvidencePath, Committed, RolledBack, Reason);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 
     internal static bool IsSafeEvidencePath(string path) =>
         !string.IsNullOrWhiteSpace(path) &&
@@ -458,10 +447,7 @@ internal sealed record MultiMemoryAggregateResult
         (transactionId, scope, outcome, participants, failure, warning, evidencePath) =
         (TransactionId, Scope, Outcome, Participants, Failure, Warning, EvidencePath);
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 
     internal static MultiMemoryAggregateResult Create(string transactionId, string scope,
         MultiMemoryOutcome outcome, IReadOnlyList<MultiMemoryParticipantRequest> expectedParticipants,

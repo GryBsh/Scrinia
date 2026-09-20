@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using static Scrinia.Core.RequireTextHelper;
 
 namespace Scrinia.Core;
 
@@ -105,10 +106,7 @@ internal sealed record RecoveryBlock
     internal string Detail { get; }
     internal int? UnsupportedVersion { get; }
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
 
 internal sealed record RecoveryDiscoveryResult
@@ -260,8 +258,5 @@ internal sealed record RecoveryOutcome
     internal RecoveryBlock? Block { get; }
     internal string? Warning { get; }
 
-    private static string RequireText(string value, string parameterName) =>
-        string.IsNullOrWhiteSpace(value)
-            ? throw new ArgumentException("Value cannot be null, empty, or whitespace.", parameterName)
-            : value;
+
 }
