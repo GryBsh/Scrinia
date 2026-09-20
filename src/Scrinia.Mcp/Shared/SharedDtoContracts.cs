@@ -1,14 +1,8 @@
 using System.Text.Json.Serialization;
+using Scrinia.Core.Configuration;
 
 namespace Scrinia.Mcp.SharedContracts;
 
-public enum SharedAvailability
-{
-    [JsonStringEnumMemberName("available")] Available,
-    [JsonStringEnumMemberName("unavailable")] Unavailable,
-    [JsonStringEnumMemberName("stale")] Stale,
-    [JsonStringEnumMemberName("conflicted")] Conflicted
-}
 public enum SharedHitKind
 {
     [JsonStringEnumMemberName("entry")] Entry,
@@ -34,7 +28,7 @@ public enum MutationKind
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record SharedBaseSummary(string Base, string? Root, SharedAvailability Availability, string? Generation);
+public sealed record SharedBaseSummary(string Base, string? Root, SharedBaseAvailability Availability, string? Generation);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record SearchHit(string Base, string Path, SharedHitKind Kind, int? Chunk, double Score, string Preview, IReadOnlyDictionary<string, string[]> Attributes);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -55,7 +49,7 @@ public abstract record FactsResult(string Base, FactsOperation Op);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record MutationResult(string Base, string? Path, string? Destination, MutationKind Mutation, string Generation, string[] Manifest);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record RefreshResult(string Base, string? PreviousGeneration, string NewGeneration, SharedAvailability Availability, SharedWarning[] Warnings);
+public sealed record RefreshResult(string Base, string? PreviousGeneration, string NewGeneration, SharedBaseAvailability Availability, SharedWarning[] Warnings);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record SharedWarning(string Base, string Code, string Diagnostic);
 

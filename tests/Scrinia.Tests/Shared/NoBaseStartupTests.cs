@@ -99,7 +99,7 @@ public sealed class NoBaseStartupTests
             SharedBaseSummary summary = new SharedServer(workspace, registry, new ThrowingRuntimeFactory())
                 .GetEnabledBaseSummaries().Should().ContainSingle().Which;
             summary.Base.Should().Be("missing-root");
-            summary.Availability.Should().Be(SharedAvailability.Unavailable);
+            summary.Availability.Should().Be(SharedBaseAvailability.Unavailable);
         }
         finally
         {

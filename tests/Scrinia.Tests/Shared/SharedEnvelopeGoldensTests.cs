@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Text.Json;
+using Scrinia.Core.Configuration;
 using Scrinia.Mcp.SharedContracts;
 using YamlDotNet.Serialization;
 
@@ -80,7 +81,7 @@ followUp: []
 mutation: applied
 """);
 
-        var refresh = new RefreshResult("team", new string('0', 64), new string('f', 64), SharedAvailability.Available, []);
+        var refresh = new RefreshResult("team", new string('0', 64), new string('f', 64), SharedBaseAvailability.Available, []);
         SharedEnvelope.Success("team", refresh).ToYaml().Should().Be($"""
 status: success
 base: team
@@ -97,7 +98,7 @@ mutation: none
 """);
 
         var warning = new SharedWarning("team", "SHARED_BASE_UNAVAILABLE", "The enabled base could not be opened.");
-        string partialYaml = SharedEnvelope.Partial(new object[] { new SharedBaseSummary("team", null, SharedAvailability.Unavailable, null) }, [warning]).ToYaml();
+        string partialYaml = SharedEnvelope.Partial(new object[] { new SharedBaseSummary("team", null, SharedBaseAvailability.Unavailable, null) }, [warning]).ToYaml();
         partialYaml.Should().Be("""
 status: partial
 results:

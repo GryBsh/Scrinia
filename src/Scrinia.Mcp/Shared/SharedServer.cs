@@ -101,9 +101,9 @@ public sealed class SharedServer
     private SharedBaseSummary CreateSummary(string baseName, SharedBaseEntry? entry)
     {
         if (entry is null)
-            return new SharedBaseSummary(baseName, null, SharedAvailability.Unavailable, null);
+            return new SharedBaseSummary(baseName, null, SharedBaseAvailability.Unavailable, null);
 
-        return new SharedBaseSummary(baseName, entry.Root, SharedAvailability.Unavailable, null);
+        return new SharedBaseSummary(baseName, entry.Root, SharedBaseAvailability.Unavailable, null);
     }
 }
 

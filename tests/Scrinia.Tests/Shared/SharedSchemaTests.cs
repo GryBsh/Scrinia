@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using FluentAssertions;
+using Scrinia.Core.Configuration;
 using Scrinia.Mcp.SharedContracts;
 
 namespace Scrinia.Tests.Shared;
@@ -12,7 +13,7 @@ public sealed class SharedSchemaTests
     public void Shared_dto_serialization_uses_lower_case_enums_omits_nulls_and_rejects_unknown_properties()
     {
         var baseSummary = JsonSerializer.Serialize(
-            new SharedBaseSummary("alpha", null, SharedAvailability.Available, null),
+            new SharedBaseSummary("alpha", null, SharedBaseAvailability.Available, null),
             SharedDtoJsonContext.Default.SharedBaseSummary);
         baseSummary.Should().Be("{\"base\":\"alpha\",\"availability\":\"available\"}");
 
@@ -24,8 +25,8 @@ public sealed class SharedSchemaTests
             SharedDtoJsonContext.Default.MutationResult);
         mutationJson.Should().Be("{\"base\":\"alpha\",\"mutation\":\"none\",\"generation\":\"generation\",\"manifest\":[]}");
 
-        foreach (var availability in Enum.GetValues<SharedAvailability>())
-            JsonSerializer.Serialize(availability, SharedDtoJsonContext.Default.SharedAvailability)
+        foreach (var availability in Enum.GetValues<SharedBaseAvailability>())
+            JsonSerializer.Serialize(availability, SharedDtoJsonContext.Default.SharedBaseAvailability)
                 .Should().MatchRegex("^\\\"(available|unavailable|stale|conflicted)\\\"$");
         foreach (var kind in Enum.GetValues<SharedHitKind>())
             JsonSerializer.Serialize(kind, SharedDtoJsonContext.Default.SharedHitKind)

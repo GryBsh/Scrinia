@@ -13,10 +13,14 @@ namespace Scrinia.Core.Configuration;
 
 public enum SharedBaseAvailability
 {
+    [JsonStringEnumMemberName("available")]
     Available,
+    [JsonStringEnumMemberName("unavailable")]
     Unavailable,
+    [JsonStringEnumMemberName("stale")]
     Stale,
-    Conflicted,
+    [JsonStringEnumMemberName("conflicted")]
+    Conflicted
 }
 
 public enum SharedMutationCertainty
