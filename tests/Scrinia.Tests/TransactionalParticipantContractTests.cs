@@ -152,6 +152,14 @@ public sealed class TransactionalParticipantContractTests
             .Should().Throw<ArgumentException>();
     }
 
+    [Fact]
+    public void TransactionalFailureCode_Core_And_Abstractions_AreIdentical()
+    {
+        var core = Enum.GetNames<Scrinia.Core.TransactionalFailureCode>();
+        var abstractions = Enum.GetNames<Scrinia.Plugin.Abstractions.TransactionalFailureCode>();
+        Assert.Equal(abstractions, core);
+    }
+
     private static TransactionalMemoryManifestEntry ManifestEntry() =>
         new(MemoryAddress.Parse("/memory/item"), "op", "write");
 
