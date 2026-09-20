@@ -51,8 +51,8 @@ public partial class ScriniaCommands
         // (close admission, cancel and await its active invocation here);
         // the outer single global drain stays in Program.
         // The adapter never drains unrelated work and never touches plugins.
-        // It is tracked on WorkspaceSetup so shutdown stays ordered.
-        WorkspaceSetup.StartMaintenanceScheduler();
+        // It is tracked on MaintenanceSchedulerHost so shutdown stays ordered.
+        MaintenanceSchedulerHost.StartMaintenanceScheduler(WorkspaceSetup.Root);
 
         var builder = Host.CreateApplicationBuilder();
 
@@ -85,7 +85,7 @@ public partial class ScriniaCommands
             // Inner shutdown first: stop the bounded adapter (cancel and
             // await its active invocation) before Program's outer global
             // drain waits for unrelated background work.
-            await WorkspaceSetup.StopMaintenanceSchedulerAsync();
+            await MaintenanceSchedulerHost.StopMaintenanceSchedulerAsync();
         }
     }
 }
