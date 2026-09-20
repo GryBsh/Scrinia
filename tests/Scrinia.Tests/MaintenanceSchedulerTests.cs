@@ -346,15 +346,15 @@ public sealed class MaintenanceSchedulerTests
     }
 
     [Fact]
-    public void WorkspaceSetup_OwnsSchedulerSetupWithoutDrain()
+    public void MaintenanceSchedulerHost_OwnsSchedulerSetupWithoutDrain()
     {
-        string setupSource = File.ReadAllText(
-            Scrinia.TestDoubles.RepoPaths.Combine("src", "Scrinia", "Commands", "WorkspaceSetup.cs"));
+        string hostSource = File.ReadAllText(
+            Scrinia.TestDoubles.RepoPaths.Combine("src", "Scrinia", "Commands", "MaintenanceSchedulerHost.cs"));
 
-        Assert.Contains("StartMaintenanceScheduler", setupSource, StringComparison.Ordinal);
-        Assert.Contains("StopMaintenanceSchedulerAsync", setupSource, StringComparison.Ordinal);
-        Assert.Contains("MaintenanceScheduler", setupSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("DrainAsync", setupSource, StringComparison.Ordinal);
+        Assert.Contains("StartMaintenanceScheduler", hostSource, StringComparison.Ordinal);
+        Assert.Contains("StopMaintenanceSchedulerAsync", hostSource, StringComparison.Ordinal);
+        Assert.Contains("MaintenanceScheduler", hostSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("DrainAsync", hostSource, StringComparison.Ordinal);
     }
 
     private static int CountOccurrences(string source, string value)
