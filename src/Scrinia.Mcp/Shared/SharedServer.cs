@@ -125,6 +125,8 @@ public enum MutationCertainty { Applied, None, Unknown }
 public sealed record SharedEnvelope
 {
     public string Status { get; init; } = "success";
+    public bool IsError => Status is "error";
+    public bool IsWarning => Status is "partial";
     public string? Base { get; init; }
     public object? Result { get; init; }
     public IReadOnlyList<object>? Results { get; init; }
