@@ -34,7 +34,7 @@ public partial class ScriniaCommands
         // IMemoryStore split, the NOT_SUPPORTED branches on a third of the tool
         // surface, and the parity suite that held the two honest.
         WorkspaceSetup.Configure(workspaceRoot);
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
 
         // First-run convenience: if the embedding model isn't on disk yet, fetch it
         // before the MCP server starts up. Writes status to stderr only — stdout is

@@ -189,7 +189,7 @@ public class WorkspaceRootTests : IDisposable
     [Fact]
     public void OrphanWarning_NamesBothStoresAndAConcreteMigrationCommand()
     {
-        string text = Scrinia.Commands.WorkspaceSetup.FormatOrphanWarning(
+        string text = Scrinia.Commands.OrphanStoreReporter.FormatOrphanWarning(
             orphan: @"C:\.scrinia",
             root: @"C:\repos\proj",
             topics: ["agent", "patterns"]);
@@ -204,7 +204,7 @@ public class WorkspaceRootTests : IDisposable
     [Fact]
     public void OrphanWarning_ExportCommandTargetsTheOrphansParentNotTheStoreItself()
     {
-        string text = Scrinia.Commands.WorkspaceSetup.FormatOrphanWarning(
+        string text = Scrinia.Commands.OrphanStoreReporter.FormatOrphanWarning(
             orphan: @"C:\containers\.scrinia",
             root: @"C:\containers\proj",
             topics: ["agent", "patterns"]);
@@ -215,7 +215,7 @@ public class WorkspaceRootTests : IDisposable
     [Fact]
     public void OrphanWarning_WithNoTopics_PointsAtListInsteadOfGuessingAnExportCommand()
     {
-        string text = Scrinia.Commands.WorkspaceSetup.FormatOrphanWarning(
+        string text = Scrinia.Commands.OrphanStoreReporter.FormatOrphanWarning(
             orphan: @"C:\containers\.scrinia",
             root: @"C:\containers\proj",
             topics: []);
@@ -234,7 +234,7 @@ public class WorkspaceRootTests : IDisposable
         Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "findings"));
         Directory.CreateDirectory(Path.Combine(store, "topics", "entity", "skill"));
 
-        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+        var topics = Scrinia.Commands.OrphanStoreReporter.ListTopics(store);
 
         Assert.Contains("conventions", topics);
         Assert.Contains("findings", topics);
@@ -251,7 +251,7 @@ public class WorkspaceRootTests : IDisposable
         Directory.CreateDirectory(Path.Combine(store, "topics", "agent", "session-log"));
         Directory.CreateDirectory(Path.Combine(store, "topics", "entity", "skill"));
 
-        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+        var topics = Scrinia.Commands.OrphanStoreReporter.ListTopics(store);
 
         // Pins two behaviours at once: "agent" is reported as itself and NOT descended into
         // (its "session-log" child must not appear), while "entity" IS descended into (its
@@ -267,7 +267,7 @@ public class WorkspaceRootTests : IDisposable
         Directory.CreateDirectory(Path.Combine(store, "topics", "custom-notes"));
         Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "api"));
 
-        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+        var topics = Scrinia.Commands.OrphanStoreReporter.ListTopics(store);
 
         // The old flat top-level enumeration would return ["custom-notes", "memory"] instead
         // (reporting the namespace directory name rather than descending into it) and fail this.
@@ -281,7 +281,7 @@ public class WorkspaceRootTests : IDisposable
         Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "api"));
         Directory.CreateDirectory(Path.Combine(store, "topics", "api"));
 
-        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+        var topics = Scrinia.Commands.OrphanStoreReporter.ListTopics(store);
 
         // The old flat top-level enumeration would return ["api", "memory"] instead — asserting
         // only that a single "api" entry is present would still pass against that; asserting
@@ -297,7 +297,7 @@ public class WorkspaceRootTests : IDisposable
         Directory.CreateDirectory(Path.Combine(store, "memories", "goal", "G-5"));
         File.WriteAllText(Path.Combine(store, "memories", "goal", "G-5", "research.meta.json"), "{}");
 
-        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+        var topics = Scrinia.Commands.OrphanStoreReporter.ListTopics(store);
 
         Assert.Empty(topics);
     }

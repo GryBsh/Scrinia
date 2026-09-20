@@ -321,7 +321,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();

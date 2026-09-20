@@ -481,7 +481,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         string content;
@@ -634,7 +634,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
@@ -680,7 +680,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         string content;
@@ -735,7 +735,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(name, json, out MemoryAddress address)) return 1;
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
@@ -768,7 +768,7 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         if (!TryGetPersistentAddress(from, json, out MemoryAddress fromAddress)) return 1;
         if (!TryGetPersistentAddress(to, json, out MemoryAddress toAddress)) return 1;
-        WorkspaceSetup.WarnOnOrphanStores();
+        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
         var tools = new ScriniaMcpTools();
