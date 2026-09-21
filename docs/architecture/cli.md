@@ -11,7 +11,10 @@ src/Scrinia/
   Commands/
     ScriniaCommands.cs      Partial CLI command class (split across ScriniaCommands.*.cs)
     BundleCommands.cs        Public bundle command group; delegates to ScriniaCommands
-    WorkspaceSetup.cs       Workspace init, local store configuration, plugin discovery
+    WorkspaceSetup.cs       Workspace init + local store configuration (thin composition root)
+    EmbeddingsHost.cs       Embeddings/plugins lifecycle — LoadPluginsAsync, reindex, Vulkan plugin
+    OrphanStoreReporter.cs  Orphan-store migration warnings
+    MaintenanceSchedulerHost.cs  Bounded background maintenance lifecycle
     WorkspaceConfig.cs      .scrinia/config.json management
     ConfigJsonContext.cs     Source-gen JSON for config
   Services/
@@ -41,7 +44,7 @@ app.Run(args);
 
 ## Workspace Discovery
 
-`WorkspaceSetup` handles workspace initialization:
+`WorkspaceSetup` handles workspace initialization (root resolution + store wiring):
 
 1. Walk up from `cwd` looking for the nearest enclosing git repository (a `.git` entry,
    which may be a directory or, in worktrees and submodules, a file)
@@ -50,14 +53,16 @@ app.Run(args);
    happens
 4. `.scrinia/memories/` and any topic subdirectories beneath it are created lazily by the first
    write, not during workspace-root resolution
-5. Discover and launch plugins
+
+Plugin discovery and launch is handled separately by `EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root)`
+(see *Embeddings Integration* below), not during workspace-root resolution.
 
 This mirrors `git`'s own `.git/` discovery, bounded the same way `git` bounds it: at the
 first repository found, not the first `.scrinia/` found.
 
 ## WorkspaceSetup (CLI Store Access)
 
-The CLI uses `WorkspaceSetup`, a static class that configures the active store for the process. `WorkspaceSetup.Configure(workspaceRoot)` runs at the top of every CLI command; it resolves the workspace root, builds ranker weights from config, and sets `MemoryStoreContext.Current` to a new `FileMemoryStore`. Commands that also need embeddings/search plugins additionally call `WorkspaceSetup.LoadPluginsAsync()` right after.
+The CLI uses `WorkspaceSetup`, a static class that configures the active store for the process. `WorkspaceSetup.Configure(workspaceRoot)` runs at the top of every CLI command; it resolves the workspace root, builds ranker weights from config, and creates a `FileMemoryStore` via `StoreFactory.Create`, setting `MemoryStoreContext.Current`. Commands that also need embeddings/search plugins additionally call `EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root)` right after.
 
 ```
 ScriniaCommands.<Command>
@@ -65,10 +70,10 @@ ScriniaCommands.<Command>
 WorkspaceSetup.Configure(workspaceRoot)
       |
       +-- Resolves workspace root (WorkspaceRoot.Resolve)
-      +-- Creates FileMemoryStore(root, rankerOptions)
+      +-- Creates FileMemoryStore via StoreFactory.Create(root, rankerOptions)
       +-- Sets MemoryStoreContext.Current
       |
-WorkspaceSetup.LoadPluginsAsync()  (commands that need search/embeddings)
+EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root)  (commands that need search/embeddings)
       |
       +-- Wires embeddings provider, plugin host
 ```
@@ -126,7 +131,7 @@ name sets never intersect, and the local store path and registration are byte-fo
 
 ### Provider Selection
 
-`WorkspaceSetup.LoadPluginsAsync()` selects the embeddings path in this order:
+`EmbeddingsHost.LoadPluginsAsync()` selects the embeddings path in this order:
 
 An explicitly configured HTTP provider (`ollama`, `openai`, `voyageai`, `azure`, or `google`)
 takes precedence over both the Vulkan plugin and built-in Model2Vec. In that case, the plugin and
@@ -185,7 +190,7 @@ It implements both extension interfaces so the CLI can use a single object for a
 
 ### Startup Sequence
 
-1. `WorkspaceSetup.LoadPluginsAsync()` resolves the configured plugin name from
+1. `EmbeddingsHost.LoadPluginsAsync()` resolves the configured plugin name from
    `plugins:embeddings` (default: `scri-plugin-embeddings`) and its executable through the mandatory
    `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — never the executable-relative
    plugins tree and never a flat fallback.
