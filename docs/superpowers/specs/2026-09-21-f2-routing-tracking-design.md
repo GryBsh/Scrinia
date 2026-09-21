@@ -16,9 +16,9 @@ Current problems: construction and resolution are split across multiple authorit
 **Approach A: sunset shim then break, with auto-migrate on touch — NO warning log.**
 
 - Keep the `local-topic:` branch as a read-only recovery-compat shim routed through the single authority, marked `Obsolete`, then break (remove) it at the sunset date.
-- `/agent/` is unified to `/skill/` semantics: on disk-miss + legacy `local:agent` hit, auto-promote (write file + sidecar, delete legacy, return promoted). Idempotent. No warning log beyond the existing migration trace.
+- `/agent/` is unified to `/skill/` semantics: on disk-miss + legacy `local:agent` hit, auto-promote in two ordered steps — (1) `FileEntityTransactionCoordinator.ExecuteAsync(new FileEntityMutation(...))` for file + sidecar publish only, (2) on `Created` / `Replaced` only delete legacy `local:agent` NMP/2 entry via the store; on `RecoveryRequired` / throw leave legacy intact. Idempotent. No warning log beyond the existing migration trace.
 - Tracking precedence is centralized in a new `EffectivePolicy.ResolveEffective(envSingle, envDouble, fileValue)` with a single-underscore-wins rule, consumed by env-aware Inspect/Migrate/Set.
-- The approved breaking legacy removal is noted in CHANGELOG Unreleased.
+- The approved breaking legacy removal is noted in `CHANGELOG.md` Unreleased / Breaking section.
 
 Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on startup), F4 (dual-write). See Out of Scope.
 
@@ -75,8 +75,9 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
 ### Architecture
 
 - New `EffectivePolicy.ResolveEffective(envSingle, envDouble, fileValue)` is the single precedence function for tracking policy.
-- Inspect / Migrate / Set accept an `ITrackingPolicyStore` that is env-aware, backed by `WorkspaceSetup.GetConfigValue` for file reads.
-- Precedence: single-underscore environment wins over double-underscore environment, which wins over the workspace file value, which wins over the default.
+  - Exact spellings: `envSingle` = `SCRINIA_WORKSPACE_TRACKING`, `envDouble` = `SCRINIA__WORKSPACE__TRACKING`, `fileValue` = `Scrinia:Workspace:Tracking`.
+- Inspect / Migrate / Set accept an `ITrackingPolicyStore` that is env-aware, backed by `WorkspaceSetup.GetConfigValue` for file reads. Note: `ITrackingPolicyStore` is a new env-aware seam — the current `TrackingPolicyStore` is file-only.
+- Precedence per `WorkspaceSetup.GetConfigValue`: single-underscore environment wins over double-underscore environment, which wins over the workspace file value, which wins over the default `Unset`.
 - `Shared:Enabled` environment spellings remain ignored (workspace-only), unchanged.
 
 ### Components
@@ -96,8 +97,8 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
 
 ### Error handling
 
-- Missing env vars and missing file value resolve to the default (no error).
-- Malformed values fall back per existing Core result contracts (declared errors and precedence live in the Core result contracts; see AGENTS.md Phase 2 boundary).
+- Missing env vars and missing file value resolve to the default `Unset` (no error).
+- Malformed file value throws `ScriniaConfigurationException` via `WorkspaceConfig.ParseTracking`; malformed env value throws the same exception for consistency (explicit decision: throw, not silent fallback).
 - Config mutations keep the existing interprocess lock + same-directory `DurableFile` replacement; `CONFIG_RECOVERY_REQUIRED` on failed compensation/recovery, unchanged.
 
 ### Testing
@@ -112,16 +113,17 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
 ### Architecture
 
 - `/agent/` is unified to `/skill/` semantics: same disk layout contract (file + sidecar meta via `ReadSidecarMeta<T>` / `WriteSidecarMeta<T>`), same lookup chain (disk first, then legacy NMP/2 entry, then embedded built-in where applicable).
-- On disk-miss + legacy `local:agent` hit, auto-promote via `FileEntityTransactionCoordinator.ExecuteAsync`: write file + sidecar, delete legacy entry, return promoted. Idempotent — a second read finds the disk file and skips promotion.
+- On disk-miss + legacy `local:agent` hit, auto-promote in two ordered steps: (1) `FileEntityTransactionCoordinator.ExecuteAsync(new FileEntityMutation(...))` publishes file + sidecar only, (2) on `Created`/`Replaced` only delete the legacy `local:agent` NMP/2 entry via the store; on `RecoveryRequired` / throw leave legacy intact. Idempotent — a second read finds the disk file and skips promotion; a crash between steps re-derives the same bytes from the surviving legacy entry.
 - No warning log is emitted for the promotion beyond the existing migration trace.
-- Reads are lock-free; this is documented as accepted (a concurrent-promotion race resolves to the same file + sidecar content; last-writer-wins is benign because the source legacy bytes are identical).
+- Disk-hit reads are lock-free; promotion holds the coordinator per-entity exclusive `.lock`; concurrent promotion converges benign (same source bytes, last-writer-wins).
 
 ### Components
 
 | Component | Role after change |
 |---|---|
 | `/agent/` handler | Same semantics as `/skill/` handler |
-| `FileEntityTransactionCoordinator.ExecuteAsync` | Atomic-feeling promote: write file + sidecar, delete legacy, return promoted |
+| `FileEntityTransactionCoordinator.ExecuteAsync(new FileEntityMutation(...))` | Step 1: publish file + sidecar only (returns `Created` / `Replaced` / `RecoveryRequired`) |
+| Store delete of legacy `local:agent` NMP/2 entry | Step 2: runs only on `Created` / `Replaced`; skipped on `RecoveryRequired` / throw |
 | Existing migration trace | Sole observability for the promotion (no new warning log) |
 
 ### Data flow
@@ -129,13 +131,15 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
 1. Read `/agent/{name}`: check disk (file + sidecar).
 2. On disk-hit, return directly (lock-free).
 3. On disk-miss, check legacy `local:agent` NMP/2 entry.
-4. On legacy-hit, `FileEntityTransactionCoordinator.ExecuteAsync` writes file + sidecar, deletes the legacy entry, returns promoted.
-5. On legacy-miss, fall through to built-in / not-found as today.
+4. On legacy-hit, step 1: `FileEntityTransactionCoordinator.ExecuteAsync(new FileEntityMutation(...))` publishes file + sidecar (holds the per-entity exclusive `.lock`).
+5. On legacy-hit, step 2: on `Created` / `Replaced` only, delete the legacy `local:agent` NMP/2 entry via the store and return promoted; on `RecoveryRequired` / throw, leave legacy intact.
+6. On legacy-miss, fall through to built-in / not-found as today.
 
 ### Error handling
 
-- Promotion failure leaves the legacy entry intact (read still succeeds from legacy on retry); no partial-delete.
-- Idempotency: re-execution after a crash either finds the disk file (skip) or re-derives from the surviving legacy entry (same bytes).
+- Step 1 failure (`RecoveryRequired` / throw) leaves the legacy entry intact (read still succeeds from legacy on retry); the legacy delete in step 2 never runs.
+- Step 2 runs only on `Created` / `Replaced`; no partial-delete of file + sidecar is exposed (coordinator guarantees atomic-feeling publish).
+- Idempotency: re-execution after a crash either finds the disk file (skip) or re-derives the same bytes from the surviving legacy entry (crash between steps re-derives identical content).
 - No new error surface: failures surface through the existing migration-trace / Core result contracts.
 
 ### Testing
@@ -150,9 +154,9 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
 
 ### Architecture
 
-- Two promotion paths, one coordinator:
+- Two promotion paths, one coordinator (two ordered steps: file + sidecar publish via `ExecuteAsync(new FileEntityMutation(...))`, then legacy `local:agent` delete on `Created` / `Replaced` only):
   - **Demand-driven:** read-time auto-promote on touch (Section 3).
-  - **Bulk:** `tracking migrate-legacy` sweep also promotes `local:agent` legacy entries (same `FileEntityTransactionCoordinator.ExecuteAsync`).
+  - **Bulk:** `tracking migrate-legacy` sweep also promotes `local:agent` legacy entries (same two-step coordinator sequence).
 - `local-topic:` journals are rewritten (migrated) before the sunset date; then the sunset test flips the shim branch to `Unknown` scope and the `Obsolete` shim is removed.
 
 ### Components
@@ -167,13 +171,13 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
 
 1. Steady state: reads auto-promote `local:agent` entries on touch.
 2. Operator runs `tracking migrate-legacy --to` for a bulk sweep of remaining `local:agent` entries.
-3. Pre-sunset: `local-topic:` journals are rewritten to canonical form.
+3. Pre-sunset: `local-topic:` journals are rewritten to canonical form via `tracking migrate-legacy` / explicit journal rewrite — never via shim writes (shim writes stay rejected per Section 1).
 4. Sunset: shim removed; sunset test asserts `Unknown` scope for legacy inputs.
 
 ### Error handling
 
 - Bulk sweep is per-entry fault-isolated: one bad entry does not abort the sweep (existing migrate-legacy semantics).
-- Sunset removal is a breaking change: noted in CHANGELOG Unreleased (approved breaking legacy removal).
+- Sunset removal is a breaking change: noted in `CHANGELOG.md` Unreleased / Breaking section (approved breaking legacy removal).
 
 ### Testing
 
@@ -183,7 +187,7 @@ Alternatives rejected: F1 (freeze legacy forever), F3 (eager bulk rewrite on sta
   - Recovery compat (`local-topic:` reads succeed pre-sunset).
   - Sunset expiry (`local-topic:` resolves to `Unknown` post-removal).
 - Gate: `dotnet test Scrinia.sln` green.
-- CHANGELOG Unreleased entry records the approved breaking legacy removal.
+- `CHANGELOG.md` Unreleased / Breaking entry records the approved breaking legacy removal.
 
 ---
 
