@@ -97,6 +97,25 @@ internal static class SafeTensorsReader
         return (float)BitConverter.UInt16BitsToHalf(half);
     }
 
+    /// <summary>
+    /// Reads the SafeTensors header and returns the total on-disk length the manifest declares: the
+    /// 8-byte length prefix plus the header plus the largest tensor <c>data_offsets</c> end. Throws
+    /// <see cref="FormatException"/> when the header is not a well-formed manifest, so a corrupt
+    /// manifest is caught here by reading only the header — never the tensor body.
+    /// </summary>
+    public static long VerifyManifestLength(Stream stream)
+    {
+        stream.Position = 0;
+        Dictionary<string, TensorMeta> header = ReadHeader(stream);
+
+        long maxDataEnd = 0;
+        foreach (TensorMeta meta in header.Values)
+            maxDataEnd = Math.Max(maxDataEnd, meta.DataEnd);
+
+        // ReadHeader consumed the 8-byte prefix and the header, so the stream now sits at the data start.
+        return stream.Position + maxDataEnd;
+    }
+
     /// <summary>Computes the start offset of the data section (8 + headerLen).</summary>
     public static long GetDataStart(Stream stream)
     {

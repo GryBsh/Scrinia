@@ -30,12 +30,15 @@ public static class Model2VecModelManager
     internal static IReadOnlyList<DownloadableAsset> AssetDefinitions => Assets;
 
     /// <summary>Whether every model file is published (directly or at its verified digest path). A
-    /// <c>.tmp</c> or partial file never counts as available.</summary>
+    /// <c>.tmp</c> or partial file never counts as available. This is a <b>cheap</b> pre-check: it
+    /// validates the SafeTensors header only and never reads the ~22MB tensor body — the full-file
+    /// content gate runs in <c>Model2VecProvider.Load</c>, so the model is hashed once at startup, not
+    /// twice.</summary>
     public static bool IsModelAvailable(string modelDir)
     {
         try
         {
-            Model2VecAssetResolver.Resolve(modelDir, Assets);
+            Model2VecAssetResolver.ResolveForAvailability(modelDir, Assets);
             return true;
         }
         catch (FileNotFoundException)
@@ -49,6 +52,18 @@ public static class Model2VecModelManager
         catch (ModelDownloadException)
         {
             return false;
+        }
+        catch (FormatException)
+        {
+            return false; // corrupt SafeTensors manifest — caught by the header-only check, no full read
+        }
+        catch (EndOfStreamException)
+        {
+            return false; // header-truncated manifest — ReadExactly ran past EOF, not a full read
+        }
+        catch (IOException)
+        {
+            return false; // any stream/IO failure degrades to unavailable (fail-soft to BM25)
         }
     }
 

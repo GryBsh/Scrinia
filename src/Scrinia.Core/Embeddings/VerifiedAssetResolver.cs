@@ -87,7 +87,7 @@ internal static class VerifiedAssetResolver
         ValidateDestinationPath(modelDir, directoryPath);
     }
 
-    private static List<VerifiedAssetPath> ResolvePaths(
+    internal static List<VerifiedAssetPath> ResolvePaths(
         string modelDir, IReadOnlyList<DownloadableAsset> assets)
     {
         if (assets.Count == 0)
@@ -175,12 +175,57 @@ internal static class VerifiedAssetResolver
         }
     }
 
+    /// <summary>
+    /// Cheap availability pre-check for one asset. Reads only the SafeTensors <b>header</b> — never the
+    /// tensor body — and confirms the manifest is well-formed and declares a file length that matches on
+    /// disk. A truncated or corrupt manifest is caught here without reading the ~22MB body; the full-file
+    /// SHA-256 that proves on-disk content matches the pinned digest stays in <see cref="ValidateContent"/>,
+    /// the gate <c>Load</c> runs before the model embeds.
+    /// </summary>
+    internal static void VerifyAssetDigest(VerifiedAssetPath path)
+    {
+        if (!path.Asset.Filename.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+            return; // non-tensor asset (e.g. vocab): existence is the signal; Load's full hash gates content.
+
+        long declaredLength;
+        using var fs = new FileStream(
+            path.Path, FileMode.Open, FileAccess.Read, FileShare.Read, HashBufferSize, FileOptions.SequentialScan);
+        declaredLength = SafeTensorsReader.VerifyManifestLength(fs);
+
+        long actualLength = new FileInfo(path.Path).Length;
+        if (actualLength != declaredLength)
+            throw new ModelDownloadException(
+                $"{path.Asset.Filename} manifest declares {declaredLength} bytes but the file is {actualLength}.");
+    }
+
     private static void ValidateContent(VerifiedAssetPath path)
     {
+        // Recorded up front: any full-file hash here — success or a digest mismatch that rejects it —
+        // is the expensive ~22MB read the eager/availability split exists to avoid doubling.
+        RecordFullContentValidation(path.Asset.Filename);
         using var stream = new FileStream(
             path.Path, FileMode.Open, FileAccess.Read, FileShare.Read, HashBufferSize, FileOptions.SequentialScan);
         string actual = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
         ThrowIfDigestMismatch(path.Asset, actual);
+    }
+
+    /// <summary>
+    /// Test seam: records the filenames whose <b>full file</b> content was SHA-256 validated, on the
+    /// current execution context, so the eager <c>Load</c> vs. cheap availability pre-check contract
+    /// can be asserted. Production never installs the list, so <see cref="RecordFullContentValidation"/>
+    /// is a no-op outside the tests that read <see cref="FullContentValidatedAssets"/>.
+    /// </summary>
+    private static readonly AsyncLocal<List<string>?> FullContentValidated = new();
+
+    internal static IReadOnlyList<string> FullContentValidatedAssets =>
+        FullContentValidated.Value is { } list ? list : Array.Empty<string>();
+
+    internal static void ResetFullContentValidationSpy() => FullContentValidated.Value = new List<string>();
+
+    internal static void RecordFullContentValidation(string filename)
+    {
+        if (FullContentValidated.Value is { } list)
+            list.Add(filename);
     }
 
     private static async Task ValidateContentAsync(VerifiedAssetPath path, CancellationToken ct)

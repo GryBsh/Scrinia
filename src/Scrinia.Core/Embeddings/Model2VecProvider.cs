@@ -57,13 +57,9 @@ public sealed class Model2VecProvider : IEmbeddingProvider
     /// </summary>
     public static Model2VecProvider Load(string modelDir, ILogger logger)
     {
-        string safeTensorsPath = Path.Combine(modelDir, "model.safetensors");
-        string vocabPath = Path.Combine(modelDir, "vocab.txt");
-
-        if (!File.Exists(safeTensorsPath))
-            throw new FileNotFoundException("model.safetensors not found.", safeTensorsPath);
-        if (!File.Exists(vocabPath))
-            throw new FileNotFoundException("vocab.txt not found.", vocabPath);
+        Model2VecAssetPaths paths = Model2VecAssetResolver.Resolve(modelDir, Model2VecModelManager.AssetDefinitions);
+        string safeTensorsPath = paths.ModelPath;
+        string vocabPath = paths.VocabPath;
 
         // Tokenizer KIND is decided now (20 lines of vocab); the vocabulary itself is not built.
         // SentencePiece vocabs start with [PAD] then use ▁ markers.
