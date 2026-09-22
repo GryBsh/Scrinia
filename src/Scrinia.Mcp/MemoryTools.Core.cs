@@ -173,6 +173,19 @@ public sealed partial class ScriniaMcpTools
                     return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
                         .WithTruncationAdvice(RecallTruncationAdvice);
                 }
+
+                // Disk miss: auto-promote a legacy local:agent NMP/2 entry, then serve the
+                // published file. No legacy entry (or a promotion that fails) leaves this block to
+                // fall through to the NMP/2 resolution below.
+                if (await PromoteLocalAgentAsync(agentStore, address, agentSubject, cancellationToken))
+                {
+                    string agentDir = PathRouter.ToFileEntityDir("agent", agentStore.WorkspaceRoot);
+                    string promotedPath = Path.Combine(agentDir, agentSubject + ".md");
+                    string mdContent = await File.ReadAllTextAsync(promotedPath, cancellationToken);
+                    SessionBudget.RecordAccess(input, mdContent.Length);
+                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
+                        .WithTruncationAdvice(RecallTruncationAdvice);
+                }
             }
             // Fall through to NMP/2 resolution for legacy entries
         }

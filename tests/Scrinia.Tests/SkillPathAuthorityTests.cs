@@ -1,5 +1,7 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 using Scrinia.Mcp;
 using Xunit;
 
@@ -59,5 +61,69 @@ public class SkillPathAuthorityTests
 
         result.Should().NotContain("legacy body",
             because: "the local:skill NMP/2 read fallback is deleted");
+    }
+
+    [Fact]
+    public async Task MemoryRecall_AutoPromotesAndDeletesLegacyLocalAgentEntry()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+
+        // A legacy local:agent entry with no sidecar — exactly what old builds stored.
+        await store.WriteArtifactAsync("ghost", "local:agent", Nmp2ChunkedEncoder.Encode("legacy agent body"), ct: CancellationToken.None);
+
+        string result = await Tools().MemoryRecall(path: "/agent/ghost");
+
+        result.Should().Contain("legacy agent body",
+            because: "the promoted file serves the legacy body");
+
+        string published = Path.Combine(PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot), "ghost.md");
+        File.Exists(published).Should().BeTrue(
+            because: "promotion publishes the .md file entity to the agent directory");
+
+        await FluentActions.Invoking(() =>
+                store.ReadArtifactAsync(MemoryAddress.Parse("/agent/ghost"), CancellationToken.None))
+            .Should().ThrowAsync<FileNotFoundException>(
+            because: "promotion deletes the legacy NMP/2 entry after publishing");
+
+        string second = await Tools().MemoryRecall(path: "/agent/ghost");
+        second.Should().Contain("legacy agent body",
+            because: "the second recall reads the published file on disk, not re-promote or re-delete");
+    }
+
+    [Fact]
+    public async Task MemoryRecall_DiskHitDoesNotTouchLegacyLocalAgentEntry()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = TestHelpers.Store;
+
+        string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
+        Directory.CreateDirectory(agentDir);
+        string fileContent = "authoritative agent config";
+        await File.WriteAllTextAsync(Path.Combine(agentDir, "ghost.md"), fileContent, CancellationToken.None);
+
+        await store.WriteArtifactAsync("ghost", "local:agent", Nmp2ChunkedEncoder.Encode("legacy agent body"), ct: CancellationToken.None);
+
+        string result = await Tools().MemoryRecall(path: "/agent/ghost");
+
+        result.Should().Contain(fileContent,
+            because: "the on-disk file is authoritative and wins over the legacy entry");
+        result.Should().NotContain("legacy agent body");
+
+        await FluentActions.Invoking(() =>
+                store.ReadArtifactAsync(MemoryAddress.Parse("/agent/ghost"), CancellationToken.None))
+            .Should().NotThrowAsync<FileNotFoundException>(
+            because: "a disk hit never promotes or deletes the legacy entry");
+    }
+
+    [Fact]
+    public async Task MemoryRecall_LegacyMissStillReturnsNotFound()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().MemoryRecall(path: "/agent/ghost");
+
+        result.Should().Contain("NOT_FOUND",
+            because: "with neither a file nor a legacy entry the not-found path is unchanged");
     }
 }
