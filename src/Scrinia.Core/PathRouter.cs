@@ -1,5 +1,4 @@
 using Scrinia.Core.Configuration;
-using System.Diagnostics.CodeAnalysis;
 
 namespace Scrinia.Core;
 
@@ -14,8 +13,7 @@ namespace Scrinia.Core;
 public static class PathRouter
 {
     // ADJUST IF MERGER LATER — see CHANGELOG Breaking; sunset 2027-03-21 (180d from spec approval).
-    [SuppressMessage("Design", "CA2211:Non-constant fields should not be visible", Justification = "Task 6's test-only setter reassigns the sunset date, so it must be a mutable public field.")]
-    public static DateTimeOffset LocalTopicSunsetDate = new DateTimeOffset(2027, 3, 21, 0, 0, 0, TimeSpan.Zero);
+    internal static DateTimeOffset LocalTopicSunsetDate = new DateTimeOffset(2027, 3, 21, 0, 0, 0, TimeSpan.Zero);
 
     private const string MemoriesDir = "memories";
 
