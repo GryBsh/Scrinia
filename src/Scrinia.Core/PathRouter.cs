@@ -17,6 +17,11 @@ public static class PathRouter
 
     private const string MemoriesDir = "memories";
 
+    // Test-only seam: reassigns the mutable <see cref="LocalTopicSunsetDate"/> so the local-topic:
+    // sunset boundary can be asserted. Internal on purpose — no public API is added to Scrinia.Core;
+    // Scrinia.Tests reaches it through InternalsVisibleTo.
+    internal static void SetLocalTopicSunsetForTest(DateTimeOffset sunsetDate) => LocalTopicSunsetDate = sunsetDate;
+
     /// <summary>
     /// Path segment name -> on-disk directory name for hand-authored file entities.
     /// <para>The singular/plural mismatch ("skill" -> "skills", "agent" -> "agent") is historical.

@@ -1,6 +1,9 @@
+using Scrinia.Core;
 using Scrinia.Core.Configuration;
+using Scrinia.Core.Models;
 using Scrinia.Core.Migration;
 using ConsoleAppFramework;
+using Scrinia.Mcp;
 using System.Text.Json;
 
 namespace Scrinia.Commands;
@@ -40,6 +43,37 @@ internal static class TrackingCommands
         policy = value;
         return result;
     }
+
+    // Bulk counterpart of the `/agent/` recall promotion (Task 4): promote every remaining legacy
+    // `local:agent` NMP/2 entry to `.scrinia/agent/{subject}.md` through the shared
+    // `ScriniaMcpTools.PromoteLocalAgentAsync` primitive. Legacy entries are sidecar-less (only a
+    // `.nmp2` body, no `.meta.json`), so they never appear in the sidecar-backed index that
+    // `ListScoped` reads — this walks the scope directory's artifact bodies directly instead.
+    // Fault-isolated per entry: one bad artifact (decode failure, permission error, coordinator
+    // rejection) is swallowed so the sweep finishes the rest, matching the existing
+    // `tracking migrate-legacy` "keep going on failure" semantics.
+    private static readonly string LocalAgentScope = "local:agent";
+
+    internal static async Task SweepLegacyAgentsAsync(IMemoryStore store, CancellationToken cancellationToken)
+    {
+        string storeDir = store.GetStoreDirForScope(LocalAgentScope);
+        if (!Directory.Exists(storeDir)) return;
+
+        foreach (string nmp2 in Directory.EnumerateFiles(storeDir, "*.nmp2"))
+        {
+            string subject = Path.GetFileNameWithoutExtension(nmp2);
+            try
+            {
+                MemoryAddress address = MemoryAddress.Parse("/agent/" + subject);
+                await ScriniaMcpTools.PromoteLocalAgentAsync(
+                    store, address, subject, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Fault-isolated by design: a single legacy entry must not abort the sweep.
+            }
+        }
+    }
 }
 
 /// <summary>CLI adapter for local tracking status and explicit policy transitions.</summary>
@@ -59,10 +93,10 @@ public sealed class TrackingCliCommands
         return Render(output, json, (int)observation.ExitClass);
     }
 
-    public int Set([Argument] string policy, bool json = false) => Apply(policy, false, json);
-    public int MigrateLegacy(string to, bool json = false) => Apply(to, true, json);
+    public Task<int> Set([Argument] string policy, bool json = false) => Apply(policy, false, json);
+    public Task<int> MigrateLegacy(string to, bool json = false) => Apply(to, true, json);
 
-    private static int Apply(string value, bool migrate, bool json)
+    private static async Task<int> Apply(string value, bool migrate, bool json)
     {
         WorkspaceSetup.Configure(null);
         if (!TrackingCommands.TryParseTarget(value, out TrackingPolicy policy))
@@ -79,6 +113,13 @@ public sealed class TrackingCliCommands
                 state: policy.ToString().ToLowerInvariant(), warnings: result.Warnings,
                 gitCommands: TrackingCommands.InspectionArgv(WorkspaceSetup.Root))
             : ConfigurationJsonResult.Failure(command, result.ErrorCode, result.Exception?.Message);
+
+        // Approved F2 legacy cleanup: after a successful tracking migration, bulk-sweep any
+        // remaining legacy `local:agent` NMP/2 entries into first-class file entities. Fault-isolated
+        // per entry inside the sweep; the config migration outcome above is unchanged.
+        if (migrate && result.ErrorCode == ConfigurationErrorCode.None)
+            await TrackingCommands.SweepLegacyAgentsAsync(WorkspaceSetup.Store, CancellationToken.None).ConfigureAwait(false);
+
         return Render(output, json, (int)result.ExitClass);
     }
 

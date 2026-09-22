@@ -72,6 +72,27 @@ public class PathRouterTests : IDisposable
             .Should().Be(Path.Combine(_root, ".scrinia", "memories", "findings"));
     }
 
+    // Deferred from Task 2: the pre-sunset test above pins the shim live before its sunset, so this
+    // pins the opposite side through the internal test seam. LocalTopicSunsetDate is process-wide,
+    // but this test lives in the same class as the pre-sunset assertion (xUnit runs a class
+    // sequentially) and restores the date in `finally`, so neither disturbs the other.
+    [Fact]
+    public void ToStoreDir_LocalTopicScope_PostSunset_ThrowsUnknownScope()
+    {
+        DateTimeOffset original = PathRouter.LocalTopicSunsetDate;
+        try
+        {
+            PathRouter.SetLocalTopicSunsetForTest(DateTimeOffset.UnixEpoch);
+
+            var act = () => PathRouter.ToStoreDir("local-topic:findings", _root);
+            act.Should().Throw<ArgumentException>().WithMessage("*Unknown scope*");
+        }
+        finally
+        {
+            PathRouter.SetLocalTopicSunsetForTest(original);
+        }
+    }
+
     // ── File entities ─────────────────────────────────────────────────────────
 
     [Theory]
