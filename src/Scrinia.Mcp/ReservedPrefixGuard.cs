@@ -11,7 +11,7 @@ namespace Scrinia.Mcp;
 /// </summary>
 internal static class ReservedPrefixGuard
 {
-    private static readonly string[] Reserved =
+    private static readonly string[] ReservedTopicPrefixes =
     [
         "skill", "agent", "patterns", "findings", "learn",
         "sessions", "checkpoint", "temp"
@@ -50,13 +50,13 @@ internal static class ReservedPrefixGuard
         if (firstSegment.Length == 0) return null;
 
         // Exact reserved match (case-sensitive) — no hint.
-        foreach (var reserved in Reserved)
+        foreach (var reserved in ReservedTopicPrefixes)
         {
             if (firstSegment == reserved) return null;
         }
 
         // Case-insensitive match → suggest the canonical case.
-        foreach (var reserved in Reserved)
+        foreach (var reserved in ReservedTopicPrefixes)
         {
             if (firstSegment.Equals(reserved, StringComparison.OrdinalIgnoreCase))
             {

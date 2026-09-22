@@ -2545,6 +2545,29 @@ public sealed class ScriniaMcpToolsTests
             because: "non-reserved paths must not produce false-positive hints");
     }
 
+    [Fact]
+    public void ReservedTopicPrefixes_CarriesExactlyTheEightCanonicalTopics()
+    {
+        string[] expected =
+        [
+            "skill", "agent", "patterns", "findings", "learn",
+            "sessions", "checkpoint", "temp"
+        ];
+
+        var field = typeof(ReservedPrefixGuard).GetField(
+            "ReservedTopicPrefixes",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        field.Should().NotBeNull("the reserved guard must expose the renamed field");
+        var actual = (string[]?)field!.GetValue(null);
+
+        actual.Should().NotBeNull();
+        actual!.Should()
+            .HaveCount(expected.Length, "the reserved guard must track exactly the canonical set")
+            .And
+            .BeEquivalentTo(expected, "the reserved guard must carry the canonical reserved topics, membership order-independent");
+    }
+
     // ── Rich search surface (facts/tags/path filters/path-segment score) ────────
 
     [Fact]
