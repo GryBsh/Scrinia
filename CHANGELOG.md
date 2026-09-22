@@ -30,6 +30,44 @@ and all assembly attributes.
   Vulkan install in the new `docs/installation.md` and `src/Scrinia/package-readme.md`, and pinned the
   living-doc headings and `SCRINIA_HOME`-naming source diagnostics with doc/source tests.
 
+### Changed (breaking) — tracking precedence now resolves through one authority
+
+- `tracking migrate-legacy` (and `status`/`set`) no longer read the workspace file value directly. The
+  effective tracking policy is resolved by `EffectivePolicy.ResolveEffective`, so precedence now
+  follows a single order: **single-underscore environment > double-underscore environment > file >
+  `Unset`**. `SCRINIA_WORKSPACE_TRACKING` keeps priority where both environment forms are set; a
+  workspace that exported the previously-ignored double-underscore form (`SCRINIA__WORKSPACE__TRACKING`)
+  is now honored by the CLI.
+- `LegacyMigrationService.Read`/`Inspect`/`Migrate`/`Set` now thread `envSingle`/`envDouble` through
+  `Inspect`/`Migrate`/`Set`; `Unset` maps to `null` so a missing policy is never misread as a real
+  policy downstream (`EffectivePolicy` returns `Unset` for empty input, not null).
+
+### Removed (breaking) — the `local-topic:` recovery shim sunsets after 2027-03-21
+
+- `PathRouter.ToStoreDir` gates the read-only `local-topic:` recovery shim behind
+  `LocalTopicSunsetDate` (2027-03-21). Before sunset a legacy `local-topic:<journal>` scope resolves to
+  `.scrinia/memories/<topic>`; after sunset the prefix falls through to the `Unknown scope` throw,
+  matching every other prefix. Legacy journals from older store layouts are therefore no longer
+  reachable by path once the sunset passes.
+- The sunset date is a mutable `internal static` field on `PathRouter`, flipped only through the
+  test-only `SetLocalTopicSunsetForTest` seam, so the post-sunset `Unknown scope` throw is assertable.
+
+### Removed (breaking) — legacy `local:agent` entries are promoted on touch and bulk-swept
+
+- `/agent/<subject>` recall now auto-promotes a legacy `local:agent` NMP/2 entry to
+  `.scrinia/agent/{subject}.md` on first touch — publish the `.md` body and its `.meta.json` sidecar
+  through the shared `FileEntityTransactionCoordinator`, then delete the legacy artifact — and
+  `tracking migrate-legacy` bulk-sweeps any remaining `local:agent` entries the same way, fault-isolated
+  per entry. Promotion is idempotent: a later read finds the published file and never re-deletes.
+- **Breaking:** the NMP/2 `local:agent` store entry is deleted on promotion (the `.nmp2` body via
+  `DeleteArtifact`, the sidecar via `Remove` — both no-ops when absent), so a workspace that still
+  addressed a raw `local:agent` entry by its store address after this change finds it gone. An
+  existing `.scrinia/agent/{subject}.md` file still wins over promotion.
+- The promotion is one shared internal primitive (`ScriniaMcpTools.PromoteLocalAgentAsync`), reused by
+  both the recall handler and the CLI sweep. The CLI reaches it through `Scrinia.Mcp`'s
+  `InternalsVisibleTo("scri")` — the same boundary it already uses for other MCP internals — rather
+  than moving the primitive into Core.
+
 ## [0.6.0] — 2026-08-27
 
 ### Changed (breaking) — unified logical memory addressing

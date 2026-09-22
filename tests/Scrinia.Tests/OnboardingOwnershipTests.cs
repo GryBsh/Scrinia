@@ -22,7 +22,7 @@ public sealed class OnboardingOwnershipTests
             "f61e2fbfe3b268cbd0097ec3a7efb2ba191d0c12f8895c618631776dba555f8a"),
         (["docs", "superpowers", "reviews", "2026-08-31-shared-memory-global-tool-spec-review.md"],
             "3d1364da2278ee7652debcbd88de33b8c6e4a0ebb86ab7344344b10568f6f00a"),
-        (["CHANGELOG.md"], "22181b7765314dd7aae8453aabe785bd3ac6ad335f5b2e5070d2d383a82aa071"),
+        (["CHANGELOG.md"], "f6480527c08e90076ab8d9c77d3e636f136b26c188c00817f422be82dd2ba49b"),
     ];
 
     private static readonly string[] OwnedPhase4Surfaces =
