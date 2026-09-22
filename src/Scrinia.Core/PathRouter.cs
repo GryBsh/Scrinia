@@ -1,3 +1,6 @@
+using Scrinia.Core.Configuration;
+using System.Diagnostics.CodeAnalysis;
+
 namespace Scrinia.Core;
 
 /// <summary>
@@ -10,6 +13,10 @@ namespace Scrinia.Core;
 /// </summary>
 public static class PathRouter
 {
+    // ADJUST IF MERGER LATER — see CHANGELOG Breaking; sunset 2027-03-21 (180d from spec approval).
+    [SuppressMessage("Design", "CA2211:Non-constant fields should not be visible", Justification = "Task 6's test-only setter reassigns the sunset date, so it must be a mutable public field.")]
+    public static DateTimeOffset LocalTopicSunsetDate = new DateTimeOffset(2027, 3, 21, 0, 0, 0, TimeSpan.Zero);
+
     private const string MemoriesDir = "memories";
 
     /// <summary>
@@ -98,6 +105,10 @@ public static class PathRouter
     /// Maps an internal scope string ("local", "local:findings", "local:goal/G-5") to its
     /// store directory under <c>.scrinia/memories/</c>. The single authority for
     /// scope-to-directory resolution (v3 layout — see <see cref="StoreLayoutMigration"/>).
+    /// <para>The <c>local-topic:</c> prefix is a read-only recovery-compat shim for legacy journals
+    /// from older store layouts; it resolves to <c>.scrinia/memories/&lt;topic&gt;</c> only before the
+    /// sunset in <see cref="LocalTopicSunsetDate"/> (2027-03-21). After sunset the prefix falls
+    /// through to the <c>Unknown scope</c> throw, matching the other prefixes' treatment.</para>
     /// </summary>
     public static string ToStoreDir(string scope, string workspaceRoot)
     {
@@ -105,9 +116,12 @@ public static class PathRouter
         if (scope == "local")
             return memories;
 
-        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+        // Recovery-compat read-only shim for legacy `local-topic:` journals. Sunset 2027-03-21; after sunset legacy inputs resolve to Unknown scope (see LocalTopicSunsetDate).
+        if (DateTimeOffset.UtcNow < LocalTopicSunsetDate && scope.StartsWith("local-topic:", StringComparison.Ordinal))
+        {
             return Path.Combine(memories,
                 scope["local-topic:".Length..].Replace('/', Path.DirectorySeparatorChar));
+        }
 
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             return Path.Combine(memories,

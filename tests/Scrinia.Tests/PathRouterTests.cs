@@ -62,6 +62,16 @@ public class PathRouterTests : IDisposable
         act.Should().Throw<ArgumentException>().WithMessage("*Unknown scope*");
     }
 
+    [Fact]
+    public void ToStoreDir_LocalTopicScope_ResolvesUnderMemoriesDir_PreSunset()
+    {
+        PathRouter.LocalTopicSunsetDate.Should().BeAfter(DateTimeOffset.UtcNow,
+            because: "the local-topic: recovery shim is only live before its sunset");
+
+        PathRouter.ToStoreDir("local-topic:findings", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "findings"));
+    }
+
     // ── File entities ─────────────────────────────────────────────────────────
 
     [Theory]
