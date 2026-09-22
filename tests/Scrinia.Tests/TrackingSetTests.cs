@@ -49,7 +49,7 @@ public sealed class TrackingSetTests : IDisposable
             .Which.InnerExceptions.Should().HaveCount(2);
         File.Exists(Path.Combine(directory, ".tracking-recovery.json")).Should().BeTrue();
 
-        LegacyFilesystemObservation recovered = new LegacyMigrationService().Inspect(_workspace);
+        LegacyFilesystemObservation recovered = new LegacyMigrationService().Inspect(_workspace, null, null);
 
         recovered.ErrorCode.Should().Be(ConfigurationErrorCode.None);
         WorkspaceConfig.Load(_workspace).GetTrackingPolicy().Should().Be(TrackingPolicy.Local);

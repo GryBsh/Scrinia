@@ -80,7 +80,7 @@ public class B0CompatibilityHarness
         File.WriteAllText(journal, "complete", new UTF8Encoding(false));
         var service = new LegacyMigrationService();
 
-        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir, null, null);
         LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
 
         Assert.NotEqual(ConfigurationErrorCode.None, inspection.ErrorCode);

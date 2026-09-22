@@ -48,7 +48,9 @@ public sealed class TrackingCliCommands
     public int Status(bool json = false)
     {
         WorkspaceSetup.Configure(null);
-        LegacyFilesystemObservation observation = new LegacyMigrationService().Inspect(WorkspaceSetup.Root);
+        string? envSingle = Environment.GetEnvironmentVariable(EffectivePolicy.EnvSingle);
+        string? envDouble = Environment.GetEnvironmentVariable(EffectivePolicy.EnvDouble);
+        LegacyFilesystemObservation observation = new LegacyMigrationService().Inspect(WorkspaceSetup.Root, envSingle, envDouble);
         string state = observation.State == LegacyMigrationState.Fresh ? "fresh-default-local" : observation.State.ToString().ToLowerInvariant();
         ConfigurationJsonResult output = observation.ErrorCode == ConfigurationErrorCode.None
             ? ConfigurationJsonResult.Success("tracking status", false, tracking: state, state: state,
@@ -65,10 +67,12 @@ public sealed class TrackingCliCommands
         WorkspaceSetup.Configure(null);
         if (!TrackingCommands.TryParseTarget(value, out TrackingPolicy policy))
             return Render(ConfigurationJsonResult.Failure(migrate ? "tracking migrate-legacy" : "tracking set", ConfigurationErrorCode.CliInvalidArgument), json, 2);
+        string? envSingle = Environment.GetEnvironmentVariable(EffectivePolicy.EnvSingle);
+        string? envDouble = Environment.GetEnvironmentVariable(EffectivePolicy.EnvDouble);
         var service = new LegacyMigrationService();
         LegacyMigrationResult result = migrate
-            ? service.Migrate(WorkspaceSetup.Root, policy)
-            : service.Set(WorkspaceSetup.Root, policy);
+            ? service.Migrate(WorkspaceSetup.Root, policy, envSingle, envDouble)
+            : service.Set(WorkspaceSetup.Root, policy, envSingle, envDouble);
         string command = migrate ? "tracking migrate-legacy" : "tracking set";
         ConfigurationJsonResult output = result.ErrorCode == ConfigurationErrorCode.None
             ? ConfigurationJsonResult.Success(command, result.Changed, tracking: policy.ToString().ToLowerInvariant(),

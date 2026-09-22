@@ -17,7 +17,7 @@ public sealed class LegacyMigrationServiceTests
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "merge.config"), "custom", new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.State.Should().Be(LegacyMigrationState.Fresh);
         result.ErrorCode.Should().Be(ConfigurationErrorCode.None);
@@ -31,7 +31,7 @@ public sealed class LegacyMigrationServiceTests
         string path = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
         File.WriteAllText(path, "wrong\n", new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.State.Should().Be(LegacyMigrationState.PolicyDrift);
         result.ErrorCode.Should().Be(ConfigurationErrorCode.TrackingPolicyInvalid);
@@ -46,7 +46,7 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(Path.Combine(directory, ".gitattributes"), LegacyMergeRecognition.ScriniaMetaAttributeLine + "\n", new UTF8Encoding(false));
         WorkspaceConfig.SetValue(scope.WorkspaceDir, WorkspaceConfig.TrackingKey, "local");
 
-        new LegacyMigrationService().Inspect(scope.WorkspaceDir).State.Should().Be(LegacyMigrationState.LegacyClean);
+        new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null).State.Should().Be(LegacyMigrationState.LegacyClean);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(Path.Combine(directory, ".gitattributes"), LegacyMergeRecognition.ScriniaMetaAttributeLine + "\ncustom\n", new UTF8Encoding(false));
         WorkspaceConfig.SetValue(scope.WorkspaceDir, WorkspaceConfig.TrackingKey, "local");
 
-        new LegacyMigrationService().Inspect(scope.WorkspaceDir).State.Should().Be(LegacyMigrationState.LegacyMixed);
+        new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null).State.Should().Be(LegacyMigrationState.LegacyMixed);
     }
 
     [Fact]
@@ -70,7 +70,7 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(configPath, "{\"Scrinia:Workspace:Tracking\":\"project-git\"}", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore"), ManagedIgnoreBlock.ProjectGit, new UTF8Encoding(false));
 
-        new LegacyMigrationService().Inspect(scope.WorkspaceDir).State.Should().Be(LegacyMigrationState.ProjectGit);
+        new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null).State.Should().Be(LegacyMigrationState.ProjectGit);
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class LegacyMigrationServiceTests
         string encodedPath = Convert.ToBase64String(Encoding.UTF8.GetBytes(conflict));
         File.WriteAllText(journal, $"prepared\n{encodedPath}|-\n", new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
         Directory.Exists(conflict).Should().BeTrue();
@@ -101,7 +101,7 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"),
             $"prepared\n{Encode(config)}|-\n{Encode(Path.Combine(directory, "memories", "entry"))}|-\n", new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
         File.ReadAllText(config).Should().Be("original");
@@ -117,7 +117,7 @@ public sealed class LegacyMigrationServiceTests
         string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(config));
         File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"), $"prepared\n{encoded}|-\n", new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
         File.Exists(config).Should().BeTrue();
@@ -136,7 +136,7 @@ public sealed class LegacyMigrationServiceTests
             "prepared\n" + string.Join('\n', targets.Select(name => $"{Encode(Path.Combine(directory, name))}|-")) + "\n",
             new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.ErrorCode.Should().NotBe(ConfigurationErrorCode.None);
         File.ReadAllText(config).Should().Be("original");
@@ -150,7 +150,7 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(Path.Combine(directory, ".tracking-recovery.json"), "prepared\nnot-base64|-\n", new UTF8Encoding(false));
         var service = new LegacyMigrationService();
 
-        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir, null, null);
         LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
 
         migration.ErrorCode.Should().Be((ConfigurationErrorCode)inspection.ErrorCode);
@@ -172,7 +172,7 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(journal, journalContent, new UTF8Encoding(false));
         var service = new LegacyMigrationService();
 
-        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir, null, null);
         LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
 
         inspection.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
@@ -196,7 +196,7 @@ public sealed class LegacyMigrationServiceTests
         string journal = Path.Combine(directory, ".tracking-recovery.json");
         File.WriteAllText(journal, "complete\n", new UTF8Encoding(false));
 
-        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir);
+        LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
         result.ErrorCode.Should().Be(ConfigurationErrorCode.None);
         File.Exists(journal).Should().BeFalse();
@@ -239,11 +239,11 @@ public sealed class LegacyMigrationServiceTests
         File.WriteAllText(Path.Combine(directory, ".gitattributes"), LegacyMergeRecognition.ScriniaMetaAttributeLine + "\n", new UTF8Encoding(false));
         var service = new LegacyMigrationService();
 
-        Task[] inspections = Enumerable.Range(0, 8).Select(_ => Task.Run(() => service.Inspect(scope.WorkspaceDir))).ToArray();
+        Task[] inspections = Enumerable.Range(0, 8).Select(_ => Task.Run(() => service.Inspect(scope.WorkspaceDir, null, null))).ToArray();
         Task migration = Task.Run(() => service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local));
         await Task.WhenAll(inspections.Append(migration));
 
-        service.Inspect(scope.WorkspaceDir).ErrorCode.Should().Be(ConfigurationErrorCode.None);
+        service.Inspect(scope.WorkspaceDir, null, null).ErrorCode.Should().Be(ConfigurationErrorCode.None);
     }
 
     [Fact]

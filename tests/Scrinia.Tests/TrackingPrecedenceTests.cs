@@ -1,5 +1,7 @@
 using FluentAssertions;
-using Scrinia.Commands;
+using Scrinia.Core.Configuration;
+using Scrinia.Core.Migration;
+using Commands = Scrinia.Commands;
 
 namespace Scrinia.Tests;
 
@@ -14,48 +16,122 @@ public sealed class TrackingPrecedenceTests : IDisposable
     public TrackingPrecedenceTests()
     {
         Directory.CreateDirectory(_root);
-        WorkspaceSetup.OverrideRoot(_root);
+        Commands.WorkspaceSetup.OverrideRoot(_root);
     }
 
     public void Dispose()
     {
         Environment.SetEnvironmentVariable(SingleEnvironmentKey, null);
         Environment.SetEnvironmentVariable(DoubleEnvironmentKey, null);
-        WorkspaceSetup.OverrideRoot(null);
+        Commands.WorkspaceSetup.OverrideRoot(null);
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
     [Fact]
     public void SingleUnderscoreEnvironmentWinsOverEveryLowerPrecedenceSource()
     {
-        WorkspaceConfig.SetValue(_root, Key, "project-git");
-        Environment.SetEnvironmentVariable(DoubleEnvironmentKey, "local");
-        Environment.SetEnvironmentVariable(SingleEnvironmentKey, "project-git");
+        try
+        {
+            Commands.WorkspaceConfig.SetValue(_root, Key, "project-git");
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, "local");
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, "project-git");
 
-        WorkspaceSetup.GetConfigValue(Key).Should().Be("project-git");
+            Commands.WorkspaceSetup.GetConfigValue(Key).Should().Be("project-git");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, null);
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, null);
+        }
     }
 
     [Fact]
     public void DoubleUnderscoreEnvironmentWinsOverWorkspaceConfig()
     {
-        WorkspaceConfig.SetValue(_root, Key, "project-git");
-        Environment.SetEnvironmentVariable(DoubleEnvironmentKey, "local");
+        try
+        {
+            Commands.WorkspaceConfig.SetValue(_root, Key, "project-git");
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, "local");
 
-        WorkspaceSetup.GetConfigValue(Key).Should().Be("local");
+            Commands.WorkspaceSetup.GetConfigValue(Key).Should().Be("local");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, null);
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, null);
+        }
     }
 
     [Fact]
     public void WorkspaceConfigWinsOverDefault()
     {
-        WorkspaceConfig.SetValue(_root, Key, "project-git");
+        Commands.WorkspaceConfig.SetValue(_root, Key, "project-git");
 
-        WorkspaceSetup.GetConfigValue(Key).Should().Be("project-git");
+        Commands.WorkspaceSetup.GetConfigValue(Key).Should().Be("project-git");
     }
 
     [Fact]
     public void MissingSourcesReturnTheProvidedDefault()
     {
-        WorkspaceSetup.GetConfigValue(Key, "local").Should().Be("local");
+        Commands.WorkspaceSetup.GetConfigValue(Key, "local").Should().Be("local");
+    }
+
+    [Fact]
+    public void SingleUnderscoreEnvironmentWinsOverDoubleAndFileThroughInspect()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        Commands.WorkspaceConfig.SetValue(scope.WorkspaceDir, Key, "local");
+        try
+        {
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, "project-git");
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, "local");
+
+            string? envSingle = Environment.GetEnvironmentVariable(SingleEnvironmentKey);
+            string? envDouble = Environment.GetEnvironmentVariable(DoubleEnvironmentKey);
+            LegacyFilesystemObservation observation =
+                new LegacyMigrationService().Inspect(scope.WorkspaceDir, envSingle, envDouble);
+
+            observation.Input.TrackingPolicy.Should().Be(TrackingPolicy.Local);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, null);
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, null);
+        }
+    }
+
+    [Fact]
+    public void DoubleUnderscoreEnvironmentWinsOverMissingFileThroughInspect()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        try
+        {
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, null);
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, "project-git");
+
+            string? envSingle = Environment.GetEnvironmentVariable(SingleEnvironmentKey);
+            string? envDouble = Environment.GetEnvironmentVariable(DoubleEnvironmentKey);
+            LegacyFilesystemObservation observation =
+                new LegacyMigrationService().Inspect(scope.WorkspaceDir, envSingle, envDouble);
+
+            observation.Input.TrackingPolicy.Should().Be(TrackingPolicy.ProjectGit);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DoubleEnvironmentKey, null);
+            Environment.SetEnvironmentVariable(SingleEnvironmentKey, null);
+        }
+    }
+
+    [Fact]
+    public void MalformedEnvironmentValueIsThreadedThroughInspectAsWorkspaceConfigMalformed()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        LegacyFilesystemObservation observation =
+            new LegacyMigrationService().Inspect(scope.WorkspaceDir, "bogus", null);
+
+        observation.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
     }
 }
 
