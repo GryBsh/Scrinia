@@ -1,3 +1,5 @@
+using Scrinia.Core.Models;
+
 namespace Scrinia.Core;
 
 /// <summary>
@@ -193,6 +195,38 @@ public static class MemoryNaming
         TrySanitizeSegment(name, out string safe)
             ? safe
             : throw new ArgumentException($"Name '{name}' is invalid after sanitization.", nameof(name));
+
+    /// <summary>
+    /// THE single case-insensitive name rule. Shared verbatim by
+    /// <see cref="NameEquals"/> and every case-insensitive matcher (the store's read barrier,
+    /// the merge handler, the entity-typing handler) so none of them can drift from each other.
+    /// </summary>
+    public static readonly StringComparer Comparer = StringComparer.OrdinalIgnoreCase;
+
+    /// <summary>
+    /// THE ONE RULE for comparing two memory names: sanitize BOTH sides first (a stored "a/b"
+    /// and a subject "a_b" are the same leaf), then compare case-insensitively. Null-safe, so a
+    /// null on either side is a clean miss rather than a throw. This is the single home of the
+    /// old inline case-insensitive name rule.
+    /// </summary>
+    public static bool NameEquals(string? a, string? b)
+    {
+        if (a is null && b is null) return true;
+        if (a is null || b is null) return false;
+        if (!TrySanitizeSegment(a, out string sa)) return false;
+        if (!TrySanitizeSegment(b, out string sb)) return false;
+        return Comparer.Equals(sa, sb);
+    }
+
+    /// <summary>
+    /// THE ONE RULE for detecting URI/physical syntax that <c>MemoryAddress</c> rejects at parse.
+    /// Kept here (not in MemoryAddress) so it can be reused by the address-validation layer — one
+    /// rule, shared, no chance of the two disagreeing.
+    /// </summary>
+    public static bool IsUriLike(string value) =>
+        value.Contains('\\') || value.Contains(':') || value.Contains('?') ||
+        value.Contains('#') || value.Contains('%') ||
+        value.StartsWith("//", StringComparison.Ordinal);
 
     /// <summary>
     /// Builds the full internal scope string used by the storage layer, sanitizing and validating
