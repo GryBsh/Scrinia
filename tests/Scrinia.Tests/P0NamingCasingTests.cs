@@ -167,4 +167,38 @@ public class P0NamingCasingTests
         entry.Should().NotBeNull();
         entry!.Name.Should().Be("Notes");
     }
+
+    [Theory]
+    [InlineData("/notes", "local", "notes")]
+    [InlineData("/api/notes", "local:api", "notes")]
+    [InlineData("/a/b/c", "local:a/b", "c")]
+    public void RoundTrip_Resolve_Format_Parse_Resolve(string raw, string scope, string subject)
+    {
+        using var _ = new TestHelpers.StoreScope();
+        var addr = Scrinia.Core.Models.MemoryAddress.Parse(raw);
+        var resolved = MemoryNaming.ResolveAddress(addr);
+        resolved.Should().Be((scope, subject));
+        var display = MemoryNaming.FormatQualifiedName(resolved.Scope, resolved.Subject);
+        var reparsed = Scrinia.Core.Models.MemoryAddress.Parse(
+            display.StartsWith('/') ? display : "/" + display);
+        MemoryNaming.ResolveAddress(reparsed).Should().Be(resolved);
+    }
+
+    [Fact]
+    public void LegacyColon_Rejected_WithPathSuggestion()
+    {
+        using var _ = new TestHelpers.StoreScope();
+        var store = (Scrinia.Core.FileMemoryStore)Scrinia.Core.MemoryStoreContext.Current!;
+        var ex = Assert.Throws<System.ArgumentException>(() =>
+            store.ParseQualifiedName("topic:subject"));
+        ex.Message.Should().Contain("/topic/subject");
+    }
+
+    [Fact]
+    public void RecoveryBypass_ParseScopeLabel_Unvalidated()
+    {
+        MemoryNaming.ParseScopeLabel("local").Should().Be("local");
+        MemoryNaming.ParseScopeLabel("ephemeral").Should().Be("ephemeral");
+        MemoryNaming.ParseScopeLabel("api").Should().Be("local:api");
+    }
 }
