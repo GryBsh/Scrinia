@@ -100,4 +100,31 @@ public class P0NamingCasingTests
             .Should().Be(MemoryNaming.FormatQualifiedName("local:api", "notes"));
         store.SanitizeName("a/b").Should().Be(MemoryNaming.SanitizeName("a/b"));
     }
+
+    [Fact]
+    public void PathParser_EntityMatch_IsCaseInsensitive_DespiteCaseSensitiveCallerSet()
+    {
+        var parsed = PathParser.Parse(
+            "/goal/G-5", new HashSet<string>(new[] { "goal" }, StringComparer.Ordinal));
+        parsed.IsEntityPath.Should().BeTrue();
+        parsed.EntityPairs.Should().ContainSingle().Which.Should().Be(
+            new EntityIdPair("goal", "G-5"));
+    }
+
+    [Fact]
+    public void PathParser_EntityMatch_MixedCasePair()
+    {
+        var parsed = PathParser.Parse(
+            "/GOAL/g-5", new HashSet<string>(new[] { "goal" }, StringComparer.Ordinal));
+        parsed.IsEntityPath.Should().BeTrue();
+        parsed.Tags.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void PathParser_CallerSet_NotMutated()
+    {
+        var caller = new HashSet<string>(new[] { "Goal" }, StringComparer.Ordinal);
+        PathParser.Parse("/goal/G-5", caller);
+        caller.Should().ContainSingle().Which.Should().Be("Goal");
+    }
 }

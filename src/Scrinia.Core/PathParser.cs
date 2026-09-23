@@ -78,6 +78,11 @@ public static class PathParser
         if (parts.Length == 0)
             throw new ArgumentException("Path resolves to empty after normalization.", nameof(rawPath));
 
+        // Case-insensitive lookup over the caller's set — copied once so a
+        // case-sensitive caller set still matches entity pairs. The caller's set
+        // is never mutated.
+        var entityLookup = new HashSet<string>(entityTypes, MemoryNaming.Comparer);
+
         // --- 4. Walk segments pairwise for entity/ID inference --------------------
         var segments = new List<PathSegment>();
         var entityPairs = new List<EntityIdPair>();
@@ -88,7 +93,7 @@ public static class PathParser
         {
             var current = parts[i];
 
-            if (entityTypes.Contains(current) && i + 1 < parts.Length)
+            if (entityLookup.Contains(current) && i + 1 < parts.Length)
             {
                 var id = parts[i + 1];
                 entityPairs.Add(new EntityIdPair(current, id));
