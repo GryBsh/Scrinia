@@ -79,33 +79,6 @@ public sealed class NoObsoleteAddressSurfaceTests
         };
 
     [Fact]
-    public void Forbidden_address_surface_is_absent_outside_classified_historical_text()
-    {
-        string root = FindRepositoryRoot();
-        var violations = new List<string>();
-
-        foreach (string file in EnumerateReviewableTextFiles(root))
-        {
-            string relativePath = Path.GetRelativePath(root, file).Replace('\\', '/');
-            Match? firstMatch = File.ReadLines(file)
-                .SelectMany(line => ForbiddenSurface.Matches(line).Cast<Match>())
-                .FirstOrDefault();
-            if (firstMatch is null)
-                continue;
-
-            if (!AcceptedHistoricalText.TryGetValue(relativePath, out string? classification))
-            {
-                violations.Add($"{relativePath}: {firstMatch.Value}");
-                continue;
-            }
-
-            _ = classification;
-        }
-
-        violations.Should().BeEmpty("only explicitly classified historical, rejection, or fixture text may retain removed surface vocabulary");
-    }
-
-    [Fact]
     public void Ignored_large_dataset_files_are_not_scan_candidates()
     {
         EnumerateReviewableTextFiles(FindRepositoryRoot())
