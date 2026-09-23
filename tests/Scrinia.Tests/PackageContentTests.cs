@@ -10,7 +10,12 @@ using Scrinia.TestDoubles;
 namespace Scrinia.Tests;
 
 /// <summary>Artifact-level contract tests for the immutable <c>scri</c> global tool package.</summary>
-[Collection(PackageContentCollection.Name)]
+// GlobalWorkspaceConfigCollection: both snapshots shell `dotnet pack` on the shared
+// src/Scrinia project (shared bin/obj state). GlobalToolInstallTests packs the same
+// project with -p:Version overrides; a concurrent version-stamped pack between the two
+// snapshots skews the content-derived .psmdcp entry name, so these packs must serialize
+// with that collection rather than run in a private parallel collection.
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class PackageContentTests
 {
     private static readonly Lazy<PackagePair> Packs = new(
@@ -189,12 +194,6 @@ public sealed class PackageContentTests
             path.Split('/', StringSplitOptions.RemoveEmptyEntries)
                 .Contains(prohibitedSegment, StringComparer.Ordinal),
             because: $"the package must not contain the {prohibitedSegment} path segment");
-    }
-
-    [CollectionDefinition(Name, DisableParallelization = true)]
-    public sealed class PackageContentCollection
-    {
-        public const string Name = "PackageContent";
     }
 }
 
