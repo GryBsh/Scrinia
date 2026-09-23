@@ -151,5 +151,6 @@ internal enum DurableWritePhase
 {
     BeforeWrite,
     BeforeFlush,
-    BeforeMove
+    BeforeMove,
+    BeforeDirSync
 }

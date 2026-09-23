@@ -122,6 +122,7 @@ internal static class B0FaultSeam
         DurableWritePhase.BeforeWrite => FaultPhase.BeforeWrite,
         DurableWritePhase.BeforeFlush => FaultPhase.BeforeFlush,
         DurableWritePhase.BeforeMove => FaultPhase.BeforeMove,
+        DurableWritePhase.BeforeDirSync => FaultPhase.BeforeDirSync,
         _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, "Unknown durable write phase.")
     };
 
@@ -208,7 +209,7 @@ internal static class B0FaultSeam
 
     public enum FaultPhase
     {
-        BeforeWrite, BeforeFlush, BeforeMove,
+        BeforeWrite, BeforeFlush, BeforeMove, BeforeDirSync,
         AppendRawArtifactRead, AppendRawSidecarRead, AppendJournalWrite, AppendJournalFlush,
         AppendJournalParse, AppendJournalDelete, AppendArchiveArtifactWrite,
         AppendArchiveArtifactFlush, AppendArchiveSidecarWrite, AppendArchiveSidecarFlush,
