@@ -426,28 +426,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     public string FormatQualifiedName(string scope, string subject) =>
-        scope.StartsWith("local:", StringComparison.Ordinal)
-            ? $"/{scope["local:".Length..]}/{subject}"
-            : subject;
+        MemoryNaming.FormatQualifiedName(scope, subject);
 
     internal bool IsEphemeral(string name) =>
         MemoryNaming.IsEphemeralName(name);
 
-    public (string Scope, string Subject) ResolveAddress(MemoryAddress address)
-    {
-        if (!address.IsValid)
-            throw new ArgumentException("The memory address must be valid.", nameof(address));
-        if (address.Kind == MemoryAddressKind.Ephemeral)
-            return ("ephemeral", address.Value);
+    public (string Scope, string Subject) ResolveAddress(MemoryAddress address) =>
+        MemoryNaming.ResolveAddress(address);
 
-        var segments = address.Value[1..].Split('/');
-        if (segments.Length == 1)
-            return ("local", SanitizeName(segments[0]));
-
-        return (MemoryNaming.BuildScopedTopicScope(segments[..^1]), SanitizeName(segments[^1]));
-    }
-
-    public string SanitizeName(string name) => SanitizeNameCore(name);
+    public string SanitizeName(string name) => MemoryNaming.SanitizeName(name);
 
     public ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default)
     {
@@ -509,7 +496,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// matchers, and <see cref="ExpandLegacyIndexEntries"/> at migration time. Throwing here
     /// would let one stored entry poison every read of its scope, and abort the orphan sweep
     /// part-way through a <see cref="SaveIndex"/> that deletes files.</para></summary>
-    private static string SanitizeNameCore(string name) => MemoryNaming.SanitizeSegment(name);
+    private static string SanitizeNameCore(string name) => MemoryNaming.SanitizeName(name);
 
     // ── Ephemeral memory ─────────────────────────────────────────────────────
 

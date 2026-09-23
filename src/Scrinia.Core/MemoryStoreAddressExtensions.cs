@@ -58,10 +58,10 @@ internal static class MemoryStoreAddressExtensions
         if (parsed.Segments.Count == 0)
             throw new ArgumentException("Empty path", nameof(name));
         if (parsed.Segments.Count == 1)
-            return ("local", store.SanitizeName(parsed.Segments[0].Value));
+            return ("local", MemoryNaming.SanitizeName(parsed.Segments[0].Value));
 
         string scope = MemoryNaming.BuildScopedTopicScope(
             parsed.Segments.Take(parsed.Segments.Count - 1).Select(segment => segment.Value));
-        return (scope, store.SanitizeName(parsed.Segments[^1].Value));
+        return (scope, MemoryNaming.SanitizeName(parsed.Segments[^1].Value));
     }
 }
