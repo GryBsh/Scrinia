@@ -153,4 +153,18 @@ public class P0NamingCasingTests
             Scrinia.Core.Models.MemoryAddress.Parse("topic:subject"));
         ex.Message.Should().Contain("Address");
     }
+
+    [Fact]
+    public async Task Store_CaseInsensitiveRead_PreservesStoredCasing()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        var writeAddr = MemoryAddress.Parse("/api/Notes");
+        var write = MemoryWrite.Create(writeAddr, ["hello"], new Dictionary<string, IReadOnlyList<string>>(), []);
+        await store.WriteAsync(writeAddr, write);
+        var readAddr = MemoryAddress.Parse("/api/NOTES");
+        var entry = await store.ReadAsync(readAddr);
+        entry.Should().NotBeNull();
+        entry!.Name.Should().Be("Notes");
+    }
 }

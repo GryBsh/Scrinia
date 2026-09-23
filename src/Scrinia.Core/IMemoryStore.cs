@@ -131,7 +131,7 @@ public interface IMemoryStore : IPluginStore
     {
         var (scope, subject) = ResolveAddress(address);
         var current = LoadIndex(scope).FirstOrDefault(
-            e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
+            e => MemoryNaming.NameEquals(e.Name, subject));
         if (current is null) return false;
         var updated = mutate(current);
         if (updated is null) return false;

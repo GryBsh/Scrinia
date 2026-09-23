@@ -451,8 +451,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             if (!File.Exists(FindArtifactPath(subject, scope)))
                 return (ArtifactEntry?)null;
-            return LoadIndexUnderRecoveryBarrier(scope).FirstOrDefault(entry =>
-                entry.Address == address || entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            return MemoryNaming.ResolveExistingName(LoadIndexUnderRecoveryBarrier(scope), address);
         }));
     }
 
@@ -2119,7 +2118,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 foreach (var existing in cachedIndex.Entries)
                 {
                     if (!replaced
-                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                        && MemoryNaming.NameEquals(existing.Name, target))
                     {
                         next.Add(cacheEntry);
                         replaced = true;
@@ -2190,7 +2189,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 foreach (var existing in cachedIndex.Entries)
                 {
                     if (!dropped
-                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                        && MemoryNaming.NameEquals(existing.Name, target))
                     {
                         dropped = true;
                         continue;
@@ -2319,7 +2318,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 foreach (var existing in cachedIndex.Entries)
                 {
                     if (!replaced
-                        && SanitizeName(existing.Name).Equals(target, StringComparison.OrdinalIgnoreCase))
+                        && MemoryNaming.NameEquals(existing.Name, target))
                     {
                         next.Add(cacheEntry);
                         replaced = true;
@@ -2432,7 +2431,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 ? LoadIndex(scope)
                 : LoadIndexUnderExclusiveAppendLock(scope))
             .FirstOrDefault(
-                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+                e => MemoryNaming.NameEquals(e.Name, subject));
         if (existingEntry is not null)
             subject = existingEntry.Name;
 
@@ -2598,7 +2597,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         await RecoverAppendUnsafeAsync(scope, "store-recovery", cancellationToken).ConfigureAwait(false);
 
         ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope)
-            .FirstOrDefault(entry => entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(entry => MemoryNaming.NameEquals(entry.Name, subject));
         if (existingEntry is not null)
             subject = existingEntry.Name;
 
@@ -2802,7 +2801,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), cancellationToken: ct);
             await RecoverAppendUnsafeAsync(scope, operationId, ct);
             ArtifactEntry? canonicalEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
-                entry => entry.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+                entry => MemoryNaming.NameEquals(entry.Name, subject));
             if (canonicalEntry is not null)
                 subject = canonicalEntry.Name;
 
@@ -2882,7 +2881,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         else
         {
             existingEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
-                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+                e => MemoryNaming.NameEquals(e.Name, subject));
             if (existingEntry is not null)
                 subject = existingEntry.Name;
 

@@ -49,8 +49,7 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
         // entirely, above and independent of the store's own lookup. Every store's own lookup is
         // case-insensitive too, on every filesystem — but this one runs first, so it has to be.
         var entry = store.LoadIndex(scope)
-            .FirstOrDefault(e => store.SanitizeName(e.Name)
-                .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(e => MemoryNaming.NameEquals(e.Name, subject));
         if (entry?.Attributes is null) return;
         if (!entry.Attributes.TryGetValue(KnownAttributes.MentionKey, out var mentions) || mentions.Length == 0)
             return;
