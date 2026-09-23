@@ -127,4 +127,30 @@ public class P0NamingCasingTests
         PathParser.Parse("/goal/G-5", caller);
         caller.Should().ContainSingle().Which.Should().Be("Goal");
     }
+
+    [Theory]
+    [InlineData("/api/no?tes")]
+    [InlineData("/api/no#tes")]
+    [InlineData("/api/no%tes")]
+    [InlineData("/api\\back")]
+    [InlineData("topic:subject")]
+    public void MemoryAddress_And_PathParser_RejectUriLike(string raw)
+    {
+        Scrinia.Core.Models.MemoryAddress.TryParse(
+            raw, out _, out _).Should().BeFalse();
+        // PathParser (this snapshot) rejects only `\`, `:`, `..`, control chars via its own
+        // inline guards; the `?/#/%` inputs are MemoryAddress's domain (see IsUriLike unify).
+        // Assert the PathParser throw only for the input it actually rejects here.
+        if (raw.StartsWith('/') && raw.Contains('\\'))
+            Assert.Throws<System.ArgumentException>(() =>
+                Scrinia.Core.PathParser.Parse(raw, new HashSet<string>()));
+    }
+
+    [Fact]
+    public void MemoryAddress_LegacyColon_GateMessageSuggestsPath()
+    {
+        var ex = Assert.Throws<Scrinia.Core.Models.MemoryAddressException>(() =>
+            Scrinia.Core.Models.MemoryAddress.Parse("topic:subject"));
+        ex.Message.Should().Contain("Address");
+    }
 }

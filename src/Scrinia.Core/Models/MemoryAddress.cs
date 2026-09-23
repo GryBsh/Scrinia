@@ -114,10 +114,7 @@ public readonly record struct MemoryAddress
         segment.All(character => character is not '/' and not '\\' and not ':' and not '?' and not '#' and
             not '%' and not '*' and not '<' and not '>' and not '|' and not '"');
 
-    private static bool ContainsPhysicalOrUriSyntax(string value) =>
-        value.Contains('\\') || value.Contains(':') || value.Contains('?') || value.Contains('#') ||
-        value.Contains('%') || value.StartsWith("//", StringComparison.Ordinal) ||
-        (value.Length >= 2 && char.IsLetter(value[0]) && value[1] == ':');
+    private static bool ContainsPhysicalOrUriSyntax(string value) => MemoryNaming.IsUriLike(value);
 
     private static bool ContainsControlCharacters(string value) => value.Any(char.IsControl);
 }
