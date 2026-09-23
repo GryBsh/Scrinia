@@ -429,4 +429,78 @@ public static class MemoryNaming
         "ephemeral" => "ephemeral",
         _ => $"local:{label}",
     };
+
+    // ── Address resolution, qualified names, leaf sanitization ───────────────
+    //
+    // Task 2 consolidated these from <see cref="FileMemoryStore"/> into the single naming home.
+    // The bodies are verbatim: <c>ResolveAddress</c> and <c>FormatQualifiedName</c> were the store's
+    // own locals, <c>SanitizeName</c> is the throwing leaf over <see cref="SanitizeSegment"/>, and the
+    // two <c>ResolveExistingName</c> overloads are the store's case-insensitive/first-match lookups.
+
+    /// <summary>
+    /// THE ONE RULE for turning a parsed address back into the <c>(scope, subject)</c> the store writes
+    /// against. A bare <c>/name</c> is a local memory; a <c>/topic/subject</c> path is a topic scope plus
+    /// a sanitized leaf; an ephemeral address resolves to the <c>ephemeral</c> scope with its bare value
+    /// (the <c>~</c> prefix was already stripped at parse). Body moved verbatim from
+    /// <see cref="FileMemoryStore.ResolveAddress"/>.
+    /// </summary>
+    public static (string Scope, string Subject) ResolveAddress(MemoryAddress address)
+    {
+        if (!address.IsValid)
+            throw new ArgumentException("The memory address must be valid.", nameof(address));
+        if (address.Kind == MemoryAddressKind.Ephemeral)
+            return ("ephemeral", address.Value);
+
+        var segments = address.Value[1..].Split('/');
+        if (segments.Length == 1)
+            return ("local", SanitizeName(segments[0]));
+
+        return (BuildScopedTopicScope(segments[..^1]), SanitizeName(segments[^1]));
+    }
+
+    /// <summary>
+    /// THE ONE RULE for formatting a <c>(scope, subject)</c> pair back into a qualified name. A
+    /// <c>local:{topic}</c> scope becomes <c>/topic/subject</c>; the bare <c>local</c> scope (and, by
+    /// the store's contract, the <c>ephemeral</c> scope whose <c>~</c> the facade re-adds) becomes the
+    /// bare subject. Body moved verbatim from <see cref="FileMemoryStore.FormatQualifiedName"/>.
+    /// </summary>
+    public static string FormatQualifiedName(string scope, string subject) =>
+        scope.StartsWith("local:", StringComparison.Ordinal)
+            ? $"/{scope["local:".Length..]}/{subject}"
+            : subject;
+
+    /// <summary>Throwing leaf over <see cref="SanitizeSegment"/> for a memory name. Moved verbatim from
+    /// <see cref="FileMemoryStore.SanitizeName"/> so the leaf and the scope share one character rule.</summary>
+    public static string SanitizeName(string name) => SanitizeSegment(name);
+
+    /// <summary>
+    /// THE ONE RULE for resolving a stored entry by its (sanitized, case-insensitive) name. Scans in
+    /// order and returns the FIRST match, or null on a miss. Moved verbatim from
+    /// <see cref="FileMemoryStore"/>.
+    /// </summary>
+    public static ArtifactEntry? ResolveExistingName(IReadOnlyList<ArtifactEntry> entries, string subject)
+    {
+        foreach (var entry in entries)
+        {
+            if (NameEquals(entry.Name, subject))
+                return entry;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Second overload: an EXACT-address match first (the common case — the entry was written to this
+    /// address), then a case-insensitive name fallback so a re-addressed write still finds its subject.
+    /// Body moved verbatim from <see cref="FileMemoryStore"/>.
+    /// </summary>
+    public static ArtifactEntry? ResolveExistingName(IReadOnlyList<ArtifactEntry> entries, MemoryAddress address)
+    {
+        foreach (var entry in entries)
+        {
+            if (entry.Address == address)
+                return entry;
+        }
+        var (_, subject) = ResolveAddress(address);
+        return ResolveExistingName(entries, subject);
+    }
 }
