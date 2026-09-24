@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Formats;
@@ -114,7 +113,7 @@ internal sealed record AppendJournalMember(
         byte[] bytes;
         try
         {
-            bytes = Convert.FromBase64String(payload);
+            bytes = RecoveryPayload.DecodeBase64(payload);
         }
         catch (FormatException exception)
         {
@@ -122,7 +121,7 @@ internal sealed record AppendJournalMember(
                 $"Append journal payload is not valid base64: {journalPath}", exception);
         }
 
-        string actualHash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        string actualHash = RecoveryPayload.Sha256HexLower(bytes);
         if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
             throw new AppendJournalException(AppendJournalFailure.IntegrityFailed,
                 $"Append journal payload hash does not match: {journalPath}");
@@ -388,19 +387,7 @@ internal static class AppendJournalCodec
         path.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsSha256(string? value)
-    {
-        if (value is null || value.Length != 64)
-            return false;
-
-        foreach (char character in value)
-        {
-            if (!Uri.IsHexDigit(character))
-                return false;
-        }
-
-        return true;
-    }
+    private static bool IsSha256(string? value) => RecoveryPayload.IsLowercaseSha256(value);
 
     private static bool IsLegalTransition(AppendJournalState current, AppendJournalState next) =>
         current == next || (current, next) switch

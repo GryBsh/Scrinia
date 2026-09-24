@@ -270,8 +270,8 @@ internal static partial class RecoveryEnvelopeCodec
             throw new JsonException("File-entity recovery member is incomplete.");
         try
         {
-            byte[] payload = Convert.FromBase64String(member.Payload ?? string.Empty);
-            if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(payload)), member.Sha256,
+            byte[] payload = RecoveryPayload.DecodeBase64(member.Payload ?? string.Empty);
+            if (!string.Equals(RecoveryPayload.Sha256HexLower(payload), member.Sha256,
                     StringComparison.OrdinalIgnoreCase))
                 throw new JsonException("File-entity recovery member hash is invalid.");
         }
@@ -902,11 +902,11 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         if (snapshot is null)
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
                 "Committed file-entity evidence is missing a snapshot.", evidencePath);
-        byte[] expected = Convert.FromBase64String(snapshot.Payload ?? string.Empty);
+        byte[] expected = RecoveryPayload.DecodeBase64(snapshot.Payload ?? string.Empty);
         string directory = Path.GetDirectoryName(evidencePath)!;
         RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
             new RecoveryScopeBinding(scope, directory), RecoveryEvidenceKind.FileEntityJournal,
-            snapshot.Path, new RecoveryExpectedHash(Convert.ToHexStringLower(SHA256.HashData(expected))),
+            snapshot.Path, new RecoveryExpectedHash(RecoveryPayload.Sha256HexLower(expected)),
             MaintenanceLimits.Hard, cancellationToken).AsTask().GetAwaiter().GetResult();
         verification.SourceContent?.Dispose();
         if (verification.Outcome != RecoveryVerificationOutcome.Verified)

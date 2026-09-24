@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Scrinia.Core;
@@ -184,7 +183,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             return;
         }
 
-        string expectedHash = Convert.ToHexStringLower(SHA256.HashData(expected));
+        string expectedHash = RecoveryPayload.Sha256HexLower(expected);
         RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
             new RecoveryScopeBinding("workspace", Path.GetFullPath(Path.GetDirectoryName(path)!)),
             RecoveryEvidenceKind.FileEntityJournal, Path.GetFullPath(path),
@@ -413,7 +412,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     private static RawMemberSnapshot ToRawSnapshot(RecoveryMemberSnapshot snapshot)
     {
         byte[] bytes;
-        try { bytes = Convert.FromBase64String(snapshot.Payload ?? string.Empty); }
+        try { bytes = RecoveryPayload.DecodeBase64(snapshot.Payload ?? string.Empty); }
         catch (FormatException exception) { throw new InvalidDataException("Recovery snapshot payload is invalid.", exception); }
         return new RawMemberSnapshot(snapshot.Path, snapshot.Existed, bytes, snapshot.Sha256);
     }

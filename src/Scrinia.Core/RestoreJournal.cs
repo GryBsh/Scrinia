@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -134,7 +133,7 @@ internal static class RestoreJournalCodec
         decodedLength >= 0 && decodedLength <= maximumDecodedBytes;
 
     internal static long GetPaddedBase64Length(long byteCount) =>
-        checked(((byteCount + 2) / 3) * 4);
+        RecoveryPayload.PaddedBase64Length(byteCount);
 
     internal static RestoreJournal CreatePrepared(string scope, IReadOnlyList<RestoreJournalPayload> entries)
     {
@@ -154,10 +153,10 @@ internal static class RestoreJournalCodec
                 payload.Entry.Name,
                 safeName + ".nmp2",
                 Convert.ToBase64String(payload.BodyBytes),
-                Convert.ToHexStringLower(SHA256.HashData(payload.BodyBytes)),
+                RecoveryPayload.Sha256HexLower(payload.BodyBytes),
                 safeName + ".meta.json",
                 Convert.ToBase64String(payload.SidecarBytes),
-                Convert.ToHexStringLower(SHA256.HashData(payload.SidecarBytes))));
+                RecoveryPayload.Sha256HexLower(payload.SidecarBytes)));
         }
 
         var journal = new RestoreJournal(
@@ -318,24 +317,21 @@ internal static class RestoreJournalCodec
         try
         {
             DecodeObserver.Value?.Invoke();
-            payload = Convert.FromBase64String(encoded);
+            payload = RecoveryPayload.DecodeBase64(encoded);
         }
         catch (FormatException exception)
         {
             throw Malformed(scope, journalPath, $"Restore journal {payloadName} encoding is invalid.", exception);
         }
 
-        string actualDigest = Convert.ToHexStringLower(SHA256.HashData(payload));
+        string actualDigest = RecoveryPayload.Sha256HexLower(payload);
         if (!string.Equals(actualDigest, digest, StringComparison.Ordinal))
             throw Malformed(scope, journalPath, $"Restore journal {payloadName} failed integrity verification.");
         return payload;
     }
 
-    private static bool IsLowercaseSha256(string? digest)
-    {
-        if (digest is not { Length: 64 }) return false;
-        return digest.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
-    }
+    private static bool IsLowercaseSha256(string? digest) =>
+        RecoveryPayload.IsLowercaseSha256(digest);
 
     private static bool IsCanonicalBase64(string? value, long maximumBytes)
     {
@@ -365,11 +361,8 @@ internal static class RestoreJournalCodec
         _ => -1
     };
 
-    private static long GetDecodedBase64Length(string value)
-    {
-        int padding = value.EndsWith("==", StringComparison.Ordinal) ? 2 : value.EndsWith('=') ? 1 : 0;
-        return checked(((long)value.Length / 4 * 3) - padding);
-    }
+    private static long GetDecodedBase64Length(string value) =>
+        RecoveryPayload.DecodedBase64Length(value);
 
     private static RestoreRecoveryException Unsupported(string scope, string journalPath, int version) =>
         new(scope, journalPath, RestoreRecoveryFailure.UnsupportedVersion,

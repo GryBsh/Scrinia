@@ -82,6 +82,12 @@ public sealed record ArchivePlan
 
     internal ArchivePlan WithStatuses(ArchiveMemberStatus artifactStatus, ArchiveMemberStatus sidecarStatus) =>
         new(Required, ArtifactArchivePath, SidecarArchivePath, artifactStatus, sidecarStatus, PruneCandidates);
+
+    internal static ArchivePlan FromPair(ArchivePairPlan plan) =>
+        new(plan.Required, plan.ArtifactPath, plan.SidecarPath,
+            plan.Required ? ArchiveMemberStatus.Planned : ArchiveMemberStatus.NotRequired,
+            plan.Required ? ArchiveMemberStatus.Planned : ArchiveMemberStatus.NotRequired,
+            plan.PruneCandidates);
 }
 
 public enum ArchiveMemberStatus

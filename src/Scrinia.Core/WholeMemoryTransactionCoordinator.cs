@@ -194,11 +194,7 @@ internal sealed class WholeMemoryTransactionCoordinator : IWholeMemoryTransactio
             transaction.OldSidecar,
             transaction.NewArtifact,
             transaction.NewSidecar,
-            new ArchivePlan(transaction.Archive.Required, transaction.Archive.ArtifactPath,
-                transaction.Archive.SidecarPath,
-                transaction.Archive.Required ? ArchiveMemberStatus.Planned : ArchiveMemberStatus.NotRequired,
-                transaction.Archive.Required ? ArchiveMemberStatus.Planned : ArchiveMemberStatus.NotRequired,
-                transaction.Archive.PruneCandidates),
+            ArchivePlan.FromPair(transaction.Archive),
             transaction.StartedAt);
         AppendJournal journal = AppendJournalCodec.CreatePrepared(appendTransaction);
         journal = state switch
