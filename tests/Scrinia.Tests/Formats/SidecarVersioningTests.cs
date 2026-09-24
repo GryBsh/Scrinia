@@ -415,7 +415,7 @@ public sealed partial class SidecarVersioningTests
     /// Edits an EXISTING on-disk sidecar to add a key this build's <see cref="ArtifactEntry"/>
     /// has no member for, then invalidates the store's in-process index cache so the next read
     /// goes back to disk. Without the invalidation, <c>LoadIndex</c> would keep serving the
-    /// warm <see cref="FileMemoryStore.CachedIndex"/> populated by the seeding
+    /// warm <see cref="CachedIndex"/> populated by the seeding
     /// <c>StoreAsync</c> above — which predates this edit — and the write-path test using this
     /// helper would fail for a caching reason that has nothing to do with
     /// <c>BuildDerivedEntry</c>.

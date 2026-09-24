@@ -144,11 +144,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private bool _maintenanceDisposed;
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, AdmissionGate> _admissionLocks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object _admissionLifecycleGate = new();
-    private bool _admissionDisposed;
-    private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ScopeLockManager _scopeLockManager;
+    private readonly ScopeIndexCache _scopeIndexCache;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -179,29 +176,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     internal int CommittedScopeInvalidationCount { get; private set; }
     internal int RollbackScopeInvalidationCount { get; private set; }
-
-    /// <summary>
-    /// In-memory cache of a scope's index entries, handed out by reference on a
-    /// <see cref="LoadIndex"/> cache hit.
-    ///
-    /// <para>This wraps a single list rather than being one because it is the documented home of
-    /// the aliasing contract below — see
-    /// docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md. It previously also
-    /// carried a name-to-position map, a lazy BM25 corpus-stats cache and a rebuild method; none
-    /// had a single reader anywhere in the repo, and the map was rebuilt on every cache write.
-    /// Deleted 2026-08-10.</para>
-    /// </summary>
-    internal sealed class CachedIndex
-    {
-        /// <summary>The cached entries. Handed out by reference from LoadIndex — callers get a
-        /// live view of this list, not a copy. That is safe only because no reader mutates it
-        /// and every cache write REPLACES the CachedIndex rather than mutating this instance.
-        /// A caller that needs to mutate must call ToList() explicitly, as ImportTopicEntries
-        /// does.</summary>
-        public List<ArtifactEntry> Entries { get; }
-
-        public CachedIndex(List<ArtifactEntry> entries) => Entries = entries;
-    }
 
     /// <summary>
     /// LRU cache for decoded artifact text, bounded by total byte size.
@@ -317,6 +291,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
+        _scopeLockManager = new ScopeLockManager();
+        _scopeIndexCache = new ScopeIndexCache();
         _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
         _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
         _participantAdapterFactory = participantAdapterFactory;
@@ -627,7 +603,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                                     (result.BackupPath is not null ? $"; backup at {result.BackupPath}"
                                         : result.BackupSkipped ? "; no backup written (a prior one already exists)"
                                         : ""));
-                            _indexCache.Clear();
+                            _scopeIndexCache.Clear();
                             _cachedTopics = null;
                         }
                         _layoutChecked = true;
@@ -780,9 +756,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     // ── CRUD ─────────────────────────────────────────────────────────────────
 
-    private ReaderWriterLockSlim GetIndexLock(string scope) =>
-        _indexLocks.GetOrAdd(scope, _ => new ReaderWriterLockSlim());
-
     private string GetLockPath(string scope) =>
         Path.Combine(GetStoreDirForScope(scope), ".lock");
 
@@ -790,7 +763,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true)
     {
         ArgumentNullException.ThrowIfNull(body);
-        AdmissionGate admissionGate = AcquireAdmissionGate(scope);
+        AdmissionGate admissionGate = _scopeLockManager.AcquireAdmissionGate(scope);
         bool admitted = false;
         Stopwatch admissionTimer = Stopwatch.StartNew();
         try
@@ -812,42 +785,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             if (admitted)
                 admissionGate.Semaphore.Release();
-            ReleaseAdmissionGate(scope, admissionGate);
+            _scopeLockManager.ReleaseAdmissionGate(scope, admissionGate);
         }
-    }
-
-    private AdmissionGate AcquireAdmissionGate(string scope)
-    {
-        lock (_admissionLifecycleGate)
-        {
-            ObjectDisposedException.ThrowIf(_admissionDisposed, this);
-            AdmissionGate gate = _admissionLocks.GetOrAdd(scope, _ => new AdmissionGate());
-            gate.Leases++;
-            return gate;
-        }
-    }
-
-    private void ReleaseAdmissionGate(string scope, AdmissionGate gate)
-    {
-        lock (_admissionLifecycleGate)
-        {
-            gate.Leases--;
-            if (gate.Leases != 0)
-                return;
-
-            _admissionLocks.TryGetValue(scope, out AdmissionGate? current);
-            if (ReferenceEquals(current, gate))
-                _admissionLocks.TryRemove(scope, out _);
-            gate.Dispose();
-        }
-    }
-
-    private sealed class AdmissionGate : IDisposable
-    {
-        internal SemaphoreSlim Semaphore { get; } = new(1, 1);
-        internal int Leases { get; set; }
-
-        public void Dispose() => Semaphore.Dispose();
     }
 
     internal RecoveryDiscoveryResult DiscoverRecoveryForScope(string scope, string storeDirectory,
@@ -1198,7 +1137,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     {
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout);
-        var lk = GetIndexLock(scope);
+        var lk = _scopeLockManager.GetIndexLock(scope);
         lk.EnterWriteLock();
         try
         {
@@ -1327,7 +1266,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private List<ArtifactEntry> LoadIndexUnderRecoveryBarrier(string scope)
     {
-        var lk = GetIndexLock(scope);
+        var lk = _scopeLockManager.GetIndexLock(scope);
 
         // Fast lane: an in-memory cache hit performs no I/O, so it needs no file handle.
         //
@@ -1395,7 +1334,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // Live view, not a copy. Safe because no reader mutates the returned list — there is
             // no derived structure on CachedIndex left to desync — and every cache write REPLACES
             // the CachedIndex rather than mutating this instance.
-            if (_indexCache.TryGetValue(scope, out var cached))
+            if (_scopeIndexCache.TryGet(scope, out var cached))
                 return cached.Entries;
         }
         finally
@@ -1419,7 +1358,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private List<ArtifactEntry> LoadIndexUnderExclusiveAppendLock(string scope)
     {
-        if (_indexCache.TryGetValue(scope, out var cached))
+        if (_scopeIndexCache.TryGet(scope, out var cached))
             return cached.Entries;
         return LoadIndexUnsafe(scope);
     }
@@ -1427,7 +1366,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private List<ArtifactEntry> LoadIndexUnsafe(string scope)
     {
         // Live view — see the comment on the fast-path check in LoadIndex.
-        if (_indexCache.TryGetValue(scope, out var cached))
+        if (_scopeIndexCache.TryGet(scope, out var cached))
             return cached.Entries;
 
         string storeDir = GetStoreDirForScope(scope);
@@ -1495,7 +1434,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
 
         if (entries.Count > 0)
-            _indexCache[scope] = new CachedIndex(entries);
+            _scopeIndexCache.Replace(scope, entries);
 
         return entries;
     }
@@ -1734,7 +1673,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             Directory.CreateDirectory(storeDir);
             WriteSidecar(entry, storeDir);
-            _indexCache.TryRemove(scope, out _); // next read rebuilds from the now-upgraded sidecars
+            _scopeIndexCache.Remove(scope); // next read rebuilds from the now-upgraded sidecars
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
         });
@@ -1925,7 +1864,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// </remarks>
     public void InvalidateCaches()
     {
-        _indexCache.Clear();
+        _scopeIndexCache.Clear();
         _cachedTopics = null;
         _artifactCache.Invalidate(string.Empty);
         InvalidateEntityFacts();
@@ -1938,7 +1877,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// </summary>
     internal void InvalidateScopeCacheAfterRollback(string scope)
     {
-        _indexCache.TryRemove(scope, out _);
+        _scopeIndexCache.Remove(scope);
         _artifactCache.Invalidate($"{scope}|");
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
@@ -1954,7 +1893,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     internal void InvalidateCommittedScope(string scope)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
-        _indexCache.TryRemove(scope, out _);
+        _scopeIndexCache.Remove(scope);
         _artifactCache.Invalidate($"{scope}|");
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
@@ -2031,7 +1970,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         WriteSidecars(entries, storeDir);
 
-        _indexCache[scope] = new CachedIndex(entries);
+        _scopeIndexCache.Replace(scope, entries);
 
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
@@ -2101,7 +2040,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // arrives, which was already filesystem-arbitrary before this change. Appending a
             // new entry (or replacing one in place) therefore cannot violate an ordering
             // contract that never existed.
-            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            if (_scopeIndexCache.TryGet(scope, out var cachedIndex))
             {
                 // Cache the NORMALIZED entry, not the caller's raw parameter. WriteSidecarCore
                 // calls entry.NormalizeAttributesKey() on a LOCAL copy before serializing, so disk
@@ -2127,11 +2066,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                     next.Add(existing);
                 }
                 if (!replaced) next.Add(cacheEntry);
-                _indexCache[scope] = new CachedIndex(next);
+                _scopeIndexCache.Replace(scope, next);
             }
             else
             {
-                _indexCache.TryRemove(scope, out _);
+                _scopeIndexCache.Remove(scope);
             }
 
             // Only a scope transitioning from empty (no sidecars) to non-empty changes the
@@ -2181,7 +2120,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // pinned down: the cache can be left showing the survivor under the deleted twin's
             // casing until the next cold load. That is cosmetic — the entry count is right and the
             // surviving sidecar stays reachable — where losing the survivor entirely is not.
-            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            if (_scopeIndexCache.TryGet(scope, out var cachedIndex))
             {
                 string target = Path.GetFileName(metaPath)[..^".meta.json".Length];
                 var next = new List<ArtifactEntry>(cachedIndex.Entries.Count);
@@ -2196,11 +2135,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                     }
                     next.Add(existing);
                 }
-                _indexCache[scope] = new CachedIndex(next);
+                _scopeIndexCache.Replace(scope, next);
             }
             else
             {
-                _indexCache.TryRemove(scope, out _);
+                _scopeIndexCache.Remove(scope);
             }
 
             // Invalidate topic discovery cache only when removing this entry emptied the scope.
@@ -2310,7 +2249,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // reachable through the public delegate, and normalizing costs nothing when there is
             // nothing to normalize. Pinned by IndexCacheWritePathTests.
             var cacheEntry = updated.NormalizeAttributesKey();
-            if (_indexCache.TryGetValue(scope, out var cachedIndex))
+            if (_scopeIndexCache.TryGet(scope, out var cachedIndex))
             {
                 string target = SanitizeName(cacheEntry.Name);
                 var next = new List<ArtifactEntry>(cachedIndex.Entries.Count + 1);
@@ -2327,11 +2266,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                     next.Add(existing);
                 }
                 if (!replaced) next.Add(cacheEntry);
-                _indexCache[scope] = new CachedIndex(next);
+                _scopeIndexCache.Replace(scope, next);
             }
             else
             {
-                _indexCache.TryRemove(scope, out _);
+                _scopeIndexCache.Remove(scope);
             }
 
             // No _cachedTopics invalidation, and that is the same scope-lifecycle rule Upsert and
@@ -4646,7 +4585,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // so a warm entry that another process has since rewritten would be reverted to the
             // cached version over the newer body. Holding the exclusive lock is not enough: the
             // lock says nothing about how old the CACHE is. One cold read per bulk import.
-            _indexCache.TryRemove(topicScope, out _);
+            _scopeIndexCache.Remove(topicScope);
 
             // Read under the lock that will commit it. The snapshot and the commit used to sit on
             // opposite sides of an unlocked write loop, which is what let a concurrent write land
@@ -4952,7 +4891,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private void InvalidateRecoveredScopeUnsafe(string scope)
     {
-        _indexCache.TryRemove(scope, out _);
+        _scopeIndexCache.Remove(scope);
         _artifactCache.Invalidate($"{scope}|");
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
@@ -5112,20 +5051,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             _maintenancePages.Clear();
         }
 
-        AdmissionGate[] admissionGatesToDispose;
-        lock (_admissionLifecycleGate)
-        {
-            _admissionDisposed = true;
-            admissionGatesToDispose = _admissionLocks.Values
-                .Where(gate => gate.Leases == 0)
-                .ToArray();
-            foreach (AdmissionGate gate in admissionGatesToDispose)
-            {
-                foreach (var pair in _admissionLocks.Where(pair => ReferenceEquals(pair.Value, gate)).ToArray())
-                    _admissionLocks.TryRemove(pair.Key, out _);
-                gate.Dispose();
-            }
-        }
+        _scopeLockManager.Dispose();
 
         Exception? firstFailure = null;
         try { _factMaterializer.Dispose(); }
@@ -5139,13 +5065,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         try { _maintenanceRuns.Dispose(); }
         catch (Exception exception) { firstFailure ??= exception; }
-
-        foreach (var lk in _indexLocks.Values)
-        {
-            try { lk.Dispose(); }
-            catch (Exception exception) { firstFailure ??= exception; }
-        }
-        _indexLocks.Clear();
 
         // Admission gates are managed-only and may still be released by an async operation that
         // was already admitted when disposal began. Letting those gates become unreachable avoids

@@ -602,9 +602,12 @@ public sealed class B5MaintenanceDiscoveryTests
 
     private static int AdmissionGateCount(FileMemoryStore store)
     {
-        FieldInfo field = typeof(FileMemoryStore).GetField("_admissionLocks",
+        FieldInfo managerField = typeof(FileMemoryStore).GetField("_scopeLockManager",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
-        return ((System.Collections.IDictionary)field.GetValue(store)!).Count;
+        object manager = managerField.GetValue(store)!;
+        FieldInfo field = manager.GetType().GetField("_admissionLocks",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return ((System.Collections.IDictionary)field.GetValue(manager)!).Count;
     }
 
     private static IEnumerable<string> EnumerateDirectoriesWithCounter(string root, EnumerationCounter counter)
