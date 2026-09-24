@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core;
@@ -132,45 +133,86 @@ internal static class DurableFile
         if (string.IsNullOrEmpty(directory))
             directory = ".";
         ThrowInjected(DurableWritePhase.BeforeDirSync, directory);
-        FileRetry.Run(() =>
-        {
-            if (OperatingSystem.IsWindows())
-                SyncDirectoryWindows(directory);
-            else
-                SyncDirectoryUnix(directory);
-        });
+
+        if (OperatingSystem.IsWindows())
+            SyncDirectoryWindows(directory);
+        else
+            SyncDirectoryUnix(directory);
     }
 
     private static void SyncDirectoryWindows(string directory)
     {
-        IntPtr handle = CreateFile(
-            directory, GENERIC_WRITE, 0, IntPtr.Zero, OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
-        if (handle == (IntPtr)(-1))
+        // Advertise the full standard share set so the directory opens concurrently with any other
+        // holder (parallel test classes, a parent process, antivirus, etc.). Sharing nothing made a
+        // busy Temp directory fail with ERROR_SHARING_VIOLATION on the first parallel run.
+        const uint fullShareMode =
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE | FILE_SHARE_EXECUTE;
+
+        // Read/write/delete is the canonical directory-fsync share set (it is what the major runtimes
+        // advertise). FILE_SHARE_EXECUTE is not required to open the directory concurrently.
+        const uint standardShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+
+        // shareMode lives outside the loop so the INVALID_PARAMETER fallback below sticks on the next
+        // attempt instead of being reset to the full set every iteration (which would loop forever).
+        uint shareMode = fullShareMode;
+        for (int attempt = 0; ; attempt++)
         {
+            IntPtr handle = CreateFile(
+                directory, GENERIC_WRITE, shareMode, IntPtr.Zero, OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+
+            if (handle != (IntPtr)(-1))
+            {
+                bool flushed = FlushFileBuffers(handle);
+                int flushError = Marshal.GetLastWin32Error();
+                CloseHandle(handle);
+                if (flushed)
+                    return;
+                throw new IOException(
+                    $"Failed to flush directory '{directory}' (Win32 error {flushError}).");
+            }
+
             int error = Marshal.GetLastWin32Error();
-            // Directory vanished between the caller's existence check and this open (a race the
-            // atomic move already won): nothing to persist, so treat the sync as satisfied.
+            // Directory vanished between the atomic move and this open: the move already won, so the
+            // rename is durable enough to treat the sync as satisfied.
             if (error is ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND)
                 return;
+
+            // FILE_SHARE_EXECUTE (0x10) is rejected with ERROR_INVALID_PARAMETER on some builds/volumes
+            // when opening a directory. Fall back to the canonical read/write/delete set once and let
+            // the bounded sharing-violation backoff below handle any remaining contention.
+            if (error is ERROR_INVALID_PARAMETER && shareMode is fullShareMode)
+            {
+                shareMode = standardShareMode;
+                continue;
+            }
+
+            // A sharing violation is a transient lock held by a process that opened the directory with
+            // a more restrictive share than ours; back off and retry for a bounded window before
+            // giving up so a briefly-contended directory doesn't fail a durable write.
+            if (error is ERROR_SHARING_VIOLATION && attempt < DirectoryShareRetries.Length - 1)
+            {
+                Thread.Sleep(DirectoryShareRetries[attempt]);
+                continue;
+            }
+
             throw new IOException(
                 $"Failed to open directory '{directory}' for fsync (Win32 error {error}).");
         }
-
-        try
-        {
-            if (!FlushFileBuffers(handle))
-            {
-                int error = Marshal.GetLastWin32Error();
-                throw new IOException(
-                    $"Failed to flush directory '{directory}' (Win32 error {error}).");
-            }
-        }
-        finally
-        {
-            CloseHandle(handle);
-        }
     }
+
+    // Bounded backoff for a directory briefly held open by another process. Total ~7.3s absorbs
+    // short-lived locks without pretending a permanent failure will ever resolve.
+    private static readonly TimeSpan[] DirectoryShareRetries =
+    [
+        TimeSpan.FromMilliseconds(100),
+        TimeSpan.FromMilliseconds(200),
+        TimeSpan.FromMilliseconds(400),
+        TimeSpan.FromMilliseconds(800),
+        TimeSpan.FromMilliseconds(1600),
+        TimeSpan.FromMilliseconds(1600),
+        TimeSpan.FromMilliseconds(1600),
+    ];
 
     private static void SyncDirectoryUnix(string directory)
     {
@@ -210,6 +252,12 @@ internal static class DurableFile
     private const uint OPEN_EXISTING = 3;
     private const int ERROR_FILE_NOT_FOUND = 2;
     private const int ERROR_PATH_NOT_FOUND = 3;
+    private const int ERROR_INVALID_PARAMETER = 87;
+    private const uint FILE_SHARE_READ = 0x0000_0001;
+    private const uint FILE_SHARE_WRITE = 0x0000_0002;
+    private const uint FILE_SHARE_DELETE = 0x0000_0004;
+    private const uint FILE_SHARE_EXECUTE = 0x0000_0010;
+    private const int ERROR_SHARING_VIOLATION = 32;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr CreateFile(
