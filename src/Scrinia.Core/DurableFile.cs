@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using Scrinia.Core.Resilience;
 
@@ -92,6 +93,7 @@ internal static class DurableFile
                 ThrowInjected(DurableWritePhase.BeforeMove, path);
                 File.Move(temporaryPath!, path, overwrite: true);
             });
+            SyncDirectory(path);
         }
         catch (Exception exception)
         {
@@ -123,6 +125,123 @@ internal static class DurableFile
         ThrowInjected(DurableWritePhase.BeforeFlush, destination);
         stream.Flush(flushToDisk: true);
     }
+
+    private static void SyncDirectory(string destination)
+    {
+        string? directory = Path.GetDirectoryName(destination);
+        if (string.IsNullOrEmpty(directory))
+            directory = ".";
+        ThrowInjected(DurableWritePhase.BeforeDirSync, directory);
+        FileRetry.Run(() =>
+        {
+            if (OperatingSystem.IsWindows())
+                SyncDirectoryWindows(directory);
+            else
+                SyncDirectoryUnix(directory);
+        });
+    }
+
+    private static void SyncDirectoryWindows(string directory)
+    {
+        IntPtr handle = CreateFile(
+            directory, GENERIC_WRITE, 0, IntPtr.Zero, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+        if (handle == (IntPtr)(-1))
+        {
+            int error = Marshal.GetLastWin32Error();
+            // Directory vanished between the caller's existence check and this open (a race the
+            // atomic move already won): nothing to persist, so treat the sync as satisfied.
+            if (error is ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND)
+                return;
+            throw new IOException(
+                $"Failed to open directory '{directory}' for fsync (Win32 error {error}).");
+        }
+
+        try
+        {
+            if (!FlushFileBuffers(handle))
+            {
+                int error = Marshal.GetLastWin32Error();
+                throw new IOException(
+                    $"Failed to flush directory '{directory}' (Win32 error {error}).");
+            }
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    private static void SyncDirectoryUnix(string directory)
+    {
+        int fd = open(directory, O_RDONLY);
+        if (fd == -1)
+        {
+            int errno = Marshal.GetLastPInvokeError();
+            // Same not-found race as the Windows path: tolerate it.
+            if (errno is ENOENT or ENOTDIR)
+                return;
+            throw new IOException(
+                $"Failed to open directory '{directory}' for fsync (errno {errno}).");
+        }
+
+        try
+        {
+            if (fsync(fd) != 0)
+            {
+                int errno = Marshal.GetLastPInvokeError();
+                throw new IOException(
+                    $"Failed to flush directory '{directory}' (errno {errno}).");
+            }
+        }
+        finally
+        {
+            int _ = close(fd);
+        }
+    }
+
+    #pragma warning disable CA1838, CA2101, CA1865
+
+    // Windows interop (kernel32). FILE_FLAG_BACKUP_SEMANTICS is required to open a directory handle;
+    // GENERIC_WRITE is required so FlushFileBuffers can flush the directory's entries (a read-only
+    // handle fails with access denied).
+    private const uint GENERIC_WRITE = 0x4000_0000;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x0200_0000;
+    private const uint OPEN_EXISTING = 3;
+    private const int ERROR_FILE_NOT_FOUND = 2;
+    private const int ERROR_PATH_NOT_FOUND = 3;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateFile(
+        string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        IntPtr lpSecurityAttributes, uint dwCreationDisposition,
+        uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FlushFileBuffers(IntPtr hFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    // POSIX interop (libc). O_RDONLY is used in place of O_DIRECTORY: AtomicWrite only ever passes a
+    // real directory, and O_DIRECTORY's constant differs between Linux (0x10000) and macOS (0x100000),
+    // which a two-way IsWindows() dispatch cannot represent. fsync on a directory fd flushes entries.
+    private const int O_RDONLY = 0;
+    private const int ENOENT = 2;
+    private const int ENOTDIR = 4;
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int open(string pathname, int flags);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int fsync(int fd);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int close(int fd);
+
+    #pragma warning restore CA1838, CA2101, CA1865
 
     private static void ThrowInjected(DurableWritePhase phase, string destination)
     {
