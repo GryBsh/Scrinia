@@ -149,6 +149,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly ScopeLockManager _scopeLockManager;
     private readonly ScopeIndexCache _scopeIndexCache;
     private readonly TopicDiscoveryService _topicDiscoveryService;
+    private readonly ListingService _listing;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -287,6 +288,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _scopeIndexCache = new ScopeIndexCache();
         _maintenancePageServiceCache = new MaintenancePageServiceCache(_recoveryDiscovery, _maintenanceRuns);
         _topicDiscoveryService = new TopicDiscoveryService(() => MemoriesRoot);
+        _listing = new ListingService(
+            scope => LoadIndex(scope),
+            scope => GetStoreDirForScope(scope),
+            name => SanitizeName(name),
+            () => ListEphemeral(),
+            s => TopicDiscoveryService.IncludesEphemeral(s),
+            s => _topicDiscoveryService.ResolveReadScopes(s),
+            (s, e) => _topicDiscoveryService.ResolveReadScopes(s, e));
         _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
         _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
         _participantAdapterFactory = participantAdapterFactory;
@@ -3928,44 +3937,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     // ── Listing & Search ─────────────────────────────────────────────────────
 
-    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null)
-    {
-        var result = new List<ScopedArtifact>();
+    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null) => _listing.ListScoped(scopes);
 
-        if (TopicDiscoveryService.IncludesEphemeral(scopes))
-            result.AddRange(ListEphemeral());
-
-        foreach (string scope in ResolveReadScopes(scopes))
-        {
-            foreach (var entry in LoadIndex(scope))
-                result.Add(new ScopedArtifact(scope, entry));
-        }
-        return result;
-    }
-
-    /// <summary>
-    /// Lazy override of the interface default: walks the same source
-    /// <see cref="ListScoped(IReadOnlyList{string}?)"/> does — <see cref="ListEphemeral"/> then
-    /// per-scope <see cref="LoadIndex"/> — but returns on the first match instead of materializing
-    /// a <see cref="List{T}"/> first. A scope after the match is never loaded at all; the default
-    /// (<c>ListScoped(scopes).Any(predicate)</c>) would load every scope before testing any of
-    /// them.
-    /// </summary>
-    public bool AnyScoped(IReadOnlyList<string>? scopes, Func<ScopedArtifact, bool> predicate)
-    {
-        if (TopicDiscoveryService.IncludesEphemeral(scopes) && ListEphemeral().Any(predicate))
-            return true;
-
-        foreach (string scope in ResolveReadScopes(scopes))
-        {
-            foreach (var entry in LoadIndex(scope))
-            {
-                if (predicate(new ScopedArtifact(scope, entry)))
-                    return true;
-            }
-        }
-        return false;
-    }
+    public bool AnyScoped(IReadOnlyList<string>? scopes, Func<ScopedArtifact, bool> predicate) =>
+        _listing.AnyScoped(scopes, predicate);
 
     // ── Entity Facts ─────────────────────────────────────────────────────────
 
@@ -4063,50 +4038,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         catch (ArgumentException) { return null; }
     }
 
-    private static List<TopicInfo> BuildTopicInfosFromCandidates(IReadOnlyList<ScopedArtifact> candidates)
-    {
-        var topics = new List<TopicInfo>();
-        foreach (var group in candidates
-            .Where(c => c.Scope.StartsWith("local:", StringComparison.Ordinal))
-            .GroupBy(c => c.Scope, StringComparer.OrdinalIgnoreCase))
-        {
-            string topicName = group.Key["local:".Length..];
-            int count = group.Count();
-            topics.Add(new TopicInfo(
-                Scope: group.Key,
-                TopicName: topicName,
-                EntryCount: count,
-                Description: $"{topicName} ({count} {(count == 1 ? "entry" : "entries")})",
-                Tags: null,
-                EntryNames: group.Select(c => c.Entry.Name).ToArray()));
-        }
-        return topics;
-    }
-
     // ── Filtering overloads (excludeTopics) ──────────────────────────────────
 
-    /// <summary>
-    /// Efficient override of the default interface method: filters at scope-resolution level
-    /// rather than post-filtering, avoiding loading indices for excluded topics.
-    /// </summary>
-    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
-    {
-        // Task 9, D-4: an empty excludeTopics list behaves identically to null.
-        if (excludeTopics is not { Count: > 0 })
-            return ListScoped(scopes);
-
-        var result = new List<ScopedArtifact>();
-
-        if (TopicDiscoveryService.IncludesEphemeral(scopes))
-            result.AddRange(ListEphemeral());
-
-        foreach (string scope in ResolveReadScopes(scopes, excludeTopics))
-        {
-            foreach (var entry in LoadIndex(scope))
-                result.Add(new ScopedArtifact(scope, entry));
-        }
-        return result;
-    }
+    public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics) =>
+        _listing.ListScoped(scopes, excludeTopics);
 
     /// <summary>
     /// Filters candidates and topics BEFORE the scorer's top-K cut, so a selective filter fills to
@@ -4132,7 +4067,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         // there is no re-listing to compare it against in this branch.
         IReadOnlyList<ScopedArtifact> allCandidates =
             query.Candidates is { } supplied
-                ? FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
+                ? _listing.FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
                 : ListScoped(query.Scopes, query.ExcludeTopics);
 
         IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
@@ -4148,38 +4083,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         if (hasAttr)
             topics = [];
         else if (hasPath)
-            topics = BuildTopicInfosFromCandidates(allCandidates)
+            topics = ListingService.BuildTopicInfosFromCandidates(allCandidates)
                 .Where(t => SearchResultFilter.TopicMatches(t, pathPrefix))
                 .ToList();
         else
-            topics = BuildTopicInfosFromCandidates(allCandidates);
+            topics = ListingService.BuildTopicInfosFromCandidates(allCandidates);
 
         var searcher = new WeightedAttributeScorer(RankerOptions);
         return searcher.SearchAll(query.Query, entryCandidates, topics, query.Limit,
             query.SupplementalScores, query.EntityGraphScores);
-    }
-
-    /// <summary>
-    /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to, so
-    /// a wider or differently-scoped <see cref="SearchQuery.Candidates"/> cannot change a search's
-    /// answer. A list narrower than the query's scopes is not corrected here — it still under-returns.
-    /// Mirrors <see cref="ListScoped(IReadOnlyList{string}?, IReadOnlyList{string}?)"/>'s scope
-    /// resolution, including its rule for when ephemeral memories are in play.
-    /// </summary>
-    private List<ScopedArtifact> FilterToQueryScopes(
-        IReadOnlyList<ScopedArtifact> candidates, IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
-    {
-        var allowed = new HashSet<string>(
-            ResolveReadScopes(scopes, excludeTopics), StringComparer.OrdinalIgnoreCase);
-
-        if (TopicDiscoveryService.IncludesEphemeral(scopes))
-            allowed.Add("ephemeral");
-
-        var result = new List<ScopedArtifact>(candidates.Count);
-        foreach (var candidate in candidates)
-            if (allowed.Contains(candidate.Scope))
-                result.Add(candidate);
-        return result;
     }
 
     /// <summary>
@@ -4254,46 +4166,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public string[] DiscoverTopics() =>
         _topicDiscoveryService.DiscoverTopics();
 
-    public List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null)
-    {
-        var topics = new List<TopicInfo>();
-        foreach (string scope in ResolveReadScopes(scopes))
-        {
-            if (!scope.StartsWith("local:", StringComparison.Ordinal))
-                continue;
-
-            string topicName = scope["local:".Length..];
-            var entries = LoadIndex(scope);
-            if (entries.Count == 0) continue;
-            topics.Add(new TopicInfo(
-                Scope: scope,
-                TopicName: topicName,
-                EntryCount: entries.Count,
-                Description: $"{topicName} ({entries.Count} {(entries.Count == 1 ? "entry" : "entries")})",
-                Tags: null,
-                EntryNames: entries.Select(e => e.Name).ToArray()));
-        }
-        return topics;
-    }
+    public List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null) => _listing.GatherTopicInfos(scopes);
 
     // ── Export/Import helpers ─────────────────────────────────────────────────
 
-    public List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope)
-    {
-        var result = new List<(string, string)>();
-        var entries = LoadIndex(topicScope);
-        string storeDir = GetStoreDirForScope(topicScope);
-        foreach (var entry in entries)
-        {
-            string subject = entry.Address.Kind == MemoryAddressKind.Persistent
-                ? entry.Address.Value.Trim('/').Split('/')[^1]
-                : entry.Address.Value;
-            string filePath = Path.Combine(storeDir, SanitizeName(subject) + ".nmp2");
-            if (File.Exists(filePath))
-                result.Add((subject, filePath));
-        }
-        return result;
-    }
+    public List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) =>
+        _listing.ListTopicArtifacts(topicScope);
 
     /// <summary>
     /// Cross-process lock budget for a restore. A restore holds its scope's lock for the whole
