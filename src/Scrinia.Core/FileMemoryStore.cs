@@ -2353,43 +2353,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     // ── The write surface: raw input in, derived entry out ───────────────────
 
-    /// <inheritdoc/>
-    public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
-        => await StoreAsyncCore(write, ct, appendOperationId: null);
+    private sealed record PrecomputedStore(
+        DerivedMetadata Derived, string Artifact, int ChunkCount, long OriginalBytes);
 
-    internal async Task<(ArtifactEntry Entry, WholeMemoryResult? Transaction)> StoreWithTransactionResultAsync(
-        MemoryWrite write, CancellationToken ct = default)
+    private PrecomputedStore PrecomputeForStore(MemoryWrite write, bool isEphemeral)
     {
-        WholeMemoryResult? transaction = null;
-        ArtifactEntry entry = await StoreAsyncCore(write, ct, appendOperationId: null,
-            result => transaction = result).ConfigureAwait(false);
-        return (entry, transaction);
-    }
-
-    private async Task<ArtifactEntry> StoreAsyncCore(
-        MemoryWrite write, CancellationToken ct, string? appendOperationId = null,
-        Action<WholeMemoryResult>? transactionResult = null)
-    {
-        ArgumentNullException.ThrowIfNull(write);
-        try
-        {
-            write.ValidateOrThrow(_writeValidationOptions);
-        }
-        catch (InvalidMemoryWriteException exception) when (appendOperationId is not null)
-        {
-            exception.AppendOperationId = appendOperationId;
-            throw;
-        }
-
-        // Ephemerality is the store's question, not the pipeline's — it decides where the memory
-        // lands, and it suppresses the auto-derived review condition (D-05).
-        bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
-
         // The one call. `write.Keywords` is the caller's RAW list by MemoryWrite's contract (D-01);
         // nothing this method computes is ever fed back in as input.
         var derived = MemoryDerivation.ForStore(
             write.RawContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()), write.Keywords.ToArray(),
-            isEphemeral: ephemeral,
+            isEphemeral: isEphemeral,
             fileHasher: HashWorkspaceFile);
 
         string artifact = write.RawContent.Length == 1
@@ -2398,18 +2371,52 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(write.RawContent));
 
-        if (ephemeral)
-        {
-            var existingEph = GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name));
-            return PersistEphemeral(write.Name, artifact, originalBytes, chunkCount, derived,
-                createdAt: existingEph?.CreatedAt ?? DateTimeOffset.UtcNow,
-                updatedAt: existingEph is not null ? DateTimeOffset.UtcNow : null);
-        }
+        return new PrecomputedStore(derived, artifact, chunkCount, originalBytes);
+    }
 
-        if (appendOperationId is null)
-            return await StorePersistentAsync(write, artifact, originalBytes, chunkCount, derived, ct,
-                transactionResult)
-                .ConfigureAwait(false);
+    private async Task<ArtifactEntry> PersistEphemeralAsync(MemoryWrite write, CancellationToken ct)
+    {
+        string ephemeralKey = MemoryNaming.StripEphemeralPrefix(write.Name);
+        EphemeralEntry? existingEph = GetEphemeral(ephemeralKey);
+        PrecomputedStore pre = PrecomputeForStore(write, isEphemeral: true);
+        return PersistEphemeral(write.Name, pre.Artifact, pre.OriginalBytes, pre.ChunkCount, pre.Derived,
+            createdAt: existingEph?.CreatedAt ?? DateTimeOffset.UtcNow,
+            updatedAt: existingEph is not null ? DateTimeOffset.UtcNow : null);
+    }
+
+    /// <inheritdoc/>
+    public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
+        => await StorePersistentOrEphemeralAsync(write, ct);
+
+    internal async Task<(ArtifactEntry Entry, WholeMemoryResult? Transaction)> StoreWithTransactionResultAsync(
+        MemoryWrite write, CancellationToken ct = default)
+    {
+        WholeMemoryResult? transaction = null;
+        ArtifactEntry entry = await StorePersistentOrEphemeralAsync(write, ct,
+            result => transaction = result).ConfigureAwait(false);
+        return (entry, transaction);
+    }
+
+    private async Task<ArtifactEntry> StorePersistentOrEphemeralAsync(
+        MemoryWrite write, CancellationToken ct, Action<WholeMemoryResult>? transactionResult = null)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        write.ValidateOrThrow(_writeValidationOptions);   // plain validation — the appendOperationId
+                                                        // annotation catch (was :2378–2382) is dead
+                                                        // and removed.
+        if (write.Address.Kind == MemoryAddressKind.Ephemeral)
+            return await PersistEphemeralAsync(write, ct);
+        return await StorePersistentAsync(write, ct, transactionResult);
+    }
+
+    private async Task<ArtifactEntry> CreateForAppendAsync(
+        MemoryWrite write, string appendOperationId, CancellationToken ct)
+    {
+        PrecomputedStore pre = PrecomputeForStore(write, isEphemeral: false);
+        var derived = pre.Derived;
+        var artifact = pre.Artifact;
+        var chunkCount = pre.ChunkCount;
+        var originalBytes = pre.OriginalBytes;
 
         // The typed address is the canonical identity. `MemoryWrite.Scope` is retained as the
         // resolved pair for legacy callers, but a public write can still carry the default
@@ -2586,10 +2593,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     private async Task<ArtifactEntry> StorePersistentAsync(
-        MemoryWrite write, string artifact, long originalBytes, int chunkCount,
-        DerivedMetadata derived, CancellationToken cancellationToken,
+        MemoryWrite write, CancellationToken cancellationToken,
         Action<WholeMemoryResult>? transactionResult = null)
     {
+        PrecomputedStore pre = PrecomputeForStore(write, isEphemeral: false);
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
@@ -2608,8 +2615,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         DateTimeOffset createdAt = existingEntry?.CreatedAt ?? startedAt;
         DateTimeOffset? updatedAt = existingEntry is null ? null : startedAt;
-        ArtifactEntry entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount,
-            createdAt, updatedAt, derived, existingEntry);
+        ArtifactEntry entry = BuildDerivedEntry(subject, scope, pre.OriginalBytes, pre.ChunkCount,
+            createdAt, updatedAt, pre.Derived, existingEntry);
 
         RawMemberSnapshot oldArtifact = await CaptureWholeMemberAsync(
             ArtifactPath(subject, scope), WholeMemoryFaultPoint.RawArtifactRead, cancellationToken)
@@ -2617,7 +2624,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         RawMemberSnapshot oldSidecar = await CaptureWholeMemberAsync(
             MetaPath(subject, scope), WholeMemoryFaultPoint.RawSidecarRead, cancellationToken)
             .ConfigureAwait(false);
-        byte[] newArtifactBytes = System.Text.Encoding.UTF8.GetBytes(artifact);
+        byte[] newArtifactBytes = System.Text.Encoding.UTF8.GetBytes(pre.Artifact);
         byte[] newSidecarBytes = System.Text.Encoding.UTF8.GetBytes(SerializeSidecar(entry));
         ArchivePlan archive = BuildArchivePlan(subject, scope, existingEntry is not null,
             oldSidecar.Existed, startedAt);
@@ -2651,7 +2658,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
             ct.ThrowIfCancellationRequested();
             InjectWholeFault(WholeMemoryFaultPoint.LiveArtifactWrite, transaction.NewArtifact.Path);
-            await WriteArtifactAsync(subject, scope, artifact, transaction.OperationId, ct)
+            await WriteArtifactAsync(subject, scope, pre.Artifact, transaction.OperationId, ct)
                 .ConfigureAwait(false);
             InjectWholeFault(WholeMemoryFaultPoint.LiveSidecarWrite, transaction.NewSidecar.Path);
             UpsertForAppend(entry, scope, transaction.OperationId);
@@ -2783,7 +2790,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             {
                 if (GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name)) is null)
                 {
-                    ArtifactEntry created = await StoreAsyncCore(write, ct, operationId);
+                    ArtifactEntry created = await PersistEphemeralAsync(write, ct);
                     return new AppendStoreResult(AppendStoreOutcome.Created, created, operationId);
                 }
 
@@ -2797,7 +2804,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             string subject = resolved.Subject;
             // Append admission shares the persistent scope with the restore journal.  Recover
             // that journal before deciding whether this is a create or an append; otherwise a
-            // missing live artifact can enter StoreAsyncCore and bypass the recovery barrier.
+            // missing live artifact can enter CreateForAppendAsync and bypass the recovery barrier.
             RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), cancellationToken: ct);
             await RecoverAppendUnsafeAsync(scope, operationId, ct);
             ArtifactEntry? canonicalEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
@@ -2809,7 +2816,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             {
                 try
                 {
-                    ArtifactEntry created = await StoreAsyncCore(write, ct, operationId);
+                    ArtifactEntry created = await CreateForAppendAsync(write, operationId, ct);
                     return new AppendStoreResult(AppendStoreOutcome.Created, created, operationId);
                 }
                 catch (AppendPostCommitCleanupException exception)
