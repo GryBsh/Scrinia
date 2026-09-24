@@ -593,9 +593,12 @@ public sealed class B5MaintenanceDiscoveryTests
 
     private static IReadOnlyCollection<MaintenanceDiscoveryPageService> MaintenancePageServices(FileMemoryStore store)
     {
-        FieldInfo field = typeof(FileMemoryStore).GetField("_maintenancePages",
+        FieldInfo owner = typeof(FileMemoryStore).GetField("_maintenancePageServiceCache",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
-        return ((System.Collections.IDictionary)field.GetValue(store)!).Values
+        object cache = owner.GetValue(store)!;
+        FieldInfo field = cache.GetType().GetField("_maintenancePages",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return ((System.Collections.IDictionary)field.GetValue(cache)!).Values
             .Cast<MaintenanceDiscoveryPageService>()
             .ToArray();
     }

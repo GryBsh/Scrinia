@@ -114,7 +114,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     /// <summary>Test-only crash seam around journal durable transitions.</summary>
     internal static AsyncLocal<Func<RestoreJournalTransition, string, Exception?>?> RestoreJournalFailureInjector { get; } = new();
-    internal Action? MaintenancePageServiceCreationBarrierForTest { get; set; }
+    internal Action? MaintenancePageServiceCreationBarrierForTest
+    {
+        get => _maintenancePageServiceCache.MaintenancePageServiceCreationBarrierForTest;
+        set => _maintenancePageServiceCache.MaintenancePageServiceCreationBarrierForTest = value;
+    }
     /// <summary>Test-only seam receiving the exact bytes successfully written to a derived file.</summary>
     private static readonly object WriteObserverGate = new();
     private static Action<string, byte[]>? WriteObserverSlot;
@@ -139,9 +143,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly IMultiMemoryParticipantAdapterFactory? _participantAdapterFactory;
     private readonly RecoveryDiscoveryCoordinator _recoveryDiscovery = new();
     private readonly MaintenanceRunRegistry _maintenanceRuns = new();
-    private readonly ConcurrentDictionary<string, MaintenanceDiscoveryPageService> _maintenancePages = new(StringComparer.Ordinal);
-    private readonly object _maintenanceLifecycleGate = new();
-    private bool _maintenanceDisposed;
+    private readonly MaintenancePageServiceCache _maintenancePageServiceCache;
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ScopeLockManager _scopeLockManager;
@@ -293,6 +295,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _scopeLockManager = new ScopeLockManager();
         _scopeIndexCache = new ScopeIndexCache();
+        _maintenancePageServiceCache = new MaintenancePageServiceCache(_recoveryDiscovery, _maintenanceRuns);
         _wholeMemoryTransactions = new WholeMemoryTransactionCoordinator(this);
         _fileEntityTransactions = new FileEntityTransactionCoordinator(_workspaceRoot);
         _participantAdapterFactory = participantAdapterFactory;
@@ -795,43 +798,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     internal MaintenanceDiscoveryPage DiscoverRecoveryPage(string scope, string storeDirectory,
         MaintenanceWorkspaceKey workspace, CancellationToken cancellationToken = default) =>
-        GetMaintenancePageService(scope, storeDirectory).ReadFirstPage(workspace, scope, cancellationToken);
+        _maintenancePageServiceCache.GetMaintenancePageService(scope, storeDirectory).ReadFirstPage(workspace, scope, cancellationToken);
 
     internal MaintenanceDiscoveryPage ContinueRecoveryPage(MaintenanceCursor cursor,
         string scope, string storeDirectory, CancellationToken cancellationToken = default) =>
-        GetMaintenancePageService(scope, storeDirectory).ReadNextPage(cursor, cancellationToken);
+        _maintenancePageServiceCache.GetMaintenancePageService(scope, storeDirectory).ReadNextPage(cursor, cancellationToken);
 
     internal MaintenanceLifecyclePage DiscoverMaintenancePage(string scope, string storeDirectory,
         MaintenanceWorkspaceKey workspace, CancellationToken cancellationToken = default) =>
-        new MaintenanceDiscoveryLifecycle(GetMaintenancePageService(scope, storeDirectory), _maintenanceRuns)
+        new MaintenanceDiscoveryLifecycle(_maintenancePageServiceCache.GetMaintenancePageService(scope, storeDirectory), _maintenanceRuns)
             .Start(workspace, scope, cancellationToken);
 
     internal MaintenanceLifecyclePage ContinueMaintenancePage(string scope, string storeDirectory,
         string continuationToken, CancellationToken cancellationToken = default) =>
-        new MaintenanceDiscoveryLifecycle(GetMaintenancePageService(scope, storeDirectory), _maintenanceRuns)
+        new MaintenanceDiscoveryLifecycle(_maintenancePageServiceCache.GetMaintenancePageService(scope, storeDirectory), _maintenanceRuns)
             .Continue(continuationToken, cancellationToken);
-
-    private MaintenanceDiscoveryPageService GetMaintenancePageService(string scope, string storeDirectory)
-    {
-        MaintenancePageServiceCreationBarrierForTest?.Invoke();
-        string key = $"{Path.GetFullPath(storeDirectory)}\0{scope}";
-        lock (_maintenanceLifecycleGate)
-        {
-            ObjectDisposedException.ThrowIf(_maintenanceDisposed, this);
-            if (_maintenancePages.TryGetValue(key, out MaintenanceDiscoveryPageService? existing))
-                return existing;
-
-            var created = new MaintenanceDiscoveryPageService(cancellationToken =>
-                _recoveryDiscovery.EnumerateMaintenanceCandidates(scope, storeDirectory, cancellationToken), _maintenanceRuns);
-            if (!_maintenancePages.TryAdd(key, created))
-            {
-                created.Dispose();
-                return _maintenancePages[key];
-            }
-
-            return created;
-        }
-    }
 
     private static string SafeRecoveryRelativePath(string root, string path)
     {
@@ -5043,13 +5024,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public void Dispose()
     {
         MaintenanceDiscoveryPageService[] maintenancePages;
-        lock (_maintenanceLifecycleGate)
-        {
-            if (_maintenanceDisposed) return;
-            _maintenanceDisposed = true;
-            maintenancePages = _maintenancePages.Values.ToArray();
-            _maintenancePages.Clear();
-        }
+        maintenancePages = _maintenancePageServiceCache.TakeDisposalSnapshot();
 
         _scopeLockManager.Dispose();
 
