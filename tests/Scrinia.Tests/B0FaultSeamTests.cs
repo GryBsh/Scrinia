@@ -53,12 +53,12 @@ public class B0FaultSeamTests
     [Fact]
     public void FaultPhase_CoversEverySourceEnumMember()
     {
-        // DurableWritePhase(3) + AppendFaultPoint(21) + WholeMemoryFaultPoint(12) +
+        // DurableWritePhase(4) + AppendFaultPoint(21) + WholeMemoryFaultPoint(12) +
         // RestoreJournalTransition(9) + MultiMemoryTransactionTransition(4) + FileEntityFaultPoint(10)
-        // = 59. (The plan's "24/62" arithmetic is a typo; the real source enums have 21 append
-        // members and 59 total — verified against the six enums below.)
-        Assert.Equal(59, Enum.GetValues(typeof(B0FaultSeam.FaultPhase)).Length);
-        Assert.Equal(3, Enum.GetNames(typeof(DurableWritePhase)).Length);
+        // = 60. (DurableWritePhase gained the BeforeDirSync phase in the P1 dir-sync fix; the real
+        // source enums have 21 append members and 60 total — verified against the six enums below.)
+        Assert.Equal(60, Enum.GetValues(typeof(B0FaultSeam.FaultPhase)).Length);
+        Assert.Equal(4, Enum.GetNames(typeof(DurableWritePhase)).Length);
         Assert.Equal(21, Enum.GetNames(typeof(AppendFaultPoint)).Length);
         Assert.Equal(12, Enum.GetNames(typeof(WholeMemoryFaultPoint)).Length);
         Assert.Equal(9, Enum.GetNames(typeof(RestoreJournalTransition)).Length);
