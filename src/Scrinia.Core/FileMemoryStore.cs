@@ -150,6 +150,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly ScopeIndexCache _scopeIndexCache;
     private readonly TopicDiscoveryService _topicDiscoveryService;
     private readonly ListingService _listing;
+    private readonly SearchService _search;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -265,7 +266,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private partial class FileStoreJsonContext : JsonSerializerContext;
 
     /// <summary>
-    /// Tunable ranker weights — read by <see cref="SearchAll(SearchQuery)"/>
+    /// Tunable ranker weights — read by <see cref="SearchService"/>
     /// when constructing the underlying <see cref="WeightedAttributeScorer"/>. Set at
     /// construction; <c>WorkspaceSetup.Configure</c> passes the workspace's
     /// <c>Scrinia:Search:*</c> config-derived values.
@@ -303,7 +304,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             ? new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync)
             : new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync,
                 participantAdapterFactory);
-        RankerOptions = rankerOptions ?? RankerOptions.Default;
+         RankerOptions = rankerOptions ?? RankerOptions.Default;
+         _search = new SearchService(
+             _listing,
+             (scope, subject) => FormatQualifiedName(scope, subject),
+             () => RankerOptions);
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
@@ -4044,55 +4049,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _listing.ListScoped(scopes, excludeTopics);
 
     /// <summary>
+    /// Search orchestration is owned by <see cref="SearchService"/>; this is a one-line forwarder.
     /// Filters candidates and topics BEFORE the scorer's top-K cut, so a selective filter fills to
     /// <c>Limit</c> instead of returning the post-limit remnant. Every filter dimension is a
     /// property of the parent candidate (path/attributes) or the topic (scope label); chunk results
     /// inherit their parent's, so filtering parents covers them.
     /// </summary>
-    public IReadOnlyList<SearchResult> SearchAll(SearchQuery query)
-    {
-        if (string.IsNullOrWhiteSpace(query.Query))
-            return [];
-
-        string? pathPrefix = query.Address?.ToString() ?? query.PathPrefix;
-        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
-        bool hasAttr = query.AttributeFilter is { Count: > 0 };
-
-        // Candidates set means the caller (SearchPipeline) already materialized this slice for
-        // the contributors — skip the second ListScoped. It is a hint about COST, never about
-        // the ANSWER: re-apply this query's own scope and excludeTopics filter so a caller who
-        // supplies a wider or differently-scoped list gets exactly what it would have got with
-        // no Candidates at all. (A list narrower than the query's scopes is not corrected here —
-        // it still under-returns.) One HashSet build plus a Contains per candidate — cheap, and
-        // there is no re-listing to compare it against in this branch.
-        IReadOnlyList<ScopedArtifact> allCandidates =
-            query.Candidates is { } supplied
-                ? _listing.FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
-                : ListScoped(query.Scopes, query.ExcludeTopics);
-
-        IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
-            ? allCandidates
-                .Where(c => SearchResultFilter.CandidateMatches(this, c, pathPrefix, query.AttributeFilter))
-                .ToList()
-            : allCandidates;
-
-        // Topics carry no attributes: an active attribute filter drops them all. Otherwise filter
-        // topics by their own scope label, derived from the UNFILTERED candidate set (a topic can
-        // match even when its entries are filtered out by a longer path prefix, and vice versa).
-        List<TopicInfo> topics;
-        if (hasAttr)
-            topics = [];
-        else if (hasPath)
-            topics = ListingService.BuildTopicInfosFromCandidates(allCandidates)
-                .Where(t => SearchResultFilter.TopicMatches(t, pathPrefix))
-                .ToList();
-        else
-            topics = ListingService.BuildTopicInfosFromCandidates(allCandidates);
-
-        var searcher = new WeightedAttributeScorer(RankerOptions);
-        return searcher.SearchAll(query.Query, entryCandidates, topics, query.Limit,
-            query.SupplementalScores, query.EntityGraphScores);
-    }
+    public IReadOnlyList<SearchResult> SearchAll(SearchQuery query) => _search.SearchAll(query);
 
     /// <summary>
     /// Efficient override of the default interface method: resolves scopes then excludes

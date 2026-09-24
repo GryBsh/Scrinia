@@ -18,12 +18,13 @@ public static class SearchResultFilter
     /// <summary>Keep-predicate for an entry candidate (covers its entry and chunk results —
     /// both inherit the parent's path and attributes).</summary>
     public static bool CandidateMatches(
-        IMemoryStore store, ScopedArtifact candidate,
-        string? pathPrefix, IReadOnlyDictionary<string, string[]>? attributeFilter)
+        ScopedArtifact candidate,
+        string? pathPrefix, IReadOnlyDictionary<string, string[]>? attributeFilter,
+        Func<string, string, string> formatQualifiedLabel)
     {
         string label = candidate.Scope == "ephemeral"
             ? $"~{candidate.Entry.Name}"
-            : store.FormatQualifiedName(candidate.Scope, candidate.Entry.Name);
+            : formatQualifiedLabel(candidate.Scope, candidate.Entry.Name);
         return MatchesPathPrefix(label, pathPrefix)
             && MatchesAttributes(candidate.Entry.Attributes, attributeFilter);
     }
