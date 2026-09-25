@@ -220,6 +220,41 @@ internal static class DurableWriter
             .last-consolidation
             .consolidate-progress.json
             """.Replace("            ", "");
-        DurableFile.AtomicWriteAllText(gitIgnorePath, content);
+            DurableFile.AtomicWriteAllText(gitIgnorePath, content);
+    }
+
+    /// <summary>Bounded best-effort delete for the maintenance sweep: up to three attempts with a
+    /// short backoff between <c>IOException</c> retries, terminal on <c>UnauthorizedAccessException</c>
+    /// / <c>DirectoryNotFoundException</c>, and cancellation-aware before each attempt. Never leaks a
+    /// non-terminal exception to the caller's retention accounting.</summary>
+    internal static bool TryDeleteBounded(string fullPath, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                File.Delete(fullPath);
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return false;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Task.Delay(10 * attempt, cancellationToken).GetAwaiter().GetResult();
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+        }
+        return false;
     }
 }

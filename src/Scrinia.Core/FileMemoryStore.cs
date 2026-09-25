@@ -867,36 +867,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return File.Exists(fullPath);
     }
 
-    private static bool TryDeleteBounded(string fullPath, CancellationToken cancellationToken)
-    {
-        const int maxAttempts = 3;
-        for (int attempt = 1; attempt <= maxAttempts; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                File.Delete(fullPath);
-                return true;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return false;
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return false;
-            }
-            catch (IOException) when (attempt < maxAttempts)
-            {
-                Task.Delay(10 * attempt, cancellationToken).GetAwaiter().GetResult();
-            }
-            catch (IOException)
-            {
-                return false;
-            }
-        }
-        return false;
-    }
+    private static bool TryDeleteBounded(string fullPath, CancellationToken cancellationToken) =>
+        DurableWriter.TryDeleteBounded(fullPath, cancellationToken);
 
     private Task<IMultiMemoryParticipantAdapter> ResolveMultiMemoryParticipantAsync(
         string scope, MultiMemoryParticipantManifest manifest, CancellationToken cancellationToken)
