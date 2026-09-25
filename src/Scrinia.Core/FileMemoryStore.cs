@@ -3733,24 +3733,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         CancellationToken ct = default) =>
         await WriteArtifactAsync(subject, scope, artifactText, operationId: null, ct);
 
-    private async Task WriteArtifactAsync(string subject, string scope, string artifactText,
-        string? operationId, CancellationToken ct = default)
-    {
-        ct.ThrowIfCancellationRequested();
-        RunUnderAppendLock(scope, operationId, () =>
-        {
-            string path = ArtifactPath(subject, scope);
-            if (operationId is null)
-                DurableFile.AtomicWriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(artifactText));
-            else
-                DurableFile.AtomicWriteAllBytesForAppend(
-                    path, System.Text.Encoding.UTF8.GetBytes(artifactText), operationId,
-                    AppendFaultPoint.LiveArtifactWrite,
-                    AppendFaultPoint.LiveArtifactFlush);
-            _artifactCache.Invalidate($"{scope}|{subject}|");
-        });
-        await Task.CompletedTask;
-    }
+    internal Task WriteArtifactAsync(string subject, string scope, string artifactText,
+        string? operationId, CancellationToken ct = default) =>
+        DurableWriter.WriteArtifact(subject, scope, artifactText, operationId, ArtifactPath,
+            key => _artifactCache.Invalidate(key), RunUnderAppendLock, ct);
 
     private async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
     {

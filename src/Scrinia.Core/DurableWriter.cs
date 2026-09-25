@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Text;
+using System.Threading;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
 
@@ -37,5 +39,29 @@ internal static class DurableWriter
                 metaPath, json, operationId,
                 AppendFaultPoint.LiveSidecarWrite,
                 AppendFaultPoint.LiveSidecarFlush);
+    }
+
+    /// <summary>Atomically write <paramref name="subject"/>'s <c>.nmp2</c> artifact body to
+    /// <see cref="artifactPath"/> under the append lock, refusing cancellation first and
+    /// invalidating the artifact LRU cache after the write. <paramref name="operationId"/> routes
+    /// through the append fault-point variant when set.</summary>
+    internal static async Task WriteArtifact(string subject, string scope, string artifactText,
+        string? operationId, Func<string, string, string> artifactPath, Action<string> invalidateArtifactCache,
+        Action<string, string?, Action> runUnderAppendLock, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        runUnderAppendLock(scope, operationId, () =>
+        {
+            string path = artifactPath(subject, scope);
+            if (operationId is null)
+                DurableFile.AtomicWriteAllBytes(path, System.Text.Encoding.UTF8.GetBytes(artifactText));
+            else
+                DurableFile.AtomicWriteAllBytesForAppend(
+                    path, System.Text.Encoding.UTF8.GetBytes(artifactText), operationId,
+                    AppendFaultPoint.LiveArtifactWrite,
+                    AppendFaultPoint.LiveArtifactFlush);
+            invalidateArtifactCache($"{scope}|{subject}|");
+        });
+        await Task.CompletedTask;
     }
 }
