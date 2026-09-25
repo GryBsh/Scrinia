@@ -4528,11 +4528,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// <summary>Best-effort removal of a staging file. A leftover is inert litter, not
     /// corruption — it is invisible to every enumerator in the store — so a failure to delete
     /// must not mask the exception that caused the rollback.</summary>
-    private static void TryDeleteStagingFile(string path)
-    {
-        try { File.Delete(path); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-    }
+    private static void TryDeleteStagingFile(string path) => DurableWriter.TryDeleteStagingFile(path);
 
     /// <summary>
     /// Removes staging files left by an import that died before committing or rolling back.

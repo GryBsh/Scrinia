@@ -182,4 +182,13 @@ internal static class DurableWriter
             if (!expected.Contains(Path.GetFileName(metaFile)))
                 File.Delete(metaFile);
     }
+
+    /// <summary>Best-effort delete of an abandoned import-staging file: swallow I/O and
+    /// access-denial failures. Import holds the scope's exclusive lock, so a present staging file
+    /// is abandoned by definition; this never rethrows.</summary>
+    internal static void TryDeleteStagingFile(string path)
+    {
+        try { File.Delete(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
 }
