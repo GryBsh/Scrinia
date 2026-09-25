@@ -3323,7 +3323,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     private static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
-        MatchesAppendMember(transaction.NewArtifact, cancellationToken) && MatchesAppendMember(transaction.NewSidecar, cancellationToken);
+        AppendRecoveryVerifier.MatchesAppendMember(transaction.NewArtifact, cancellationToken) && AppendRecoveryVerifier.MatchesAppendMember(transaction.NewSidecar, cancellationToken);
 
     private static bool HasCommittedHash(AppendTransaction transaction, string? committedHash,
         CancellationToken cancellationToken)
@@ -3347,18 +3347,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return string.Equals(actualHash, committedHash, StringComparison.Ordinal);
     }
 
-    private static bool MatchesAppendMember(RawMemberSnapshot expected, CancellationToken cancellationToken = default)
-    {
-        if (!File.Exists(expected.Path))
-            return false;
-        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
-            new RecoveryScopeBinding("append", Path.GetDirectoryName(expected.Path)!), RecoveryEvidenceKind.AppendJournal,
-            expected.Path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,
-             cancellationToken).AsTask().GetAwaiter().GetResult();
-        verification.SourceContent?.Dispose();
-        return verification.Outcome == RecoveryVerificationOutcome.Verified;
-    }
-
     private static bool TryRestoreAppendTransaction(AppendTransaction transaction)
     {
         bool artifactRestored = RestoreAppendMember(
@@ -3366,7 +3354,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         bool sidecarRestored = RestoreAppendMember(
             transaction.OldSidecar, transaction.NewSidecar, transaction.OperationId);
         return artifactRestored && sidecarRestored &&
-            MatchesAppendState(transaction.OldArtifact) && MatchesAppendState(transaction.OldSidecar);
+            AppendRecoveryVerifier.MatchesAppendState(transaction.OldArtifact) && AppendRecoveryVerifier.MatchesAppendState(transaction.OldSidecar);
     }
 
     private static bool TryRemoveCreatedArchiveMembers(AppendTransaction transaction,
@@ -3424,11 +3412,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 // A planned member may already be present from an earlier operation. Matching
                 // bytes make it safe to retain; a mismatch is evidence that ownership cannot be
                 // established, so the journal must remain for recovery.
-                return MatchesArchiveBytes(destination, expected, cancellationToken);
+                return AppendRecoveryVerifier.MatchesArchiveBytes(destination, expected, cancellationToken);
             }
             if (!File.Exists(destination))
                 return true;
-            if (!MatchesArchiveBytes(destination, expected, cancellationToken))
+            if (!AppendRecoveryVerifier.MatchesArchiveBytes(destination, expected, cancellationToken))
                 return false;
 
             Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, destination);
@@ -3443,17 +3431,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
     }
 
-    private static bool MatchesArchiveBytes(string path, RawMemberSnapshot expected,
-        CancellationToken cancellationToken = default)
-    {
-        RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
-            new RecoveryScopeBinding("append", Path.GetDirectoryName(path)!), RecoveryEvidenceKind.AppendJournal,
-            path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,
-            cancellationToken).AsTask().GetAwaiter().GetResult();
-        verification.SourceContent?.Dispose();
-        return verification.Outcome == RecoveryVerificationOutcome.Verified;
-    }
-
     private static bool RestoreAppendMember(RawMemberSnapshot oldMember, RawMemberSnapshot newMember,
         string operationId)
     {
@@ -3461,7 +3438,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             if (oldMember.Existed)
             {
-                if (File.Exists(oldMember.Path) && !MatchesAppendMember(newMember) && !MatchesAppendMember(oldMember))
+                if (File.Exists(oldMember.Path) && !AppendRecoveryVerifier.MatchesAppendMember(newMember) && !AppendRecoveryVerifier.MatchesAppendMember(oldMember))
                     return false;
                 DurableFile.AtomicWriteAllBytesForAppend(oldMember.Path, oldMember.Bytes, operationId,
                     AppendFaultPoint.RollbackWrite, AppendFaultPoint.RollbackWrite);
@@ -3470,7 +3447,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
             if (!File.Exists(oldMember.Path))
                 return true;
-            if (!MatchesAppendMember(newMember))
+            if (!AppendRecoveryVerifier.MatchesAppendMember(newMember))
                 return false;
             Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, oldMember.Path);
             if (failure is not null)
@@ -3483,9 +3460,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             return false;
         }
     }
-
-    private static bool MatchesAppendState(RawMemberSnapshot expected) =>
-        expected.Existed ? MatchesAppendMember(expected) : !File.Exists(expected.Path);
 
     private static AppendStoreException RecoveryRequired(string journalPath, string detail,
         Exception? inner = null, string operationId = "recovery") =>
