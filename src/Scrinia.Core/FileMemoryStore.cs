@@ -1597,26 +1597,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// exists — that call site depends on this producing byte-identical sidecars to a normal
     /// store write.
     /// </summary>
-    private static void WriteSidecarCore(ArtifactEntry entry, string storeDir, string? operationId = null)
-    {
-        // Unconditional backstop, deliberately below every caller. After Task 3's forward-fill
-        // skip and this task's two gates it should be unreachable from any path we enumerated --
-        // and the previous Critical is precisely what happens when a trigger is closed and the
-        // mechanism behind it is left reachable by a route nobody listed.
-        if (ArtifactSidecarPolicy.IsReadOnly(entry))
-            throw new ScopeReadOnlyException(
-                storeDir, entry.Name, entry.SchemaVersion ?? 1, DurableFormats.ArtifactSidecar.Current);
-
-        string metaPath = Path.Combine(storeDir, SanitizeNameCore(entry.Name) + ".meta.json");
-        string json = SerializeSidecar(entry);
-        if (operationId is null)
-            DurableFile.AtomicWriteAllText(metaPath, json);
-        else
-            DurableFile.AtomicWriteAllTextForAppend(
-                metaPath, json, operationId,
-                AppendFaultPoint.LiveSidecarWrite,
-                AppendFaultPoint.LiveSidecarFlush);
-    }
+    private static void WriteSidecarCore(ArtifactEntry entry, string storeDir, string? operationId = null) =>
+        DurableWriter.WriteSidecar(entry, storeDir, operationId, SanitizeNameCore, SerializeSidecar);
 
     private static string SerializeSidecar(ArtifactEntry entry)
     {
