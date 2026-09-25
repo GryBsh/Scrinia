@@ -613,7 +613,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public string WorkspaceRoot => _workspaceRoot;
 
     internal string ArtifactPath(string name, string scope = "local") =>
-        MapArtifactKey(BuildArtifactKey(SanitizeName(name), scope));
+        MapArtifactKey(ArtifactIdentityMapper.BuildArtifactKey(SanitizeName(name), scope));
 
     internal string MetaPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".meta.json");
@@ -1209,7 +1209,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         // a recovered journal (or an older sidecar carrying a bare address) cannot create a second
         // logical entry for the same leaf or leave reads and fact materialization on different keys.
         for (int i = 0; i < entries.Count; i++)
-            entries[i] = CanonicalizeEntryForScope(entries[i], scope);
+            entries[i] = ArtifactIdentityMapper.CanonicalizeEntryForScope(entries[i], scope);
 
         // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
         // recognized-key keywords) into the attributes model (Fields/Keywords) so every
@@ -1478,7 +1478,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             });
             foreach (var entry in primary)
             {
-                var canonical = CanonicalizeEntryForScope(entry, scope);
+                var canonical = ArtifactIdentityMapper.CanonicalizeEntryForScope(entry, scope);
                 if (yielded.Add((primaryDir, canonical.Name.ToLowerInvariant())))
                     yield return (canonical, scope, primaryDir);
             }
@@ -1708,7 +1708,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         // allow-list and publication; otherwise the sweep can delete the real sidecar while the
         // subsequent write recreates a nested topic/subject path.
         for (int i = 0; i < entries.Count; i++)
-            entries[i] = CanonicalizeEntryForScope(entries[i], scope);
+            entries[i] = ArtifactIdentityMapper.CanonicalizeEntryForScope(entries[i], scope);
 
         // Delete orphaned sidecars: any *.meta.json whose entry is no longer present.
         //
@@ -1775,7 +1775,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     {
         RunUnderAppendLock(scope, operationId, () =>
         {
-            entry = CanonicalizeEntryForScope(entry, scope);
+            entry = ArtifactIdentityMapper.CanonicalizeEntryForScope(entry, scope);
             string storeDir = GetStoreDirForScope(scope);
             Directory.CreateDirectory(storeDir);
 
@@ -2005,7 +2005,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             string? metaPath = ResolveSidecarPath(storeDir, SanitizeName(subject));
             var current = metaPath is null ? null : LoadSidecar(metaPath);
             if (current is not null)
-                current = CanonicalizeEntryForScope(current, scope);
+                current = ArtifactIdentityMapper.CanonicalizeEntryForScope(current, scope);
             if (current is null) return false;
 
             var updated = mutate(current);
@@ -3551,7 +3551,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             Address: MemoryAddress.Parse(scope == "local"
                 ? $"/{subject}"
                 : FormatQualifiedName(scope, subject)),
-            ArtifactKey: BuildArtifactKey(subject, scope),
+            ArtifactKey: ArtifactIdentityMapper.BuildArtifactKey(subject, scope),
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
@@ -3630,7 +3630,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return entry.ToArtifactEntry() with
         {
             Address = MemoryAddress.Parse(address),
-            ArtifactKey = BuildArtifactKey(entry.Name, "ephemeral")
+            ArtifactKey = ArtifactIdentityMapper.BuildArtifactKey(entry.Name, "ephemeral")
         };
     }
 
@@ -3700,44 +3700,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private bool DeleteArtifactUnsafe(string subject, string scope) =>
         DurableWriter.DeleteArtifact(subject, scope, ArtifactPath, key => _artifactCache.Invalidate(key));
 
-    private static string BuildArtifactKey(string subject, string scope)
-    {
-        string topic = scope.Equals("local", StringComparison.Ordinal)
-            ? ""
-            : scope.Equals("ephemeral", StringComparison.Ordinal)
-                ? "ephemeral/"
-            : scope.StartsWith("local:", StringComparison.Ordinal)
-                ? scope["local:".Length..] + "/"
-                : throw new ArgumentException($"Unknown scope: {scope}", nameof(scope));
-        return $"artifacts/{topic}{subject}.nmp2";
-    }
-
-    private ArtifactEntry CanonicalizeEntryForScope(ArtifactEntry entry, string scope)
-    {
-        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
-            return entry;
-
-        string subject = entry.Name;
-        if (string.IsNullOrWhiteSpace(subject))
-            subject = entry.Address.IsValid && entry.Address.Kind == MemoryAddressKind.Persistent
-                ? entry.Address.Value.Trim('/').Split('/')[^1]
-                : entry.Name;
-        else if (subject.Contains('/'))
-            subject = subject.Split('/')[^1];
-        string address = scope.Equals("local", StringComparison.Ordinal)
-            ? $"/{subject}"
-            : FormatQualifiedName(scope, subject);
-        return entry with
-        {
-            Address = MemoryAddress.Parse(address),
-            ArtifactKey = BuildArtifactKey(subject, scope),
-            Name = subject,
-        };
-    }
-
     private string MapArtifactKey(string artifactKey)
     {
-        ValidateArtifactKey(artifactKey);
+        ArtifactIdentityMapper.ValidateArtifactKey(artifactKey);
 
         const string prefix = "artifacts/";
         string relativePath = artifactKey[prefix.Length..];
@@ -3745,22 +3710,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         if (!PathContainment.IsWithin(MemoriesRoot, candidate))
             throw new ArgumentException("ArtifactKey resolves outside the store root.", nameof(artifactKey));
         return candidate;
-    }
-
-    private static void ValidateArtifactKey(string artifactKey)
-    {
-        if (string.IsNullOrWhiteSpace(artifactKey) ||
-            artifactKey.Contains('\\') ||
-            artifactKey.Contains(':') ||
-            artifactKey.StartsWith('/') ||
-            !artifactKey.StartsWith("artifacts/", StringComparison.Ordinal) ||
-            Uri.TryCreate(artifactKey, UriKind.Absolute, out _))
-            throw new ArgumentException("ArtifactKey must be a portable store-relative key.", nameof(artifactKey));
-
-        string relative = artifactKey["artifacts/".Length..];
-        string[] segments = relative.Split('/');
-        if (segments.Length == 0 || segments.Any(segment => segment is "" or "." or ".."))
-            throw new ArgumentException("ArtifactKey must not contain traversal segments.", nameof(artifactKey));
     }
 
     // ── Typed artifact reads ────────────────────────────────────────────────
@@ -4042,7 +3991,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 candidates.Add(entry with
                 {
                     Address = MemoryAddress.Parse(canonicalAddress),
-                    ArtifactKey = BuildArtifactKey(entry.Name, topicScope),
+                    ArtifactKey = ArtifactIdentityMapper.BuildArtifactKey(entry.Name, topicScope),
                     Name = SanitizeName(entry.Name),
                     CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt,
                 });
