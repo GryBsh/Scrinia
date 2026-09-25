@@ -165,4 +165,21 @@ internal static class DurableWriter
         invalidateArtifactCache($"{scope}|{subject}|");
         return true;
     }
+
+    /// <summary>Delete any <c>*.meta.json</c> in <paramref name="storeDir"/> whose stem is not in
+    /// <paramref name="keptStems"/> — the orphan sidecar sweep run by <c>SaveIndex</c>.
+    /// <paramref name="keptStems"/> must already be sanitized (the caller owns sanitizing, so the
+    /// allow-list matches the physical leaf names the read-only gate and canonicalization produced).
+    /// The enumeration is snapshotted with <c>.ToList()</c> before any delete so a sidecar written
+    /// by the subsequent publish pass is never re-encountered; membership is case-insensitive to
+    /// match the case-insensitive read side.</summary>
+    internal static void SweepOrphanSidecars(string storeDir, IEnumerable<string> keptStems)
+    {
+        var expected = new HashSet<string>(
+            keptStems.Select(s => s + ".meta.json"),
+            StringComparer.OrdinalIgnoreCase);
+        foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json").ToList())
+            if (!expected.Contains(Path.GetFileName(metaFile)))
+                File.Delete(metaFile);
+    }
 }

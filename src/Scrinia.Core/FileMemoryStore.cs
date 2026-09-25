@@ -1775,12 +1775,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 scope, blockingSave.Name, blockingSave.SchemaVersion ?? 1,
                 DurableFormats.ArtifactSidecar.Current);
 
-        var expected = new HashSet<string>(
-            entries.Select(e => SanitizeName(e.Name) + ".meta.json"),
-            StringComparer.OrdinalIgnoreCase);
-        foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json").ToList())
-            if (!expected.Contains(Path.GetFileName(metaFile)))
-                File.Delete(metaFile);
+        DurableWriter.SweepOrphanSidecars(storeDir, entries.Select(e => SanitizeName(e.Name)));
 
         PublishIndexUnsafe(entries, scope);
     }
