@@ -3751,62 +3751,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return WithExclusiveLock(scope, () => DeleteArtifactUnsafe(subject, scope));
     }
 
-    private bool DeleteArtifactUnsafe(string subject, string scope)
-    {
-        string path = ArtifactPath(subject, scope);
-        if (!File.Exists(path))
-        {
-            // RULING (remote-mode-leftovers, final fixes, Finding 2): this fallback is the exact
-            // counterpart of the one in Remove above.
-            //
-            // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs). Remove's
-            // name match is case-insensitive; this one was not. On a case-sensitive filesystem
-            // forget("mixedcase") against a memory stored as "MixedCase" therefore returned
-            // removed=true, deleted=false — the caller reported "Forgot: mixedcase." and the tool
-            // answered success, while MixedCase.nmp2 stayed on
-            // disk with its sidecar gone: orphaned, unreachable through list() or search(), and
-            // invisible to the next forget(). Before the sidecar lookup became case-insensitive both
-            // halves returned false and the user got a clean "no artifact found"; fixing one half
-            // and not the other turned a correct no-op into a partial delete reported as success.
-            //
-            // Fixed here rather than at the three forget() call sites: DeleteArtifact is a public
-            // store primitive, the pairing with Remove is what has to agree, and the forget path
-            // path (MemoryTools.Core.cs) sweeps every read scope with a name taken from an address and
-            // has no entry in hand to canonicalize from. Aligning the primitive fixes all callers,
-            // including any added later; canonicalizing at call sites fixes only the ones edited.
-            //
-            // Pinned by CaseSensitiveFileStoreTests.DeleteArtifact_DeletesCaseMismatchedName in
-            // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
-            // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI leg.
-            // The test skips (never silently passes) on a volume that cannot provide the flag. NTFS
-            // folds case by default, so on an ordinary Windows volume the probe above always
-            // succeeds and this branch is never entered; the guard test's directory opts out of
-            // that default, which is what exercises it.
-            //
-            // Tie-break: identical to Remove's, and it matters for the same reason — this is a
-            // delete, a case-sensitive filesystem holding pre-branch data can hold both
-            // "Note.nmp2" and "note.nmp2", and this branch is only entered when the caller asked
-            // for neither exactly. Directory enumeration order is not guaranteed, so candidates are
-            // sorted ordinally and the first is taken. Ordinal sort puts uppercase first, so
-            // "Note.nmp2" wins over "note.nmp2" — the same coin, decided the same way, as Remove's.
-            string dir = Path.GetDirectoryName(path)!;
-            string wanted = Path.GetFileName(path);
-            string? actual = Directory.Exists(dir)
-                ? Directory.EnumerateFiles(dir, "*.nmp2")
-                    .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(p => p, StringComparer.Ordinal)
-                    .FirstOrDefault()
-                : null;
-            if (actual is null) return false;
-            path = actual;
-        }
-
-        File.Delete(path);
-        // Invalidate covers the differently-cased key too: ArtifactLruCache.Invalidate matches its
-        // prefix with OrdinalIgnoreCase, and read keys are "{scope}|{subject}|{ticks}".
-        _artifactCache.Invalidate($"{scope}|{subject}|");
-        return true;
-    }
+    private bool DeleteArtifactUnsafe(string subject, string scope) =>
+        DurableWriter.DeleteArtifact(subject, scope, ArtifactPath, key => _artifactCache.Invalidate(key));
 
     private static string BuildArtifactKey(string subject, string scope)
     {
