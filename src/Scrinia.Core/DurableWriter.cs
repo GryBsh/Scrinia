@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
+using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core;
 
@@ -63,5 +64,42 @@ internal static class DurableWriter
             invalidateArtifactCache($"{scope}|{subject}|");
         });
         await Task.CompletedTask;
+    }
+
+    /// <summary>Atomically copy <paramref name="sourcePath"/> to <paramref name="destPath"/> via a
+    /// unique temp file + <see cref="FileRetry.Run"/> (survives NTFS sharing violations). Used by
+    /// the archive-version path.</summary>
+    internal static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
+    {
+        string tmp = $"{destPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
+            FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
+    }
+
+    /// <summary>Best-effort, non-atomic flush of derived <c>facts.json</c>: a bare
+    /// <c>File.WriteAllBytes</c> (no temp/move/fsync — the derived facts cache is rebuildable),
+    /// swallowing any failure. <paramref name="writeObserver"/> is the store's optional test hook.</summary>
+    internal static (bool Written, byte[] Bytes) TryWriteAllText(string path, string content,
+        Action<string, byte[]>? writeObserver)
+    {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        try
+        {
+            File.WriteAllBytes(path, bytes);
+            writeObserver?.Invoke(path, bytes);
+            return (true, bytes);
+        }
+        catch
+        {
+            return (false, []);
+        }
     }
 }

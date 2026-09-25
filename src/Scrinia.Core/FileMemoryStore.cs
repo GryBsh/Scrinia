@@ -1665,20 +1665,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return Task.CompletedTask;
     }
 
-    private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
-    {
-        string tmp = $"{destPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
-            FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
-        }
-        catch
-        {
-            try { File.Delete(tmp); } catch { }
-            throw;
-        }
-    }
+    private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true) =>
+        DurableWriter.AtomicFileCopy(sourcePath, destPath, overwrite);
 
     private void DeleteSidecar(string name, string storeDir)
     {
@@ -3990,20 +3978,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         catch { return string.Empty; }
     }
 
-    private static (bool Written, byte[] Bytes) TryWriteAllText(string path, string content)
-    {
-        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(content);
-        try
-        {
-            File.WriteAllBytes(path, bytes);
-            WriteObserver?.Invoke(path, bytes);
-            return (true, bytes);
-        }
-        catch
-        {
-            return (false, []);
-        }
-    }
+    private static (bool Written, byte[] Bytes) TryWriteAllText(string path, string content) =>
+        DurableWriter.TryWriteAllText(path, content, WriteObserver);
 
     private string? ResolveFactSidecarPath(string scope)
     {
