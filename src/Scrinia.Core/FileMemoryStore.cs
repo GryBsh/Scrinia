@@ -151,6 +151,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly TopicDiscoveryService _topicDiscoveryService;
     private readonly ListingService _listing;
     private readonly SearchService _search;
+    private readonly ArchiveService _archiveService;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -305,10 +306,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             : new MultiMemoryTransactionCoordinator(this, ResolveMultiMemoryParticipantAsync,
                 participantAdapterFactory);
          RankerOptions = rankerOptions ?? RankerOptions.Default;
-         _search = new SearchService(
-             _listing,
-             (scope, subject) => FormatQualifiedName(scope, subject),
-             () => RankerOptions);
+        _search = new SearchService(
+            _listing,
+            (scope, subject) => FormatQualifiedName(scope, subject),
+            () => RankerOptions);
+        _archiveService = new ArchiveService(
+            (name, scope) => ArtifactPath(name, scope),
+            scope => GetStoreDirForScope(scope),
+            name => SanitizeName(name),
+            (name, scope) => MetaPath(name, scope));
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
@@ -1612,9 +1618,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         DurableFile.AtomicWriteAllText(path, content);
         return Task.CompletedTask;
     }
-
-    private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true) =>
-        DurableWriter.AtomicFileCopy(sourcePath, destPath, overwrite);
 
     private void DeleteSidecar(string name, string storeDir)
     {
@@ -3901,61 +3904,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     internal void ArchiveVersion(string subject, string scope = "local")
     {
-        WithExclusiveLock(scope, () => ArchiveVersionUnsafe(subject, scope));
+        WithExclusiveLock(scope, () => _archiveService.ArchiveVersionUnsafe(subject, scope));
     }
 
-    private void ArchiveVersionUnsafe(string subject, string scope)
-    {
-        string currentPath = ArtifactPath(subject, scope);
-        if (!File.Exists(currentPath))
-            return;
-
-        string storeDir = GetStoreDirForScope(scope);
-        string versionsDir = Path.Combine(storeDir, "versions");
-        Directory.CreateDirectory(versionsDir);
-
-        // Stamped to the MILLISECOND, and never overwriting. A second-granularity stamp copied
-        // with overwrite:true meant two archives of one subject inside the same second silently
-        // replaced each other — losing a prior body from the only directory backing the promise
-        // that a write never destroys what was already there. Two overwrites in a row is the
-        // ordinary shape of an agent correcting itself mid-turn, not a contrived race.
-        // Milliseconds still collide under a tight loop, so the counter is a floor, not a
-        // flourish: the invariant is that this method never replaces an existing archive.
-        string safe = SanitizeName(subject);
-        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
-        string baseName = $"{safe}_{stamp}";
-        string archivePath = Path.Combine(versionsDir, $"{baseName}.nmp2");
-        for (int n = 2; File.Exists(archivePath); n++)
-            archivePath = Path.Combine(versionsDir, $"{baseName}-{n}.nmp2");
-
-        AtomicFileCopy(currentPath, archivePath, overwrite: false);
-
-        // The sidecar travels WITH the body. Archiving the artifact alone made the documented
-        // recovery in docs/server-admin.md corrupting rather than restoring: copying a body back
-        // left the .meta.json describing the newer content, and StoreAsync's own comment records
-        // where that lands — a later append reads the stale ChunkEntries and numbers the appended
-        // chunk from the real count, yielding non-contiguous indices. Best-effort: a missing or
-        // unreadable sidecar must not fail the write this archive is protecting.
-        string metaPath = MetaPath(subject, scope);
-        if (File.Exists(metaPath))
-        {
-            try { AtomicFileCopy(metaPath, Path.ChangeExtension(archivePath, null) + ".meta.json", overwrite: false); }
-            catch (IOException) { /* body is archived; metadata is a best-effort companion */ }
-            catch (UnauthorizedAccessException) { }
-        }
-
-        // Prune old versions — keep only the 10 most recent, and take each body's sidecar with it
-        // so pruning cannot leave a .meta.json describing an artifact that is gone.
-        var stale = Directory.GetFiles(versionsDir, $"{safe}_*.nmp2")
-            .OrderByDescending(f => f, StringComparer.Ordinal)
-            .Skip(10)
-            .ToList();
-        foreach (var old in stale)
-        {
-            try { File.Delete(old); } catch { /* best-effort cleanup */ }
-            try { File.Delete(Path.ChangeExtension(old, null) + ".meta.json"); } catch { }
-        }
-    }
+    private void ArchiveVersionUnsafe(string subject, string scope) =>
+        _archiveService.ArchiveVersionUnsafe(subject, scope);
 
     // ── Topic discovery ──────────────────────────────────────────────────────
 
