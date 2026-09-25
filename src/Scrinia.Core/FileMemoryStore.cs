@@ -3202,7 +3202,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                     verificationFailure, journal.OperationId);
 
             bool currentMembers = AreAppendMembersCurrent(transaction, ct);
-            if (currentMembers && !HasCommittedHash(transaction, journal.CommittedHash, ct))
+            if (currentMembers && !AppendRecoveryVerifier.HasCommittedHash(transaction, journal.CommittedHash, ct))
                 throw RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
                     operationId: operationId);
 
@@ -3323,29 +3323,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     private static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
-        AppendRecoveryVerifier.MatchesAppendMember(transaction.NewArtifact, cancellationToken) && AppendRecoveryVerifier.MatchesAppendMember(transaction.NewSidecar, cancellationToken);
-
-    private static bool HasCommittedHash(AppendTransaction transaction, string? committedHash,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(committedHash))
-            return false;
-
-        RecoveryVerificationResult artifact = RecoveryEvidenceVerifier.VerifySingleAsync(
-            new RecoveryScopeBinding("append", Path.GetDirectoryName(transaction.NewArtifact.Path)!),
-            RecoveryEvidenceKind.AppendJournal, transaction.NewArtifact.Path,
-            new RecoveryExpectedHash(transaction.NewArtifact.Sha256), MaintenanceLimits.Hard,
-            cancellationToken).AsTask().GetAwaiter().GetResult();
-        RecoveryVerificationResult sidecar = RecoveryEvidenceVerifier.VerifySingleAsync(
-            new RecoveryScopeBinding("append", Path.GetDirectoryName(transaction.NewSidecar.Path)!),
-            RecoveryEvidenceKind.AppendJournal, transaction.NewSidecar.Path,
-            new RecoveryExpectedHash(transaction.NewSidecar.Sha256), MaintenanceLimits.Hard,
-            cancellationToken).AsTask().GetAwaiter().GetResult();
-        string actualHash = Convert.ToHexStringLower(SHA256.HashData(
-            (artifact.SourceContent?.Bytes.ToArray() ?? []).Concat(sidecar.SourceContent?.Bytes.ToArray() ?? []).ToArray()));
-        artifact.SourceContent?.Dispose(); sidecar.SourceContent?.Dispose();
-        return string.Equals(actualHash, committedHash, StringComparison.Ordinal);
-    }
+        AppendRecoveryVerifier.MatchesAppendMember(transaction.NewArtifact, cancellationToken) &&         AppendRecoveryVerifier.MatchesAppendMember(transaction.NewSidecar, cancellationToken);
 
     private static bool TryRestoreAppendTransaction(AppendTransaction transaction)
     {
