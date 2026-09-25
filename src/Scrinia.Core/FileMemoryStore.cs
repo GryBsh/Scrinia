@@ -152,6 +152,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly ListingService _listing;
     private readonly SearchService _search;
     private readonly ArchiveService _archiveService;
+    private readonly AppendJournalWriter _appendJournalWriter;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -315,6 +316,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             scope => GetStoreDirForScope(scope),
             name => SanitizeName(name),
             (name, scope) => MetaPath(name, scope));
+        _appendJournalWriter = new AppendJournalWriter(scope => GetStoreDirForScope(scope));
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
@@ -3290,42 +3292,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     private void PersistAppendJournal(AppendTransaction transaction, AppendJournalState state,
-        string? committedHash = null, string? detail = null, CancellationToken? cancellationToken = null)
-    {
-        string storeDirectory = GetStoreDirForScope(transaction.Scope);
-        Directory.CreateDirectory(Path.Combine(storeDirectory, "versions"));
-        string path = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
-        var adapter = new AppendRecoveryAdapter();
-        AppendJournal current;
-        if (!File.Exists(path))
-        {
-            current = AppendJournalCodec.CreatePrepared(transaction);
-        }
-        else
-        {
-            // Compensation is deliberately non-cancellable so rollback can establish a safe state.
-            RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
-                new RecoveryScopeBinding(transaction.Scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
-                path, default, MaintenanceLimits.Hard, cancellationToken.GetValueOrDefault()).AsTask().GetAwaiter().GetResult();
-            if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
-                throw new IOException("Existing append journal could not be verified.");
-            using RecoveryVerificationContent verifiedJournal = verification.SourceContent;
-            RecoveryVerifiedFileMetadata metadata = verifiedJournal.Metadata;
-            RecoveryScopeBinding scopeBinding = new(transaction.Scope, storeDirectory);
-            RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
-                in verifiedJournal, in scopeBinding, path, storeDirectory, RecoveryEvidenceKind.AppendJournal, in metadata);
-            current = adapter.FromEnvelope(((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope), path);
-        }
-        current = current with
-        {
-            ArchiveArtifactStatus = transaction.Archive.ArtifactStatus,
-            ArchiveSidecarStatus = transaction.Archive.SidecarStatus
-        };
-        AppendJournal journal = AppendJournalCodec.WithState(current, state, committedHash, detail);
-        byte[] bytes = RecoveryEnvelopeCodec.Serialize(adapter.ToEnvelope(journal));
-        DurableFile.AtomicWriteAllBytesForAppend(path, bytes, transaction.OperationId,
-            AppendFaultPoint.JournalWrite, AppendFaultPoint.JournalFlush);
-    }
+        string? committedHash = null, string? detail = null, CancellationToken? cancellationToken = null) =>
+        _appendJournalWriter.PersistAppendJournal(transaction, state, committedHash, detail, cancellationToken);
 
     private void DeleteAppendJournal(AppendTransaction transaction)
     {
