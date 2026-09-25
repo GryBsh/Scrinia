@@ -8,8 +8,14 @@ namespace Scrinia.Core;
 internal sealed class AppendJournalWriter
 {
     private readonly Func<string, string> _storeDirForScope;
+    private readonly Func<AppendFaultPoint, string, string, Exception?> _injectAppendFault;
 
-    public AppendJournalWriter(Func<string, string> storeDirForScope) => _storeDirForScope = storeDirForScope;
+    public AppendJournalWriter(Func<string, string> storeDirForScope,
+        Func<AppendFaultPoint, string, string, Exception?> injectAppendFault)
+    {
+        _storeDirForScope = storeDirForScope;
+        _injectAppendFault = injectAppendFault;
+    }
 
     public void PersistAppendJournal(AppendTransaction transaction, AppendJournalState state,
         string? committedHash = null, string? detail = null, CancellationToken? cancellationToken = null)
@@ -47,5 +53,15 @@ internal sealed class AppendJournalWriter
         byte[] bytes = RecoveryEnvelopeCodec.Serialize(adapter.ToEnvelope(journal));
         DurableFile.AtomicWriteAllBytesForAppend(path, bytes, transaction.OperationId,
             AppendFaultPoint.JournalWrite, AppendFaultPoint.JournalFlush);
+    }
+
+    /// <summary>Delete an append journal from <c>versions/</c>, guarded by the append journal-delete
+    /// fault point. Pure durable-delete leaf: no recovery verification, no rollback bookkeeping.</summary>
+    public void TryDeleteAppendJournal(string path, string operationId)
+    {
+        Exception? failure = _injectAppendFault(AppendFaultPoint.JournalDelete, operationId, path);
+        if (failure is not null)
+            throw failure;
+        File.Delete(path);
     }
 }

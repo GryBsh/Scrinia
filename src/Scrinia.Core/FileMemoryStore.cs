@@ -316,7 +316,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             scope => GetStoreDirForScope(scope),
             name => SanitizeName(name),
             (name, scope) => MetaPath(name, scope));
-        _appendJournalWriter = new AppendJournalWriter(scope => GetStoreDirForScope(scope));
+        _appendJournalWriter = new AppendJournalWriter(
+            scope => GetStoreDirForScope(scope),
+            InjectAppendFault);
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
@@ -3301,13 +3303,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         TryDeleteAppendJournal(path, transaction.OperationId);
     }
 
-    private static void TryDeleteAppendJournal(string path, string operationId)
-    {
-        Exception? failure = InjectAppendFault(AppendFaultPoint.JournalDelete, operationId, path);
-        if (failure is not null)
-            throw failure;
-        File.Delete(path);
-    }
+    private void TryDeleteAppendJournal(string path, string operationId) =>
+        _appendJournalWriter.TryDeleteAppendJournal(path, operationId);
 
     private static async Task VerifyAppendMemberAsync(
         RawMemberSnapshot expected, string operationId, CancellationToken cancellationToken)
