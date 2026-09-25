@@ -191,4 +191,35 @@ internal static class DurableWriter
         try { File.Delete(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
+
+    /// <summary>Writes the default <c>.scrinia/.gitignore</c> content atomically. Pure durable-write
+    /// leaf: fixed content constant, no fault injection, no recovery orchestration. Caller must have
+    /// already ensured the parent directory exists.</summary>
+    internal static void WriteDefaultGitIgnore(string gitIgnorePath)
+    {
+        string content = """
+            # Lock files (runtime artifacts from cross-process file locking)
+            **/*.lock
+
+            # Export bundles (generated, can be re-exported)
+            exports/
+
+            # Archived versions (auto-pruned, not source-controlled)
+            **/versions/
+
+            # Temporary files from interrupted writes
+            **/*.tmp
+
+            # Interrupted topic restore journals (recovered on the next access)
+            **/.restore-journal.json
+
+            # Vector indexes (derived from topic content; rebuild with `scri reindex`)
+            embeddings/
+
+            # Consolidation bookkeeping (rebuilt from sidecar state on next run)
+            .last-consolidation
+            .consolidate-progress.json
+            """.Replace("            ", "");
+        DurableFile.AtomicWriteAllText(gitIgnorePath, content);
+    }
 }

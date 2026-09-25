@@ -31,7 +31,7 @@ public class Wave2RemainingTests
     }
     [Fact] public void DerivedClassifier_Anchored()
     {
-        var src = File.ReadAllText(R("src/Scrinia.Core/FileMemoryStore.cs"));
+        var src = File.ReadAllText(R("src/Scrinia.Core/DurableWriter.cs"));
         Assert.Contains("embeddings/", src);
     }
 }

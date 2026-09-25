@@ -345,32 +345,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
     }
 
-    private static void WriteDefaultGitIgnore(string gitIgnorePath)
-    {
-        AtomicWriteAllText(gitIgnorePath, """
-            # Lock files (runtime artifacts from cross-process file locking)
-            **/*.lock
-
-            # Export bundles (generated, can be re-exported)
-            exports/
-
-            # Archived versions (auto-pruned, not source-controlled)
-            **/versions/
-
-            # Temporary files from interrupted writes
-            **/*.tmp
-
-            # Interrupted topic restore journals (recovered on the next access)
-            **/.restore-journal.json
-
-            # Vector indexes (derived from topic content; rebuild with `scri reindex`)
-            embeddings/
-
-            # Consolidation bookkeeping (rebuilt from sidecar state on next run)
-            .last-consolidation
-            .consolidate-progress.json
-            """.Replace("            ", ""));
-    }
+    private static void WriteDefaultGitIgnore(string gitIgnorePath) =>
+        DurableWriter.WriteDefaultGitIgnore(gitIgnorePath);
 
     // ── Naming ───────────────────────────────────────────────────────────────
 
