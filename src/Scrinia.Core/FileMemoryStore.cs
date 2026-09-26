@@ -3345,32 +3345,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 transaction.OldSidecar, transaction.OperationId, cancellationToken);
     }
 
-    private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope)
-    {
-        try
-        {
-            var adapter = new AppendRecoveryAdapter();
-            string storeDirectory = Path.GetDirectoryName(Path.GetDirectoryName(journalPath))!;
-            // Compensation is deliberately non-cancellable so rollback can establish a safe state.
-            RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
-                new RecoveryScopeBinding(scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
-                journalPath, default, MaintenanceLimits.Hard, CancellationToken.None)
-                .AsTask().GetAwaiter().GetResult();
-            if (verification.Outcome != RecoveryVerificationOutcome.Verified || verification.SourceContent is null)
-                return null;
-            using RecoveryVerificationContent verifiedJournal = verification.SourceContent;
-            RecoveryVerifiedFileMetadata metadata = verifiedJournal.Metadata;
-            RecoveryScopeBinding scopeBinding = new(scope, storeDirectory);
-            RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
-                in verifiedJournal, in scopeBinding, journalPath, storeDirectory, RecoveryEvidenceKind.AppendJournal, in metadata);
-            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope);
-            return adapter.FromEnvelope(envelope, journalPath).ToTransaction();
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope) =>
+        AppendRollbackJournalReader.TryReadAppendTransactionForRollback(journalPath, scope);
 
     private static bool ReconcileArchiveMember(
         ArchiveMemberStatus status, string? destination, RawMemberSnapshot expected, string operationId,
