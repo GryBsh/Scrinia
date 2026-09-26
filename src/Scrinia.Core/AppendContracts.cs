@@ -161,3 +161,22 @@ internal enum AppendFaultPoint
     BeforeEvent,
     AfterEvent
 }
+
+/// <summary>Factory for the append recovery-blocked exception, co-located with the
+/// <see cref="AppendStoreException"/> / <see cref="AppendRecoveryInfo"/> / <see cref="AppendStoreErrorCode"/>
+/// contract it builds. Pure builder: no fault injection, no durable write, no rollback bookkeeping.</summary>
+internal static class AppendRecoveryBuilder
+{
+    /// <summary>Builds the <see cref="AppendStoreException"/> that signals an append needs operator
+    /// recovery before it can be retried. <paramref name="operationId"/> defaults to "recovery";
+    /// <paramref name="inner"/> defaults to null.</summary>
+    public static AppendStoreException RecoveryRequired(string journalPath, string detail,
+        Exception? inner = null, string operationId = "recovery") =>
+        new(AppendStoreErrorCode.RecoveryRequired, operationId,
+            $"Append recovery is required at '{journalPath}': {detail}", inner,
+            new AppendRecoveryInfo(
+                journalPath,
+                AppendJournalState.RecoveryRequired.ToString(),
+                "resolve the retained append journal before retrying",
+                detail));
+}

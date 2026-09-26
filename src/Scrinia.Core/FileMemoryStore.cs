@@ -2287,7 +2287,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                     {
                         // Retain the existing journal when recovery-state persistence itself fails.
                     }
-                    throw RecoveryRequired(
+                    throw AppendRecoveryBuilder.RecoveryRequired(
                         AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                         "Create rollback could not prove both missing live members were restored.",
                         operationId: appendOperationId!);
@@ -2299,7 +2299,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 }
                 catch (Exception recoveryException)
                 {
-                    throw RecoveryRequired(
+                    throw AppendRecoveryBuilder.RecoveryRequired(
                         AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                         "Create rollback completed but the journal could not be removed.",
                         recoveryException, appendOperationId!);
@@ -2747,7 +2747,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                     {
                         // Keep the existing journal when recovery-state persistence fails.
                     }
-                    throw RecoveryRequired(
+                    throw AppendRecoveryBuilder.RecoveryRequired(
                         journalPath,
                         detail,
                         exception, operationId);
@@ -2761,7 +2761,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 }
                 catch (Exception recoveryException)
                 {
-                    throw RecoveryRequired(
+                    throw AppendRecoveryBuilder.RecoveryRequired(
                         AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                         "Cancellation rollback completed but the journal could not be removed.",
                         recoveryException, operationId);
@@ -2777,12 +2777,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             }
             catch (Exception journalFailure)
             {
-                throw RecoveryRequired(
+                throw AppendRecoveryBuilder.RecoveryRequired(
                     AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                     "Archive publication failed and its recovery state could not be persisted.",
                     new AggregateException(exception, journalFailure), operationId);
             }
-            throw RecoveryRequired(
+            throw AppendRecoveryBuilder.RecoveryRequired(
                 AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                 "Archive publication did not complete safely.", exception, operationId);
         }
@@ -2805,7 +2805,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 {
                     // Preserve the original recovery boundary if journal persistence itself fails.
                 }
-                throw RecoveryRequired(
+                throw AppendRecoveryBuilder.RecoveryRequired(
                     AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                     "Pre-commit rollback could not prove both live members were restored.",
                     exception, operationId);
@@ -2819,7 +2819,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 }
                 catch (Exception recoveryException)
                 {
-                    throw RecoveryRequired(
+                    throw AppendRecoveryBuilder.RecoveryRequired(
                     AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(scope), "versions")),
                     "Rollback completed but the journal could not be removed.", recoveryException, operationId);
             }
@@ -3167,7 +3167,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 : exception is RecoveryEnvelopeException
                     ? ((exception as RecoveryEnvelopeException)?.OperationId ?? operationId)
                     : operationId;
-            throw RecoveryRequired(journalPath, "The append journal failed integrity verification.", exception,
+            throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The append journal failed integrity verification.", exception,
                 recoveryOperationId);
         }
 
@@ -3198,19 +3198,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             Exception? verificationFailure = InjectAppendFault(
                 AppendFaultPoint.VerificationRead, journal.OperationId, journalPath);
             if (verificationFailure is not null)
-                throw RecoveryRequired(journalPath, "Committed append verification could not be completed.",
+                throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "Committed append verification could not be completed.",
                     verificationFailure, journal.OperationId);
 
             bool currentMembers = AreAppendMembersCurrent(transaction, ct);
             if (currentMembers && !AppendRecoveryVerifier.HasCommittedHash(transaction, journal.CommittedHash, ct))
-                throw RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
+                throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
                     operationId: operationId);
 
             if (currentMembers)
             {
                 ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, ct);
                 if (cleanup.Failed)
-                    throw RecoveryRequired(journalPath,
+                    throw AppendRecoveryBuilder.RecoveryRequired(journalPath,
                         cleanup.Detail,
                         operationId: transaction.OperationId);
 
@@ -3220,7 +3220,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 }
                 catch (Exception exception)
                 {
-                    throw RecoveryRequired(journalPath,
+                    throw AppendRecoveryBuilder.RecoveryRequired(journalPath,
                         "Committed append cleanup could not remove its journal evidence.",
                         exception, transaction.OperationId);
                 }
@@ -3228,7 +3228,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             }
 
             if (!TryRestoreAppendTransaction(transaction))
-                throw RecoveryRequired(journalPath, "The committed append does not match its recorded bytes",
+                throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append does not match its recorded bytes",
                     operationId: operationId);
         }
         else if (!TryRestoreAppendTransaction(transaction))
@@ -3290,7 +3290,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 ? journalFailure
                 : new AggregateException(detail, failure, journalFailure);
         }
-        throw RecoveryRequired(journalPath, detail, failure, operationId);
+        throw AppendRecoveryBuilder.RecoveryRequired(journalPath, detail, failure, operationId);
     }
 
     private void PersistAppendJournal(AppendTransaction transaction, AppendJournalState state,
@@ -3414,16 +3414,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             return false;
         }
     }
-
-    private static AppendStoreException RecoveryRequired(string journalPath, string detail,
-        Exception? inner = null, string operationId = "recovery") =>
-        new(AppendStoreErrorCode.RecoveryRequired, operationId,
-            $"Append recovery is required at '{journalPath}': {detail}", inner,
-            new AppendRecoveryInfo(
-                journalPath,
-                AppendJournalState.RecoveryRequired.ToString(),
-                "resolve the retained append journal before retrying",
-                detail));
 
     /// <summary>Assembles the index entry from the derived half plus the store's own bookkeeping.
     /// <see cref="AttributeMigration.Forward"/> is the same safety net both pre-collapse write paths
