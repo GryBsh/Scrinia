@@ -1,0 +1,4 @@
+{
+  "Scrinia:Embeddings:Provider": "model2vec",
+  "Scrinia:Llm:Provider": "claude-cli"
+}

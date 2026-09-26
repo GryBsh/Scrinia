@@ -1,0 +1,101 @@
+{
+  "address": "/findings/transactional-participant-retry-elapsed-assertion",
+  "artifactKey": "artifacts/findings/transactional-participant-retry-elapsed-assertion.nmp2",
+  "originalBytes": 230,
+  "chunkCount": 1,
+  "createdAt": "2026-09-14T19:29:24.7210217+00:00",
+  "contentPreview": "TransactionalParticipantAdapterTests now asserts RetryElapsedMilliseconds is non-negative rather than exactly zero; elapsed metadata is timing-dependent even when retry delays are zero. Focused test run passed 28/28 on 2026-09-14.",
+  "keywords": [
+    "09",
+    "14",
+    "2026",
+    "28",
+    "asserts",
+    "delays",
+    "dependent",
+    "deterministic assertion",
+    "elapsed",
+    "exactly",
+    "focused",
+    "metadata",
+    "negative",
+    "non",
+    "passed",
+    "rather",
+    "retry",
+    "retry elapsed metadata",
+    "retryelapsedmilliseconds",
+    "run",
+    "test",
+    "timing",
+    "transactionalparticipantadaptertests",
+    "zero",
+    "zero-delay retry"
+  ],
+  "termFrequencies": {
+    "09": 3,
+    "14": 3,
+    "2026": 3,
+    "28": 4,
+    "assertion": 5,
+    "assertions": 3,
+    "asserts": 3,
+    "change": 3,
+    "cs": 3,
+    "delay": 5,
+    "delays": 3,
+    "dependent": 3,
+    "deterministic": 5,
+    "elapsed": 11,
+    "exactly": 3,
+    "file": 3,
+    "flaky": 3,
+    "focused": 9,
+    "mention": 3,
+    "metadata": 11,
+    "negative": 3,
+    "non": 3,
+    "orphan": 3,
+    "passed": 3,
+    "rather": 3,
+    "retry": 16,
+    "retryelapsedmilliseconds": 9,
+    "review": 3,
+    "run": 3,
+    "scrinia": 3,
+    "test": 6,
+    "tests": 6,
+    "timing": 3,
+    "topic": 6,
+    "transactional": 3,
+    "transactionalparticipantadaptertests": 12,
+    "true": 3,
+    "zero": 9
+  },
+  "codeRefs": {
+    "tests/Scrinia.Tests/TransactionalParticipantAdapterTests.cs": "b7b70dbfbda9d2a49557fb324eceab6a14f7d5930c19c6acc4180d2ce1ba6908"
+  },
+  "attributes": {
+    "file": [
+      "tests/Scrinia.Tests/TransactionalParticipantAdapterTests.cs"
+    ],
+    "topic": [
+      "flaky-test",
+      "transactional",
+      "transactionalparticipantadaptertests",
+      "retryelapsedmilliseconds",
+      "focused"
+    ],
+    "review": [
+      "when retry elapsed metadata assertions change"
+    ],
+    "orphan": [
+      "true"
+    ]
+  },
+  "agentKeywords": [
+    "retry elapsed metadata",
+    "deterministic assertion",
+    "zero-delay retry"
+  ]
+}
