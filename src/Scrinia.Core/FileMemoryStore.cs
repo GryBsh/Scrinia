@@ -2237,13 +2237,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 new ArchivePlan(false, null, null, ArchiveMemberStatus.NotRequired,
                     ArchiveMemberStatus.NotRequired, []), DateTimeOffset.UtcNow);
             LastPreparedAppendTransactionForTest = createTransaction;
-            PersistAppendJournal(createTransaction, AppendJournalState.Prepared);
+            _appendJournalWriter.PersistAppendJournal(createTransaction, AppendJournalState.Prepared);
         }
 
         try
         {
             if (createTransaction is not null)
-                PersistAppendJournal(createTransaction, AppendJournalState.NewPairInProgress);
+                _appendJournalWriter.PersistAppendJournal(createTransaction, AppendJournalState.NewPairInProgress);
             await WriteArtifactAsync(subject, scope, artifact, appendOperationId, ct);
             if (appendOperationId is null)
                 Upsert(entry, scope);
@@ -2256,9 +2256,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 await VerifyAppendMemberAsync(createTransaction.NewSidecar, appendOperationId!, ct);
                 string committedHash = Convert.ToHexStringLower(SHA256.HashData(
                     createTransaction.NewArtifact.Bytes.Concat(createTransaction.NewSidecar.Bytes).ToArray()));
-                PersistAppendJournal(createTransaction, AppendJournalState.Committed, committedHash);
+                _appendJournalWriter.PersistAppendJournal(createTransaction, AppendJournalState.Committed, committedHash);
                 appendCommitted = true;
-                DeleteAppendJournal(createTransaction);
+                _appendJournalWriter.DeleteAppendJournal(createTransaction);
             }
         }
         catch (Exception exception) when (appendCommitted)
@@ -2280,7 +2280,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 {
                     try
                     {
-                        PersistAppendJournal(createTransaction, AppendJournalState.RecoveryRequired,
+                        _appendJournalWriter.PersistAppendJournal(createTransaction, AppendJournalState.RecoveryRequired,
                             detail: "Create rollback could not prove both original live members were restored.");
                     }
                     catch
@@ -2294,8 +2294,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 }
                 try
                 {
-                    PersistAppendJournal(createTransaction, AppendJournalState.RolledBack);
-                    DeleteAppendJournal(createTransaction);
+                    _appendJournalWriter.PersistAppendJournal(createTransaction, AppendJournalState.RolledBack);
+                    _appendJournalWriter.DeleteAppendJournal(createTransaction);
                 }
                 catch (Exception recoveryException)
                 {
@@ -2708,8 +2708,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             startedAt);
         LastPreparedAppendTransactionForTest = transaction;
 
-        PersistAppendJournal(transaction, AppendJournalState.Prepared);
-        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Prepared);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
 
         // Archive publication is part of the frozen plan boundary. If it fails, no live member has
         // been touched and there is nothing to roll back.
@@ -2717,7 +2717,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             transaction = await PublishFrozenArchiveAsync(transaction, ct);
             LastPreparedAppendTransactionForTest = transaction;
-            PersistAppendJournal(transaction, AppendJournalState.Archived);
+            _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Archived);
         }
         catch (Exception exception)
         {
@@ -2740,7 +2740,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                         : "Cancellation rollback could not prove both live members were restored.";
                     try
                     {
-                        PersistAppendJournal(rollbackTransaction ?? transaction,
+                        _appendJournalWriter.PersistAppendJournal(rollbackTransaction ?? transaction,
                             AppendJournalState.RecoveryRequired, detail: detail);
                     }
                     catch
@@ -2755,9 +2755,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
                 try
                 {
-                    PersistAppendJournal(transaction, AppendJournalState.RolledBack,
+                    _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RolledBack,
                         detail: "Append cancellation was rolled back byte-for-byte.");
-                    DeleteAppendJournal(transaction);
+                    _appendJournalWriter.DeleteAppendJournal(transaction);
                 }
                 catch (Exception recoveryException)
                 {
@@ -2772,7 +2772,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
             try
             {
-                PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
+                _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
                     detail: "Archive publication did not complete; retained evidence requires recovery.");
             }
             catch (Exception journalFailure)
@@ -2798,7 +2798,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             {
                 try
                 {
-                    PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
+                    _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
                         detail: "Pre-commit rollback could not prove both live members were restored.");
                 }
                 catch
@@ -2813,9 +2813,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
                 try
                 {
-                    PersistAppendJournal(transaction, AppendJournalState.RolledBack,
+                    _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RolledBack,
                         detail: "Pre-commit append failure was rolled back byte-for-byte.");
-                    DeleteAppendJournal(transaction);
+                    _appendJournalWriter.DeleteAppendJournal(transaction);
                 }
                 catch (Exception recoveryException)
                 {
@@ -2849,7 +2849,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             try
             {
-                DeleteAppendJournal(transaction);
+                _appendJournalWriter.DeleteAppendJournal(transaction);
             }
             catch (Exception exception)
             {
@@ -2867,7 +2867,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
             try
             {
-                PersistAppendJournal(transaction, AppendJournalState.CleanupPending,
+                _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.CleanupPending,
                     committedHash, cleanup.Detail);
             }
             catch (Exception exception)
@@ -2960,7 +2960,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         ArchiveMemberStatus artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!, transaction.OperationId,
             AppendFaultPoint.ArchiveArtifactWrite, AppendFaultPoint.ArchiveArtifactFlush, ct);
             transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
-        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
 
         ArchiveMemberStatus sidecarStatus = ArchiveMemberStatus.NotRequired;
         if (transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null)
@@ -2968,7 +2968,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush, ct);
 
         transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, sidecarStatus) };
-        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
         return transaction;
     }
 
@@ -3098,14 +3098,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         AppendTransaction transaction, ArtifactEntry entry, string artifact, CancellationToken ct)
     {
         await WriteArtifactAsync(entry.Name, transaction.Scope, artifact, transaction.OperationId, ct);
-        PersistAppendJournal(transaction, AppendJournalState.NewPairInProgress);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.NewPairInProgress);
         UpsertForAppend(entry, transaction.Scope, transaction.OperationId);
 
         await VerifyAppendMemberAsync(transaction.NewArtifact, transaction.OperationId, ct);
         await VerifyAppendMemberAsync(transaction.NewSidecar, transaction.OperationId, ct);
         string committedHash = Convert.ToHexStringLower(SHA256.HashData(
             transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
-        PersistAppendJournal(transaction, AppendJournalState.Committed, committedHash);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Committed, committedHash);
     }
 
     internal async Task RecoverAppendAsync(string scope, CancellationToken cancellationToken = default)
@@ -3126,7 +3126,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             ?? throw new InvalidOperationException("An append transaction must be prepared before the recovery seam is used.");
         transaction = transaction with { OperationId = operationId };
         LastPreparedAppendTransactionForTest = transaction;
-        PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
             detail: "Deterministic recovery evidence created for testing.");
     }
 
@@ -3181,7 +3181,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             try
             {
                 transaction = ReplayArchiveMembers(transaction, journalPath, ct);
-                PersistAppendJournal(transaction, AppendJournalState.Archived,
+                _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Archived,
                     cancellationToken: ct,
                     detail: "Recorded archive members were deterministically completed.");
             }
@@ -3216,7 +3216,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
                 try
                 {
-                    TryDeleteAppendJournal(journalPath, transaction.OperationId);
+                    _appendJournalWriter.TryDeleteAppendJournal(journalPath, transaction.OperationId);
                 }
                 catch (Exception exception)
                 {
@@ -3239,8 +3239,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         try
         {
-            PersistAppendJournal(transaction, AppendJournalState.RolledBack);
-            TryDeleteAppendJournal(journalPath, transaction.OperationId);
+            _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RolledBack);
+            _appendJournalWriter.TryDeleteAppendJournal(journalPath, transaction.OperationId);
         }
         catch (Exception exception)
         {
@@ -3263,7 +3263,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 transaction.OperationId, AppendFaultPoint.ArchiveArtifactWrite,
                 AppendFaultPoint.ArchiveArtifactFlush, cancellationToken);
         transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
-        PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
+        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
 
         ArchiveMemberStatus sidecarStatus = plan.SidecarStatus;
         if (sidecarStatus is not (ArchiveMemberStatus.AlreadyPresentVerified or ArchiveMemberStatus.Created))
@@ -3282,7 +3282,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     {
         try
         {
-            PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired, detail: detail);
+            _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired, detail: detail);
         }
         catch (Exception journalFailure)
         {
@@ -3292,19 +3292,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
         throw AppendRecoveryBuilder.RecoveryRequired(journalPath, detail, failure, operationId);
     }
-
-    private void PersistAppendJournal(AppendTransaction transaction, AppendJournalState state,
-        string? committedHash = null, string? detail = null, CancellationToken? cancellationToken = null) =>
-        _appendJournalWriter.PersistAppendJournal(transaction, state, committedHash, detail, cancellationToken);
-
-    private void DeleteAppendJournal(AppendTransaction transaction)
-    {
-        string path = AppendJournalCodec.GetJournalPath(Path.Combine(GetStoreDirForScope(transaction.Scope), "versions"));
-        TryDeleteAppendJournal(path, transaction.OperationId);
-    }
-
-    private void TryDeleteAppendJournal(string path, string operationId) =>
-        _appendJournalWriter.TryDeleteAppendJournal(path, operationId);
 
     private static async Task VerifyAppendMemberAsync(
         RawMemberSnapshot expected, string operationId, CancellationToken cancellationToken)

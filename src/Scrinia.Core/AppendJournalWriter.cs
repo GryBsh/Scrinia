@@ -64,4 +64,13 @@ internal sealed class AppendJournalWriter
             throw failure;
         File.Delete(path);
     }
+
+    /// <summary>Derive the <c>versions/</c> append-journal path for a transaction and delete it through
+    /// the fault-guarded durable-delete leaf. Pure lifecycle method: no recovery verification, no
+    /// rollback bookkeeping.</summary>
+    public void DeleteAppendJournal(AppendTransaction transaction)
+    {
+        string path = AppendJournalCodec.GetJournalPath(Path.Combine(_storeDirForScope(transaction.Scope), "versions"));
+        TryDeleteAppendJournal(path, transaction.OperationId);
+    }
 }
