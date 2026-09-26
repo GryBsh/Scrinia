@@ -257,4 +257,13 @@ internal static class DurableWriter
         }
         return false;
     }
+
+    /// <summary>Terminal delete of an already-resolved sidecar file. The caller (<see cref="FileMemoryStore.Remove"/>)
+    /// performs the case-insensitive resolution via <see cref="FileMemoryStore.ResolveSidecarPath"/>; this owns only
+    /// the plain <c>File.Delete</c>, matching the role of <see cref="DeleteArtifact"/> for the artifact body. Pure durable-delete
+    /// leaf: no fault injection, no recovery orchestration, no case fallback.</summary>
+    internal static void DeleteSidecar(string sidecarPath)
+    {
+        File.Delete(sidecarPath);
+    }
 }

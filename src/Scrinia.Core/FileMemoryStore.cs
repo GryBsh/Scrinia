@@ -1889,7 +1889,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 return false;
 
             // Delete the sidecar file
-            File.Delete(metaPath);
+            DurableWriter.DeleteSidecar(metaPath);
 
             // Copy-on-write cache update — see the matching comment in Upsert for why this must
             // install a NEW CachedIndex and must not re-read the scope's sidecars.
