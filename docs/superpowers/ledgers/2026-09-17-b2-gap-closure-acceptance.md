@@ -23,7 +23,7 @@ implementation phase.
 | --- | --- | --- |
 | Task 1 baseline-fixture minors | Missing append paths, restore body/sidecar paths, and a production-faithful committed file-entity fixture remain identified in the plan. | Deferred to a later implementation phase; no fixture work or fixture-result claim is made here. |
 | Task 3 reparse fixture | Platform-specific reparse coverage requires a deterministic seam and implementation-backed tests. | Deferred to a later implementation phase; this ledger makes no portability or regression-result claim. |
-| Task 6 bare-`complete` recovery journal | Independently existing completed-journal coverage may remain as contextual evidence, but it is not new B2 acceptance evidence. | Deferred for explicit B2 fixture and acceptance coverage in a later implementation phase. |
+| Task 6 bare-`complete` recovery journal | Independently existing completed-journal coverage may remain as contextual evidence, but it is not new B2 acceptance evidence. | Closed by P34 (commit 806d4bd): the half-replay risk is content-gated via RecoverCommittedCleanup; the empty-entries residual is rejected as Malformed at ParseTypedBodyDocument (RecoveryEnvelope.cs, during ReadVerified) before discovery computes a subject. Regression test EmptyEntriesCompletedJournal_FailsClosedAsMalformedBlockWithoutCrashing (JournaledRestoreRecoveryTests.cs) locks in the closure. |
 | B1 scope-contamination disclosure | The scope audit preserves the ruling that unrelated or unqualified evidence cannot widen another scope's recovery barrier. | Documentation reconciliation only; no B2 remediation or acceptance is claimed. |
 | Envelope hygiene and non-removed audit residue | Duplicate validation, `CanonicalPathEquals`, and sync-over-async paths remain subject to their existing contracts. | Any envelope-hygiene or source/test remediation is deferred. This ledger neither removes paths nor accepts them as remediated. |
 
@@ -135,7 +135,9 @@ scope-audit classification table below.
   existing production code. `LegacyMigrationState.cs` lines 424–425 reject a "complete" marker
   without a preceding "prepared"; the closest existing test is
   `LegacyMigrationServiceTests.CompletedJournalWithTrailingContentIsRejectedByInspectAndMigrate`
-  (InlineData "complete\nprepared" rejected). No new code or test was written this phase.
+     (InlineData "complete\nprepared" rejected). No new code or test was written this phase.
+
+   P34 (2026-09-27) closed the restore-journal half of this finding with explicit acceptance coverage. The original M13 half-replay premise is unreachable in the converged architecture: a completed restore journal is admitted as Committed and routed through `RecoverCommittedCleanup`, which content-verifies every entry and fails closed on any hash mismatch or missing file (see `CompletedJournalDestinationIntegrityFailure_IdentifiesTheRetainedJournal`). The only live residual was a malformed restore envelope with empty `entries`: `SubjectOf` computes its subject before `ValidateAdmission` can reject the empty array, and the discovery catch filters skip `InvalidOperationException`, so discovery would crash. Tracing confirmed `ParseTypedBodyDocument` (RecoveryEnvelope.cs, during `ReadVerified`, before `adapter.ConsumeParsed`) already rejects `restore.Entries is not { Count: > 0 }` as a `Malformed` block, so recovery fails closed there. The empty-entries regression test locks this in; no production source change was required. The `LegacyMigrationState` config-migration rejection (lines 424–425) remains a separate, still-valid guard for the tracking-journal path.
 - **scope-contamination:** The seven scope-audit paths above are unrelated to B2 production
   behavior. None were reclassified as B2 ownership.
 
@@ -150,4 +152,4 @@ reconciliation:
 - Build 0 errors
 - Diff clean
 
-Gap-closure is documentation-only and requires no new verification.
+Gap-closure is documentation-only and requires no new verification — except that Task 6 bare-`complete` recovery journal is now closed by P34 (commit 806d4bd) with a committed regression test (`EmptyEntriesCompletedJournal_FailsClosedAsMalformedBlockWithoutCrashing`, JournaledRestoreRecoveryTests.cs); that finding's closure is verification-backed, not docs-only.
