@@ -36,6 +36,12 @@ internal static class AppendRecoveryVerifier
     public static bool MatchesAppendState(RawMemberSnapshot expected) =>
         expected.Existed ? MatchesAppendMember(expected) : !File.Exists(expected.Path);
 
+    /// <summary>Prove that a recovered append's new artifact + sidecar members are both present and
+    /// verified. Pure predicate: no fault injection, no durable write, no rollback bookkeeping.</summary>
+    public static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
+        MatchesAppendMember(transaction.NewArtifact, cancellationToken) &&
+        MatchesAppendMember(transaction.NewSidecar, cancellationToken);
+
     /// <summary>Prove that a committed append's live artifact + sidecar bytes, recovered through the
     /// frozen verifier, hash-combine to the journal's recorded committed hash. Pure committed-integrity
     /// proof: no fault injection, no durable write, no rollback.</summary>

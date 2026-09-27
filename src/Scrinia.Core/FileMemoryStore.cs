@@ -3081,7 +3081,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             }
         }
 
-        bool publicationWasVisible = AreAppendMembersCurrent(transaction, ct);
+        bool publicationWasVisible = AppendRecoveryVerifier.AreAppendMembersCurrent(transaction, ct);
         if (journal.State is AppendJournalState.Committed or AppendJournalState.CleanupPending)
         {
             Exception? verificationFailure = InjectAppendFault(
@@ -3090,7 +3090,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "Committed append verification could not be completed.",
                     verificationFailure, journal.OperationId);
 
-            bool currentMembers = AreAppendMembersCurrent(transaction, ct);
+            bool currentMembers = AppendRecoveryVerifier.AreAppendMembersCurrent(transaction, ct);
             if (currentMembers && !AppendRecoveryVerifier.HasCommittedHash(transaction, journal.CommittedHash, ct))
                 throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
                     operationId: operationId);
@@ -3155,11 +3155,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
         throw AppendRecoveryBuilder.RecoveryRequired(journalPath, detail, failure, operationId);
     }
-
-    private static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
-        AppendRecoveryVerifier.MatchesAppendMember(transaction.NewArtifact, cancellationToken) &&         AppendRecoveryVerifier.MatchesAppendMember(transaction.NewSidecar, cancellationToken);
-
-
 
     private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope) =>
         AppendRollbackJournalReader.TryReadAppendTransactionForRollback(journalPath, scope);
