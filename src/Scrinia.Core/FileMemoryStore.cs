@@ -157,6 +157,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly AppendArchiveReplayer _archiveReplayer;
     private readonly AppendMemberVerifier _memberVerifier;
     private readonly AppendRollbackExecutor _rollbackExecutor;
+    private readonly AppendRecoveryConductor _recoveryConductor;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -331,6 +332,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             InjectAppendFault);
         _rollbackExecutor = new AppendRollbackExecutor(
             InjectAppendFault);
+        _recoveryConductor = new AppendRecoveryConductor(
+            InjectAppendFault, _archiveReplayer, _appendJournalWriter, _recoveryEnforcer, _archiveService, _rollbackExecutor);
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
@@ -2342,8 +2345,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), cancellationToken: cancellationToken);
-        await RecoverAppendUnsafeAsync(scope, "store-recovery", cancellationToken).ConfigureAwait(false);
+        string storeDirectory = GetStoreDirForScope(scope);
+        RecoverScopeUnsafe(scope, storeDirectory, cancellationToken: cancellationToken);
+        await _recoveryConductor.RecoverAppendUnsafeAsync(scope, storeDirectory, "store-recovery", cancellationToken).ConfigureAwait(false);
 
         ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope)
             .FirstOrDefault(entry => MemoryNaming.NameEquals(entry.Name, subject));
@@ -2547,8 +2551,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // Append admission shares the persistent scope with the restore journal.  Recover
             // that journal before deciding whether this is a create or an append; otherwise a
             // missing live artifact can enter CreateForAppendAsync and bypass the recovery barrier.
-            RecoverScopeUnsafe(scope, GetStoreDirForScope(scope), cancellationToken: ct);
-            await RecoverAppendUnsafeAsync(scope, operationId, ct);
+            string storeDirectory = GetStoreDirForScope(scope);
+            RecoverScopeUnsafe(scope, storeDirectory, cancellationToken: ct);
+            await _recoveryConductor.RecoverAppendUnsafeAsync(scope, storeDirectory, operationId, ct);
             ArtifactEntry? canonicalEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
                 entry => MemoryNaming.NameEquals(entry.Name, subject));
             if (canonicalEntry is not null)
@@ -2615,7 +2620,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
         var (scope, subject) = ResolveAddress(write.Address);
         if (!ephemeral)
-            await RecoverAppendUnsafeAsync(scope, operationId, ct);
+            await _recoveryConductor.RecoverAppendUnsafeAsync(scope, GetStoreDirForScope(scope), operationId, ct);
         ArtifactEntry? existingEntry = null;
         EphemeralEntry? existingEph = null;
         RawMemberSnapshot? oldArtifact = null;
@@ -3004,11 +3009,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), TimeSpan.FromSeconds(5), cancellationToken);
-        await RecoverAppendUnsafeAsync(scope, "recovery", cancellationToken);
+        await _recoveryConductor.RecoverAppendUnsafeAsync(scope, GetStoreDirForScope(scope), "recovery", cancellationToken);
     }
 
     internal Task<bool> RecoverAppendParticipantForCoordinatorAsync(string scope, CancellationToken cancellationToken) =>
-        RecoverAppendUnsafeAsync(scope, "coordinator-recovery", cancellationToken);
+        _recoveryConductor.RecoverAppendUnsafeAsync(scope, GetStoreDirForScope(scope), "coordinator-recovery", cancellationToken);
 
     internal void WriteAppendRecoveryRequiredJournalForTest(string operationId)
     {
@@ -3020,127 +3025,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired,
             detail: "Deterministic recovery evidence created for testing.");
     }
-
-    private Task<bool> RecoverAppendUnsafeAsync(string scope, string operationId = "recovery", CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
-        ct.ThrowIfCancellationRequested();
-        string storeDirectory = GetStoreDirForScope(scope);
-        string journalPath = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
-        RecoveryVerificationResult journalVerification = RecoveryEvidenceVerifier.VerifySingleAsync(
-            new RecoveryScopeBinding(scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
-            journalPath, default, MaintenanceLimits.Hard, ct).AsTask().GetAwaiter().GetResult();
-        if (journalVerification.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
-            return Task.FromResult(false);
-
-        AppendJournal journal;
-        try
-        {
-            if (journalVerification.Outcome != RecoveryVerificationOutcome.Verified ||
-                journalVerification.SourceContent is null)
-                throw new IOException("Append journal could not be verified.");
-            using RecoveryVerificationContent verifiedJournal = journalVerification.SourceContent;
-            Exception? parseFailure = InjectAppendFault(AppendFaultPoint.JournalParse, operationId, journalPath);
-            if (parseFailure is not null)
-                throw parseFailure;
-            var adapter = new AppendRecoveryAdapter();
-            RecoveryVerifiedFileMetadata metadata = verifiedJournal.Metadata;
-            RecoveryScopeBinding scopeBinding = new(scope, storeDirectory);
-            RecoveryVerifiedEnvelope verifiedEnvelope = RecoveryEnvelopeCodec.ParseVerifiedEnvelope(
-                in verifiedJournal, in scopeBinding, journalPath, storeDirectory, RecoveryEvidenceKind.AppendJournal, in metadata);
-            RecoveryEnvelopeDocument envelope = ((IRecoveryAdapter)adapter).ConsumeParsed(in verifiedEnvelope);
-            journal = adapter.FromEnvelope(envelope, journalPath);
-        }
-        catch (Exception exception) when (exception is AppendJournalException or RecoveryEnvelopeException or IOException)
-        {
-            string recoveryOperationId = exception is AppendJournalException journalException
-                ? journalException.OperationId ?? operationId
-                : exception is RecoveryEnvelopeException
-                    ? ((exception as RecoveryEnvelopeException)?.OperationId ?? operationId)
-                    : operationId;
-            throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The append journal failed integrity verification.", exception,
-                recoveryOperationId);
-        }
-
-        // From this boundary onward the journal is the source of truth for correlation. The
-        // caller's ID is only meaningful while admitting the journal; recovery work belongs to
-        // the append attempt recorded by the durable evidence.
-        operationId = journal.OperationId;
-        AppendTransaction transaction = journal.ToTransaction();
-        if (journal.State is AppendJournalState.RecoveryRequired or AppendJournalState.ArchiveInProgress)
-        {
-            try
-            {
-                transaction = _archiveReplayer.ReplayArchiveMembers(transaction, journalPath, ct);
-                _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Archived,
-                    cancellationToken: ct,
-                    detail: "Recorded archive members were deterministically completed.");
-            }
-            catch (Exception exception)
-            {
-                _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
-                    "Archive recovery could not prove every recorded archive member.", exception, operationId);
-            }
-        }
-
-        bool publicationWasVisible = AppendRecoveryVerifier.AreAppendMembersCurrent(transaction, ct);
-        if (journal.State is AppendJournalState.Committed or AppendJournalState.CleanupPending)
-        {
-            Exception? verificationFailure = InjectAppendFault(
-                AppendFaultPoint.VerificationRead, journal.OperationId, journalPath);
-            if (verificationFailure is not null)
-                throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "Committed append verification could not be completed.",
-                    verificationFailure, journal.OperationId);
-
-            bool currentMembers = AppendRecoveryVerifier.AreAppendMembersCurrent(transaction, ct);
-            if (currentMembers && !AppendRecoveryVerifier.HasCommittedHash(transaction, journal.CommittedHash, ct))
-                throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
-                    operationId: operationId);
-
-            if (currentMembers)
-            {
-                ArchiveCleanupResult cleanup = _archiveService.PruneCommittedArchives(transaction, ct);
-                if (cleanup.Failed)
-                    throw AppendRecoveryBuilder.RecoveryRequired(journalPath,
-                        cleanup.Detail,
-                        operationId: transaction.OperationId);
-
-                try
-                {
-                    _appendJournalWriter.TryDeleteAppendJournal(journalPath, transaction.OperationId);
-                }
-                catch (Exception exception)
-                {
-                    throw AppendRecoveryBuilder.RecoveryRequired(journalPath,
-                        "Committed append cleanup could not remove its journal evidence.",
-                        exception, transaction.OperationId);
-                }
-                return Task.FromResult(publicationWasVisible);
-            }
-
-            if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
-                throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append does not match its recorded bytes",
-                    operationId: operationId);
-        }
-        else if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
-        {
-            _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
-                "Raw rollback could not prove the original pair.", null, operationId);
-        }
-
-        try
-        {
-            _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RolledBack);
-            _appendJournalWriter.TryDeleteAppendJournal(journalPath, transaction.OperationId);
-        }
-        catch (Exception exception)
-        {
-            _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
-                "Rollback completed but final journalization could not be proven.", exception, operationId);
-        }
-        return Task.FromResult(publicationWasVisible);
-    }
-
 
     private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope) =>
         AppendRollbackJournalReader.TryReadAppendTransactionForRollback(journalPath, scope);
