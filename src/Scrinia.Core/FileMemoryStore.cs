@@ -153,6 +153,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly SearchService _search;
     private readonly ArchiveService _archiveService;
     private readonly AppendJournalWriter _appendJournalWriter;
+    private readonly AppendRollbackExecutor _rollbackExecutor;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
     internal byte[]? LastCapturedOldSidecarBytesForTest { get; private set; }
@@ -318,6 +319,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             (name, scope) => MetaPath(name, scope));
         _appendJournalWriter = new AppendJournalWriter(
             scope => GetStoreDirForScope(scope),
+            InjectAppendFault);
+        _rollbackExecutor = new AppendRollbackExecutor(
             InjectAppendFault);
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
         _factMaterializer = new EntityFactMaterializer(
@@ -2276,7 +2279,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // CancellationToken.None: a cancelled store must still be rolled back.
             if (createTransaction is not null)
             {
-                if (!TryRestoreAppendTransaction(createTransaction))
+                if (!_rollbackExecutor.TryRestoreAppendTransaction(createTransaction))
                 {
                     try
                     {
@@ -2730,9 +2733,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 AppendTransaction? rollbackTransaction = TryReadAppendTransactionForRollback(
                     journalPath, scope);
                 bool archivesReconciled = rollbackTransaction is not null &&
-                    TryRemoveCreatedArchiveMembers(rollbackTransaction, CancellationToken.None);
+                    _rollbackExecutor.TryRemoveCreatedArchiveMembers(rollbackTransaction, CancellationToken.None);
                 bool liveMembersRestored = rollbackTransaction is not null &&
-                    TryRestoreAppendTransaction(rollbackTransaction);
+                    _rollbackExecutor.TryRestoreAppendTransaction(rollbackTransaction);
                 if (!archivesReconciled || !liveMembersRestored)
                 {
                     string detail = !archivesReconciled
@@ -2794,7 +2797,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         catch (Exception exception)
         {
             // CancellationToken.None: a cancelled append must still be rolled back.
-            if (!TryRestoreAppendTransaction(transaction))
+            if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
             {
                 try
                 {
@@ -3227,11 +3230,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 return Task.FromResult(publicationWasVisible);
             }
 
-            if (!TryRestoreAppendTransaction(transaction))
+            if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
                 throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append does not match its recorded bytes",
                     operationId: operationId);
         }
-        else if (!TryRestoreAppendTransaction(transaction))
+        else if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
         {
             PersistRecoveryRequiredOrThrow(transaction, journalPath,
                 "Raw rollback could not prove the original pair.", null, operationId);
@@ -3312,95 +3315,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
         AppendRecoveryVerifier.MatchesAppendMember(transaction.NewArtifact, cancellationToken) &&         AppendRecoveryVerifier.MatchesAppendMember(transaction.NewSidecar, cancellationToken);
 
-    private static bool TryRestoreAppendTransaction(AppendTransaction transaction)
-    {
-        bool artifactRestored = RestoreAppendMember(
-            transaction.OldArtifact, transaction.NewArtifact, transaction.OperationId);
-        bool sidecarRestored = RestoreAppendMember(
-            transaction.OldSidecar, transaction.NewSidecar, transaction.OperationId);
-        return artifactRestored && sidecarRestored &&
-            AppendRecoveryVerifier.MatchesAppendState(transaction.OldArtifact) && AppendRecoveryVerifier.MatchesAppendState(transaction.OldSidecar);
-    }
 
-    private static bool TryRemoveCreatedArchiveMembers(AppendTransaction transaction,
-        CancellationToken cancellationToken = default)
-    {
-        ArchivePlan plan = transaction.Archive;
-        return ReconcileArchiveMember(plan.ArtifactStatus, plan.ArtifactArchivePath,
-                   transaction.OldArtifact, transaction.OperationId, cancellationToken) &&
-               ReconcileArchiveMember(plan.SidecarStatus, plan.SidecarArchivePath,
-                transaction.OldSidecar, transaction.OperationId, cancellationToken);
-    }
 
     private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope) =>
         AppendRollbackJournalReader.TryReadAppendTransactionForRollback(journalPath, scope);
 
-    private static bool ReconcileArchiveMember(
-        ArchiveMemberStatus status, string? destination, RawMemberSnapshot expected, string operationId,
-        CancellationToken cancellationToken = default)
-    {
-        if (status is ArchiveMemberStatus.NotRequired or ArchiveMemberStatus.AlreadyPresentVerified)
-            return true;
-        if (destination is null)
-            return false;
 
-        try
-        {
-            if (status is not ArchiveMemberStatus.Created)
-            {
-                if (!File.Exists(destination))
-                    return true;
-                // A planned member may already be present from an earlier operation. Matching
-                // bytes make it safe to retain; a mismatch is evidence that ownership cannot be
-                // established, so the journal must remain for recovery.
-                return AppendRecoveryVerifier.MatchesArchiveBytes(destination, expected, cancellationToken);
-            }
-            if (!File.Exists(destination))
-                return true;
-            if (!AppendRecoveryVerifier.MatchesArchiveBytes(destination, expected, cancellationToken))
-                return false;
-
-            Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, destination);
-            if (failure is not null)
-                throw failure;
-            File.Delete(destination);
-            return !File.Exists(destination);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool RestoreAppendMember(RawMemberSnapshot oldMember, RawMemberSnapshot newMember,
-        string operationId)
-    {
-        try
-        {
-            if (oldMember.Existed)
-            {
-                if (File.Exists(oldMember.Path) && !AppendRecoveryVerifier.MatchesAppendMember(newMember) && !AppendRecoveryVerifier.MatchesAppendMember(oldMember))
-                    return false;
-                DurableFile.AtomicWriteAllBytesForAppend(oldMember.Path, oldMember.Bytes, operationId,
-                    AppendFaultPoint.RollbackWrite, AppendFaultPoint.RollbackWrite);
-                return true;
-            }
-
-            if (!File.Exists(oldMember.Path))
-                return true;
-            if (!AppendRecoveryVerifier.MatchesAppendMember(newMember))
-                return false;
-            Exception? failure = InjectAppendFault(AppendFaultPoint.RollbackDelete, operationId, oldMember.Path);
-            if (failure is not null)
-                throw failure;
-            File.Delete(oldMember.Path);
-            return !File.Exists(oldMember.Path);
-        }
-        catch
-        {
-            return false;
-        }
-    }
 
     /// <summary>Assembles the index entry from the derived half plus the store's own bookkeeping.
     /// <see cref="AttributeMigration.Forward"/> is the same safety net both pre-collapse write paths
