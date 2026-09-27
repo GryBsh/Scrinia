@@ -153,6 +153,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly SearchService _search;
     private readonly ArchiveService _archiveService;
     private readonly AppendJournalWriter _appendJournalWriter;
+    private readonly AppendMemberVerifier _memberVerifier;
     private readonly AppendRollbackExecutor _rollbackExecutor;
 
     internal byte[]? LastCapturedOldArtifactBytesForTest { get; private set; }
@@ -319,6 +320,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             (name, scope) => MetaPath(name, scope));
         _appendJournalWriter = new AppendJournalWriter(
             scope => GetStoreDirForScope(scope),
+            InjectAppendFault);
+        _memberVerifier = new AppendMemberVerifier(
             InjectAppendFault);
         _rollbackExecutor = new AppendRollbackExecutor(
             InjectAppendFault);
@@ -2255,8 +2258,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
             if (createTransaction is not null)
             {
-                await VerifyAppendMemberAsync(createTransaction.NewArtifact, appendOperationId!, ct);
-                await VerifyAppendMemberAsync(createTransaction.NewSidecar, appendOperationId!, ct);
+                await _memberVerifier.VerifyAsync(createTransaction.NewArtifact, appendOperationId!, ct);
+                await _memberVerifier.VerifyAsync(createTransaction.NewSidecar, appendOperationId!, ct);
                 string committedHash = Convert.ToHexStringLower(SHA256.HashData(
                     createTransaction.NewArtifact.Bytes.Concat(createTransaction.NewSidecar.Bytes).ToArray()));
                 _appendJournalWriter.PersistAppendJournal(createTransaction, AppendJournalState.Committed, committedHash);
@@ -3104,8 +3107,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.NewPairInProgress);
         UpsertForAppend(entry, transaction.Scope, transaction.OperationId);
 
-        await VerifyAppendMemberAsync(transaction.NewArtifact, transaction.OperationId, ct);
-        await VerifyAppendMemberAsync(transaction.NewSidecar, transaction.OperationId, ct);
+        await _memberVerifier.VerifyAsync(transaction.NewArtifact, transaction.OperationId, ct);
+        await _memberVerifier.VerifyAsync(transaction.NewSidecar, transaction.OperationId, ct);
         string committedHash = Convert.ToHexStringLower(SHA256.HashData(
             transaction.NewArtifact.Bytes.Concat(transaction.NewSidecar.Bytes).ToArray()));
         _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Committed, committedHash);
@@ -3294,22 +3297,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 : new AggregateException(detail, failure, journalFailure);
         }
         throw AppendRecoveryBuilder.RecoveryRequired(journalPath, detail, failure, operationId);
-    }
-
-    private static async Task VerifyAppendMemberAsync(
-        RawMemberSnapshot expected, string operationId, CancellationToken cancellationToken)
-    {
-        Exception? failure = InjectAppendFault(AppendFaultPoint.VerificationRead, operationId, expected.Path);
-        if (failure is not null)
-            throw failure;
-        RecoveryVerificationResult verification = await RecoveryEvidenceVerifier.VerifySingleAsync(
-            new RecoveryScopeBinding("append", Path.GetDirectoryName(expected.Path)!),
-            RecoveryEvidenceKind.AppendJournal, expected.Path,
-            new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard, cancellationToken)
-            .ConfigureAwait(false);
-        verification.SourceContent?.Dispose();
-        if (verification.Outcome != RecoveryVerificationOutcome.Verified)
-            throw new IOException($"Append member verification failed after publication: {expected.Path}");
     }
 
     private static bool AreAppendMembersCurrent(AppendTransaction transaction, CancellationToken cancellationToken = default) =>
