@@ -153,6 +153,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly SearchService _search;
     private readonly ArchiveService _archiveService;
     private readonly AppendJournalWriter _appendJournalWriter;
+    private readonly AppendRecoveryEnforcer _recoveryEnforcer;
     private readonly AppendArchiveReplayer _archiveReplayer;
     private readonly AppendMemberVerifier _memberVerifier;
     private readonly AppendRollbackExecutor _rollbackExecutor;
@@ -323,6 +324,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _appendJournalWriter = new AppendJournalWriter(
             scope => GetStoreDirForScope(scope),
             InjectAppendFault);
+        _recoveryEnforcer = new AppendRecoveryEnforcer(_appendJournalWriter);
         _archiveReplayer = new AppendArchiveReplayer(
             InjectAppendFault, _appendJournalWriter);
         _memberVerifier = new AppendMemberVerifier(
@@ -3076,7 +3078,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             }
             catch (Exception exception)
             {
-                PersistRecoveryRequiredOrThrow(transaction, journalPath,
+                _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
                     "Archive recovery could not prove every recorded archive member.", exception, operationId);
             }
         }
@@ -3122,7 +3124,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
         else if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
         {
-            PersistRecoveryRequiredOrThrow(transaction, journalPath,
+            _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
                 "Raw rollback could not prove the original pair.", null, operationId);
         }
 
@@ -3133,28 +3135,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
         catch (Exception exception)
         {
-            PersistRecoveryRequiredOrThrow(transaction, journalPath,
+            _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
                 "Rollback completed but final journalization could not be proven.", exception, operationId);
         }
         return Task.FromResult(publicationWasVisible);
     }
 
-
-    private void PersistRecoveryRequiredOrThrow(AppendTransaction transaction, string journalPath,
-        string detail, Exception? failure, string operationId)
-    {
-        try
-        {
-            _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.RecoveryRequired, detail: detail);
-        }
-        catch (Exception journalFailure)
-        {
-            failure = failure is null
-                ? journalFailure
-                : new AggregateException(detail, failure, journalFailure);
-        }
-        throw AppendRecoveryBuilder.RecoveryRequired(journalPath, detail, failure, operationId);
-    }
 
     private static AppendTransaction? TryReadAppendTransactionForRollback(string journalPath, string scope) =>
         AppendRollbackJournalReader.TryReadAppendTransactionForRollback(journalPath, scope);
