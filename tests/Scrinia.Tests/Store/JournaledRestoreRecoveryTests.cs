@@ -406,6 +406,29 @@ public class JournaledRestoreRecoveryTests
     }
 
     [Fact]
+    public async Task EmptyEntriesCompletedJournal_FailsClosedAsMalformedBlockWithoutCrashing()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        string storeDirectory = store.GetStoreDirForScope(Scope);
+        Directory.CreateDirectory(storeDirectory);
+        string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
+
+        byte[] completedEmptyJournal = SerializeHandcraftedJournal(state: "completed", entries: 0);
+        File.WriteAllBytes(journalPath, completedEmptyJournal);
+
+        Action load = () => store.LoadIndex(Scope);
+
+        RestoreRecoveryException failure = Record.Exception(load)
+            .Should().BeOfType<RestoreRecoveryException>().Subject;
+        failure.DiscoveryBlock.Should().NotBeNull(
+            "an empty-entries completed restore journal must become a clean recovery block");
+        failure.DiscoveryBlock!.Reason.Should().Be(RecoveryBlockReason.Malformed);
+        File.Exists(journalPath).Should().BeTrue(
+            "the malformed journal must be retained, never half-replayed");
+    }
+
+    [Fact]
     public async Task ImportTopicEntries_WhenTheFirstLiveBodyWriteFailsAfterPreparedJournalCreation_LeavesEveryLivePairUntouched()
     {
         using var scope = new TestHelpers.StoreScope();
