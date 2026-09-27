@@ -153,6 +153,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly SearchService _search;
     private readonly ArchiveService _archiveService;
     private readonly AppendJournalWriter _appendJournalWriter;
+    private readonly AppendArchiveReplayer _archiveReplayer;
     private readonly AppendMemberVerifier _memberVerifier;
     private readonly AppendRollbackExecutor _rollbackExecutor;
 
@@ -321,6 +322,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _appendJournalWriter = new AppendJournalWriter(
             scope => GetStoreDirForScope(scope),
             InjectAppendFault);
+        _archiveReplayer = new AppendArchiveReplayer(
+            InjectAppendFault, _appendJournalWriter);
         _memberVerifier = new AppendMemberVerifier(
             InjectAppendFault);
         _rollbackExecutor = new AppendRollbackExecutor(
@@ -2963,14 +2966,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         string versionsDirectory = Path.GetDirectoryName(plan.ArtifactArchivePath!)!;
         Directory.CreateDirectory(versionsDirectory);
-        ArchiveMemberStatus artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!, transaction.OperationId,
+        ArchiveMemberStatus artifactStatus = _archiveReplayer.WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!, transaction.OperationId,
             AppendFaultPoint.ArchiveArtifactWrite, AppendFaultPoint.ArchiveArtifactFlush, ct);
             transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
         _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
 
         ArchiveMemberStatus sidecarStatus = ArchiveMemberStatus.NotRequired;
         if (transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null)
-            sidecarStatus = WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
+            sidecarStatus = _archiveReplayer.WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
                 AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush, ct);
 
         transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, sidecarStatus) };
@@ -2978,62 +2981,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return transaction;
     }
 
-    private static ArchiveMemberStatus WriteArchiveMember(
-        string memberName, RawMemberSnapshot member, string destination, string operationId,
-        AppendFaultPoint writePoint, AppendFaultPoint flushPoint, CancellationToken cancellationToken)
-    {
-        if (!member.Existed)
-            return ArchiveMemberStatus.NotRequired;
-
-        try
-        {
-            Exception? injected = InjectAppendFault(writePoint, operationId, destination);
-            if (injected is not null)
-                throw injected;
-
-            if (File.Exists(destination))
-            {
-                string root = Path.GetDirectoryName(Path.GetDirectoryName(destination)!)!;
-                RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
-                    new RecoveryScopeBinding("workspace", root), RecoveryEvidenceKind.AppendJournal,
-                    destination, new RecoveryExpectedHash(member.Sha256), MaintenanceLimits.Hard,
-                     cancellationToken).AsTask().GetAwaiter().GetResult();
-                verification.SourceContent?.Dispose();
-                if (verification.Outcome == RecoveryVerificationOutcome.Verified)
-                    return ArchiveMemberStatus.AlreadyPresentVerified;
-
-                throw new AppendStoreException(
-                    AppendStoreErrorCode.RecoveryRequired,
-                    operationId,
-                    $"Archive {memberName} destination contains different bytes: {destination}",
-                    recovery: new AppendRecoveryInfo(
-                        AppendJournalCodec.GetJournalPath(Path.GetDirectoryName(destination)!),
-                        AppendJournalState.RecoveryRequired.ToString(),
-                        "resolve the retained append journal before retrying",
-                        $"Archive {memberName} destination contains different bytes."));
-            }
-
-            DurableFile.AtomicWriteAllBytesForAppend(destination, member.Bytes, operationId, writePoint, flushPoint);
-        }
-        catch (AppendStoreException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            throw new AppendStoreException(
-                AppendStoreErrorCode.RecoveryRequired,
-                operationId,
-                $"Archive {memberName} publication failed at '{destination}'.",
-                exception,
-                new AppendRecoveryInfo(
-                    AppendJournalCodec.GetJournalPath(Path.GetDirectoryName(destination)!),
-                    AppendJournalState.RecoveryRequired.ToString(),
-                    "resolve the retained append journal before retrying",
-                    exception.Message));
-        }
-        return ArchiveMemberStatus.Created;
-    }
 
     private sealed record ArchiveCleanupResult(bool Failed, string[] Failures)
     {
@@ -3186,7 +3133,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         {
             try
             {
-                transaction = ReplayArchiveMembers(transaction, journalPath, ct);
+                transaction = _archiveReplayer.ReplayArchiveMembers(transaction, journalPath, ct);
                 _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.Archived,
                     cancellationToken: ct,
                     detail: "Recorded archive members were deterministically completed.");
@@ -3256,32 +3203,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return Task.FromResult(publicationWasVisible);
     }
 
-    private AppendTransaction ReplayArchiveMembers(AppendTransaction transaction, string journalPath,
-        CancellationToken cancellationToken)
-    {
-        ArchivePlan plan = transaction.Archive;
-        if (!plan.Required)
-            return transaction;
-
-        ArchiveMemberStatus artifactStatus = plan.ArtifactStatus;
-        if (artifactStatus is not (ArchiveMemberStatus.AlreadyPresentVerified or ArchiveMemberStatus.Created))
-            artifactStatus = WriteArchiveMember("artifact", transaction.OldArtifact, plan.ArtifactArchivePath!,
-                transaction.OperationId, AppendFaultPoint.ArchiveArtifactWrite,
-                AppendFaultPoint.ArchiveArtifactFlush, cancellationToken);
-        transaction = transaction with { Archive = plan.WithStatuses(artifactStatus, plan.SidecarStatus) };
-        _appendJournalWriter.PersistAppendJournal(transaction, AppendJournalState.ArchiveInProgress);
-
-        ArchiveMemberStatus sidecarStatus = plan.SidecarStatus;
-        if (sidecarStatus is not (ArchiveMemberStatus.AlreadyPresentVerified or ArchiveMemberStatus.Created))
-        {
-            sidecarStatus = transaction.OldSidecar.Existed && plan.SidecarArchivePath is not null
-                ? WriteArchiveMember("sidecar", transaction.OldSidecar, plan.SidecarArchivePath, transaction.OperationId,
-                    AppendFaultPoint.ArchiveSidecarWrite, AppendFaultPoint.ArchiveSidecarFlush, cancellationToken)
-                : ArchiveMemberStatus.NotRequired;
-        }
-
-        return transaction with { Archive = plan.WithStatuses(artifactStatus, sidecarStatus) };
-    }
 
     private void PersistRecoveryRequiredOrThrow(AppendTransaction transaction, string journalPath,
         string detail, Exception? failure, string operationId)
