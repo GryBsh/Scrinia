@@ -13,17 +13,20 @@ internal sealed class ArchiveService
     private readonly Func<string, string> _storeDirForScope;
     private readonly Func<string, string> _sanitizeName;
     private readonly Func<string, string, string> _metaPath;
+    private readonly Func<AppendFaultPoint, string, string, Exception?> _injectAppendFault;
 
     public ArchiveService(
         Func<string, string, string> artifactPath,
         Func<string, string> storeDirForScope,
         Func<string, string> sanitizeName,
-        Func<string, string, string> metaPath)
+        Func<string, string, string> metaPath,
+        Func<AppendFaultPoint, string, string, Exception?> injectAppendFault)
     {
         _artifactPath = artifactPath;
         _storeDirForScope = storeDirForScope;
         _sanitizeName = sanitizeName;
         _metaPath = metaPath;
+        _injectAppendFault = injectAppendFault;
     }
 
     /// <summary>Archive the current version of one memory's artifact (and best-effort its sidecar)
@@ -81,4 +84,73 @@ internal sealed class ArchiveService
             try { File.Delete(Path.ChangeExtension(old, null) + ".meta.json"); } catch { }
         }
     }
+
+    /// <summary>Prune the stale archive members a committed append planned for deletion. Shared
+    /// durable-write prune conductor moved off <see cref="FileMemoryStore"/> in P30; holds no store
+    /// instance — only the injected append-fault seam the store exposes as the static
+    /// <c>InjectAppendFault</c>.</summary>
+    public ArchiveCleanupResult PruneCommittedArchives(AppendTransaction transaction, CancellationToken ct)
+    {
+        var failures = new List<string>();
+        if (ct.IsCancellationRequested)
+            return new ArchiveCleanupResult(true, ["archive cleanup cancelled."]);
+
+        Exception? cleanupFailure = _injectAppendFault(
+            AppendFaultPoint.ArchiveCleanup, transaction.OperationId, transaction.Scope);
+        if (cleanupFailure is not null)
+            return new ArchiveCleanupResult(
+                true,
+                [$"archive cleanup: {cleanupFailure.Message}"]);
+
+        string versionsRoot = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(transaction.Archive.ArtifactArchivePath ?? transaction.NewArtifact.Path)!, "..", "versions"));
+        string liveArtifact = Path.GetFullPath(transaction.NewArtifact.Path);
+        string liveSidecar = Path.GetFullPath(transaction.NewSidecar.Path);
+        string? currentArtifact = transaction.Archive.ArtifactArchivePath is null
+            ? null : Path.GetFullPath(transaction.Archive.ArtifactArchivePath);
+        string? currentSidecar = transaction.Archive.SidecarArchivePath is null
+            ? null : Path.GetFullPath(transaction.Archive.SidecarArchivePath);
+
+        foreach (string candidate in transaction.Archive.PruneCandidates)
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                string fullCandidate = Path.GetFullPath(candidate);
+                if (!PathContainment.IsWithin(versionsRoot, fullCandidate) ||
+                    string.Equals(fullCandidate, liveArtifact, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fullCandidate, liveSidecar, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fullCandidate, currentArtifact, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(fullCandidate, currentSidecar, StringComparison.OrdinalIgnoreCase))
+                {
+                    failures.Add($"refused unsafe archive candidate: {candidate}");
+                    break;
+                }
+                Exception? injected = _injectAppendFault(
+                    AppendFaultPoint.PruningDelete, transaction.OperationId, fullCandidate);
+                if (injected is not null)
+                    throw injected;
+                File.Delete(fullCandidate);
+            }
+            catch (OperationCanceledException exception)
+            {
+                failures.Add($"pruning cancelled: {exception.Message}");
+                break;
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"{candidate}: {exception.Message}");
+                break;
+            }
+        }
+
+        return new ArchiveCleanupResult(failures.Count > 0, failures.ToArray());
+    }
+}
+
+internal sealed record ArchiveCleanupResult(bool Failed, string[] Failures)
+{
+    internal string Detail => Failures.Length == 0
+        ? "Archive cleanup did not complete."
+        : $"Archive cleanup did not complete: {string.Join("; ", Failures)}";
 }

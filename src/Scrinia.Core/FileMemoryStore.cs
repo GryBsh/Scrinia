@@ -318,7 +318,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             (name, scope) => ArtifactPath(name, scope),
             scope => GetStoreDirForScope(scope),
             name => SanitizeName(name),
-            (name, scope) => MetaPath(name, scope));
+            (name, scope) => MetaPath(name, scope),
+            InjectAppendFault);
         _appendJournalWriter = new AppendJournalWriter(
             scope => GetStoreDirForScope(scope),
             InjectAppendFault);
@@ -2851,7 +2852,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             throw;
         }
 
-        ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, ct);
+        ArchiveCleanupResult cleanup = _archiveService.PruneCommittedArchives(transaction, ct);
         bool pruningFailed = cleanup.Failed;
         bool journalCleanupFailed = false;
         if (!pruningFailed)
@@ -2926,7 +2927,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         BuildArchivePlan(subject, scope, required, sidecarRequired: true, startedAt);
 
     internal string[] PruneCommittedArchivesForTest(AppendTransaction transaction) =>
-        PruneCommittedArchives(transaction, CancellationToken.None).Failures;
+        _archiveService.PruneCommittedArchives(transaction, CancellationToken.None).Failures;
 
     private ArchivePlan BuildArchivePlan(
         string subject, string scope, bool required, bool sidecarRequired, DateTimeOffset startedAt)
@@ -2981,71 +2982,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         return transaction;
     }
 
-
-    private sealed record ArchiveCleanupResult(bool Failed, string[] Failures)
-    {
-        internal string Detail => Failures.Length == 0
-            ? "Archive cleanup did not complete."
-            : $"Archive cleanup did not complete: {string.Join("; ", Failures)}";
-    }
-
-    private static ArchiveCleanupResult PruneCommittedArchives(AppendTransaction transaction, CancellationToken ct)
-    {
-        var failures = new List<string>();
-        if (ct.IsCancellationRequested)
-            return new ArchiveCleanupResult(true, ["archive cleanup cancelled."]);
-
-        Exception? cleanupFailure = InjectAppendFault(
-            AppendFaultPoint.ArchiveCleanup, transaction.OperationId, transaction.Scope);
-        if (cleanupFailure is not null)
-            return new ArchiveCleanupResult(
-                true,
-                [$"archive cleanup: {cleanupFailure.Message}"]);
-
-        string versionsRoot = Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(transaction.Archive.ArtifactArchivePath ?? transaction.NewArtifact.Path)!, "..", "versions"));
-        string liveArtifact = Path.GetFullPath(transaction.NewArtifact.Path);
-        string liveSidecar = Path.GetFullPath(transaction.NewSidecar.Path);
-        string? currentArtifact = transaction.Archive.ArtifactArchivePath is null
-            ? null : Path.GetFullPath(transaction.Archive.ArtifactArchivePath);
-        string? currentSidecar = transaction.Archive.SidecarArchivePath is null
-            ? null : Path.GetFullPath(transaction.Archive.SidecarArchivePath);
-
-        foreach (string candidate in transaction.Archive.PruneCandidates)
-        {
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                string fullCandidate = Path.GetFullPath(candidate);
-                if (!PathContainment.IsWithin(versionsRoot, fullCandidate) ||
-                    string.Equals(fullCandidate, liveArtifact, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fullCandidate, liveSidecar, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fullCandidate, currentArtifact, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fullCandidate, currentSidecar, StringComparison.OrdinalIgnoreCase))
-                {
-                    failures.Add($"refused unsafe archive candidate: {candidate}");
-                    break;
-                }
-                Exception? injected = InjectAppendFault(
-                    AppendFaultPoint.PruningDelete, transaction.OperationId, fullCandidate);
-                if (injected is not null)
-                    throw injected;
-                File.Delete(fullCandidate);
-            }
-            catch (OperationCanceledException exception)
-            {
-                failures.Add($"pruning cancelled: {exception.Message}");
-                break;
-            }
-            catch (Exception exception)
-            {
-                failures.Add($"{candidate}: {exception.Message}");
-                break;
-            }
-        }
-
-        return new ArchiveCleanupResult(failures.Count > 0, failures.ToArray());
-    }
 
     private async Task PublishLiveAppendAsync(
         AppendTransaction transaction, ArtifactEntry entry, string artifact, CancellationToken ct)
@@ -3161,7 +3097,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
             if (currentMembers)
             {
-                ArchiveCleanupResult cleanup = PruneCommittedArchives(transaction, ct);
+                ArchiveCleanupResult cleanup = _archiveService.PruneCommittedArchives(transaction, ct);
                 if (cleanup.Failed)
                     throw AppendRecoveryBuilder.RecoveryRequired(journalPath,
                         cleanup.Detail,
