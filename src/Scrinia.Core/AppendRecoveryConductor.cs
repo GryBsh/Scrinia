@@ -35,17 +35,17 @@ internal sealed class AppendRecoveryConductor
     /// <summary>Recover a committed or aborted append journal for a scope without mutating the public store.
     /// Top-level recovery state machine: no store instance state — <paramref name="storeDirectory"/> is threaded
     /// in by the caller, the fault seam is the injected hook, and every durable leaf is a referenced owner.</summary>
-    public Task<bool> RecoverAppendUnsafeAsync(string scope, string storeDirectory,
+    public async Task<bool> RecoverAppendUnsafeAsync(string scope, string storeDirectory,
         string operationId = "recovery", CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ct.ThrowIfCancellationRequested();
         string journalPath = AppendJournalCodec.GetJournalPath(Path.Combine(storeDirectory, "versions"));
-        RecoveryVerificationResult journalVerification = RecoveryEvidenceVerifier.VerifySingleAsync(
+        RecoveryVerificationResult journalVerification = await RecoveryEvidenceVerifier.VerifySingleAsync(
             new RecoveryScopeBinding(scope, storeDirectory), RecoveryEvidenceKind.AppendJournal,
-            journalPath, default, MaintenanceLimits.Hard, ct).AsTask().GetAwaiter().GetResult();
+            journalPath, default, MaintenanceLimits.Hard, ct).ConfigureAwait(false);
         if (journalVerification.Outcome == RecoveryVerificationOutcome.ProtectedMissing)
-            return Task.FromResult(false);
+            return false;
 
         AppendJournal journal;
         try
@@ -97,7 +97,7 @@ internal sealed class AppendRecoveryConductor
             }
         }
 
-        bool publicationWasVisible = AppendRecoveryVerifier.AreAppendMembersCurrent(transaction, ct);
+        bool currentMembers = await AppendRecoveryVerifier.AreAppendMembersCurrentAsync(transaction, ct).ConfigureAwait(false);
         if (journal.State is AppendJournalState.Committed or AppendJournalState.CleanupPending)
         {
             Exception? verificationFailure = _injectAppendFault(
@@ -106,8 +106,7 @@ internal sealed class AppendRecoveryConductor
                 throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "Committed append verification could not be completed.",
                     verificationFailure, journal.OperationId);
 
-            bool currentMembers = AppendRecoveryVerifier.AreAppendMembersCurrent(transaction, ct);
-            if (currentMembers && !AppendRecoveryVerifier.HasCommittedHash(transaction, journal.CommittedHash, ct))
+            if (currentMembers && !await AppendRecoveryVerifier.HasCommittedHashAsync(transaction, journal.CommittedHash, ct).ConfigureAwait(false))
                 throw AppendRecoveryBuilder.RecoveryRequired(journalPath, "The committed append hash does not match its recorded value",
                     operationId: operationId);
 
@@ -129,7 +128,7 @@ internal sealed class AppendRecoveryConductor
                         "Committed append cleanup could not remove its journal evidence.",
                         exception, transaction.OperationId);
                 }
-                return Task.FromResult(publicationWasVisible);
+                return currentMembers;
             }
 
             if (!_rollbackExecutor.TryRestoreAppendTransaction(transaction))
@@ -152,6 +151,6 @@ internal sealed class AppendRecoveryConductor
             _recoveryEnforcer.PersistRecoveryRequiredOrThrow(transaction, journalPath,
                 "Rollback completed but final journalization could not be proven.", exception, operationId);
         }
-        return Task.FromResult(publicationWasVisible);
+        return currentMembers;
     }
 }

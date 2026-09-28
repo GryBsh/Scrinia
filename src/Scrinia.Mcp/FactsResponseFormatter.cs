@@ -19,7 +19,7 @@ public static class FactsResponseFormatter
         IntersectionResult r => Success(Intersection(r)),
         DisambiguationResult r => Warning(Disambiguation(r)),
         NotFoundResult r => Warning($"not found: no entity named \"{r.Arg}\""),
-        _ => Success("no result"),
+        _ => Warning("no result: unhandled FactsResult subtype"),
     };
 
     private static McpResponse Success(string content) =>

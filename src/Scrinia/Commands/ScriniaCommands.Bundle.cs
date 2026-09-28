@@ -218,6 +218,17 @@ public partial class ScriniaCommands
             artifactContents[entryName] = artifact;
         }
 
+        // Warn about requested path segments that resolved to nothing (typos, misspellings).
+        var missingPaths = CollectUnresolvedPaths(files);
+        if (missingPaths.Count > 0)
+        {
+            string message = $"The following requested path(s) did not resolve to any files: {string.Join(", ", missingPaths)}";
+            if (json)
+                Console.Error.WriteLine($"[scrinia:bundle-warn] {message}");
+            else
+                AnsiConsole.MarkupLine($"[yellow]Warning:[/] {Markup.Escape(message)}[/]");
+        }
+
         // Create the bundle zip. The archive layout has ONE definition, in BundleFormatService —
         // this command used to duplicate it inline, along with a hard-coded manifest version.
         using (var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write))
@@ -246,6 +257,30 @@ public partial class ScriniaCommands
                 $"({ScriniaMcpTools.FormatBytes(fileSize)}) at {Markup.Escape(bundlePath)}[/]");
         }
         return Task.FromResult(0);
+    }
+
+    /// <summary>Reports each comma-separated path segment in <paramref name="filesArg"/> that would
+    /// resolve to zero files under <see cref="ResolveFiles"/> — i.e. a plain file that doesn't exist
+    /// or a glob with no matches in an existing directory. Used to warn the caller on typos.</summary>
+    private static List<string> CollectUnresolvedPaths(string filesArg)
+    {
+        var missing = new List<string>();
+        foreach (string part in filesArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.Contains('*') || part.Contains('?'))
+            {
+                string directory = Path.GetDirectoryName(part) ?? ".";
+                if (Directory.Exists(directory) && Directory.GetFiles(directory, Path.GetFileName(part)).Length == 0)
+                    missing.Add(part);
+                else if (!Directory.Exists(directory))
+                    missing.Add(part);
+            }
+            else if (!File.Exists(part))
+            {
+                missing.Add(part);
+            }
+        }
+        return missing;
     }
 
     /// <summary>Resolves the bundle output path inside <paramref name="exportsDir"/>, rejecting any
