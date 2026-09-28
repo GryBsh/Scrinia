@@ -174,12 +174,7 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         int pad = ParsePad(artifact);
         byte[] padded = Base64UrlDecode(sb64.ToString());
 
-        int compressedLen = padded.Length - pad;
-        if (compressedLen <= 0)
-            return [];
-
-        byte[] compressed = padded[..compressedLen];
-        return BrotliDecompressBounded(compressed, maxBytes);
+        return DecompressPadded(padded, pad, maxBytes);
     }
 
     /// <summary>Verifies decoded output against the header's declared length and CRC32.
@@ -316,9 +311,22 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         }
 
         byte[] padded = Base64UrlDecode(sb64.ToString());
-        int compressedLen = padded.Length - pad;
-        if (compressedLen <= 0) return [];
+        return DecompressPadded(padded, pad, maxBytes);
+    }
 
+    /// <summary>
+    /// Shared pad-footer handling for the single-chunk and per-chunk decode paths. Validates the
+    /// <c>##PAD</c> footer against the decoded length BEFORE slicing so a negative or over-large pad
+    /// (e.g. a tampered <c>##PAD:-999999</c>) fails closed with a catchable
+    /// <see cref="InvalidDataException"/> instead of slicing past the buffer and throwing
+    /// <see cref="ArgumentOutOfRangeException"/>.
+    /// </summary>
+    private static byte[] DecompressPadded(byte[] padded, int pad, long maxBytes)
+    {
+        if (pad < 0 || pad > padded.Length)
+            throw new InvalidDataException("NMP/2 pad footer is out of range and cannot be trusted.");
+        int compressedLen = padded.Length - pad;
+        if (compressedLen == 0) return [];
         byte[] compressed = padded[..compressedLen];
         return BrotliDecompressBounded(compressed, maxBytes);
     }

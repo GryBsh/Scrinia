@@ -333,9 +333,36 @@ public static class McpResponseExtensions
     {
         if (value.Contains(':') || value.Contains('#') || value.Contains('"') ||
             value.Contains('\'') || value.Contains('{') || value.Contains('}') ||
-            value.Contains('[') || value.Contains(']') || value.Contains('\n'))
+            value.Contains('[') || value.Contains(']') || value.Any(char.IsControl))
         {
-            return $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r")}\"";
+            var sb = new StringBuilder(value.Length + 2);
+            sb.Append('"');
+            foreach (char c in value)
+            {
+                switch (c)
+                {
+                    case '\\':
+                        sb.Append("\\\\");
+                        break;
+                    case '"':
+                        sb.Append("\\\"");
+                        break;
+                    case '\n':
+                        sb.Append("\\n");
+                        break;
+                    case '\r':
+                        sb.Append("\\r");
+                        break;
+                    default:
+                        if (char.IsControl(c))
+                            sb.Append($"\\u{((int)c):X4}");
+                        else
+                            sb.Append(c);
+                        break;
+                }
+            }
+            sb.Append('"');
+            return sb.ToString();
         }
 
         return value;

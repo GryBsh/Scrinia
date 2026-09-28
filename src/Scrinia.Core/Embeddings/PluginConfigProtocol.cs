@@ -83,8 +83,24 @@ public static class PluginConfigProtocol
         return options;
     }
 
-    /// <summary>A key is a secret when it names an API key. Covers current and future *ApiKey keys.</summary>
+    /// <summary>
+    /// The explicit set of config keys that are secrets — they must travel to the plugin child
+    /// process via its environment, never via argv (which is world-readable). This is the primary
+    /// guard: any key named here is secret regardless of how it is spelled. The <c>ApiKey</c> suffix
+    /// check in <see cref="IsSecret"/> is a secondary backstop for future keys ending in "ApiKey"
+    /// that someone forgot to add here — it must never be relied on alone.
+    /// </summary>
+    private static readonly HashSet<string> KnownSecretKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Scrinia:Embeddings:OpenAiApiKey",
+    };
+
+    /// <summary>
+    /// A key is a secret when it is in <see cref="KnownSecretKeys"/> (the primary, explicit guard)
+    /// or still ends in <c>ApiKey</c> (a secondary backstop for future *ApiKey keys).
+    /// </summary>
     public static bool IsSecret(string key) =>
+        KnownSecretKeys.Contains(key) ||
         key.EndsWith("ApiKey", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>

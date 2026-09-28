@@ -33,17 +33,62 @@ internal static class SafeTensorsReader
         {
             if (name == "__metadata__") continue;
 
-            var dtype = element.GetProperty("dtype").GetString()!;
-            var shape = element.GetProperty("shape").EnumerateArray()
-                .Select(e => e.GetInt64()).ToArray();
-            var offsets = element.GetProperty("data_offsets").EnumerateArray()
-                .Select(e => e.GetInt64()).ToArray();
-
-            result[name] = new TensorMeta(dtype, shape, offsets[0], offsets[1]);
+            result[name] = ReadTensorMeta(name, element);
         }
 
         return result;
     }
+
+    /// <summary>
+    /// Parses and validates one tensor's dtype, shape and data_offsets from an untrusted
+    /// SafeTensors header. Fails closed with <see cref="FormatException"/> on any structural
+    /// problem — a non-object element, a non-string/empty dtype, a non-numeric shape element, or a
+    /// data_offsets array that is not exactly two non-negative numbers in order — so a corrupt or
+    /// malicious manifest is rejected here as a catchable FormatException rather than surfacing an
+    /// NRE or InvalidCastException that the model-availability gate does not treat as unavailable.
+    /// </summary>
+    private static TensorMeta ReadTensorMeta(string name, JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new FormatException($"SafeTensors tensor '{name}' is not a JSON object.");
+
+        JsonElement dtypeElement = RequireObjectProperty(element, "dtype", name);
+        if (dtypeElement.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(dtypeElement.GetString()))
+            throw new FormatException($"SafeTensors tensor '{name}' has a non-string or empty dtype.");
+        string dtype = dtypeElement.GetString()!;
+
+        JsonElement shapeElement = RequireObjectProperty(element, "shape", name);
+        if (shapeElement.ValueKind != JsonValueKind.Array)
+            throw new FormatException($"SafeTensors tensor '{name}' shape is not a JSON array.");
+        long[] shape = shapeElement.EnumerateArray()
+            .Select(e => ReadNumber(e, "shape", name)).ToArray();
+
+        JsonElement offsetsElement = RequireObjectProperty(element, "data_offsets", name);
+        if (offsetsElement.ValueKind != JsonValueKind.Array)
+            throw new FormatException($"SafeTensors tensor '{name}' data_offsets is not a JSON array.");
+        List<long> offsets = new(2);
+        foreach (JsonElement offset in offsetsElement.EnumerateArray())
+            offsets.Add(ReadNumber(offset, "data_offsets", name));
+        if (offsets.Count != 2)
+            throw new FormatException($"SafeTensors tensor '{name}' data_offsets must contain exactly two numbers, found {offsets.Count}.");
+
+        long dataStart = offsets[0];
+        long dataEnd = offsets[1];
+        if (dataStart < 0 || dataEnd < 0 || dataStart > dataEnd)
+            throw new FormatException($"SafeTensors tensor '{name}' has invalid data_offsets [{dataStart}, {dataEnd}].");
+
+        return new TensorMeta(dtype, shape, dataStart, dataEnd);
+    }
+
+    private static JsonElement RequireObjectProperty(JsonElement element, string property, string tensorName) =>
+        element.TryGetProperty(property, out JsonElement value)
+            ? value
+            : throw new FormatException($"SafeTensors tensor '{tensorName}' is missing the '{property}' property.");
+
+    private static long ReadNumber(JsonElement element, string property, string tensorName) =>
+        element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out long value)
+            ? value
+            : throw new FormatException($"SafeTensors tensor '{tensorName}' property '{property}' is not an integer.");
 
     /// <summary>
     /// Reads a tensor as float32 from the data section of a SafeTensors file.

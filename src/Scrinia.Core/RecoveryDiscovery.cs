@@ -434,6 +434,21 @@ internal sealed class RecoveryDiscoveryCoordinator
         _ => RecoveryBlockReason.Malformed
     };
 
+    // Single source of truth for RecoveryBlockReason -> MaintenanceProtectionReason. Both the B2
+    // projection and the B3 coordinator adapter delegate here, so a new RecoveryBlockReason member
+    // maps identically in each and the two can no longer drift.
+    internal static MaintenanceProtectionReason MapProtection(RecoveryBlockReason reason) => reason switch
+    {
+        RecoveryBlockReason.Malformed => MaintenanceProtectionReason.Malformed,
+        RecoveryBlockReason.UnsupportedVersion => MaintenanceProtectionReason.UnsupportedVersion,
+        RecoveryBlockReason.Ambiguous => MaintenanceProtectionReason.Ambiguous,
+        RecoveryBlockReason.Inconsistent => MaintenanceProtectionReason.Unverifiable,
+        RecoveryBlockReason.WrongScope => MaintenanceProtectionReason.Unsafe,
+        RecoveryBlockReason.Unsafe => MaintenanceProtectionReason.Unsafe,
+        RecoveryBlockReason.ReplayIoFailed => MaintenanceProtectionReason.Inaccessible,
+        _ => MaintenanceProtectionReason.UnresolvedRecovery
+    };
+
     private static string TryFileEntityOperationId(string evidencePath)
     {
         string name = Path.GetFileName(evidencePath);
@@ -523,17 +538,8 @@ internal sealed class B2RecoveryMaintenanceAdapter : IB2RecoveryMaintenanceAdapt
         };
     }
 
-    private static MaintenanceProtectionReason MapProtection(RecoveryBlockReason reason) => reason switch
-    {
-        RecoveryBlockReason.Malformed => MaintenanceProtectionReason.Malformed,
-        RecoveryBlockReason.UnsupportedVersion => MaintenanceProtectionReason.UnsupportedVersion,
-        RecoveryBlockReason.Ambiguous => MaintenanceProtectionReason.Ambiguous,
-        RecoveryBlockReason.Inconsistent => MaintenanceProtectionReason.Unverifiable,
-        RecoveryBlockReason.WrongScope => MaintenanceProtectionReason.Unsafe,
-        RecoveryBlockReason.Unsafe => MaintenanceProtectionReason.Unsafe,
-        RecoveryBlockReason.ReplayIoFailed => MaintenanceProtectionReason.Inaccessible,
-        _ => MaintenanceProtectionReason.UnresolvedRecovery
-    };
+    private static MaintenanceProtectionReason MapProtection(RecoveryBlockReason reason) =>
+        RecoveryDiscoveryCoordinator.MapProtection(reason);
 
     internal static string SafeRelativePath(string evidencePath)
     {
@@ -587,16 +593,7 @@ internal sealed class B3CoordinatorMaintenanceAdapter : IB3CoordinatorMaintenanc
     internal static B3CoordinatorMaintenanceProjection Blocked(RecoveryBlock block, string expectedScope) =>
         new(expectedScope, block.OperationId, MultiMemoryTransactionState.RecoveryRequired, DateTimeOffset.MinValue,
             DateTimeOffset.MinValue, [], [], [], [], false, false)
-        { Protection = block.Reason switch
-            {
-                RecoveryBlockReason.Malformed => MaintenanceProtectionReason.Malformed,
-                RecoveryBlockReason.UnsupportedVersion => MaintenanceProtectionReason.UnsupportedVersion,
-                RecoveryBlockReason.Ambiguous => MaintenanceProtectionReason.Ambiguous,
-                RecoveryBlockReason.Inconsistent => MaintenanceProtectionReason.Unverifiable,
-                RecoveryBlockReason.WrongScope => MaintenanceProtectionReason.Unsafe,
-        RecoveryBlockReason.Unsafe => MaintenanceProtectionReason.Unsafe,
-                _ => MaintenanceProtectionReason.Inaccessible
-            } };
+        { Protection = RecoveryDiscoveryCoordinator.MapProtection(block.Reason) };
 
     public B3CoordinatorMaintenanceProjection Project(MultiMemoryTransactionRecord record, string expectedScope)
     {

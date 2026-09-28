@@ -161,19 +161,37 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to create Vulkan embedding provider");
+                _provider = new NullEmbeddingProvider(); // reset so a failed create never leaves a half-bound provider for the next region
             }
 
             _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
                 _provider.GetType().Name, _provider.IsAvailable);
 
-            // Sign the store with the active provider's signature (null when unavailable — a transient
-            // provider-load failure must not quarantine good vectors). On a real provider change, mismatched
-            // files self-quarantine on first load and rebuild via reindex.
-            string? expectedSignature = ChunkedSignature.ForProvider(_provider, _options);
-            var vectorStore = new VectorStore(dataDir, expectedSignature);
+            // The provider is now owned by this plugin. If wiring the store below fails, this region
+            // can only FAIL CLOSED by returning the sentinel to null — and it disposes the created
+            // provider (releasing its llama GPU context) before resetting, so a retry never leaks a
+            // second GPU context.
+            try
+            {
+                // Sign the store with the active provider's signature (null when unavailable — a transient
+                // provider-load failure must not quarantine good vectors). On a real provider change, mismatched
+                // files self-quarantine on first load and rebuild via reindex.
+                string? expectedSignature = ChunkedSignature.ForProvider(_provider, _options);
+                var vectorStore = new VectorStore(dataDir, expectedSignature);
 
-            _indexer = new MemoryVectorIndexer(_provider, vectorStore, _logger, _options);
-            _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
+                _indexer = new MemoryVectorIndexer(_provider, vectorStore, _logger, _options);
+                _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
+            }
+            catch (Exception ex)
+            {
+                // A provider was created successfully but store/indexer wiring failed. Dispose the
+                // (GPU-backed) provider so its llama context is released before re-entry, then reset the
+                // sentinel and indexer so the next EnsureInitialized retries from a clean NullEmbeddingProvider.
+                (_provider as IDisposable)?.Dispose();
+                _provider = new NullEmbeddingProvider();
+                _indexer = null;
+                _logger.LogWarning(ex, "Failed to wire embeddings store after provider creation; disposing provider");
+            }
         }
     }
 
