@@ -14,6 +14,8 @@ internal static class AppendRecoveryVerifier
     {
         if (!File.Exists(expected.Path))
             return false;
+        // AppendJournal labels the append-scope evidence here; we verify a live append member
+        // (NewArtifact), not a journal, so the append scope is what matters for accounting.
         RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
             new RecoveryScopeBinding("append", Path.GetDirectoryName(expected.Path)!), RecoveryEvidenceKind.AppendJournal,
             expected.Path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,
@@ -25,6 +27,8 @@ internal static class AppendRecoveryVerifier
     public static bool MatchesArchiveBytes(string path, RawMemberSnapshot expected,
         CancellationToken cancellationToken = default)
     {
+        // AppendJournal labels the append-scope evidence here; we verify a live append member
+        // (archive byte), not a journal, so the append scope is what matters for accounting.
         RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(
             new RecoveryScopeBinding("append", Path.GetDirectoryName(path)!), RecoveryEvidenceKind.AppendJournal,
             path, new RecoveryExpectedHash(expected.Sha256), MaintenanceLimits.Hard,

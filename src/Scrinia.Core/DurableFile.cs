@@ -6,8 +6,9 @@ using Scrinia.Core.Resilience;
 namespace Scrinia.Core;
 
 /// <summary>
-/// Replaces one file through a flushed sibling temporary file. The file contents are flushed, but
-/// the containing directory is not: a power loss can retain the old file if the rename is lost.
+/// Replaces one file through a flushed sibling temporary file. Both the file contents and the
+/// containing directory are fsync'd (via SyncDirectory) for crash durability, so a completed
+/// AtomicWrite is durable across a power loss.
 /// </summary>
 internal static class DurableFile
 {

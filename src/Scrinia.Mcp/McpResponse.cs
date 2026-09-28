@@ -276,7 +276,7 @@ public static class McpResponseExtensions
         sb.AppendLine(ci, $"status: {r.Status}");
 
         if (r.Action is not null)
-            sb.AppendLine(ci, $"action: {r.Action}");
+            sb.AppendLine(ci, $"action: {YamlEscape(r.Action)}");
         if (r.Path is not null)
             sb.AppendLine(ci, $"path: {YamlEscape(r.Path)}");
         if (r.OperationId is not null)
@@ -286,7 +286,7 @@ public static class McpResponseExtensions
         if (r.JournalPath is not null)
             sb.AppendLine(ci, $"journalPath: {YamlEscape(r.JournalPath)}");
         if (r.Reason is not null)
-            sb.AppendLine(ci, $"reason: {r.Reason}");
+            sb.AppendLine(ci, $"reason: {YamlEscape(r.Reason)}");
         if (r.Error is not null)
             sb.AppendLine(ci, $"error: {YamlEscape(r.Error)}");
         if (r.ErrorCode is not null)

@@ -421,6 +421,16 @@ internal static partial class RecoveryEnvelopeCodec
             text.Contains(Format, StringComparison.Ordinal);
     }
 
+    internal static bool IsJson(ReadOnlySpan<byte> bytes)
+    {
+        foreach (byte value in bytes)
+        {
+            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
+            return value == (byte)'{';
+        }
+        return false;
+    }
+
     internal static void EnsureOperation(ReadOnlySpan<byte> bytes, RecoveryOperation expectedOperation,
         string evidencePath)
     {
@@ -636,15 +646,6 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
         new(true, false, false, envelope.Scope, evidencePath, envelope.OperationId,
             new RecoveryBlock(envelope.Scope, evidencePath, RecoveryOperation.Append, envelope.OperationId,
                 RecoveryBlockReason.Inconsistent, detail), null);
-    private static bool IsJson(ReadOnlySpan<byte> bytes)
-    {
-        foreach (byte value in bytes)
-        {
-            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
-            return value == (byte)'{';
-        }
-        return false;
-    }
 }
 
 internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
@@ -772,15 +773,6 @@ internal sealed class RestoreRecoveryAdapter : IRecoveryAdapter
         if (verification.Outcome != RecoveryVerificationOutcome.Verified)
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
                 "Committed restore destination failed verification.", evidencePath);
-    }
-    private static bool IsJson(ReadOnlySpan<byte> bytes)
-    {
-        foreach (byte value in bytes)
-        {
-            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
-            return value == (byte)'{';
-        }
-        return false;
     }
 }
 
@@ -1042,15 +1034,4 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
 
     private static RecoveryEnvelopeException UnsafeMemberPath(string evidencePath) =>
         new(RecoveryEnvelopeFailure.Unsafe, "File-entity recovery member path is unsafe.", evidencePath);
-
-    private static bool IsJson(ReadOnlySpan<byte> bytes)
-    {
-        foreach (byte value in bytes)
-        {
-            if (value is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
-            return value == (byte)'{';
-        }
-        return false;
-    }
-
 }

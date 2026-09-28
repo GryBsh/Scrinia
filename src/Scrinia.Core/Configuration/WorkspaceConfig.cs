@@ -168,7 +168,7 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         if (value.Length == 0)
             throw Invalid("Enabled must contain one or more canonical base names.");
         string[] names = value.Split(';', StringSplitOptions.None);
-        if (names.Any(name => !IsCanonicalName(name)) || names.Distinct(StringComparer.Ordinal).Count() != names.Length)
+        if (names.Any(name => !SharedBaseRegistry.IsCanonicalName(name)) || names.Distinct(StringComparer.Ordinal).Count() != names.Length)
             throw Invalid("Enabled must contain unique, canonical, semicolon-separated base names.");
         return names;
     }
@@ -201,9 +201,6 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
             throw Invalid("The workspace config contains invalid JSON.", exception);
         }
     }
-
-    private static bool IsCanonicalName(string value) => value.Length is >= 1 and <= 32 && value[0] is >= 'a' and <= 'z' &&
-        value[1..].All(character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
 
     private static ScriniaConfigurationException Invalid(string message, Exception? inner = null) =>
         inner is null ? new ScriniaConfigurationException(message) : new ScriniaConfigurationException(message, inner);

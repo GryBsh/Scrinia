@@ -201,7 +201,15 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         .Where(pair => RootsOverlap(pair.Root, root))
         .Select(pair => new SharedBaseCollision(name, root, pair.Key, pair.Root)).FirstOrDefault();
 
-    private static bool SamePhysical(string left, string right) => RootsOverlap(left, right) && PathContainment.IsWithin(left, right) && PathContainment.IsWithin(right, left);
+    internal static bool SamePhysical(string left, string right)
+    {
+        // Both sides are normalized so callers may pass raw or already-canonical roots.
+        left = NormalizeRoot(left);
+        right = NormalizeRoot(right);
+        return RootsOverlap(left, right)
+            && PathContainment.IsWithin(left, right)
+            && PathContainment.IsWithin(right, left);
+    }
     private static bool RootsOverlap(string left, string right) => PathContainment.IsWithin(left, right) || PathContainment.IsWithin(right, left);
     private static SharedBaseResult Success(SharedBaseEntry entry) => new(Base: entry);
     private static SharedBaseResult Failure(ConfigurationErrorCode code, string message, ConfigurationExitClass exit = ConfigurationExitClass.PolicyFailure) =>

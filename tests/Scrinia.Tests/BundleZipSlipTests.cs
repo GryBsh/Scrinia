@@ -7,9 +7,10 @@ using Xunit;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Regression coverage for the bundle-import zip-slip: a manifest whose
-/// <c>fileEntities</c> category key contains a path-traversal segment must not
-/// be able to write files outside the store's <c>.scrinia</c> base dir.
+/// Regression coverage proving the bundle-import allowlist skips an unknown
+/// <c>fileEntities</c> category key (e.g. "../outside") before any path
+/// resolution. This proves allowlist-skip of an unknown key, not real-traversal
+/// containment (the harder real-traversal case lives in BundleImportCategoryAllowlistTests).
 /// </summary>
 public sealed class BundleZipSlipTests : IDisposable
 {
@@ -32,7 +33,7 @@ public sealed class BundleZipSlipTests : IDisposable
     }
 
     [Fact]
-    public void ImportBundle_WithTraversalCategoryKey_WritesNothingOutsideStore()
+    public void ImportBundle_WithUnknownCategoryKey_IsSkipped_ByAllowlist()
     {
         // The real gate is BundleFormatService.CategoryToKind, an allowlist of known
         // category keys ("skills", "agent") checked in ImportFileEntities before any

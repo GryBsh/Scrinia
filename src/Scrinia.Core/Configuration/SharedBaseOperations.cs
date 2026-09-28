@@ -105,11 +105,8 @@ public sealed class SharedBaseOperations
     public SharedBaseResult Enable(string name) => _registry.Enable(name);
     public SharedBaseResult Disable(string name) => _registry.Disable(name);
 
-    private static bool SamePhysical(string left, string right)
-    {
-        string normalized = SharedBaseRegistry.NormalizeRoot(right);
-        return PathContainment.IsWithin(left, normalized) && PathContainment.IsWithin(normalized, left);
-    }
+    private static bool SamePhysical(string left, string right) =>
+        SharedBaseRegistry.SamePhysical(left, right);
 
     private static SharedBaseResult ValidateArgumentRoot(string root)
     {

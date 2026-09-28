@@ -126,7 +126,7 @@ public sealed class HomeConfigStore : IHomeConfigStore
             var baseNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (JsonProperty baseProperty in root.GetProperty("sharedBases").EnumerateObject())
             {
-                if (!baseNames.Add(baseProperty.Name) || !IsCanonicalName(baseProperty.Name) || baseProperty.Value.ValueKind != JsonValueKind.Object)
+                if (!baseNames.Add(baseProperty.Name) || !SharedBaseRegistry.IsCanonicalName(baseProperty.Name) || baseProperty.Value.ValueKind != JsonValueKind.Object)
                     throw Invalid("The home config contains an invalid shared base.");
                 var fields = new HashSet<string>(StringComparer.Ordinal);
                 foreach (JsonProperty field in baseProperty.Value.EnumerateObject())
@@ -155,15 +155,10 @@ public sealed class HomeConfigStore : IHomeConfigStore
         {
             string name = pair.Key;
             SharedBaseEntry entry = pair.Value;
-            if (!IsCanonicalName(name) || entry is null || !IsValidBaseRoot(entry.Root))
+            if (!SharedBaseRegistry.IsCanonicalName(name) || entry is null || !IsValidBaseRoot(entry.Root))
                 throw Invalid("The home config contains an invalid shared base.");
         }
     }
-
-    private static bool IsCanonicalName(string name) =>
-        name.Length is >= 1 and <= 32 && IsLowercaseAscii(name[0]) && name[1..].All(character => IsLowercaseAscii(character) || char.IsAsciiDigit(character) || character == '-');
-
-    private static bool IsLowercaseAscii(char character) => character is >= 'a' and <= 'z';
 
     private static bool IsValidBaseRoot(string? root)
     {
