@@ -1,12 +1,21 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Scrinia.Core;
 
 /// <summary>
-/// Cross-process file lock using OS-enforced FileStream locks.
-/// Creates a .lock file in the target directory.
+/// Cross-process file lock that creates a <c>.lock</c> file in the target directory.
+///
+/// <para>On Windows the exclusion is OS-enforced: the underlying FileStream opens with
+/// <see cref="FileShare.None"/> for an exclusive lock or <see cref="FileShare.Read"/> for a shared
+/// lock, and the system rejects a conflicting open, so a second process cannot proceed. On
+/// non-Windows platforms <c>FileShare</c> is advisory and does not cross process boundaries, so
+/// exclusion is enforced with <c>flock(2)</c>: an exclusive lock takes <c>LOCK_EX</c>, a shared lock
+/// takes <c>LOCK_SH</c>, and a non-blocking attempt that fails with <c>EAGAIN</c>/<c>EWOULDBLOCK</c>
+/// means another process holds the lock and is retried with exponential backoff. The lock is
+/// released explicitly on dispose via <c>LOCK_UN</c>.</para>
 /// </summary>
 public sealed class FileLock : IDisposable
 {
@@ -25,6 +34,17 @@ public sealed class FileLock : IDisposable
     private FileLock() { }
 
     /// <summary>
+    /// Which cross-process lock to take: exclusive (single writer) or shared (multiple readers).
+    /// Drives the <see cref="flock"/> mode on non-Windows; on Windows <see cref="FileShare"/>
+    /// already distinguishes the two, so this is informational there.
+    /// </summary>
+    private enum FileLockMode
+    {
+        Exclusive,
+        Shared
+    }
+
+    /// <summary>
     /// Acquires an exclusive lock for write operations. Blocks all other readers and writers.
     /// Retries with exponential backoff up to <paramref name="timeout"/>.
     /// </summary>
@@ -34,7 +54,7 @@ public sealed class FileLock : IDisposable
         // write needs somewhere to land. AcquireShared has already returned a lock over nothing if
         // the directory is missing, so this call was pure cost on every cold read.
         Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
-        return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout ?? TimeSpan.FromSeconds(5), logger);
+        return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, FileLockMode.Exclusive, timeout ?? TimeSpan.FromSeconds(5), logger);
     }
 
     internal static FileLock AcquireExclusive(string lockPath, TimeSpan timeout, CancellationToken cancellationToken,
@@ -45,7 +65,7 @@ public sealed class FileLock : IDisposable
             throw new ArgumentOutOfRangeException(nameof(timeout), "The lock timeout must be positive.");
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
-        return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout, logger, cancellationToken);
+        return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, FileLockMode.Exclusive, timeout, logger, cancellationToken);
     }
 
     /// <summary>
@@ -66,13 +86,13 @@ public sealed class FileLock : IDisposable
         if (dir is not null && !Directory.Exists(dir))
             return new FileLock();
 
-        return Acquire(lockPath, FileAccess.Read, FileShare.Read, timeout ?? TimeSpan.FromSeconds(5), logger);
+        return Acquire(lockPath, FileAccess.Read, FileShare.Read, FileLockMode.Shared, timeout ?? TimeSpan.FromSeconds(5), logger);
     }
 
-    private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, TimeSpan timeout, ILogger? logger)
-        => Acquire(lockPath, access, share, timeout, logger, CancellationToken.None);
+    private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, FileLockMode mode, TimeSpan timeout, ILogger? logger)
+        => Acquire(lockPath, access, share, mode, timeout, logger, CancellationToken.None);
 
-    private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, TimeSpan timeout,
+    private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, FileLockMode mode, TimeSpan timeout,
         ILogger? logger, CancellationToken cancellationToken)
     {
         ILogger log = logger ?? DefaultLogger;
@@ -83,21 +103,12 @@ public sealed class FileLock : IDisposable
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            IOException? openError = null;
+            FileStream? stream = null;
             try
             {
-                var stream = new FileStream(lockPath, FileMode.OpenOrCreate, access, share);
-                return new FileLock(stream);
-            }
-            catch (IOException ex) when (sw.Elapsed < timeout && IsTransientIoException(ex))
-            {
-                if (!contended)
-                {
-                    contended = true;
-                    LockContended(log, lockPath, sw.ElapsedMilliseconds, null);
-                }
-                if (cancellationToken.WaitHandle.WaitOne(delayMs))
-                    cancellationToken.ThrowIfCancellationRequested();
-                delayMs = Math.Min(delayMs * 2, 500);
+                stream = new FileStream(lockPath, FileMode.OpenOrCreate, access, share);
             }
             catch (UnauthorizedAccessException)
             {
@@ -109,18 +120,74 @@ public sealed class FileLock : IDisposable
                     return new FileLock();
                 throw;
             }
-            catch (IOException)
+            catch (IOException ex)
+            {
+                openError = ex;
+            }
+
+            // Windows enforces cross-process exclusion at the open above (FileShare is OS-enforced
+            // there). Non-Windows FileShare is advisory, so a successful open is not enough: enforce
+            // with flock(2) on the underlying descriptor.
+            if (stream is not null && OperatingSystem.IsWindows())
+                return new FileLock(stream);
+
+            bool contendedAttempt;
+            if (stream is not null)
+            {
+                // Non-Windows: take a non-blocking lock on the fd. flock(2) is advisory, but the POSIX
+                // kernel enforces it across processes for a given open file description — exactly the
+                // guarantee FileShare cannot provide off Windows.
+                int fd = (int)stream.SafeFileHandle.DangerousGetHandle();
+                int how = mode == FileLockMode.Exclusive ? LOCK_EX : LOCK_SH;
+                if (flock(fd, how | LOCK_NB) == 0)
+                    return new FileLock(stream);
+                stream.Dispose();
+                int errno = Marshal.GetLastPInvokeError();
+                if (errno is EAGAIN or EWOULDBLOCK)
+                    contendedAttempt = true;
+                else
+                {
+                    openError = new IOException(
+                        $"flock({how}) failed with errno {errno} while locking '{lockPath}'.");
+                    contendedAttempt = false;
+                }
+            }
+            else
+            {
+                // Windows (or a non-Windows open failure): only a known transient sharing violation is
+                // contention; every other IOException is a hard failure.
+                contendedAttempt = IsTransientIoException(openError!);
+            }
+
+            if (!contendedAttempt)
             {
                 LockTimedOut(log, lockPath, sw.ElapsedMilliseconds, null);
                 throw new FileLockTimeoutException(lockPath, timeout);
             }
+
+            // Contended within the timeout window: log once, back off exponentially, and retry.
+            if (sw.Elapsed >= timeout)
+            {
+                LockTimedOut(log, lockPath, sw.ElapsedMilliseconds, null);
+                throw new FileLockTimeoutException(lockPath, timeout);
+            }
+            if (!contended)
+            {
+                contended = true;
+                LockContended(log, lockPath, sw.ElapsedMilliseconds, null);
+            }
+            if (cancellationToken.WaitHandle.WaitOne(delayMs))
+                cancellationToken.ThrowIfCancellationRequested();
+            delayMs = Math.Min(delayMs * 2, 500);
         }
     }
 
     private static bool IsTransientIoException(IOException ex)
     {
-        // Only retry known transient sharing violations. Every other IOException
-        // propagates to FileRetry outer window or surfaces as timeout.
+        // Windows-only semantics: retry only the Win32 sharing/lock violations that FileStream
+        // surfaces on a conflicting cross-process open. Every other IOException propagates to the
+        // timeout branch. Non-Windows enforces contention via flock(2) and never reaches here for a
+        // sharing violation.
         int hr = System.Runtime.InteropServices.Marshal.GetHRForException(ex);
         int win32 = hr & 0xFFFF;
         return win32 == 32  // ERROR_SHARING_VIOLATION
@@ -143,8 +210,46 @@ public sealed class FileLock : IDisposable
     public void Dispose()
     {
         var stream = Interlocked.Exchange(ref _stream, null);
-        stream?.Dispose();
+        if (stream is null)
+            return;
+
+        if (OperatingSystem.IsWindows())
+        {
+            // Windows releases the OS-enforced FileShare lock when the handle is closed.
+            stream.Dispose();
+            return;
+        }
+
+        // Non-Windows: release the flock(2) explicitly before closing the descriptor. Closing also
+        // releases the lock, but an explicit unlock surfaces any flock(2) error instead of hiding it
+        // in finalization.
+        int fd = (int)stream.SafeFileHandle.DangerousGetHandle();
+        int _ = flock(fd, LOCK_UN);
+        stream.Dispose();
     }
+
+    #pragma warning disable CA1838, CA2101, CA1865
+
+    // Non-Windows interop (libc flock(2)). flock is advisory, but the POSIX kernel enforces it across
+    // processes for a given open file description — the cross-process guarantee FileStream's FileShare
+    // cannot provide off Windows. On Windows this import is never called (FileShare does the work), so
+    // its unresolved symbol is harmless: P/Invoke imports resolve lazily at first call.
+    [DllImport("libc", SetLastError = true)]
+    private static extern int flock(int fd, int how);
+
+    // flock(2) operation flags.
+    private const int LOCK_SH = 1;   // shared read lock
+    private const int LOCK_EX = 2;   // exclusive write lock
+    private const int LOCK_NB = 4;   // do not block; fail with EAGAIN if the lock is held
+    private const int LOCK_UN = 8;   // release the lock
+
+    // flock(2) errno when the lock is held by another process: EAGAIN, which equals EWOULDBLOCK on a
+    // given platform. Linux reports 11; macOS reports 35 — accept both so the contention check is
+    // correct on either.
+    private const int EAGAIN = 11;
+    private const int EWOULDBLOCK = 35;
+
+    #pragma warning restore CA1838, CA2101, CA1865
 }
 
 public sealed class FileLockTimeoutException : TimeoutException

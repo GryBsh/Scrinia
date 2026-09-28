@@ -1202,8 +1202,23 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private List<ArtifactEntry> LoadIndexUnderExclusiveAppendLock(string scope)
     {
-        if (_scopeIndexCache.TryGet(scope, out var cached))
-            return cached.Entries;
+        // The exclusive FILE lock (held by the caller) prevents cross-process writes, but not a
+        // same-process writer that replaces _scopeIndexCache under WithExclusiveLock's EnterWriteLock.
+        // Take the per-scope read lock so this cache check is sequenced against that writer — matching
+        // LoadIndexUnderRecoveryBarrier. LoadIndexUnsafe below re-checks the cache and already runs
+        // inside the caller's exclusive file lock, so it needs no additional read lock here.
+        var lk = _scopeLockManager.GetIndexLock(scope);
+        lk.EnterReadLock();
+        try
+        {
+            if (_scopeIndexCache.TryGet(scope, out var cached))
+                return cached.Entries;
+        }
+        finally
+        {
+            lk.ExitReadLock();
+        }
+
         return LoadIndexUnsafe(scope);
     }
 
