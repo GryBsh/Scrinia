@@ -24,11 +24,6 @@ public sealed record ChunkEntryResult(
     int TotalChunks,
     double Score) : SearchResult(Score);
 
-// Backward-compatible entry-only result (used by Find/Search methods)
-public sealed record ScoredArtifact(
-    ScopedArtifact Item,
-    double Score);
-
 // Topic metadata for search scoring
 public sealed record TopicInfo(
     string Scope,

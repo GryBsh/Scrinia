@@ -47,44 +47,6 @@ internal sealed class WeightedAttributeScorer
         _weights = weights ?? ScoringWeights.Default;
     }
 
-    public IReadOnlyList<ScoredArtifact> Search(
-        string query,
-        IEnumerable<ScopedArtifact> candidates,
-        int limit)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-            return [];
-
-        var candidateList = candidates as IList<ScopedArtifact> ?? candidates.ToList();
-
-        // Compute BM25 corpus stats from all candidates with TF data
-        var (avgDocLen, docFreqs) = Bm25Scorer.ComputeCorpusStats(
-            candidateList.Select(c => (IReadOnlyDictionary<string, int>?)c.Entry.TermFrequencies),
-            docCountHint: candidateList.Count);
-
-        var queryTerms = TextAnalysis.Tokenize(query);
-        int corpusSize = candidateList.Count;
-
-        var scored = new List<ScoredArtifact>();
-
-        foreach (var candidate in candidateList)
-        {
-            double attributeScore = ScoreEntry(query, candidate.Entry);
-            double bm25Score = ComputeBm25(queryTerms, candidate.Entry, avgDocLen, corpusSize, docFreqs);
-            double total = attributeScore + bm25Score * _weights.Bm25Weight;
-            if (total > 0)
-                scored.Add(new ScoredArtifact(candidate, total));
-        }
-
-        scored.Sort((a, b) =>
-        {
-            int cmp = b.Score.CompareTo(a.Score);
-            return cmp != 0 ? cmp : b.Item.Entry.CreatedAt.CompareTo(a.Item.Entry.CreatedAt);
-        });
-
-        return scored.Take(Math.Max(1, limit)).ToList();
-    }
-
     /// <summary>
     /// Searches both entries and topics, returning polymorphic results interleaved by score.
     /// </summary>

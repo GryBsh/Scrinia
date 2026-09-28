@@ -38,7 +38,7 @@ public sealed class ScorerCleanupTests
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("widgets");
 
-        var scored = new WeightedAttributeScorer().Search("widgets", [new ScopedArtifact("local", entry)], 10);
+        var scored = new WeightedAttributeScorer(new RankerOptions(AlphaRecency: 0)).SearchAll("widgets", [new ScopedArtifact("local", entry)], Array.Empty<TopicInfo>(), 10, null, null);
 
         scored.Should().ContainSingle();
         scored[0].Score.Should().Be(40,
@@ -69,11 +69,11 @@ public sealed class ScorerCleanupTests
         var entries = store.LoadIndex("local");
         var scoped = entries.Select(e => new ScopedArtifact("local", e)).ToList();
 
-        var scored = new WeightedAttributeScorer().Search("widgets", scoped, 10);
+        var scored = new WeightedAttributeScorer(new RankerOptions(AlphaRecency: 0)).SearchAll("widgets", scoped, Array.Empty<TopicInfo>(), 10, null, null);
 
         scored.Should().HaveCount(2);
-        var tagResult = scored.Single(r => r.Item.Entry.Name == "tag-only");
-        var previewResult = scored.Single(r => r.Item.Entry.Name == "preview-only");
+        var tagResult = scored.Single(r => r is EntryResult er && er.Item.Entry.Name == "tag-only");
+        var previewResult = scored.Single(r => r is EntryResult er && er.Item.Entry.Name == "preview-only");
 
         previewResult.Score.Should().Be(5, because: "content-preview-contains is the lowest tier");
         tagResult.Score.Should().BeGreaterThan(previewResult.Score,
