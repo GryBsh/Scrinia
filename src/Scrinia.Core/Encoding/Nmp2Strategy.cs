@@ -138,15 +138,16 @@ public sealed class Nmp2Strategy : IEncodingStrategy
                 throw new InvalidDataException(
                     $"NMP/2 artifact declares {count} chunks; must be 1..{MaxChunkCount}.");
 
+            var sections = ExtractRawChunkSections(artifact, count);
             var chunks = new List<byte[]>(Math.Min(count, 256));
             long runningTotal = 0;
-            for (int i = 1; i <= count; i++)
+            for (int i = 0; i < sections.Count; i++)
             {
-                byte[] chunkBytes = DecodeChunkSection(artifact, i, maxBytes - runningTotal);
+                byte[] chunkBytes = DecodeChunkSectionFrom(sections[i], maxBytes - runningTotal);
                 runningTotal += chunkBytes.Length;
                 if (runningTotal > maxBytes)
                     throw new InvalidDataException(
-                        $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i}).");
+                        $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i + 1}).");
                 chunks.Add(chunkBytes);
             }
 
@@ -307,6 +308,63 @@ public sealed class Nmp2Strategy : IEncodingStrategy
             if (line.StartsWith("##", StringComparison.Ordinal)) break;
             if (line.Equals("NMP/END", StringComparison.Ordinal)) break;
 
+            sb64.Append(line);
+        }
+
+        byte[] padded = Base64UrlDecode(sb64.ToString());
+        return DecompressPadded(padded, pad, maxBytes);
+    }
+
+    /// <summary>
+    /// Extracts the raw text of each <c>##CHUNK:N</c> .. <c>##PAD:N</c> section from a
+    /// multi-chunk artifact in a single left-to-right pass, preserving exact formatting for
+    /// verbatim copy. Each <c>IndexOf</c> starts where the previous section ended rather than
+    /// re-scanning from index 0, so the whole extraction is O(n) instead of O(k·n).
+    /// </summary>
+    internal static List<string> ExtractRawChunkSections(string artifact, int chunkCount)
+    {
+        var sections = new List<string>(chunkCount);
+        int from = 0;
+        for (int i = 1; i <= chunkCount; i++)
+        {
+            string marker = $"##CHUNK:{i}\n";
+            int start = artifact.IndexOf(marker, from, StringComparison.Ordinal);
+            if (start < 0)
+                throw new FormatException($"Could not find ##CHUNK:{i} marker in artifact.");
+            // find ##PAD: after the marker
+            string padPrefix = "##PAD:";
+            int padStart = artifact.IndexOf(padPrefix, start + marker.Length, StringComparison.Ordinal);
+            if (padStart < 0)
+                throw new FormatException($"Could not find ##PAD: after ##CHUNK:{i}.");
+            int padEnd = artifact.IndexOf('\n', padStart);
+            if (padEnd < 0) padEnd = artifact.Length; else padEnd++; // include newline
+            sections.Add(artifact[start..padEnd]);
+            from = padEnd; // next section starts here — makes the whole extraction O(n)
+        }
+        return sections;
+    }
+
+    /// <summary>
+    /// Decodes a single chunk section (already extracted between its <c>##CHUNK:N</c> and
+    /// <c>##PAD:N</c> markers) into decompressed bytes, bounded by <paramref name="maxBytes"/>.
+    /// Operates on the pre-extracted slice rather than re-walking the whole artifact.
+    /// </summary>
+    internal static byte[] DecodeChunkSectionFrom(string section, long maxBytes)
+    {
+        var sb64 = new StringBuilder();
+        int pad = 0;
+        foreach (var line in EnumerateLines(section))
+        {
+            // The section's first line is the ##CHUNK:N marker copied verbatim from the artifact;
+            // skip it, exactly as DecodeChunkSection skipped the marker before collecting.
+            if (line.StartsWith("##CHUNK:", StringComparison.Ordinal)) continue;
+            if (line.StartsWith("##PAD:", StringComparison.Ordinal))
+            {
+                if (int.TryParse(line[6..], out int p)) pad = p;
+                break;
+            }
+            if (line.StartsWith("##", StringComparison.Ordinal)) break;
+            if (line.Equals("NMP/END", StringComparison.Ordinal)) break;
             sb64.Append(line);
         }
 

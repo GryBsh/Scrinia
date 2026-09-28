@@ -86,7 +86,7 @@ public static class Nmp2ChunkedEncoder
         int newCount = oldCount + 1;
 
         // Extract existing chunk sections (the raw encoded lines between ##CHUNK:N and ##PAD:N inclusive)
-        var existingChunkSections = ExtractRawChunkSections(existingArtifact, oldCount);
+        var existingChunkSections = Nmp2Strategy.ExtractRawChunkSections(existingArtifact, oldCount);
 
         // Parse existing header for CRC and byte count — no need to decode existing chunks
         var metadata = Nmp2Strategy.Instance.ParseHeader(existingArtifact);
@@ -247,37 +247,6 @@ public static class Nmp2ChunkedEncoder
         sb.Append('\n');
     }
 
-    /// <summary>
-    /// Extracts the raw text of each chunk section (##CHUNK:N through ##PAD:N\n inclusive)
-    /// from a multi-chunk artifact, preserving exact formatting for verbatim copy.
-    /// </summary>
-    private static List<string> ExtractRawChunkSections(string artifact, int chunkCount)
-    {
-        var sections = new List<string>(chunkCount);
-        for (int i = 1; i <= chunkCount; i++)
-        {
-            string marker = $"##CHUNK:{i}\n";
-            int start = artifact.IndexOf(marker, StringComparison.Ordinal);
-            if (start < 0)
-                throw new FormatException($"Could not find ##CHUNK:{i} marker in artifact.");
-
-            // Find the end of this chunk's PAD line
-            string padPrefix = "##PAD:";
-            int padStart = artifact.IndexOf(padPrefix, start + marker.Length, StringComparison.Ordinal);
-            if (padStart < 0)
-                throw new FormatException($"Could not find ##PAD: after ##CHUNK:{i}.");
-
-            int padEnd = artifact.IndexOf('\n', padStart);
-            if (padEnd < 0)
-                padEnd = artifact.Length;
-            else
-                padEnd++; // include the newline
-
-            sections.Add(artifact[start..padEnd]);
-        }
-        return sections;
-    }
-
     /// <summary>Returns the number of independently decodable chunks. Always ≥ 1.</summary>
     public static int GetChunkCount(string artifact) =>
         Nmp2Strategy.ParseChunkCount(artifact);
@@ -345,15 +314,16 @@ public static class Nmp2ChunkedEncoder
             throw new InvalidDataException(
                 $"NMP/2 artifact declares {count} chunks; must be 1..{Nmp2Strategy.MaxChunkCount}.");
         long maxBytes = Nmp2Strategy.MaxDecodedBytes;
+        var sections = Nmp2Strategy.ExtractRawChunkSections(artifact, count);
         var chunkBytes = new byte[count][];
         long total = 0;
-        for (int i = 1; i <= count; i++)
+        for (int i = 0; i < sections.Count; i++)
         {
-            chunkBytes[i - 1] = Nmp2Strategy.DecodeChunkSection(artifact, i, maxBytes - total);
-            total += chunkBytes[i - 1].Length;
+            chunkBytes[i] = Nmp2Strategy.DecodeChunkSectionFrom(sections[i], maxBytes - total);
+            total += chunkBytes[i].Length;
             if (total > maxBytes)
                 throw new InvalidDataException(
-                    $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i}).");
+                    $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i + 1}).");
         }
 
         byte[] all = new byte[total];
