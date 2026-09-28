@@ -17,9 +17,12 @@ public sealed record RetryOptions
     }
 }
 
-/// <summary>Retry with exponential backoff and jitter.</summary>
-public static class RetryPolicy
-{
+    /// <summary>Retry with exponential backoff and jitter.</summary>
+    public static class RetryPolicy
+    {
+        /// <summary>Absolute ceiling on a single retry backoff. Caps exponential growth so an
+        /// extreme configured BaseDelayMs can't produce a multi-hour wait on the last retry.</summary>
+        private const long MaxDelayMs = 5L * 60 * 1000;
     /// <summary>Execute an async operation with retry on transient failures.</summary>
     public static async Task<T> ExecuteAsync<T>(
         Func<Task<T>> operation,
@@ -97,7 +100,9 @@ public static class RetryPolicy
     {
         long exponential = (long)baseDelayMs * (1 << Math.Min(attempt, 10));
         int jitter = Random.Shared.Next(0, baseDelayMs);
-        return TimeSpan.FromMilliseconds(exponential + jitter);
+        // Cap the total so an extreme configured BaseDelayMs can't yield a multi-hour wait.
+        long cappedMs = Math.Clamp(exponential + jitter, 0, MaxDelayMs);
+        return TimeSpan.FromMilliseconds(cappedMs);
     }
 
     private static TimeSpan GetRetryAfterDelay(HttpResponseHeaders headers, TimeSpan fallback)

@@ -865,10 +865,13 @@ public sealed partial class ScriniaMcpTools
         long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
         int totalTokens = (int)(totalBytes / 4);
         var now = DateTimeOffset.UtcNow;
-        int staleCount = entries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).IsStale);
-        int reviewCount = entries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).NeedsReview);
+        int staleCount = 0, reviewCount = 0;
+        foreach (ScopedArtifact entry in entries)
+        {
+            var status = AttributeReaders.GetReviewStatus(entry.Entry.Attributes, now);
+            if (status.IsStale) staleCount++;
+            if (status.NeedsReview) reviewCount++;
+        }
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         // Group by scope
