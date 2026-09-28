@@ -122,10 +122,15 @@ public static class PathRouter
         // Recovery-compat read-only shim for legacy `local-topic:` journals. Sunset 2027-03-21; after sunset legacy inputs resolve to Unknown scope (see LocalTopicSunsetDate).
         if (DateTimeOffset.UtcNow < LocalTopicSunsetDate && scope.StartsWith("local-topic:", StringComparison.Ordinal))
         {
-            return Path.Combine(memories,
+            string target = Path.Combine(memories,
                 scope["local-topic:".Length..].Replace('/', Path.DirectorySeparatorChar));
+            if (!PathContainment.IsWithin(memories, target))
+                throw new ArgumentException($"Local-topic scope '{scope}' escapes the store directory.", nameof(scope));
+            return target;
         }
 
+        // Shares the same un-guarded combine pattern as the local-topic: shim above, but is left as-is:
+        // a `local:` scope reaches here only after MemoryNaming/PathContainment already validated it upstream.
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             return Path.Combine(memories,
                 scope["local:".Length..].Replace('/', Path.DirectorySeparatorChar));

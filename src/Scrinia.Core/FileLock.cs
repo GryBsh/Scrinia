@@ -141,16 +141,12 @@ public sealed class FileLock : IDisposable
                 int how = mode == FileLockMode.Exclusive ? LOCK_EX : LOCK_SH;
                 if (flock(fd, how | LOCK_NB) == 0)
                     return new FileLock(stream);
+                int errno = Marshal.GetLastPInvokeError();   // capture BEFORE close()/Dispose, while errno is fresh
                 stream.Dispose();
-                int errno = Marshal.GetLastPInvokeError();
                 if (errno is EAGAIN or EWOULDBLOCK)
                     contendedAttempt = true;
                 else
-                {
-                    openError = new IOException(
-                        $"flock({how}) failed with errno {errno} while locking '{lockPath}'.");
                     contendedAttempt = false;
-                }
             }
             else
             {
