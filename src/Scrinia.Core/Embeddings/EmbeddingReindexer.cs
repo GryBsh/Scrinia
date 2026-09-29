@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Core.Embeddings;
 
@@ -41,10 +42,7 @@ public static class EmbeddingReindexer
 
         options ??= new EmbeddingOptions();
 
-        var items = store.ListScoped()
-            .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
-            .DistinctBy(i => $"{i.Scope}\u001f{i.Entry.Name}", StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var items = EnumeratePersistentItems(store);
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
 
@@ -164,10 +162,7 @@ public static class EmbeddingReindexer
         Action<int, int>? progress,
         CancellationToken ct)
     {
-        var items = store.ListScoped()
-            .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
-            .DistinctBy(i => $"{i.Scope}\u001f{i.Entry.Name}", StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var items = EnumeratePersistentItems(store);
         int total = items.Count;
         int embedded = 0, skipped = 0, failed = 0;
 
@@ -261,7 +256,7 @@ public static class EmbeddingReindexer
     {
         var scopes = store.ListScoped()
             .Select(item => item.Scope)
-            .Where(scope => !scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .Where(scope => !MemoryArtifactSource.IsEphemeral(scope))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(scope => scope, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -284,4 +279,18 @@ public static class EmbeddingReindexer
             .OrderBy(scope => scope, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
+
+    /// <summary>
+    /// The single shared enumeration of persistent memories for a reindex pass: every stored
+    /// item, minus the session-bound <c>ephemeral</c> scope, de-duplicated per
+    /// <c>(scope, subject)</c> case-insensitively. Used by both the provider-driven
+    /// (<see cref="ReindexAsync"/>) and sink-driven (<see cref="ReindexViaSinkAsync"/>) passes so
+    /// the filter and the <c>\u001f</c>-separated, case-insensitive <c>DistinctBy</c> key stay in
+    /// one place.
+    /// </summary>
+    private static List<ScopedArtifact> EnumeratePersistentItems(IMemoryStore store) =>
+        store.ListScoped()
+            .Where(i => !MemoryArtifactSource.IsEphemeral(i.Scope))
+            .DistinctBy(i => $"{i.Scope}\u001f{i.Entry.Name}", StringComparer.OrdinalIgnoreCase)
+            .ToList();
 }

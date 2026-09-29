@@ -41,10 +41,11 @@ public sealed class VoyageAiEmbeddingProvider : ResilientEmbeddingProvider
 
     protected override async Task<float[]?> ParseEmbeddingResponseAsync(HttpResponseMessage response, CancellationToken ct)
     {
-        var result = await response.Content.ReadFromJsonAsync(VoyageAiJsonContext.Default.VoyageAiEmbedResponse, ct);
-        if (result?.Data is { Length: > 0 })
-            return result.Data[0].Embedding;
-        return null;
+        return await EmbeddingResponseParser.ParseOpenAICompatibleAsync<VoyageAiEmbedResponse>(
+            response.Content,
+            VoyageAiJsonContext.Default.VoyageAiEmbedResponse,
+            r => r.Data is { Length: > 0 } ? r.Data[0].Embedding : null,
+            ct);
     }
 
     protected override Task<HttpResponseMessage> SendEmbedBatchRequestAsync(

@@ -42,10 +42,11 @@ public sealed class OpenAiEmbeddingProvider : ResilientEmbeddingProvider
 
     protected override async Task<float[]?> ParseEmbeddingResponseAsync(HttpResponseMessage response, CancellationToken ct)
     {
-        var result = await response.Content.ReadFromJsonAsync(OpenAiJsonContext.Default.OpenAiEmbedResponse, ct);
-        if (result?.Data is { Length: > 0 })
-            return result.Data[0].Embedding;
-        return null;
+        return await EmbeddingResponseParser.ParseOpenAICompatibleAsync<OpenAiEmbedResponse>(
+            response.Content,
+            OpenAiJsonContext.Default.OpenAiEmbedResponse,
+            r => r.Data is { Length: > 0 } ? r.Data[0].Embedding : null,
+            ct);
     }
 
     protected override Task<HttpResponseMessage> SendEmbedBatchRequestAsync(

@@ -53,10 +53,11 @@ public sealed class AzureAiEmbeddingProvider : ResilientEmbeddingProvider
 
     protected override async Task<float[]?> ParseEmbeddingResponseAsync(HttpResponseMessage response, CancellationToken ct)
     {
-        var result = await response.Content.ReadFromJsonAsync(AzureJsonContext.Default.AzureEmbedResponse, ct);
-        if (result?.Data is { Length: > 0 })
-            return result.Data[0].Embedding;
-        return null;
+        return await EmbeddingResponseParser.ParseOpenAICompatibleAsync<AzureEmbedResponse>(
+            response.Content,
+            AzureJsonContext.Default.AzureEmbedResponse,
+            r => r.Data is { Length: > 0 } ? r.Data[0].Embedding : null,
+            ct);
     }
 
     protected override Task<HttpResponseMessage> SendEmbedBatchRequestAsync(

@@ -1,3 +1,4 @@
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Core;
@@ -14,7 +15,7 @@ internal static class ArtifactIdentityMapper
     {
         string topic = scope.Equals("local", StringComparison.Ordinal)
             ? ""
-            : scope.Equals("ephemeral", StringComparison.Ordinal)
+            : scope.Equals(MemoryArtifactSource.EphemeralScope, StringComparison.Ordinal)
                 ? "ephemeral/"
                 : scope.StartsWith("local:", StringComparison.Ordinal)
                     ? scope["local:".Length..] + "/"
@@ -24,7 +25,7 @@ internal static class ArtifactIdentityMapper
 
     public static ArtifactEntry CanonicalizeEntryForScope(ArtifactEntry entry, string scope)
     {
-        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+        if (MemoryArtifactSource.IsEphemeral(scope))
             return entry;
 
         string subject = entry.Name;

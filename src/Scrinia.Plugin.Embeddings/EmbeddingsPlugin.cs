@@ -380,7 +380,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     {
         EnsureInitialized();
         var allItems = store.ListScoped()
-            .Where(item => !item.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .Where(item => !MemoryArtifactSource.IsEphemeral(item.Scope))
             .DistinctBy(item => item.Entry.Address)
             .ToArray();
         int count = 0;

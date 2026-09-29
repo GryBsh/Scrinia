@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Scrinia.Core.Embeddings;
 
 namespace Scrinia.Core;
 
@@ -75,7 +76,7 @@ internal sealed class TopicDiscoveryService
         string s = token.Trim();
         if (s.Equals("local", StringComparison.OrdinalIgnoreCase)) return ["local"];
         // Ephemeral is handled separately in ListScoped — exclude from filesystem scopes
-        if (s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase)) return [];
+        if (MemoryArtifactSource.IsEphemeral(s)) return [];
 
         // Path prefix query: "/goal/G-5/" → find all scopes under that path tree
         if (s.StartsWith('/'))
@@ -204,7 +205,7 @@ internal sealed class TopicDiscoveryService
         // .Trim() below and throw.
         scopes = MemoryNaming.NormalizeFilterList(scopes);
         return scopes is not { Count: > 0 }
-            || scopes.Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+            || scopes.Any(s => MemoryArtifactSource.IsEphemeral(s));
     }
 
     internal void InvalidateCachedTopics() => _cachedTopics = null;

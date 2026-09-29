@@ -10,6 +10,7 @@ using Scrinia.Core.Formats;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Core;
@@ -424,7 +425,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public ValueTask<ArtifactEntry?> ReadAsync(MemoryAddress address, CancellationToken ct = default)
     {
         var (scope, subject) = ResolveAddress(address);
-        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+        if (MemoryArtifactSource.IsEphemeral(scope))
         {
             var ephemeral = GetEphemeral(subject);
             return ValueTask.FromResult<ArtifactEntry?>(ephemeral is null
@@ -453,7 +454,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public ValueTask DeleteAsync(MemoryAddress address, CancellationToken ct = default)
     {
         var (scope, subject) = ResolveAddress(address);
-        if (scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+        if (MemoryArtifactSource.IsEphemeral(scope))
             ForgetEphemeral(subject);
         else
         {
@@ -3946,7 +3947,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public bool Remove(MemoryAddress address)
     {
         var (scope, subject) = ResolveAddress(address);
-        return scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase)
+        return MemoryArtifactSource.IsEphemeral(scope)
             ? ForgetEphemeral(address)
             : Remove(subject, scope);
     }

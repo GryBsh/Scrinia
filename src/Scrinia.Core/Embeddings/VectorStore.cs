@@ -202,7 +202,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
             _scopeVectors[scope] = vectors;
 
             // Persist if not ephemeral
-            if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            if (!MemoryArtifactSource.IsEphemeral(scope))
             {
                 string path = GetFilePath(scope);
                 var probe = File.Exists(path) ? ProbeAppendable(path) : AppendProbe.NotAppendable;
@@ -271,7 +271,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
             var vectors = current.Where(v => !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
             _scopeVectors[scope] = vectors;
 
-            if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            if (!MemoryArtifactSource.IsEphemeral(scope))
             {
                 string path = GetFilePath(scope);
                 var probe = File.Exists(path) ? ProbeAppendable(path) : AppendProbe.NotAppendable;
@@ -385,7 +385,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
             foreach (var (chunkIndex, vector) in deduped)
                 replacement.Add(new VectorEntry(name, chunkIndex, vector));
             // Persist if not ephemeral
-            if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            if (!MemoryArtifactSource.IsEphemeral(scope))
             {
                 string path = GetFilePath(scope);
                 // Replacements are transactions, not append batches. A temp SVF3 is fully written
@@ -470,7 +470,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
 
         // Validate through the single scope constructor before any Path.Combine.
         // Ephemeral is allowed as-is; everything else must be buildable.
-        if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+        if (!MemoryArtifactSource.IsEphemeral(scope))
         {
             string topic = scope.StartsWith("local:", StringComparison.OrdinalIgnoreCase)
                 ? scope["local:".Length..]
@@ -489,7 +489,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
                         throw new ArgumentException($"Scope segment '{seg}' is not allowed.", nameof(scope));
                 }
             }
-            else if (!scope.Equals("local", StringComparison.OrdinalIgnoreCase) && !scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            else if (!scope.Equals("local", StringComparison.OrdinalIgnoreCase) && !MemoryArtifactSource.IsEphemeral(scope))
             {
                 throw new ArgumentException($"Scope '{scope}' is not a valid scope.", nameof(scope));
             }
