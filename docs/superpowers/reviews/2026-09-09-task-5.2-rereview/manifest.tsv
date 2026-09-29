@@ -1,0 +1,5 @@
+M	tests/Scrinia.Plugin.Embeddings.Tests/ModelDownloadIntegrityTests.cs
+M	tests/Scrinia.Tests/GlobalToolInstallTests.cs
+M	tests/Scrinia.Tests/ModelRelocationTests.cs
+M	tests/Scrinia.Tests/PluginDiscoveryDiagnosticTests.cs
+M	tests/Scrinia.Tests/Shared/NoBaseStartupTests.cs

@@ -1,0 +1,15 @@
+C:\Program Files\dotnet\sdk\10.0.400-preview.0.26322.102\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.RuntimeIdentifierInference.targets(383,5): message NETSDK1057: You are using a preview version of .NET. See: https://aka.ms/dotnet-support-policy [C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\tests\Scrinia.Tests\Scrinia.Tests.csproj]
+C:\Program Files\dotnet\sdk\10.0.400-preview.0.26322.102\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.RuntimeIdentifierInference.targets(383,5): message NETSDK1057: You are using a preview version of .NET. See: https://aka.ms/dotnet-support-policy [C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj]
+C:\Program Files\dotnet\sdk\10.0.400-preview.0.26322.102\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.RuntimeIdentifierInference.targets(383,5): message NETSDK1057: You are using a preview version of .NET. See: https://aka.ms/dotnet-support-policy [C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia.Core\Scrinia.Core.csproj]
+C:\Program Files\dotnet\sdk\10.0.400-preview.0.26322.102\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.RuntimeIdentifierInference.targets(383,5): message NETSDK1057: You are using a preview version of .NET. See: https://aka.ms/dotnet-support-policy [C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\tests\Scrinia.TestDoubles\Scrinia.TestDoubles.csproj]
+C:\Program Files\dotnet\sdk\10.0.400-preview.0.26322.102\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.RuntimeIdentifierInference.targets(383,5): message NETSDK1057: You are using a preview version of .NET. See: https://aka.ms/dotnet-support-policy [C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia.Mcp\Scrinia.Mcp.csproj]
+  Scrinia.Core -> C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia.Core\bin\Debug\net10.0\Scrinia.Core.dll
+  Scrinia.TestDoubles -> C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\tests\Scrinia.TestDoubles\bin\Debug\net10.0\Scrinia.TestDoubles.dll
+  Scrinia.Plugin.Abstractions -> C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia.Plugin.Abstractions\bin\Debug\net10.0\Scrinia.Plugin.Abstractions.dll
+  Scrinia.Mcp -> C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia.Mcp\bin\Debug\net10.0\Scrinia.Mcp.dll
+  Scrinia -> C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\src\Scrinia\bin\Debug\net10.0\scri.dll
+  Scrinia.Tests -> C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\tests\Scrinia.Tests\bin\Debug\net10.0\Scrinia.Tests.dll
+Test run for C:\SynologyDrive\Source\repos\workspace-scrinia\Scrinia\tests\Scrinia.Tests\bin\Debug\net10.0\Scrinia.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+
+Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3, Duration: 1 m 43 s - Scrinia.Tests.dll (net10.0)

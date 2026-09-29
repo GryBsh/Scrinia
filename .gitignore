@@ -66,10 +66,7 @@ BenchmarkDotNet.Artifacts/
 docs/proposals/
 docs/research/
 docs/reviews/
-docs/findings/
 .superpowers/
-docs/superpowers/
-docs/planning/
 **/scratchpad/
 
 **/node_modules/
