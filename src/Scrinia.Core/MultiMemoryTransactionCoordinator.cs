@@ -586,32 +586,18 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
     private async Task<MultiMemoryAggregateResult> AbortPreparedAsync(MultiMemoryTransactionRecord record,
         IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, string directory, CancellationToken cancellationToken)
     {
-        var outcomes = new List<MultiMemoryParticipantOutcome>();
-        bool stateChanged = false;
-        bool stateChangeUnknown = false;
-        MultiMemoryFailure? failure = null;
-        foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
-        {
-            try
+        var (outcomes, stateChanged, stateChangeUnknown, failure, latestRecord) = await RollBackParticipantsAsync(
+            adapters,
+            async (participantAdapter, rollbackCancellationToken) =>
             {
-                await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                record = await UpdateParticipantStateIfPresentAsync(record, adapter, cancellationToken).ConfigureAwait(false);
-                stateChanged |= adapter.ObservableStateChanged is true;
-                stateChangeUnknown |= adapter.ObservableStateChanged is null;
-                outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
-                    adapter.EvidencePath, false, true, null));
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                try { record = await UpdateParticipantStateIfPresentAsync(record, adapter, CancellationToken.None).ConfigureAwait(false); }
-                catch (Exception updateException) { failure ??= Classify(updateException); }
-                failure ??= Classify(exception);
-                stateChanged |= adapter.ObservableStateChanged is true;
-                stateChangeUnknown |= adapter.ObservableStateChanged is null;
-                outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
-                    adapter.EvidencePath, false, false, FailureDetail(failure.Value)));
-            }
-        }
+                record = await UpdateParticipantStateIfPresentAsync(record, participantAdapter,
+                    rollbackCancellationToken).ConfigureAwait(false);
+                return record;
+            },
+            detail => FailureDetail(detail!.Value),
+            cancellationToken).ConfigureAwait(false);
+        record = latestRecord ?? record;
+
         IReadOnlyList<MultiMemoryParticipantOutcome> orderedOutcomes = outcomes
             .OrderBy(outcome => outcome.Subject, StringComparer.Ordinal)
             .ThenBy(outcome => outcome.OperationId, StringComparer.Ordinal)
@@ -635,6 +621,51 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         }
         return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, MultiMemoryOutcome.RolledBack,
             orderedOutcomes, null, null, null);
+    }
+
+    private async Task<(List<MultiMemoryParticipantOutcome> Outcomes, bool StateChanged, bool StateChangeUnknown,
+        MultiMemoryFailure? Failure, MultiMemoryTransactionRecord? LatestRecord)>
+        RollBackParticipantsAsync(IReadOnlyList<IMultiMemoryParticipantAdapter> adapters,
+                                  Func<IMultiMemoryParticipantAdapter, CancellationToken, Task<MultiMemoryTransactionRecord>>? afterRollback,
+                                  Func<MultiMemoryFailure?, string?>? detailFactory,
+                                  CancellationToken cancellationToken)
+    {
+        var outcomes = new List<MultiMemoryParticipantOutcome>();
+        MultiMemoryFailure? failure = null;
+        bool stateChanged = false;
+        bool stateChangeUnknown = false;
+        MultiMemoryTransactionRecord? latestRecord = null;
+        foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
+        {
+            bool rolledBack = false;
+            string? detail = null;
+            try
+            {
+                await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                if (afterRollback is not null)
+                    latestRecord = await afterRollback(adapter, cancellationToken).ConfigureAwait(false);
+                rolledBack = true;
+                stateChanged |= adapter.ObservableStateChanged is true;
+                stateChangeUnknown |= adapter.ObservableStateChanged is null;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                try
+                {
+                    if (afterRollback is not null)
+                        latestRecord = await afterRollback(adapter, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception updateException) { failure ??= Classify(updateException); }
+                failure ??= Classify(exception);
+                rolledBack = false;
+                detail = detailFactory?.Invoke(failure);
+                stateChanged |= adapter.ObservableStateChanged is true;
+                stateChangeUnknown |= adapter.ObservableStateChanged is null;
+            }
+            outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
+                adapter.EvidencePath, false, rolledBack, detail));
+        }
+        return (outcomes, stateChanged, stateChangeUnknown, failure, latestRecord);
     }
 
     private async Task<MultiMemoryAdmissionResult> AdmitUnderLockAsync(
@@ -869,29 +900,12 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
     private async Task<MultiMemoryAggregateResult> RollbackBeforeDecisionAsync(string id, string scope,
         IReadOnlyList<IMultiMemoryParticipantAdapter> adapters, string directory, CancellationToken cancellationToken)
     {
-        var outcomes = new List<MultiMemoryParticipantOutcome>();
-        MultiMemoryFailure? failure = null;
-        bool stateChanged = false;
-        bool stateChangeUnknown = false;
-        foreach (IMultiMemoryParticipantAdapter adapter in adapters.Reverse())
-        {
-            bool rolledBack = false;
-            try
-            {
-                await adapter.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                rolledBack = true;
-                stateChanged |= adapter.ObservableStateChanged is true;
-                stateChangeUnknown |= adapter.ObservableStateChanged is null;
-            }
-            catch (Exception exception)
-            {
-                failure ??= Classify(exception);
-                stateChanged |= adapter.ObservableStateChanged is true;
-                stateChangeUnknown |= adapter.ObservableStateChanged is null;
-            }
-            outcomes.Add(new MultiMemoryParticipantOutcome(adapter.Subject, adapter.OperationId, adapter.Kind,
-                adapter.EvidencePath, false, rolledBack, rolledBack ? null : failure?.ToString()));
-        }
+        var (outcomes, stateChanged, stateChangeUnknown, failure, _) = await RollBackParticipantsAsync(
+            adapters,
+            afterRollback: null,
+            detailFactory: d => d?.ToString(),
+            cancellationToken).ConfigureAwait(false);
+
         if (stateChanged)
             _store.InvalidateScopeCacheAfterRollback(scope);
         if (failure is null)
