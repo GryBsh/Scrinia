@@ -263,10 +263,7 @@ public sealed partial class ScriniaMcpTools
         }
         catch (InvalidMemoryWriteException ex)
         {
-            return ResponseBuilder.Error(
-                ex.Message,
-                ErrorCodes.InvalidParameter,
-                $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
+            return InvalidMemoryWriteResponse(ex);
         }
 
         ArtifactEntry stored;

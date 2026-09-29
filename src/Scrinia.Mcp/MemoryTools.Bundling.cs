@@ -132,17 +132,11 @@ public sealed partial class ScriniaMcpTools
         }
         catch (DurableWriteException ex)
         {
-            return Task.FromResult(ResponseBuilder.Error(
-                ex.Message,
-                ErrorCodes.DurableWriteFailed,
-                "Check permissions, free disk space if needed, and retry."));
+            return Task.FromResult(DurableWriteFailureResponse(ex));
         }
         catch (ScopeReadOnlyException ex)
         {
-            return Task.FromResult(ResponseBuilder.Error(
-                ex.Message,
-                ErrorCodes.DurableWriteFailed,
-                "Check permissions, free disk space if needed, and retry after upgrading scri when an existing sidecar is newer."));
+            return Task.FromResult(DurableWriteFailureResponse(ex));
         }
         catch (InvalidOperationException ex)
         {
