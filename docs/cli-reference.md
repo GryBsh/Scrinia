@@ -506,7 +506,7 @@ plugin; the historical `plugins:llm` key has been removed.
 
 ### Workspace tracking and shared bases
 
-Phase 2 uses two separate files. The workspace file, `<workspace-root>/.scrinia/config.json`, stays
+Two configuration files are used. The workspace file, `<workspace-root>/.scrinia/config.json`, stays
 the flat `Dictionary<string,string>` configuration. Its owned scalars are
 `Scrinia:Workspace:Tracking` (`local` or `project-git`) and `Scrinia:Shared:Enabled` (an ordered,
 semicolon-separated list of canonical names). An absent Enabled key is the valid zero-base state;

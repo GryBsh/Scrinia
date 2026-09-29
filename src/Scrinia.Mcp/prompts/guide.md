@@ -121,7 +121,7 @@ facts({ op: 'intersect', entities: ['person:jolene', 'place:france'] })
 
 ### Workspace tracking and shared bases
 
-Phase 2 has two configuration files. `<workspace-root>/.scrinia/config.json` remains a flat
+Two configuration files track workspace state. `<workspace-root>/.scrinia/config.json` remains a flat
 `Dictionary<string,string>`; its owned scalars are `Scrinia:Workspace:Tracking` (`local` or
 `project-git`) and `Scrinia:Shared:Enabled` (an ordered semicolon-separated list of canonical names).
 An absent Enabled key means zero enabled bases; an empty value is invalid. `SCRINIA_HOME/config.json`

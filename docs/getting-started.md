@@ -216,7 +216,7 @@ Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [.
 
 ## Workspace Tracking and Shared Bases
 
-Phase 2 keeps two configuration files distinct:
+Two configuration files track workspace state distinctly:
 
 - `<workspace-root>/.scrinia/config.json` remains a flat `Dictionary<string,string>`. The owned
   scalars are `Scrinia:Workspace:Tracking` (`local` or `project-git`) and
