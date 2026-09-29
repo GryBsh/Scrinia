@@ -190,30 +190,34 @@ public partial class ScriniaCommands
             entryName = uniqueName;
 
             string artifact = Nmp2ChunkedEncoder.Encode(content);
-            int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
             long originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
-            string preview = ContentPreview.Generate(content);
-
-            string desc = !string.IsNullOrWhiteSpace(description)
-                ? description
-                : content[..Math.Min(200, content.Length)];
-
-            // An explicit -d description is the more intentional value — prefer it as the
-            // display carrier; otherwise fall back to the auto-generated content preview.
-            string entryContentPreview = !string.IsNullOrWhiteSpace(description) ? desc : preview;
 
             Dictionary<string, string[]>? attributes = tagArray is { Length: > 0 }
                 ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.TagKey] = tagArray }
                 : null;
 
+            // Derive metadata through the single authoritative pipeline (the store derives; callers
+            // must not). ForStore recomputes chunk count, term frequencies, keywords, chunk entries,
+            // auto-derived attributes, and the preview — no hand-derived duplicate. fileHasher is
+            // null so a bundle never captures the exporting machine's file paths as a drift baseline.
+            var derived = MemoryDerivation.ForStore(
+                [content],
+                description: string.IsNullOrWhiteSpace(description) ? null : description,
+                attributes: attributes,
+                fileHasher: null);
+
             entries.Add(new ArtifactEntry(
                 Name: entryName,
                 Uri: "",
                 OriginalBytes: originalBytes,
-                ChunkCount: chunkCount,
+                ChunkCount: Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: entryContentPreview,
-                Attributes: attributes));
+                ContentPreview: derived.ContentPreview,
+                Keywords: derived.Keywords.Length > 0 ? derived.Keywords : null,
+                TermFrequencies: derived.TermFrequencies.Count > 0 ? derived.TermFrequencies : null,
+                ChunkEntries: derived.ChunkEntries,
+                Attributes: derived.Attributes,
+                AgentKeywords: derived.AgentKeywords));
 
             artifactContents[entryName] = artifact;
         }

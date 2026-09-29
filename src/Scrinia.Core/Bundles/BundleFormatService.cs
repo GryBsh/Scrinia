@@ -632,6 +632,12 @@ public static class BundleFormatService
     /// </summary>
     private static byte[] ReadZipEntryBounded(ZipArchiveEntry entry, long maximumBytes)
     {
+        // Refuse an oversized declared member before allocating any body — defense in depth
+        // alongside the streaming cap below. Shared by the artifact and file-entity import
+        // paths so the guard lives in one place (design-review finding #2).
+        if (entry.Length > maximumBytes)
+            throw new InvalidOperationException($"Invalid bundle — '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
+
         try
         {
             using var input = entry.Open();
