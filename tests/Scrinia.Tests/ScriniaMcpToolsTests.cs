@@ -754,6 +754,24 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Recall_OutOfRangeChunk_ReturnsGracefulInvalidParameterError()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["Chunk one content.", "Chunk two content."]);
+
+        var response = ResponseParser.Parse(await new ScriniaMcpTools().MemoryRecall(artifact, chunk: 5));
+
+        response.Status.Should().Be("error",
+            because: "an out-of-range chunk index is a graceful tool error, not a thrown exception");
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+        response.Error.Should().Contain("5",
+            because: "the error must name the requested chunk");
+        response.Error.Should().Contain("2",
+            because: "the error must name the memory's chunk count / valid range");
+        response.ActionNeeded.Should().Contain(c => c.Contains("1..2"),
+            because: "the recovery hint must direct the caller to a valid chunk index");
+    }
+
+    [Fact]
     public async Task E2E_Store_Show_RoundTrip()
     {
         using var scope = new TestHelpers.StoreScope();

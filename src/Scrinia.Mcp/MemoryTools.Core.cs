@@ -233,7 +233,22 @@ public sealed partial class ScriniaMcpTools
 
         if (chunk is not null)
         {
-            string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
+            string chunkContent;
+            try
+            {
+                chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // The encoder guards [1, chunkCount]; surface that as a graceful, structured tool
+                // error (retry with a valid index) instead of letting it propagate as an un-actionable
+                // throw. The tool boundary owns the response shape — the encoder contract is unchanged.
+                return ResponseBuilder.Error(
+                    $"Chunk {chunk.Value} is out of range; this memory has {chunkCount} chunk(s) (1-based).",
+                    ErrorCodes.InvalidParameter,
+                    $"recall again with a valid chunk index (1..{chunkCount}) or without a chunk to read all chunks.");
+            }
+
             SessionBudget.RecordAccess(input, chunkContent.Length);
             return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel)
                 .WithTruncationAdvice(RecallTruncationAdvice);
