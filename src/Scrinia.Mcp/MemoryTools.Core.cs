@@ -139,7 +139,7 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         string input = inlineArtifact?.Trim() ?? address.ToString();
-        if (input.StartsWith("NMP/2 ", StringComparison.Ordinal))
+        if (Nmp2Strategy.Instance.RecognizesNmp2Prefix(input))
         {
             if (!Nmp2Strategy.Instance.CanDecode(input))
                 return ResponseBuilder.Error(
@@ -223,7 +223,7 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
-        if (!artifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
+        if (!Nmp2Strategy.Instance.RecognizesNmp2Prefix(artifact.TrimStart()))
             return ResponseBuilder.Error(
                 "Only NMP/2 artifacts are supported by this tool.",
                 ErrorCodes.InvalidParameter,

@@ -624,31 +624,18 @@ public static class BundleFormatService
         }
     }
 
-    private static byte[] ReadZipEntryBytes(ZipArchiveEntry entry)
+    /// <summary>
+    /// Reads one zip member while enforcing a hard byte cap (the same raw-body bound the NMP/2
+    /// artifact path uses). Streams instead of loading the whole member into memory at once, so a
+    /// hostile, highly-compressible member cannot blow the process heap. Shared by the artifact and
+    /// file-entity import paths — the decompression-bomb guard lives in one place.
+    /// </summary>
+    private static byte[] ReadZipEntryBounded(ZipArchiveEntry entry, long maximumBytes)
     {
         try
         {
             using var input = entry.Open();
-            using var bytes = new MemoryStream();
-            input.CopyTo(bytes);
-            return bytes.ToArray();
-        }
-        catch (Exception exception) when (exception is IOException or InvalidDataException)
-        {
-            throw new DurableWriteException("read bundle", entry.FullName, exception);
-        }
-    }
-
-    private static byte[] ReadZipArtifactBytes(ZipArchiveEntry entry)
-    {
-        long maximumBytes = RestoreJournalCodec.MaxRawNmp2BodyBytes;
-        if (entry.Length > maximumBytes)
-            throw new InvalidOperationException($"Invalid bundle — artifact '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
-
-        try
-        {
-            using var input = entry.Open();
-            using var bytes = new MemoryStream(entry.Length > 0 ? checked((int)entry.Length) : 0);
+            using var bytes = new MemoryStream(maximumBytes > 0 && maximumBytes < int.MaxValue ? (int)Math.Min(maximumBytes, int.MaxValue) : 0);
             var buffer = new byte[81920];
             long totalBytes = 0;
             int read;
@@ -656,7 +643,7 @@ public static class BundleFormatService
             {
                 totalBytes = checked(totalBytes + read);
                 if (totalBytes > maximumBytes)
-                    throw new InvalidOperationException($"Invalid bundle — artifact '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
+                    throw new InvalidOperationException($"Invalid bundle — member '{entry.FullName}' exceeds the maximum raw size.");
 
                 bytes.Write(buffer, 0, read);
             }
@@ -668,6 +655,12 @@ public static class BundleFormatService
             throw new DurableWriteException("read bundle", entry.FullName, exception);
         }
     }
+
+    private static byte[] ReadZipEntryBytes(ZipArchiveEntry entry) =>
+        ReadZipEntryBounded(entry, RestoreJournalCodec.MaxRawNmp2BodyBytes);
+
+    private static byte[] ReadZipArtifactBytes(ZipArchiveEntry entry) =>
+        ReadZipEntryBounded(entry, RestoreJournalCodec.MaxRawNmp2BodyBytes);
 
     // ── File entity helpers ─────────────────────────────────────────────────
 

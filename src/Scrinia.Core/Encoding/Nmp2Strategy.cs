@@ -202,6 +202,18 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         artifact.StartsWith("NMP/2 ", StringComparison.Ordinal) &&
         artifact.Contains("NMP/END", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Preliminary family gate for classification/routing: true when the input begins with the
+    /// NMP/2 prefix. This is the single authority for "does this look like an NMP/2 artifact"
+    /// across the CLI, MCP, plugin, and shared-base surfaces. It recognises the family only — full
+    /// validity (header grammar, NMP/END, CRC) is <see cref="CanDecode"/>'s job and runs after a
+    /// positive result here. Keeping the bare prefix (no trailing space) on purpose: a bare or
+    /// incomplete "NMP/2…" input is still recognised as the family and then rejected by CanDecode,
+    /// so it is never misrouted to name/URI handling.
+    /// </summary>
+    public bool RecognizesNmp2Prefix(string candidate) =>
+        candidate.StartsWith("NMP/2", StringComparison.Ordinal);
+
     public ArtifactMetadata ParseHeader(string artifact)
     {
         // Header: "NMP/2 {N}B CRC32:{hex}"

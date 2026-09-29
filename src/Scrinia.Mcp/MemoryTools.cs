@@ -28,7 +28,7 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult<string?>(null);
 
         // Inline NMP/2 artifact
-        if (input.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
+        if (Nmp2Strategy.Instance.RecognizesNmp2Prefix(input.TrimStart()))
             return Task.FromResult<string?>(input);
 
         return Task.FromResult<string?>(null);
@@ -83,7 +83,7 @@ public sealed partial class ScriniaMcpTools
             return false;
 
         string candidate = input.Trim();
-        bool isNmp2 = candidate.StartsWith("NMP/2", StringComparison.Ordinal);
+        bool isNmp2 = Nmp2Strategy.Instance.RecognizesNmp2Prefix(candidate);
         bool isKnownOtherArtifact = candidate.StartsWith("TAMIS/2", StringComparison.Ordinal);
         bool isArtifactHeader = System.Text.RegularExpressions.Regex.IsMatch(
             candidate, "^[A-Z][A-Z0-9_-]*/[0-9]+(?:\\s|$)",

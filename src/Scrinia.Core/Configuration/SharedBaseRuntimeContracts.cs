@@ -457,7 +457,7 @@ internal static class DurableInventory
 
             byte[] body = File.ReadAllBytes(bodyPath);
             string text = StrictUtf8.GetString(body);
-            if (!text.StartsWith("NMP/2 ", StringComparison.Ordinal))
+            if (!Nmp2Strategy.Instance.RecognizesNmp2Prefix(text))
             {
                 AddUnavailable(entries, warnings, visiblePath, relative, text.StartsWith("NMP/", StringComparison.Ordinal) ? "SHARED_FORMAT_UNSUPPORTED" : "SHARED_ENTRY_CORRUPT");
                 return;
