@@ -536,17 +536,11 @@ public partial class ScriniaCommands
                         CliJsonContext.Default.CliMcpOutput);
                     return 1;
                 }
-                MemoryError? writeError = response.ErrorCode == ErrorCodes.InvalidParameter
-                    ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
-                        response.Error ?? "invalid write content")
-                    : null;
+                MemoryError? writeError = ClassifyWriteError(response, false, "store");
                 WriteJsonError(response.Error ?? "unknown error", writeError);
                 return 1;
             }
-            MemoryError? textWriteError = response.ErrorCode == ErrorCodes.InvalidParameter
-                ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
-                    response.Error ?? "invalid write content")
-                : null;
+            MemoryError? textWriteError = ClassifyWriteError(response, false, "store");
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response, textWriteError))}");
             return 1;
         }

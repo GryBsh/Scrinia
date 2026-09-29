@@ -130,6 +130,20 @@ public partial class ScriniaCommands
         return response.IsWarning ? 1 : 0;
     }
 
+    /// <summary>
+    /// The single definition of the <c>invalid_write_content</c> memory error, applied when a
+    /// write response carries an <c>InvalidParameter</c> error code. <paramref name="appendOnly"/>
+    /// restricts it to <c>append</c> responses (the only write whose InvalidParameter is a content
+    /// issue); the <c>store</c> command passes false so every InvalidParameter write is classified.
+    /// </summary>
+    private static MemoryError? ClassifyWriteError(McpResponse r, bool appendOnly, string action)
+    {
+        if (r.ErrorCode != ErrorCodes.InvalidParameter) return null;
+        if (appendOnly && action != "append") return null;
+        return new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
+            r.Error ?? "invalid write content");
+    }
+
     // ── MCP-passthrough commands ────────────────────────────────────────────
     //
     // Each of the six commands below wires the CLI directly into the same
@@ -161,10 +175,7 @@ public partial class ScriniaCommands
                         CliJsonContext.Default.CliMcpOutput);
                     return 1;
                 }
-                MemoryError? writeError = action == "append" && r.ErrorCode == ErrorCodes.InvalidParameter
-                    ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
-                        r.Error ?? "invalid write content")
-                    : null;
+                MemoryError? writeError = ClassifyWriteError(r, true, action);
                 WriteJsonError(r.Error ?? "unknown error", writeError);
                 return 1;
             }
@@ -177,10 +188,7 @@ public partial class ScriniaCommands
         {
             if (r.IsError)
             {
-                MemoryError? writeError = action == "append" && r.ErrorCode == ErrorCodes.InvalidParameter
-                    ? new MemoryError(MemoryErrorCategory.InvalidWriteContent, "invalid_write_content",
-                        r.Error ?? "invalid write content")
-                    : null;
+                MemoryError? writeError = ClassifyWriteError(r, true, action);
                 AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(r, writeError))}");
                 return 1;
             }
@@ -347,31 +355,41 @@ public partial class ScriniaCommands
         return EmitMcpResult(response, json, "restore");
     }
 
-    private static List<string> ResolveFiles(string filesArg)
-    {
-        var result = new List<string>();
+    /// <summary>Outcome of classifying one comma-separated path segment from a files argument:
+    /// whether it resolved to a file, and the absolute paths it expanded to.</summary>
+    private sealed record FileArgResolution(string Source, bool Resolved, IReadOnlyList<string> Paths);
 
-        // Try comma-separated first
-        string[] parts = filesArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        foreach (string part in parts)
-        {
-            // Check if it contains wildcard characters (glob)
-            if (part.Contains('*') || part.Contains('?'))
+    /// <summary>
+    /// The single definition of how a comma-separated <c>files</c> argument is scanned: each
+    /// segment is a glob (contains <c>*</c>/<c>?</c>) or a plain path; a glob expands to the files
+    /// in an existing directory, a plain path resolves only if it exists. <see cref="ResolveFiles"/>
+    /// and <see cref="CollectUnresolvedPaths"/> are the two inverse projections of this scan.
+    /// </summary>
+    private static List<FileArgResolution> ScanFilesArg(string filesArg) =>
+        filesArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(segment =>
             {
-                string directory = Path.GetDirectoryName(part) ?? ".";
-                string pattern = Path.GetFileName(part);
-                if (Directory.Exists(directory))
+                if (segment.Contains('*') || segment.Contains('?'))
                 {
-                    result.AddRange(Directory.GetFiles(directory, pattern));
+                    string directory = Path.GetDirectoryName(segment) ?? ".";
+                    string pattern = Path.GetFileName(segment);
+                    if (Directory.Exists(directory))
+                    {
+                        string[] matches = Directory.GetFiles(directory, pattern);
+                        return new FileArgResolution(segment, matches.Length > 0, matches);
+                    }
                 }
-            }
-            else if (File.Exists(part))
-            {
-                result.Add(Path.GetFullPath(part));
-            }
-        }
+                else if (File.Exists(segment))
+                {
+                    return new FileArgResolution(segment, true, [Path.GetFullPath(segment)]);
+                }
+                return new FileArgResolution(segment, false, Array.Empty<string>());
+            })
+            .ToList();
 
-        return result;
-    }
+    private static List<string> ResolveFiles(string filesArg) =>
+        ScanFilesArg(filesArg)
+            .Where(r => r.Resolved)
+            .SelectMany(r => r.Paths)
+            .ToList();
 }

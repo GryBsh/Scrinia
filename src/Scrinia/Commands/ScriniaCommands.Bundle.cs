@@ -266,26 +266,11 @@ public partial class ScriniaCommands
     /// <summary>Reports each comma-separated path segment in <paramref name="filesArg"/> that would
     /// resolve to zero files under <see cref="ResolveFiles"/> — i.e. a plain file that doesn't exist
     /// or a glob with no matches in an existing directory. Used to warn the caller on typos.</summary>
-    private static List<string> CollectUnresolvedPaths(string filesArg)
-    {
-        var missing = new List<string>();
-        foreach (string part in filesArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (part.Contains('*') || part.Contains('?'))
-            {
-                string directory = Path.GetDirectoryName(part) ?? ".";
-                if (Directory.Exists(directory) && Directory.GetFiles(directory, Path.GetFileName(part)).Length == 0)
-                    missing.Add(part);
-                else if (!Directory.Exists(directory))
-                    missing.Add(part);
-            }
-            else if (!File.Exists(part))
-            {
-                missing.Add(part);
-            }
-        }
-        return missing;
-    }
+    private static List<string> CollectUnresolvedPaths(string filesArg) =>
+        ScanFilesArg(filesArg)
+            .Where(r => !r.Resolved)
+            .Select(r => r.Source)
+            .ToList();
 
     /// <summary>Resolves the bundle output path inside <paramref name="exportsDir"/>, rejecting any
     /// --output that escapes it (absolute path or traversal).</summary>
