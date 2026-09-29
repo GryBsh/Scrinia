@@ -91,7 +91,7 @@ internal sealed class WeightedAttributeScorer
 
         // ── Pass 1: Compute raw BM25 scores for normalization ────────────
         var entryBm25 = new double[candidateList.Count];
-        var chunkBm25List = new List<(int candidateIdx, int chunkIdx, double rawBm25)>();
+        var chunkBm25List = new List<(int candidateIdx, ChunkEntry chunk, double rawBm25)>();
         double maxBm25 = 0;
 
         for (int i = 0; i < candidateList.Count; i++)
@@ -105,7 +105,7 @@ internal sealed class WeightedAttributeScorer
                 foreach (var chunk in chunks)
                 {
                     double chunkRaw = ComputeChunkBm25(queryTerms, chunk, avgDocLen, corpusSize, docFreqs);
-                    chunkBm25List.Add((i, chunk.ChunkIndex, chunkRaw));
+                    chunkBm25List.Add((i, chunk, chunkRaw));
                     if (chunkRaw > maxBm25) maxBm25 = chunkRaw;
                 }
             }
@@ -146,13 +146,12 @@ internal sealed class WeightedAttributeScorer
                     total => new EntryResult(candidate, total));
             }
 
-            foreach (var (candidateIdx, chunkIdx, rawBm25) in chunkBm25List)
+            foreach (var (candidateIdx, chunk, rawBm25) in chunkBm25List)
             {
                 var candidate = candidateList[candidateIdx];
-                var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
                 double chunkAttributeScore = ScoreChunkEntry(query, chunk, candidate.Entry);
                 double normalizedChunkBm25 = maxBm25 > 0 ? rawBm25 / maxBm25 * 100.0 : 0;
-                double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
+                double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunk.ChunkIndex, supplementalScores);
                 // Entity scores are entry-level; reuse the parent's value for chunk cells.
                 double chunkEntityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
                 TryInsert(candidate, chunkAttributeScore + normalizedChunkBm25 * _weights.Bm25Weight + chunkSupplemental + chunkEntityGraph,
@@ -531,7 +530,7 @@ internal sealed class WeightedAttributeScorer
         string query,
         IList<ScopedArtifact> candidateList,
         double[] entryBm25,
-        List<(int candidateIdx, int chunkIdx, double rawBm25)> chunkBm25List,
+        List<(int candidateIdx, ChunkEntry chunk, double rawBm25)> chunkBm25List,
         IReadOnlyDictionary<string, double>? supplementalScores,
         IReadOnlyDictionary<string, double>? entityGraphScores,
         Action<ScopedArtifact, double, Func<double, SearchResult>> tryInsert)
@@ -560,12 +559,11 @@ internal sealed class WeightedAttributeScorer
         for (int ci = 0; ci < chunkBm25List.Count; ci++)
         {
             int idx = candidateList.Count + ci;
-            var (candidateIdx, chunkIdx, rawBm25) = chunkBm25List[ci];
+            var (candidateIdx, chunk, rawBm25) = chunkBm25List[ci];
             var candidate = candidateList[candidateIdx];
-            var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
             attributeScores[idx] = ScoreChunkEntry(query, chunk, candidate.Entry);
             bm25Scores[idx] = rawBm25;
-            supplementals[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
+            supplementals[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunk.ChunkIndex, supplementalScores);
             entityScores[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
         }
 
@@ -577,9 +575,8 @@ internal sealed class WeightedAttributeScorer
         for (int ci = 0; ci < chunkBm25List.Count; ci++)
         {
             int idx = candidateList.Count + ci;
-            var (candidateIdx, chunkIdx, _) = chunkBm25List[ci];
+            var (candidateIdx, chunk, _) = chunkBm25List[ci];
             var candidate = candidateList[candidateIdx];
-            var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
             double rrf = RrfScore(attributeScores[idx], bm25Scores[idx], supplementals[idx], entityScores[idx],
                 rankAttribute[idx], rankBm25[idx], rankSupp[idx], rankEntity[idx]);
             if (rrf <= 0) continue;

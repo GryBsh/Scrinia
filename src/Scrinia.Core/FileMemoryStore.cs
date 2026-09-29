@@ -2677,8 +2677,24 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         // last (D-22 reads only that last element for attributes and the new chunk entry).
         int priorChunks = Nmp2ChunkedEncoder.GetChunkCount(existingArtifact);
         string[] fullContent = new string[priorChunks + 1];
-        for (int i = 0; i < priorChunks; i++)
-            fullContent[i] = Nmp2ChunkedEncoder.DecodeChunk(existingArtifact, i + 1);
+        if (priorChunks > 0)
+        {
+            if (Nmp2Strategy.IsMultiChunk(existingArtifact))
+            {
+                int count = Nmp2Strategy.ParseChunkCount(existingArtifact);
+                var sections = Nmp2Strategy.ExtractRawChunkSections(existingArtifact, count);
+                for (int i = 0; i < sections.Count && i < priorChunks; i++)
+                {
+                    byte[] bytes = Nmp2Strategy.DecodeChunkSectionFrom(sections[i], Nmp2Strategy.MaxDecodedBytes);
+                    fullContent[i] = System.Text.Encoding.UTF8.GetString(bytes);
+                }
+            }
+            else
+            {
+                // Single-chunk artifact: no ##CHUNK: marker exists, so keep the original decode path.
+                fullContent[0] = Nmp2ChunkedEncoder.DecodeChunk(existingArtifact, 1);
+            }
+        }
         fullContent[priorChunks] = appended;
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
