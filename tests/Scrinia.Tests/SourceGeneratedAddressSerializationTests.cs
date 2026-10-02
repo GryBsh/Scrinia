@@ -177,7 +177,7 @@ public sealed class SourceGeneratedAddressSerializationTests
             CliErrorOutput translated = JsonSerializer.Deserialize(
                 output.ToString(), CliJsonContext.Default.CliErrorOutput)!;
             translated.Category.Should().Be(nameof(MemoryErrorCategory.ForbiddenAddressKind));
-            translated.Code.Should().Be("forbidden_address_kind");
+            translated.Code.Should().Be(MemoryErrorCodes.ForbiddenAddressKind);
             translated.Field.Should().Be("address");
         }
         finally

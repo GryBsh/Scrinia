@@ -26,9 +26,9 @@ public partial class ScriniaCommands
         Console.WriteLine();
     }
 
-    private static void WriteJsonError(string message, MemoryError? error = null)
+    private static void WriteJsonError(string message, MemoryError? error = null, string? code = null)
     {
-        WriteJson(new CliErrorOutput(message, error?.Category.ToString(), error?.Code,
+        WriteJson(new CliErrorOutput(message, error?.Category.ToString(), code ?? error?.Code,
             error?.Field, error?.Limit, error?.Actual), CliJsonContext.Default.CliErrorOutput);
     }
 
@@ -39,7 +39,7 @@ public partial class ScriniaCommands
         string input = raw?.Trim() ?? "";
         if (LooksLikeUri(input))
             return EmitAddressError(new MemoryError(
-                MemoryErrorCategory.UnsupportedInputForm, "unsupported_input_form",
+                MemoryErrorCategory.UnsupportedInputForm, MemoryErrorCodes.UnsupportedInputForm,
                 "Only logical memory addresses are supported; URI inputs are not accepted.", "address"), json);
 
         string canonical = MemoryNaming.CanonicalizeEphemeralAlias(input);
@@ -51,7 +51,7 @@ public partial class ScriniaCommands
 
         if (address.Kind == MemoryAddressKind.Ephemeral)
             return EmitAddressError(new MemoryError(
-                MemoryErrorCategory.ForbiddenAddressKind, "forbidden_address_kind",
+                MemoryErrorCategory.ForbiddenAddressKind, MemoryErrorCodes.ForbiddenAddressKind,
                 $"'{address}' names an ephemeral memory. Ephemeral memories are not available to the CLI; use a persistent path.",
                 "address"), json);
 
@@ -176,7 +176,7 @@ public partial class ScriniaCommands
                     return 1;
                 }
                 MemoryError? writeError = ClassifyWriteError(r, true, action);
-                WriteJsonError(r.Error ?? "unknown error", writeError);
+                WriteJsonError(r.Error ?? "unknown error", writeError, r.ErrorCode);
                 return 1;
             }
 

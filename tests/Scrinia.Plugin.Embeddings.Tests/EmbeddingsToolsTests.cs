@@ -123,18 +123,8 @@ public class EmbeddingsToolsTests : IDisposable
 
         var root = Parse(await tools.Index("local", "note", []));
 
-        root.TryGetProperty("error", out _).Should().BeFalse();
+        root.TryGetProperty("error", out _).Should().BeTrue();
         root.GetProperty("ok").GetBoolean().Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task Upsert_RejectsMalformedVectorBeforeStorage()
-    {
-        var tools = ToolsWith(new MalformedProvider());
-
-        Parse(await tools.Upsert("local", "note", "alpha"))
-            .TryGetProperty("error", out _).Should().BeTrue();
-        _store.GetVectors("local").Should().BeEmpty();
     }
 
     [Fact]
@@ -177,8 +167,8 @@ public class EmbeddingsToolsTests : IDisposable
         var tools = ToolsWith(new MarkerProvider(marker));
         await tools.Index("local", "note", ["alpha bravo", $"{marker} marimba", "charlie delta"]);
 
-        var scores = JsonSerializer.Deserialize<Dictionary<string, double>>(
-            await tools.Search(marker, ["local"]))!;
+        var scores = JsonSerializer.Deserialize<EmbeddingsSearchResponse>(
+            await tools.Search(marker, new Dictionary<string, string[]> { ["local"] = ["note"] }))!.Scores;
 
         using var scope = new FluentAssertions.Execution.AssertionScope();
         scores.Should().ContainKey("local|note");
@@ -199,8 +189,8 @@ public class EmbeddingsToolsTests : IDisposable
         var tools = ToolsWith(new MarkerProvider(marker));
         await tools.Index("local", "note", [$"{marker} first", "unrelated second", "unrelated third"]);
 
-        var scores = JsonSerializer.Deserialize<Dictionary<string, double>>(
-            await tools.Search(marker, ["local"]))!;
+        var scores = JsonSerializer.Deserialize<EmbeddingsSearchResponse>(
+            await tools.Search(marker, new Dictionary<string, string[]> { ["local"] = ["note"] }))!.Scores;
 
         scores["local|note"].Should().Be(scores["local|note|1"],
             because: "the memory key carries the maximum over its elements — the best-matching "
@@ -213,7 +203,7 @@ public class EmbeddingsToolsTests : IDisposable
     {
         var tools = ToolsWith(new NullEmbeddingProvider());
 
-        Parse(await tools.Search("anything", ["local"]))
+        Parse(await tools.Search("anything", new Dictionary<string, string[]> { ["local"] = ["/anything"] }))
             .TryGetProperty("error", out _).Should().BeTrue();
     }
 
@@ -222,8 +212,8 @@ public class EmbeddingsToolsTests : IDisposable
     {
         var tools = ToolsWith(new MarkerProvider("zzz"));
 
-        string json = await tools.Search("anything", ["empty-scope"]);
+        string json = await tools.Search("anything", new Dictionary<string, string[]> { ["empty-scope"] = ["anything"] });
 
-        JsonSerializer.Deserialize<Dictionary<string, double>>(json).Should().BeEmpty();
+        JsonSerializer.Deserialize<EmbeddingsSearchResponse>(json)!.Scores.Should().BeEmpty();
     }
 }

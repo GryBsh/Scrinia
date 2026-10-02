@@ -114,7 +114,7 @@ public class BundleExitCodeTests
             exit.Should().Be(1);
             var response = ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!);
             response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
-            response.Error.Should().Contain("Invalid bundle").And.Contain("manifest.json").And.Contain("valid JSON");
+            response.Error.Should().Contain(ErrorCodes.InvalidBundle).And.Contain("manifest.json").And.Contain("valid JSON");
         }
     }
 
@@ -153,7 +153,7 @@ public class BundleExitCodeTests
             {
                 exit.Should().Be(1);
                 ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!).ErrorCode
-                    .Should().Be(ErrorCodes.DurableWriteFailed);
+                    .Should().Be(ErrorCodes.BundleImportFailed);
             }
         }
         finally
@@ -227,8 +227,8 @@ public class BundleExitCodeTests
             (await new ScriniaMcpTools().Export(["api"])).ToYaml()).Content!;
         string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
-        // Filter on a topic the bundle does not contain -> topicCount == 0, skippedCategories
-        // empty -> ResponseBuilder.Warning("No topics were imported ...").
+        // Filter on a topic the bundle does not contain -> topicCount == 0 and
+        // ResponseBuilder.Warning("No topics were imported ...").
         int exit = await new ScriniaCommands().Import(
             bundlePath, workspaceRoot: scope.WorkspaceDir, topics: "does-not-match-anything");
 

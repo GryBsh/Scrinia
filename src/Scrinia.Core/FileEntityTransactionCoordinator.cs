@@ -29,6 +29,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
         string bodySnapshotPath = mutation.BodyPath;
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
+        ValidateDeletePaths(mutation);
 
         FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory,
             mutation.EntityKind, mutation.Name, cancellationToken);
@@ -39,6 +40,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             ? RawMemberSnapshot.Capture(bodySnapshotPath, false, [])
             : Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead, cancellationToken);
         RawMemberSnapshot oldMeta = Capture(mutation.MetaPath, FileEntityFaultPoint.RawMetaRead, cancellationToken);
+        RawMemberSnapshot[] oldDeletePaths = mutation.DeletePaths
+            .Select(path => Capture(path, FileEntityFaultPoint.RawMetaRead, cancellationToken))
+            .ToArray();
         bool metadataMutation = mutation.DeleteMeta || mutation.NewMeta is not null;
         string? evidencePath = null;
         string? archiveBody = null;
@@ -50,7 +54,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             (archiveBody, archiveMeta) = BuildArchivePaths(mutation, oldBody, oldMeta);
             evidencePath = EvidencePath(entityDirectory, operationId);
             WriteEvidence(evidencePath, mutation, oldBody, oldMeta, archiveBody, archiveMeta,
-                RecoveryLifecycleState.Prepared, null, null);
+                RecoveryLifecycleState.Prepared, null, null, oldDeletePaths);
 
             if (!sidecarOnly)
                 Archive(oldBody, archiveBody, FileEntityFaultPoint.ArchiveBodyWrite);
@@ -61,12 +65,16 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
             if (metadataMutation)
                 Publish(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta ?? [], FileEntityFaultPoint.MetaWrite);
+            foreach (string path in mutation.DeletePaths)
+                Publish(path, true, [], FileEntityFaultPoint.MetaWrite);
 
             ThrowIfFault(FileEntityFaultPoint.VerificationRead);
             if (!sidecarOnly)
                 Verify(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, cancellationToken);
             if (metadataMutation)
                 Verify(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!, cancellationToken);
+            foreach (string path in mutation.DeletePaths)
+                Verify(path, true, [], cancellationToken);
 
             RawMemberSnapshot committedBody = ExpectedSnapshot(
                 bodySnapshotPath, sidecarOnly || mutation.DeleteBody, mutation.NewBody);
@@ -74,7 +82,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
                 ? ExpectedSnapshot(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!)
                 : oldMeta;
             WriteEvidence(evidencePath, mutation, oldBody, oldMeta, archiveBody, archiveMeta,
-                RecoveryLifecycleState.Committed, committedBody, committedMeta);
+                RecoveryLifecycleState.Committed, committedBody, committedMeta, oldDeletePaths);
 
             try
             {
@@ -101,6 +109,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
                 ThrowIfFault(FileEntityFaultPoint.RollbackWrite);
                 Restore(oldBody);
                 Restore(oldMeta);
+                foreach (RawMemberSnapshot snapshot in oldDeletePaths)
+                    Restore(snapshot);
                 Delete(archiveBody);
                 Delete(archiveMeta);
                 if (evidencePath is not null)
@@ -135,6 +145,16 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             || !PathContainment.IsWithin(_workspaceRoot, meta)
             || !PathContainment.IsWithin(_workspaceRoot, versions))
             throw new ArgumentException("File-entity paths must remain within the workspace root.", nameof(mutation));
+    }
+
+    private void ValidateDeletePaths(FileEntityMutation mutation)
+    {
+        foreach (string path in mutation.DeletePaths)
+        {
+            if (!PathContainment.IsWithin(_workspaceRoot, path) ||
+                !PathContainment.IsWithin(mutation.VersionsDirectory, path))
+                throw new ArgumentException("File-entity delete paths must remain within the versions directory.", nameof(mutation));
+        }
     }
 
     private RawMemberSnapshot Capture(string path, FileEntityFaultPoint point, CancellationToken cancellationToken)
@@ -254,7 +274,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         FileEntityMutation mutation, RawMemberSnapshot oldBody, RawMemberSnapshot oldMeta,
         string operationId, string evidencePath, string? archiveBody, string? archiveMeta,
         RecoveryLifecycleState state = RecoveryLifecycleState.Prepared,
-        RawMemberSnapshot? committedBody = null, RawMemberSnapshot? committedMeta = null)
+        RawMemberSnapshot? committedBody = null, RawMemberSnapshot? committedMeta = null,
+        IReadOnlyList<RawMemberSnapshot>? deletedMembers = null)
     {
         ArgumentNullException.ThrowIfNull(mutation);
         string entityDirectory = Path.GetFullPath(Path.GetDirectoryName(evidencePath)
@@ -265,7 +286,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             oldBodySnapshot, ToRecoverySnapshot(oldMeta), archiveBody, archiveMeta,
             metadataOnly ? null : committedBody is null ? null : ToRecoverySnapshot(committedBody),
             committedMeta is null ? null : ToRecoverySnapshot(committedMeta),
-            state == RecoveryLifecycleState.Committed ? "committed" : "prepared");
+            state == RecoveryLifecycleState.Committed ? "committed" : "prepared",
+            deletedMembers?.Select(ToRecoverySnapshot).ToArray());
         return RecoveryEnvelopeCodec.FromFileEntity(body, ScopeForEntity(entityDirectory), null,
             operationId, state, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
     }
@@ -285,10 +307,11 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         string? archiveMeta,
         RecoveryLifecycleState state,
         RawMemberSnapshot? committedBody,
-        RawMemberSnapshot? committedMeta)
+        RawMemberSnapshot? committedMeta,
+        IReadOnlyList<RawMemberSnapshot>? deletedMembers = null)
     {
         RecoveryEnvelopeDocument envelope = CreateEnvelope(mutation, oldBody, oldMeta,
-            ExtractOperationId(path), path, archiveBody, archiveMeta, state, committedBody, committedMeta);
+            ExtractOperationId(path), path, archiveBody, archiveMeta, state, committedBody, committedMeta, deletedMembers);
         DurableFile.AtomicWriteAllBytes(path, RecoveryEnvelopeCodec.Serialize(envelope));
     }
 
@@ -386,6 +409,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         {
             Restore(ToRawSnapshot(body.OldBody));
             Restore(ToRawSnapshot(body.OldMeta));
+            foreach (RecoveryMemberSnapshot snapshot in body.DeletedMembers ?? [])
+                Restore(ToRawSnapshot(snapshot));
         }
 
         Delete(body.ArchiveBodyPath);

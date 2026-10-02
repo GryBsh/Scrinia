@@ -1,5 +1,6 @@
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.Core.Bundles;
 
 namespace Scrinia.Core;
 
@@ -10,14 +11,9 @@ namespace Scrinia.Core;
 /// interface rather than a class because the tool surface is tested against hand-written doubles,
 /// not because a second backing store is expected.</para>
 ///
-/// <para>It used to be two interfaces. <c>ILocalMemoryStore</c> carried the members with no
-/// meaning off a filesystem — the paths, the workspace root, the bundle export pair — so that
-/// "this operation needs local files" was a compile-time fact rather than a
-/// <see cref="NotSupportedException"/> thrown at runtime by the six members <c>HttpMemoryStore</c>
-/// could only implement by throwing. With the remote store gone, the split named a distinction
-/// that no longer divides anything: every implementation has a workspace root, so the narrowing
-/// casts at each use site could only ever succeed, and their refusal branches could not be
-/// reached.</para>
+    /// <para>The contract includes workspace paths and bundle operations because the production store
+    /// owns the complete on-disk workspace. Test doubles implement the same surface so tool behavior
+    /// can be exercised without filesystem setup.</para>
 /// </summary>
 public interface IMemoryStore : IPluginStore
 {
@@ -32,7 +28,7 @@ public interface IMemoryStore : IPluginStore
     /// the entry the STORE derived from it.
     ///
     /// <para><b>The store derives; callers must not.</b> That is the whole contract. Metadata
-    /// derivation used to be written out four times (two MCP paths, two server paths) and had
+    /// derivation used to be written out in several paths and had
     /// drifted, in four places far enough to lose data; the rulings that settled each difference are
     /// in <c>docs/superpowers/analysis/2026-08-11-derivation-inventory.md</c> and the one surviving
     /// implementation is <see cref="MemoryDerivation"/>. A caller that computes keywords, term
@@ -170,11 +166,10 @@ public interface IMemoryStore : IPluginStore
     /// rests on: <see cref="GetEntityFactStore"/>, <see cref="ListScoped(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> and
     /// (through <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(IReadOnlyList{string}?, IReadOnlyList{string}?)"/> are all
     /// correct exactly insofar as this member is. The store that broke it was the deleted
-    /// <c>HttpMemoryStore</c>, which sent no <c>limit</c> against a server defaulting to 200 rows;
-    /// all three defaults inherited the truncation, including the one that makes whole topic scopes
-    /// disappear rather than merely lose entries. The rule is written down here because the next
-    /// paged source will inherit it the same way; the one surviving implementation reads a
-    /// directory, which cannot page.</para>
+    /// a paged source that returned only its first page; all three defaults inherited the truncation,
+    /// including the one that makes whole topic scopes disappear rather than merely lose entries.
+    /// The rule is written down here because any future paged source must honor it; the production
+    /// implementation reads a directory, which cannot page.</para>
     ///
     /// <para><c>ListScopedCompletenessTests</c> holds it. Not by proving the four defaults are
     /// safe — they cannot be — but by running each of them through a double that pages correctly
@@ -182,6 +177,11 @@ public interface IMemoryStore : IPluginStore
     /// listing is executable rather than asserted here in prose.</para>
     /// </summary>
     List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes = null);
+
+    /// <summary>Returns the deterministic lexical top-K snapshot without requiring a full listing.</summary>
+    IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(
+        IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics, string query, int limit) =>
+        SearchCandidateOptions.RankLexically(ListScoped(scopes, excludeTopics), query).Take(limit).ToArray();
 
     /// <summary>
     /// True if any entry in <paramref name="scopes"/> (or across every readable scope when null)
@@ -372,7 +372,7 @@ public interface IMemoryStore : IPluginStore
     IReadOnlyList<string> ResolveReadScopes(IReadOnlyList<string>? scopes = null);
 
     // ── Filesystem layout ────────────────────────────────────────────────────
-    // Merged in from ILocalMemoryStore when the remote store was dropped; see the type summary.
+    // Filesystem members are part of this contract because the production store is workspace-backed.
 
     string FindArtifactPath(string subject, string normalizedScope);
     string GetStoreDirForScope(string scope);
@@ -390,4 +390,7 @@ public interface IMemoryStore : IPluginStore
     List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
     void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite);
+
+    /// <summary>Restores a fully validated bundle plan as one all-or-rollback operation.</summary>
+    Task<BundleRestoreResult> RestoreBundleAsync(BundleRestorePlan plan, CancellationToken ct = default);
 }

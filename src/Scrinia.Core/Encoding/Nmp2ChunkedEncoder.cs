@@ -286,7 +286,7 @@ public static class Nmp2ChunkedEncoder
     /// and then <see cref="DecodeChunk"/> once per index for the per-chunk text decompresses every
     /// chunk twice: <c>Decode</c>'s multi-chunk path already walks and decompresses each
     /// <c>##CHUNK:</c> section internally but only returns the concatenated bytes, discarding the
-    /// per-chunk boundaries a caller like <c>MemoryOrchestrator.ShowAsync</c> needs. This method
+    /// per-chunk boundaries a caller displaying a memory needs. This method
     /// does that same per-chunk decompression exactly once, keeps the boundaries, and runs the
     /// identical integrity check against the assembled buffer — nothing is decompressed twice and
     /// nothing about the check is weakened.</para>

@@ -578,57 +578,15 @@ public sealed class DualModeParseTests : IDisposable
         _store.ResolveReadScopes(["LOCAL:api"]).Should().BeEquivalentTo(["local:api"]);
     }
 
-    /// <summary>
-    /// The store-layer hazard the parser fix exists to prevent, demonstrated directly against
-    /// <see cref="FileMemoryStore"/>'s scope API rather than through
-    /// <c>ParseQualifiedName</c> — which is exactly why it keeps working after the fix, when
-    /// the parser will no longer hand anyone the second string.
-    ///
-    /// <para>Two scope strings differing only by a trailing dot are ONE directory on disk, but
-    /// two independent <c>CachedIndex</c> keys. Writing through the second leaves the first
-    /// holding a stale index that is missing the entry — and because
-    /// <c>SaveIndexUnsafe</c> deletes every <c>*.meta.json</c> not present in the entry list it
-    /// is handed, a later save driven by that stale list would delete the other scope's
-    /// sidecar. That is the data-loss path behind the aliasing.</para>
-    /// </summary>
+    /// <summary>Strict scope containment rejects a trailing-dot alias before path resolution.</summary>
     [Fact]
-    public void TwoScopeStrings_DifferingOnlyByTrailingDot_ShareOneDirectoryAndDesyncTheirCaches()
+    public void GetStoreDirForScope_TrailingDotAlias_IsRejected()
     {
-        const string cleanScope = "local:aliasdemo";
         const string aliasScope = "local:aliasdemo.";
 
-        // One directory, two names for it.
-        string cleanDir = _store.GetStoreDirForScope(cleanScope);
-        string aliasDir = _store.GetStoreDirForScope(aliasScope);
-        aliasDir.Should().NotBe(cleanDir,
-            because: "the two scope strings produce two different directory PATH strings");
+        var act = () => _store.GetStoreDirForScope(aliasScope);
 
-        _store.Upsert(MakeEntry("alpha"), cleanScope);
-
-        // Task 2 (write-path cost): Upsert now updates the cache copy-on-write and — per its
-        // "never populate a partial cache" rule — leaves a previously-uncached scope's cache
-        // absent rather than warming it. cleanScope was never read before the Upsert above, so
-        // without this call its cache would still be absent here, and the LoadIndex(cleanScope)
-        // assertion below would cold-load the (by-then two-entry) directory fresh instead of
-        // exercising the stale-cache aliasing bug this test exists to pin. Warm it explicitly so
-        // the desync below is caused by the alias write, not by an accident of cache timing.
-        _store.LoadIndex(cleanScope).Select(e => e.Name).Should().BeEquivalentTo(["alpha"]);
-
-        _store.Upsert(MakeEntry("beta"), aliasScope);
-
-        // Both sidecars landed in the SAME real directory — the paths are aliases.
-        Directory.GetFiles(cleanDir, "*.meta.json").Select(Path.GetFileName)
-            .Should().BeEquivalentTo(["alpha.meta.json", "beta.meta.json"],
-                because: "'aliasdemo.' and 'aliasdemo' are one directory on this filesystem");
-
-        // But the caches disagree: the clean scope's CachedIndex was never invalidated by the
-        // write that went through the alias, so it still reports only its own entry.
-        _store.LoadIndex(cleanScope).Select(e => e.Name)
-            .Should().BeEquivalentTo(["alpha"],
-                because: "writing through the aliased scope string did not invalidate this "
-                       + "scope's cache — the stale list is what a later SaveIndex would use "
-                       + "as its orphan-sweep allow-list, deleting 'beta' from disk");
-        _store.LoadIndex(aliasScope).Select(e => e.Name)
-            .Should().BeEquivalentTo(["alpha", "beta"]);
+        act.Should().Throw<ScopeContainmentException>()
+            .WithMessage("*not a contained, portable memory scope*");
     }
 }

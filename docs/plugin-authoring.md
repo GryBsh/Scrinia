@@ -29,17 +29,26 @@ Install it into `SCRINIA_HOME` with your plugin's own packaging (for the optiona
 
 ## Embeddings plugin tools
 
+The executable surface is the versioned embeddings protocol v1. The `status` handshake must report
+`scrinia.embeddings.protocol = 1`, the exact capabilities `index`, `search`, `remove`, and `status`,
+provider availability, dimensions, and the vector-store signature. Unsupported or malformed
+handshakes are disabled for the session and produce `EMBEDDINGS_PROTOCOL_UNSUPPORTED` or
+`EMBEDDINGS_PROTOCOL_INVALID`; the host falls back to lexical search.
+
 | Tool | Purpose |
 |---|---|
 | `index` | Preferred whole-memory operation. Receives the complete content array and atomically replaces that memory's vectors using `MemoryVectorIndexer`. |
 | `search` | Embeds a query and returns supplemental scores keyed by scope, name, and optionally chunk. |
-| `upsert` | Compatibility single-vector operation. It cannot represent the complete element/window layout and should not be used by new hosts. |
+| `upsert` | Deprecated protocol-v1 compatibility operation for installed legacy executables; new hosts never select it after a successful handshake. |
 | `remove` | Removes every vector for a memory. |
 | `status` | Reports provider availability, dimensions, and vector count. |
 
-Offer `index`. The host falls back to `upsert` only for older plugins. Retry is owned by
-`McpPluginHost.CallToolWithRetryAsync`; plugin tools should fail fast rather than retrying across the
-same process boundary a second time.
+Offer `index`. `search` receives a bounded canonical candidate set and must return scores only for
+those identities. Retry is owned by `McpPluginHost.CallToolWithRetryAsync`; plugin tools should
+fail fast rather than retrying across the same process boundary a second time.
+
+If vectors carry an incompatible provider signature, the host quarantines them instead of treating
+them as current. Rebuild them through the documented `scri reindex` flow.
 
 ## Current project boundaries
 

@@ -53,7 +53,7 @@ public sealed class BundleExportDisciplineTests
         Assert.True(File.Exists(target));
 
         var imported = new FileMemoryStore(scope.WorkspaceDir);
-        (int topicCount, int entryCount, List<string> names, _) =
+        (int topicCount, int entryCount, List<string> names) =
             BundleFormatService.ImportTopicsFromZip(
                 OpenForRead(target), imported, filterTopics: null, overwrite: true);
 

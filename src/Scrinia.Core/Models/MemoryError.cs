@@ -1,5 +1,14 @@
 namespace Scrinia.Core.Models;
 
+/// <summary>Stable machine-readable codes shared by memory adapters.</summary>
+public static class MemoryErrorCodes
+{
+    public const string MalformedAddress = "MALFORMED_ADDRESS";
+    public const string UnsupportedInputForm = "UNSUPPORTED_INPUT_FORM";
+    public const string ForbiddenAddressKind = "FORBIDDEN_ADDRESS_KIND";
+    public const string InvalidWriteContent = "INVALID_WRITE_CONTENT";
+}
+
 /// <summary>Stable categories returned by memory-facing operations.</summary>
 public enum MemoryErrorCategory
 {
@@ -29,7 +38,7 @@ public sealed record MemoryAddressError(
 {
     /// <summary>Creates a malformed-address error without echoing unsafe input.</summary>
     public static MemoryAddressError Create(string message, long? limit = null, long? actual = null) =>
-        new(MemoryErrorCategory.MalformedAddress, "malformed_address", message, "address", limit, actual);
+        new(MemoryErrorCategory.MalformedAddress, MemoryErrorCodes.MalformedAddress, message, "address", limit, actual);
 }
 
 /// <summary>Thrown by <see cref="MemoryAddress.Parse(string)"/> for malformed input.</summary>

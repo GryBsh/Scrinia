@@ -50,7 +50,7 @@ public static class MemoryNaming
     /// <summary>
     /// True for the ephemeral SURFACE alias — a path under the reserved temp prefix.
     /// <para>The alias is a surface concern, canonicalized at the MCP facade and at the CLI
-    /// commands, and it never reaches the store or the wire. Note this is false for
+    /// commands, and it never reaches the store. Note this is false for
     /// <c>~x</c>: an alias is not yet an ephemeral name.</para>
     /// </summary>
     public static bool IsEphemeralAlias(string name) =>
@@ -90,13 +90,8 @@ public static class MemoryNaming
     /// <c>ScriniaCommands.Facts.cs</c>'s <c>Facts</c> (one call) — which keeps comma-separated
     /// arguments on purpose (Task 9, D-3 — command-line arguments are strings, and
     /// forcing repeated flags would be a worse CLI for no gain — a scope name containing a comma is
-    /// therefore unaddressable from the CLI, and that is accepted). The REST <c>/memories</c>
-    /// listing endpoint used to be a second caller, on the
-    /// premise that only <c>/search</c>'s wire encoding converted to repeated params (Task 9, D-2)
-    /// — Task 9 fix round 1 (F-4) found that premise wrong: <c>IMemoryStore.ListScoped</c> already
-    /// promised list semantics, and re-joining on commas here just broke that promise for every
-    /// remote caller. <c>/memories</c> now binds <c>scopes</c> as repeated params directly, the
-    /// same as <c>/search</c>, and no longer calls this method.</para>
+    /// therefore unaddressable from the CLI, and that is accepted). List and search callers pass
+    /// the resulting list directly to the store contract.</para>
     /// </summary>
     public static string[]? SplitCommaSeparated(string? value) =>
         string.IsNullOrWhiteSpace(value)
@@ -403,7 +398,7 @@ public static class MemoryNaming
     }
 
     /// <summary>Inverse of <see cref="FormatScopeLabel"/>: RECOVERS a scope from its display
-    /// label. Needed by remote clients, which receive topic results labelled rather than scoped.
+    /// label when a listing returns a display label rather than an internal scope.
     ///
     /// <para><b>Deliberately not routed through <see cref="BuildScopedTopicScope"/></b> (Task 13).
     /// This RECOVERS a scope a listing already reports as existing, rather than

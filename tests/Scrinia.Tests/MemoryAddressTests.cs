@@ -33,7 +33,7 @@ public sealed class MemoryAddressTests
     [Fact]
     public void PersistentAddress_RendersAsLogicalPath()
     {
-        var address = MemoryAddress.Parse(" /notes/design ");
+        var address = MemoryAddress.Parse(" /notes/design");
 
         address.ToString().Should().Be("/notes/design");
         JsonSerializer.Serialize(address).Should().Be("\"/notes/design\"");
@@ -85,6 +85,21 @@ public sealed class MemoryAddressTests
         "/bad<name>", "/bad|name", "/bad\"name"
     };
 
+    [Theory]
+    [InlineData("/notes/design", true)]
+    [InlineData("/notes/design.", false)]
+    [InlineData("/notes/design ", false)]
+    [InlineData("/notes/../secret", false)]
+    [InlineData("/notes/%2e%2e/secret", false)]
+    [InlineData("/C:/windows", false)]
+    [InlineData("/\\server/share", false)]
+    public void PersistentAddresses_AreDurablyPortable(string raw, bool accepted)
+    {
+        MemoryAddress.TryParse(raw, out var address, out _).Should().Be(accepted);
+        if (accepted)
+            address.ToString().Should().Be("/notes/design");
+    }
+
     [Fact]
     public void TryParse_RejectsAddressOverUtf8Limit()
     {
@@ -93,5 +108,17 @@ public sealed class MemoryAddressTests
         MemoryAddress.TryParse(raw, out var address, out var error).Should().BeFalse();
         address.Value.Should().BeNull();
         error.Category.Should().Be(MemoryErrorCategory.MalformedAddress);
+    }
+
+    [Theory]
+    [InlineData("~scratch.", "scratch.")]
+    [InlineData("~scratch ", "scratch")]
+    [InlineData("/temp/scratch.", "scratch.")]
+    [InlineData("/temp/scratch ", "scratch")]
+    public void EphemeralAddresses_DoNotUseDurableTrailingCharacterRules(string raw, string expectedName)
+    {
+        MemoryAddress.TryParse(raw, out var address, out _).Should().BeTrue();
+        address.Kind.Should().Be(MemoryAddressKind.Ephemeral);
+        address.Value.Should().Be(expectedName);
     }
 }

@@ -252,7 +252,9 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         var byScope = candidates.GroupBy(c => c.Scope, StringComparer.OrdinalIgnoreCase);
         foreach (var group in byScope)
         {
-            var vectors = _vectorStore.GetVectors(group.Key);
+            var candidateNames = group.Select(c => c.Entry.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var vectors = _vectorStore.GetCandidateVectors(group.Key, candidateNames);
             if (vectors.Count == 0) continue;
 
             var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);

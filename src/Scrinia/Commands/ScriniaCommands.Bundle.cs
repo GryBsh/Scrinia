@@ -56,7 +56,7 @@ public partial class ScriniaCommands
 
         if (response.IsError)
         {
-            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            if (json) { WriteJsonError(response.Error ?? "unknown error", code: response.ErrorCode); return 1; }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
@@ -100,7 +100,8 @@ public partial class ScriniaCommands
         {
             if (json)
             {
-                WriteJson(new CliImportOutput(response.ToYaml()), CliJsonContext.Default.CliImportOutput);
+                WriteJson(new CliImportOutput(response.ToYaml(), response.ErrorCode, response.Status),
+                    CliJsonContext.Default.CliImportOutput);
                 return 1;
             }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");

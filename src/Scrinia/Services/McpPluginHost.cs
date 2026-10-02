@@ -50,9 +50,10 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     private bool _degraded;
 
     // Capability flags discovered via ListToolsAsync
-    private bool _hasSearch, _hasUpsert, _hasRemove, _hasStatus, _hasIndex;
+    private bool _hasSearch, _hasRemove, _hasStatus, _hasIndex;
     // Set to true only when the plugin's status reports available=true (i.e. a real provider, not NullEmbeddingProvider)
     private bool _isAvailable;
+    internal string? ProtocolFailureCode { get; private set; }
 
     /// <summary>Production construction path — connects lazily via <see cref="StartAsync"/>.</summary>
     public McpPluginHost() { }
@@ -63,7 +64,6 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         _toolCaller = toolCaller;
         var names = new HashSet<string>(toolNames, StringComparer.OrdinalIgnoreCase);
         _hasSearch = names.Contains("search");
-        _hasUpsert = names.Contains("upsert");
         _hasRemove = names.Contains("remove");
         _hasStatus = names.Contains("status");
         _hasIndex = names.Contains("index");
@@ -71,7 +71,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     }
 
     public bool HasSearchCapability => _hasSearch && _isAvailable && !_degraded;
-    public bool HasEventSinkCapability => (_hasIndex || _hasUpsert || _hasRemove) && _isAvailable && !_degraded;
+    public bool HasEventSinkCapability => (_hasIndex || _hasRemove) && _isAvailable && !_degraded;
 
     /// <summary>
     /// Starts the plugin process via MCP stdio transport. Verifies it's alive with a status call.
@@ -84,30 +84,66 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         _environment = BuildSecretEnvironment(getConfig);
         await ConnectAsync(ct);
 
-        // Verify the plugin is alive
-        if (_hasStatus)
+        await NegotiateStatusAsync(ct);
+        if (ProtocolFailureCode is not null && _client is not null)
         {
-            try
-            {
-                var result = await _client!.CallToolAsync("status", cancellationToken: ct);
-                var text = GetTextContent(result);
-                if (text is not null)
-                {
-                    using var doc = JsonDocument.Parse(text);
-                    var root = doc.RootElement;
-                    _isAvailable = GetBool(root, "available");
-                    Console.Error.WriteLine(
-                        $"[scrinia:info] Embeddings plugin ready " +
-                        $"(provider={FormatPluginStatusValue(GetString(root, "provider"))}, hardware={FormatPluginStatusValue(GetString(root, "hardware"))}, " +
-                        $"available={_isAvailable}, dims={GetInt(root, "dimensions")}, " +
-                        $"vectors={GetInt(root, "vectorCount")})");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(FormatPluginWarning("Plugin status check failed", ex));
-            }
+            await _client.DisposeAsync();
+            _client = null;
+            _toolCaller = null;
         }
+    }
+
+    internal async Task NegotiateStatusAsync(CancellationToken ct = default)
+    {
+        if (!_hasStatus || _toolCaller is null)
+        {
+            DisableForSession("EMBEDDINGS_PROTOCOL_INVALID", "status capability is missing");
+            return;
+        }
+
+        try
+        {
+            string? text = await _toolCaller.CallToolAsync("status", new Dictionary<string, object?>(), ct);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                DisableForSession("EMBEDDINGS_PROTOCOL_INVALID", "status response is empty");
+                return;
+            }
+
+            EmbeddingsStatusResponse? status = JsonSerializer.Deserialize(
+                text, PluginClientJsonContext.Default.EmbeddingsStatusResponse);
+            Exception? failure = EmbeddingsProtocol.ValidateStatus(status);
+            if (failure is not null)
+            {
+                DisableForSession(
+                    failure is EmbeddingsProtocolUnsupportedException
+                        ? "EMBEDDINGS_PROTOCOL_UNSUPPORTED"
+                        : "EMBEDDINGS_PROTOCOL_INVALID",
+                    failure.Message);
+                return;
+            }
+
+            _isAvailable = true;
+            Console.Error.WriteLine(
+                $"[scrinia:info] Embeddings plugin ready (protocol=1, dimensions={status!.Dimensions}, " +
+                $"signature={FormatPluginStatusValue(status.VectorStoreSignature)})");
+        }
+        catch (JsonException ex)
+        {
+            DisableForSession("EMBEDDINGS_PROTOCOL_INVALID", $"malformed status response: {ex.Message}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            DisableForSession("EMBEDDINGS_PROTOCOL_INVALID", ex.Message);
+        }
+    }
+
+    private void DisableForSession(string code, string detail)
+    {
+        ProtocolFailureCode = code;
+        _isAvailable = false;
+        _degraded = true;
+        Console.Error.WriteLine($"[scrinia:warn] {code}: {MultiMemoryStableDetail.SanitizeOrFallback(detail)}. Search falls back to lexical matching.");
     }
 
     internal static string[] BuildArguments(string dataDir, string modelsDir, Func<string, string?> getConfig)
@@ -159,20 +195,10 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         var tools = await _client.ListToolsAsync(cancellationToken: ct);
         var names = new HashSet<string>(tools.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
         _hasSearch = names.Contains("search");
-        _hasUpsert = names.Contains("upsert");
         _hasRemove = names.Contains("remove");
         _hasStatus = names.Contains("status");
         _hasIndex = names.Contains("index");
 
-        // Capability fact, logged once per connection rather than once per memory — see
-        // OnStoredAsync/OnAppendedAsync, which used to log this on every legacy-fallback call and
-        // would spam one identical line per memory during a bulk reindex.
-        if (!_hasIndex && _hasUpsert)
-        {
-            Console.Error.WriteLine(
-                "[scrinia:warn] Plugin offers 'upsert' but not 'index'; indexing without windowing. "
-                + "Long memories will be less reachable by semantic search.");
-        }
     }
 
     // ── ISearchScoreContributor ──────────────────────────────────────────
@@ -183,18 +209,37 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     {
         if (_degraded || !_hasSearch) return null;
 
-        var scopes = candidates.Select(c => c.Scope).Distinct().ToArray();
-        if (scopes.Length == 0) return null;
+        var candidatesByScope = candidates
+            .GroupBy(candidate => candidate.Scope, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key,
+                group => group.Select(candidate => ResolveCandidateName(candidate, store))
+                    .Distinct(StringComparer.Ordinal).ToArray(),
+                StringComparer.Ordinal);
+        if (candidatesByScope.Count == 0) return null;
 
-        var text = await CallToolWithRetryAsync("search", new Dictionary<string, object?>
-        {
-            ["query"] = query,
-            ["scopes"] = scopes,
-        }, ct);
+        var request = new EmbeddingsSearchRequest(query, candidatesByScope);
+        var text = await CallToolWithRetryAsync("search", ToArguments(request), ct);
 
         if (text is null) return null;
 
-        return JsonSerializer.Deserialize(text, PluginClientJsonContext.Default.DictionaryStringDouble);
+        EmbeddingsSearchResponse? response = JsonSerializer.Deserialize(
+            text, PluginClientJsonContext.Default.EmbeddingsSearchResponse);
+        if (response is null || response.Error is not null || response.Scores is null) return null;
+
+        var allowed = candidatesByScope
+            .SelectMany(pair => pair.Value.Select(name => $"{pair.Key}|{name}"))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return response.Scores
+            .Where(score => allowed.Contains(score.Key))
+            .ToDictionary(score => score.Key, score => score.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveCandidateName(ScopedArtifact candidate, IMemoryStore store)
+    {
+        if (store is not null)
+            return store.ResolveAddress(candidate.Entry.Address).Subject;
+
+        return candidate.Entry.Address.ToString().TrimStart('/');
     }
 
     // ── IMemoryEventSink ─────────────────────────────────────────────────
@@ -212,48 +257,12 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         // Restored the early return in front of ParseQualifiedName: a plugin advertising only
         // `remove` has neither flag set, and must not pay for a parse (which throws on a
         // malformed name) on every store/append when it was never going to call out anyway.
-        if (_degraded || (!_hasIndex && !_hasUpsert)) return;
+        if (_degraded || !_hasIndex) return;
 
         var (scope, name) = store.ResolveAddress(address);
 
-        if (_hasIndex)
-        {
-            // Preferred: hand the plugin the whole content array and let MemoryVectorIndexer run
-            // inside the plugin process. The chunking policy lives in one place instead of being
-            // restated by every caller that speaks this protocol (finding H3).
-            await CallToolWithRetryAsync("index", new Dictionary<string, object?>
-            {
-                ["scope"] = scope,
-                ["name"] = name,
-                ["content"] = content,
-            }, ct);
-            return;
-        }
-
-        // Legacy fallback for plugins that predate the `index` tool. This path does not window, so
-        // a long memory becomes one mean-pooled vector — the exact H3 regression. Kept so a
-        // third-party plugin keeps being indexed rather than silently stopping. The capability
-        // warning for this fallback is logged once per connection, in ConnectAsync — not here,
-        // where it would repeat once per memory during a bulk reindex.
-        string joined = string.Concat(content);
-        if (string.IsNullOrWhiteSpace(joined)) return;
-
-        await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
-        {
-            ["scope"] = scope, ["name"] = name, ["text"] = joined,
-        }, ct);
-
-        if (content.Length > 1)
-        {
-            for (int i = 0; i < content.Length; i++)
-            {
-                if (string.IsNullOrWhiteSpace(content[i])) continue;
-                await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
-                {
-                    ["scope"] = scope, ["name"] = name, ["text"] = content[i], ["chunkIndex"] = i + 1,
-                }, ct);
-            }
-        }
+        var request = new EmbeddingsIndexRequest(scope, name, content);
+        await CallToolWithRetryAsync("index", ToArguments(request), ct);
     }
 
     public async Task OnAppendedAsync(MemoryAddress address, string content,
@@ -267,42 +276,18 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         IPluginStore store, CancellationToken ct)
     {
         // See OnStoredAsync — same early-return-before-parse fix, same reason.
-        if (_degraded || (!_hasIndex && !_hasUpsert)) return;
+        if (_degraded || !_hasIndex) return;
 
         var (scope, name) = store.ResolveAddress(address);
 
-        if (_hasIndex)
-        {
-            // An append mutates the memory, and the plugin-side indexer replaces a memory's
-            // vectors atomically — sending only the appended fragment would destroy every vector
-            // for the rest of the memory. Re-read the current artifact and send the full
-            // post-append content array, same reasoning as CoreEmbeddingEventHandler.
-            string artifact = await store.ReadArtifactAsync(address, ct);
-            if (string.IsNullOrWhiteSpace(artifact)) return;
+        string artifact = await store.ReadArtifactAsync(address, ct);
+        if (string.IsNullOrWhiteSpace(artifact)) return;
 
-            var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
-            if (elements.Length == 0) return;
+        var elements = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
+        if (elements.Length == 0) return;
 
-            await CallToolWithRetryAsync("index", new Dictionary<string, object?>
-            {
-                ["scope"] = scope,
-                ["name"] = name,
-                ["content"] = elements,
-            }, ct);
-            return;
-        }
-
-        // Legacy fallback: the old protocol has no way to express a replace, so this keeps
-        // today's fragment-only behaviour. The top guard already guarantees _hasUpsert here,
-        // since _hasIndex is false and at least one of the two must be true to reach this line.
-        if (string.IsNullOrWhiteSpace(content)) return;
-
-        await CallToolWithRetryAsync("upsert", new Dictionary<string, object?>
-        {
-            ["scope"] = scope,
-            ["name"] = name,
-            ["text"] = content,
-        }, ct);
+        var request = new EmbeddingsIndexRequest(scope, name, elements);
+        await CallToolWithRetryAsync("index", ToArguments(request), ct);
     }
 
     public async Task OnForgottenAsync(MemoryAddress address, bool wasDeleted,
@@ -388,6 +373,8 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             if (_client is not null)
                 await _client.DisposeAsync();
             await ConnectAsync(ct);
+            await NegotiateStatusAsync(ct);
+            if (ProtocolFailureCode is not null) return false;
             return true;
         }
         catch (Exception ex)
@@ -424,6 +411,18 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         root.TryGetProperty("error", out var error)
             ? error.ToString()
             : "ok=false";
+
+    private static Dictionary<string, object?> ToArguments<T>(T request)
+    {
+        var metadata = PluginClientJsonContext.Default.GetTypeInfo(typeof(T))
+            ?? throw new InvalidOperationException($"No JSON metadata exists for {typeof(T).Name}.");
+        using JsonDocument document = JsonDocument.Parse(
+            JsonSerializer.Serialize(request, metadata));
+        return document.RootElement.EnumerateObject()
+            .ToDictionary(property => property.Name,
+                property => (object?)property.Value.Clone(),
+                StringComparer.Ordinal);
+    }
 
     private static string? GetTextContent(CallToolResult result)
     {

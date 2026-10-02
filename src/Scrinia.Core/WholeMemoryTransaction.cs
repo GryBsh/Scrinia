@@ -233,7 +233,8 @@ internal sealed record FileEntityMutation
         byte[] newBody,
         byte[]? newMeta,
         bool deleteBody,
-        bool deleteMeta)
+        bool deleteMeta,
+        IReadOnlyCollection<string>? deletePaths = null)
     {
         EntityKind = RequireText(entityKind, nameof(entityKind));
         Name = RequireText(name, nameof(name));
@@ -245,6 +246,7 @@ internal sealed record FileEntityMutation
         _newMeta = newMeta?.ToArray();
         DeleteBody = deleteBody;
         DeleteMeta = deleteMeta;
+        DeletePaths = deletePaths?.ToArray() ?? [];
     }
 
     internal string EntityKind { get; }
@@ -256,6 +258,7 @@ internal sealed record FileEntityMutation
     internal byte[]? NewMeta => _newMeta?.ToArray();
     internal bool DeleteBody { get; }
     internal bool DeleteMeta { get; }
+    internal IReadOnlyList<string> DeletePaths { get; }
 
     internal void Deconstruct(
         out string entityKind,

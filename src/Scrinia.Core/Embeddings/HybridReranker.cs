@@ -49,17 +49,9 @@ public sealed class HybridReranker : ISearchScoreContributor
         var byScope = candidates.GroupBy(c => c.Scope, StringComparer.OrdinalIgnoreCase);
         foreach (var group in byScope)
         {
-            var vectors = _store.GetVectors(group.Key);
-            if (vectors.Count == 0) continue;
-
-            // Build a name set of candidate entries for fast lookup
             var candidateNames = new HashSet<string>(
                 group.Select(c => c.Entry.Name), StringComparer.OrdinalIgnoreCase);
-
-            // Filter vectors to only those matching candidates
-            var candidateVectors = vectors
-                .Where(v => candidateNames.Contains(v.Name))
-                .ToList();
+            var candidateVectors = _store.GetCandidateVectors(group.Key, candidateNames);
 
             if (candidateVectors.Count == 0) continue;
 

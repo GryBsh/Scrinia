@@ -31,6 +31,15 @@ public class EntityQuerySeederTests
             .Should().NotContain("topic:auth");
     }
 
+    [Theory]
+    [InlineData("art", "person:martin", false)]
+    [InlineData("Martin!", "person:martin", true)]
+    [InlineData("new york architecture", "thing:new york", true)]
+    public void Seed_RequiresCompleteNormalizedTokens(string query, string entity, bool expected)
+    {
+        EntityQuerySeeder.Seed(query, [entity]).Should().HaveCount(expected ? 1 : 0);
+    }
+
     [Fact]
     public void MultipleNamed_AllSeeded()
     {

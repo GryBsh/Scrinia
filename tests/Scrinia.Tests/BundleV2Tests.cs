@@ -5,6 +5,7 @@ using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.Core.Encoding;
 
 namespace Scrinia.Tests;
 
@@ -50,7 +51,7 @@ public sealed class BundleV2Tests : IDisposable
             CreatedAt: DateTimeOffset.UtcNow,
             ContentPreview: $"Test entry for {topic}:{subject}");
         _store.Upsert(entry, scope);
-        _store.WriteArtifactAsync(subject, scope, content).GetAwaiter().GetResult();
+        _store.WriteArtifactAsync(subject, scope, Nmp2ChunkedEncoder.Encode(content)).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -75,7 +76,7 @@ public sealed class BundleV2Tests : IDisposable
                 [KnownAttributes.TagKey] = tags
             });
         _store.Upsert(entry, scope);
-        _store.WriteArtifactAsync(subject, scope, content).GetAwaiter().GetResult();
+        _store.WriteArtifactAsync(subject, scope, Nmp2ChunkedEncoder.Encode(content)).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -108,7 +109,7 @@ public sealed class BundleV2Tests : IDisposable
     /// <summary>
     /// Imports a zip from raw bytes into the given store.
     /// </summary>
-    private static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportFromBytes(
+    private static (int TopicCount, int EntryCount, List<string> Names) ImportFromBytes(
         byte[] zipBytes, IMemoryStore store, bool overwrite = true)
     {
         using var ms = new MemoryStream(zipBytes);
@@ -174,7 +175,7 @@ public sealed class BundleV2Tests : IDisposable
                     }),
                     BundleFormatService.DefaultJsonOptions);
                 WriteZipText(zip, "topics/test/index.json", indexJson);
-                WriteZipText(zip, "topics/test/note.nmp2", "hello");
+                WriteZipText(zip, "topics/test/note.nmp2", Nmp2ChunkedEncoder.Encode("hello"));
 
                 // File entities
                 WriteZipText(zip, "files/skills/planner.md", "# Planner skill");
@@ -234,7 +235,7 @@ public sealed class BundleV2Tests : IDisposable
                     }),
                     BundleFormatService.DefaultJsonOptions);
                 WriteZipText(zip, "topics/docs/index.json", indexJson);
-                WriteZipText(zip, "topics/docs/readme.nmp2", "docs content");
+                WriteZipText(zip, "topics/docs/readme.nmp2", Nmp2ChunkedEncoder.Encode("docs content"));
 
                 // v1 manifest — no FileEntities key at all
                 var manifest = new BundleManifest(
@@ -253,13 +254,12 @@ public sealed class BundleV2Tests : IDisposable
         Directory.CreateDirectory(importRoot);
         using var importStore = new FileMemoryStore(importRoot);
 
-        var (topicCount, entryCount, names, skippedCategories) = ImportFromBytes(zipBytes, importStore);
+        var (topicCount, entryCount, names) = ImportFromBytes(zipBytes, importStore);
 
         // Assert — NMP/2 topics imported successfully
         topicCount.Should().Be(1);
         entryCount.Should().Be(1);
         names.Should().Contain("docs");
-        skippedCategories.Should().BeEmpty();
 
         // Verify no file-entity directories were created
         string scriniaBase = Path.Combine(importRoot, ".scrinia");
@@ -334,10 +334,9 @@ public sealed class BundleV2Tests : IDisposable
 
         Action import = () => ImportFromBytes(zipBytes, importing);
 
-        var failure = import.Should().Throw<DurableWriteException>().Which;
+        var failure = import.Should().Throw<BundleImportException>().Which;
 
-        failure.Operation.Should().Be("create directory");
-        failure.Destination.Should().Be(skillsDirectory);
+        failure.Failure.Should().Be(BundleImportFailure.RolledBack);
         failure.InnerException.Should().BeOfType<IOException>();
         importing.Dispose();
         using var cold = new FileMemoryStore(importRoot);
@@ -420,7 +419,7 @@ public sealed class BundleV2Tests : IDisposable
         Directory.CreateDirectory(importRoot);
         using var importStore = new FileMemoryStore(importRoot);
 
-        var (topicCount, entryCount, _, _) = ImportFromBytes(zipBytes, importStore);
+        var (topicCount, entryCount, _) = ImportFromBytes(zipBytes, importStore);
 
         // Assert — topic data round-tripped
         topicCount.Should().Be(1);
@@ -439,10 +438,12 @@ public sealed class BundleV2Tests : IDisposable
         // Verify the imported topic artifact content matches
         // Task 13: the constructor sanitizes each segment itself — see SeedTopic. Wrapping it in
         // SanitizeName would flatten '/' to '_' and resolve a DIFFERENT scope than import wrote to.
-        var retryContent = await importStore.ReadArtifactAsync(MemoryAddress.Parse("/patterns/retry"));
+        var retryArtifact = await importStore.ReadArtifactAsync(MemoryAddress.Parse("/patterns/retry"));
+        var retryContent = Nmp2ChunkedEncoder.DecodeAllChunksVerified(retryArtifact).Chunks.Single();
         retryContent.Should().Be("## Retry pattern\nExponential backoff.");
 
-        var cbContent = await importStore.ReadArtifactAsync(MemoryAddress.Parse("/patterns/circuit-breaker"));
+        var cbArtifact = await importStore.ReadArtifactAsync(MemoryAddress.Parse("/patterns/circuit-breaker"));
+        var cbContent = Nmp2ChunkedEncoder.DecodeAllChunksVerified(cbArtifact).Chunks.Single();
         cbContent.Should().Be("## Circuit breaker\nFail fast.");
     }
 
@@ -500,7 +501,7 @@ public sealed class BundleV2Tests : IDisposable
                 }
                 """;
                 WriteZipText(zip, "topics/old/index.json", indexJson);
-                WriteZipText(zip, "topics/old/legacy-note.nmp2", "hello");
+                WriteZipText(zip, "topics/old/legacy-note.nmp2", Nmp2ChunkedEncoder.Encode("hello"));
 
                 var manifest = new BundleManifest(
                     Version: 1,
@@ -550,7 +551,7 @@ public sealed class BundleV2Tests : IDisposable
         string importRoot = Path.Combine(_tempDir, "hierarchical-import-target");
         Directory.CreateDirectory(importRoot);
         using var importStore = new FileMemoryStore(importRoot);
-        var (_, _, names, _) = ImportFromBytes(zipBytes, importStore);
+        var (_, _, names) = ImportFromBytes(zipBytes, importStore);
 
         names.Should().BeEquivalentTo(["goal/G-5"],
             because: "the manifest carries the topic in its scope-derived form, hierarchy intact");
@@ -578,10 +579,10 @@ public sealed class BundleV2Tests : IDisposable
             using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
             {
                 WriteZipText(zip, "manifest.json",
-                    """{"version":1,"topics":["goal_G-5"],"entryCount":1}""");
+                    """{"version":1,"topics":["goal_G-5"],"totalEntries":1}""");
                 WriteZipText(zip, "topics/goal_G-5/index.json",
                     """{"entries":[{"name":"legacy-note","originalBytes":5,"chunkCount":1}]}""");
-                WriteZipText(zip, "topics/goal_G-5/legacy-note.nmp2", "body");
+                WriteZipText(zip, "topics/goal_G-5/legacy-note.nmp2", Nmp2ChunkedEncoder.Encode("body"));
             }
             zipBytes = ms.ToArray();
         }
@@ -616,7 +617,7 @@ public sealed class BundleV2Tests : IDisposable
                     """{"version":1,"topics":["good","bad."],"entryCount":2}""");
                 WriteZipText(zip, "topics/good/index.json",
                     """{"entries":[{"name":"good-note","originalBytes":5,"chunkCount":1}]}""");
-                WriteZipText(zip, "topics/good/good-note.nmp2", "body");
+                WriteZipText(zip, "topics/good/good-note.nmp2", Nmp2ChunkedEncoder.Encode("body"));
             }
             zipBytes = ms.ToArray();
         }
@@ -679,7 +680,7 @@ public sealed class BundleV2Tests : IDisposable
             WriteZipText(zip, "topics/imported/index.json", """
                 {"entries":[{"name":"imported-note","originalBytes":5,"chunkCount":1}]}
                 """);
-            WriteZipText(zip, "topics/imported/imported-note.nmp2", "body");
+            WriteZipText(zip, "topics/imported/imported-note.nmp2", Nmp2ChunkedEncoder.Encode("body"));
             if (includeDeclaredBody)
                 WriteZipBytes(zip, $"files/{category}/planner.md", [1, 2, 3]);
             WriteZipText(zip, $"files/{category}/planner.meta.json", sidecarJson);
@@ -706,7 +707,7 @@ public sealed class BundleV2Tests : IDisposable
             WriteZipText(zip, "topics/imported/index.json", """
                 {"entries":[{"name":"imported-note","originalBytes":5,"chunkCount":1}]}
                 """);
-            WriteZipText(zip, "topics/imported/imported-note.nmp2", "body");
+            WriteZipText(zip, "topics/imported/imported-note.nmp2", Nmp2ChunkedEncoder.Encode("body"));
             WriteZipText(zip, "manifest.json", $$"""
                 {"version":2,"topics":["imported"],"totalEntries":1,
                 "fileEntities":{{fileEntitiesJson}}}

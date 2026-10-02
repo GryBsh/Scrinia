@@ -155,7 +155,7 @@ internal static class EmbeddingsHost
     ///   uses <see cref="EmbeddingReindexer.ForceReindexAsync"/> which batch-embeds and writes
     ///   the host's <see cref="VectorStore"/> directly.</item>
     ///   <item><b>Plugin-owned</b> (Vulkan plugin via MCP): replays each memory through the
-    ///   active <see cref="IMemoryEventSink"/> so the plugin's <c>upsert</c> tool rebuilds
+    ///   active <see cref="IMemoryEventSink"/> so the plugin's <c>index</c> tool rebuilds
     ///   its vector store. The host has no <see cref="IEmbeddingProvider"/> to batch-embed
     ///   in-process in this case.</item>
     /// </list>
@@ -504,6 +504,7 @@ internal static class EmbeddingsHost
             if (!host.HasSearchCapability && !host.HasEventSinkCapability)
             {
                 await host.DisposeAsync();
+                SearchContributorContext.Default ??= new PathSegmentScoreContributor();
                 return;
             }
 

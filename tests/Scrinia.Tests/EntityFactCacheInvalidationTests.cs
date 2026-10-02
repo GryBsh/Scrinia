@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Tests;
@@ -45,7 +46,7 @@ public sealed class EntityFactCacheInvalidationTests : IDisposable
     {
         const string topicScope = "local:api";
 
-        await _source.WriteArtifactAsync("auth-flow", topicScope, "auth flow notes");
+        await _source.WriteArtifactAsync("auth-flow", topicScope, Nmp2ChunkedEncoder.Encode("auth flow notes"));
         _source.Upsert(new ArtifactEntry(
             Name: "auth-flow",
             Uri: "",

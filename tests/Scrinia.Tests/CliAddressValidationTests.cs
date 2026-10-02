@@ -100,7 +100,7 @@ public sealed class CliAddressValidationTests
                 Assert.Equal(1, exit);
                 using JsonDocument document = JsonDocument.Parse(output);
                 Assert.Equal("ForbiddenAddressKind", document.RootElement.GetProperty("category").GetString());
-                Assert.Equal("forbidden_address_kind", document.RootElement.GetProperty("code").GetString());
+                Assert.Equal(MemoryErrorCodes.ForbiddenAddressKind, document.RootElement.GetProperty("code").GetString());
             }
             Assert.False(Directory.Exists(Path.Combine(workspace, ".scrinia")));
         }

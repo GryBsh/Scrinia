@@ -2,7 +2,7 @@ namespace Scrinia.Core;
 
 /// <summary>
 /// AsyncLocal indirection for <see cref="IMemoryStore"/>.
-/// MCP tools read this to dispatch to local or remote storage.
+/// MCP tools read this to dispatch to the configured workspace store.
 /// Follows the same pattern as <see cref="SessionBudget"/> overrides.
 /// </summary>
 public static class MemoryStoreContext
@@ -12,7 +12,7 @@ public static class MemoryStoreContext
 
     /// <summary>
     /// Gets or sets the IMemoryStore for the current async flow.
-    /// MCP tools read this to dispatch to local or remote storage.
+    /// MCP tools read this to dispatch to the configured workspace store.
     /// Falls back to <see cref="Default"/> when no async-local value is set,
     /// bridging the generic-host thread boundary where AsyncLocal does not propagate.
     /// </summary>

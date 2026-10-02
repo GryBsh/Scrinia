@@ -142,4 +142,15 @@ public class VectorStoreTraversalTests : IDisposable
         Assert.Throws<ArgumentException>(() => store.GetVectors("/abs/path"));
         Assert.Throws<ArgumentException>(() => store.GetVectors("C:\\windows"));
     }
+
+    [Theory]
+    [InlineData("local:topic.")]
+    [InlineData("local:topic ")]
+    [InlineData("local:../../escape")]
+    public void ScopeIdentityChangingOrEscapingInput_IsRejected(string scope)
+    {
+        var store = new VectorStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()));
+
+        Assert.Throws<ArgumentException>(() => store.GetVectors(scope));
+    }
 }

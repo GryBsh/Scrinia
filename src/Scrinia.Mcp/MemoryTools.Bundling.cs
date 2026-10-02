@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
@@ -106,29 +107,40 @@ public sealed partial class ScriniaMcpTools
             using var stream = bundle.Stream;
             using var zip = bundle.Archive;
 
-            var (topicCount, entryCount, names, skippedCategories) =
-                Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);
+            var (topicCount, entryCount, names) =
+                Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZipAsync(
+                    zip, store, topics, overwrite, cancellationToken).GetAwaiter().GetResult();
 
-            if (topicCount == 0 && skippedCategories.Count == 0)
+            if (topicCount == 0)
                 return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out)."));
 
-            // A workflows-only (or otherwise topic-free) bundle still reaches here via the
-            // skippedCategories > 0 branch above — suppress the "Imported 0 topic(s) (0 entries):"
-            // clause in that case so the response states only what actually happened.
             string message = topicCount > 0
                 ? $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}"
                 : "No topics imported.";
-            var response = ResponseBuilder.Success(message)
-                .WithAction("imported");
-            if (skippedCategories.Count > 0)
-                response = response.WithActionNeeded(
-                    $"Skipped unrecognized file-entity categories (not imported): {string.Join(", ", skippedCategories)}.");
-
-            return Task.FromResult(response);
+            return Task.FromResult(ResponseBuilder.Success(message).WithAction("imported"));
         }
         catch (RestoreRecoveryException ex)
         {
             return Task.FromResult(RecoveryBlockedResponse(ex));
+        }
+        catch (BundleImportException ex)
+        {
+            string code = ex.Failure == BundleImportFailure.RecoveryRequired
+                ? ErrorCodes.BundleRecoveryRequired
+                : ErrorCodes.BundleImportFailed;
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                code,
+                ex.Failure == BundleImportFailure.RecoveryRequired
+                    ? "Resolve the retained bundle recovery evidence before retrying."
+                    : "Retry the import after confirming the bundle and workspace are writable."));
+        }
+        catch (BundleValidationException ex)
+        {
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.InvalidBundle,
+                "Obtain a complete supported bundle and retry the import."));
         }
         catch (DurableWriteException ex)
         {
@@ -137,13 +149,6 @@ public sealed partial class ScriniaMcpTools
         catch (ScopeReadOnlyException ex)
         {
             return Task.FromResult(DurableWriteFailureResponse(ex));
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Task.FromResult(ResponseBuilder.Error(
-                ex.Message,
-                ErrorCodes.InvalidBundle,
-                "re-export the bundle with a matching version, or upgrade scri, then retry."));
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -176,7 +181,12 @@ public sealed partial class ScriniaMcpTools
             stream = new FileStream(path, FileMode.Open, FileAccess.Read);
             return (stream, new ZipArchive(stream, ZipArchiveMode.Read));
         }
-        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or InvalidDataException)
+        catch (InvalidDataException exception)
+        {
+            stream?.Dispose();
+            throw new BundleValidationException("INVALID_BUNDLE: the bundle archive is malformed.", exception);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
         {
             stream?.Dispose();
             throw new DurableWriteException("read bundle", path, exception);

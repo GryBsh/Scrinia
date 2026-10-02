@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
@@ -1295,7 +1296,7 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Import_WithMissingDeclaredFileEntity_ReturnsInvalidBundleWithUpgradeRecovery()
+    public async Task Import_WithMissingDeclaredFileEntity_ReturnsInvalidBundleWithRetryGuidance()
     {
         using var scope = new TestHelpers.StoreScope();
         string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "missing-file", includeFile: false);
@@ -1304,11 +1305,11 @@ public sealed class ScriniaMcpToolsTests
 
         response.Status.Should().Be("error");
         response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
-        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("re-export").And.Contain("upgrade");
+        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("complete supported bundle").And.Contain("retry");
     }
 
     [Fact]
-    public async Task Import_WithMalformedManifest_ReturnsInvalidBundleWithActionableError()
+    public async Task Import_WithMalformedManifest_ReturnsInvalidBundleWithRetryGuidance()
     {
         using var scope = new TestHelpers.StoreScope();
         string bundlePath = CreateMalformedManifestBundle(scope.WorkspaceDir);
@@ -1317,8 +1318,8 @@ public sealed class ScriniaMcpToolsTests
 
         response.Status.Should().Be("error");
         response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
-        response.Error.Should().Contain("Invalid bundle").And.Contain("manifest.json").And.Contain("valid JSON");
-        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("re-export").And.Contain("retry");
+        response.Error.Should().Contain(ErrorCodes.InvalidBundle).And.Contain("manifest.json").And.Contain("valid JSON");
+        response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("complete supported bundle").And.Contain("retry");
     }
 
     [Fact]
@@ -1349,9 +1350,9 @@ public sealed class ScriniaMcpToolsTests
             McpResponse response = await Tools().Import(bundlePath);
 
             response.Status.Should().Be("error");
-            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
-            response.Error.Should().Be($"Durable write bytes failed for '{destination}'.");
-            response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("permissions").And.Contain("disk space").And.Contain("retry");
+            response.ErrorCode.Should().Be(ErrorCodes.BundleImportFailed);
+            response.Error.Should().Contain("rolled back");
+            response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("bundle").And.Contain("workspace").And.Contain("Retry");
             response.Content.Should().BeNull();
         }
         finally
@@ -1361,7 +1362,7 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Import_WithUnreadableArchive_ReturnsDurableWriteFailure()
+    public async Task Import_WithUnreadableArchive_ReturnsInvalidBundle()
     {
         using var scope = new TestHelpers.StoreScope();
         string bundlePath = Path.Combine(scope.WorkspaceDir, "unreadable.scrinia-bundle");
@@ -1370,7 +1371,7 @@ public sealed class ScriniaMcpToolsTests
         McpResponse response = await Tools().Import(bundlePath);
 
         response.Status.Should().Be("error");
-        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        response.ErrorCode.Should().Be(ErrorCodes.InvalidBundle);
         response.ActionNeeded.Should().ContainSingle().Which.Should().Contain("retry");
     }
 
@@ -1383,9 +1384,8 @@ public sealed class ScriniaMcpToolsTests
 
         Action open = () => ScriniaMcpTools.OpenBundleForImport(bundlePath);
 
-        var failure = open.Should().Throw<DurableWriteException>().Which;
-        failure.Operation.Should().Be("read bundle");
-        failure.Destination.Should().Be(bundlePath);
+        var failure = open.Should().Throw<BundleValidationException>().Which;
+        failure.Message.Should().Contain(ErrorCodes.InvalidBundle);
         failure.InnerException.Should().BeOfType<InvalidDataException>();
     }
 

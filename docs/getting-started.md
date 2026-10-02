@@ -119,6 +119,11 @@ integrations, parse input with `MemoryAddress.Parse(raw)` or validate it with
 `MemoryAddress.TryParse(raw, out address, out error)` rather than passing raw address strings
 through the store or plugin contracts.
 
+Strict migration uses stable error codes. `MALFORMED_ADDRESS` and
+`SCOPE_CONTAINMENT_FORBIDDEN` mean the logical address or scope must be corrected; Scrinia never
+sanitizes these values into a filesystem path. `RESERVED_PATH_OPERATION_FORBIDDEN` means a
+`/skill/...` or `/agent/...` operation must use that namespace's supported lifecycle.
+
 The CLI is persistent-only: its memory commands reject `~name` and `/temp/name` because each
 invocation exits immediately, so an ephemeral write could not survive. Use an MCP client connected
 to the long-lived `scri serve` process for ephemeral memories.
@@ -197,6 +202,21 @@ A small set of paths have first-class behavior; everything else is plain memory 
 | `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
 | `/checkpoint/...` | State snapshots. |
 | `/temp/...` | Ephemeral — an alias for `~subject`; both spell the same memory. |
+
+Reserved paths are not ordinary memories. Skills are loaded or overridden through `/skill/...`,
+and agent profiles use `/agent/...`; unsupported operations fail explicitly rather than falling
+through to the memory store.
+
+### Search and embeddings migration
+
+Search uses `Scrinia:Search:CandidateLimit` to bound retrieval work. The default is `200`; valid
+values are `1` through `1000`. Set it deliberately when a broader candidate window is needed;
+invalid values fail configuration loading.
+
+Embeddings use protocol v1. If a plugin reports `EMBEDDINGS_PROTOCOL_UNSUPPORTED` or
+`EMBEDDINGS_PROTOCOL_INVALID`, upgrade or reinstall the embeddings executable; lexical search
+remains available. Legacy vectors are quarantined when their provider signature is incompatible;
+run `scri reindex` to rebuild them.
 
 ### Built-in Skills
 

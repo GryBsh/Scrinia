@@ -205,7 +205,7 @@ public static partial class AttributeExtractor
     /// one of <see cref="KnownAttributes.EntityKeys"/> in the same entry — the typed key
     /// (agent-supplied or otherwise) is authoritative, and a duplicate untyped mention would
     /// double-count the entity in aggregation (entity graph, top-attributes facets). Shared by
-    /// both write paths (MCP <c>MemoryTools.Core.cs</c>, server <c>MemoryOrchestrator</c>) so the
+/// all write paths so the
     /// dedup logic lives once. Returns <paramref name="attrs"/> unchanged (same reference) when
     /// there is nothing to shadow-drop.</summary>
     public static Dictionary<string, string[]>? DropMentionsShadowedByTypedKeys(Dictionary<string, string[]>? attrs)

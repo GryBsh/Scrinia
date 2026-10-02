@@ -120,7 +120,7 @@ public class SkillPathRoutingTests
     }
 
     [Fact]
-    public async Task Remember_OnASkillPath_SaysAttributesAndKeywordsDoNotApply()
+    public async Task Remember_OnASkillPath_DropsAttributesAndKeywords()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -132,13 +132,11 @@ public class SkillPathRoutingTests
         var response = ResponseParser.Parse(yaml);
 
         response.Status.Should().NotBe("error");
-        response.Info.Should().Contain(i => i.Contains("attributes", StringComparison.Ordinal),
-            "dropping an argument the schema spends 2 KB describing must be said out loud");
-        response.Info.Should().Contain(i => i.Contains("keywords", StringComparison.Ordinal));
+        response.Info.Should().BeEmpty("reserved skill writes do not report ignored general-memory fields");
     }
 
     [Fact]
-    public async Task Remember_OnASkillPath_NamesOnlyTheArgumentThatWasSupplied()
+    public async Task Remember_OnASkillPath_DoesNotReportIgnoredKeywords()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -147,9 +145,7 @@ public class SkillPathRoutingTests
             content: ["instructions"],
             keywords: ["alpha"]));
 
-        response.Info.Should().Contain(i => i.Contains("keywords", StringComparison.Ordinal));
-        response.Info.Should().NotContain(i => i.Contains("attributes", StringComparison.Ordinal),
-            "naming an argument the caller never sent is a false report");
+        response.Info.Should().BeEmpty("reserved skill writes do not report ignored general-memory fields");
     }
 
     [Fact]

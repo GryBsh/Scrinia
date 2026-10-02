@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
@@ -138,6 +139,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private const int MaxEphemeralEntries = 1000;
     private readonly string _workspaceRoot;
+    private volatile bool _bundleRecoveryBlocked;
+    private readonly AsyncLocal<int> _workspaceMutationDepth = new();
     private readonly WholeMemoryTransactionCoordinator _wholeMemoryTransactions;
     private readonly FileEntityTransactionCoordinator _fileEntityTransactions;
     private readonly MultiMemoryTransactionCoordinator _multiMemoryTransactions;
@@ -336,11 +339,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         _recoveryConductor = new AppendRecoveryConductor(
             InjectAppendFault, _archiveReplayer, _appendJournalWriter, _recoveryEnforcer, _archiveService, _rollbackExecutor);
         _writeValidationOptions = writeValidationOptions ?? new MemoryValidationOptions();
-        _factMaterializer = new EntityFactMaterializer(
+         _factMaterializer = new EntityFactMaterializer(
             items => items.Select(EntityFactDerivation.Derive).Where(memory => memory is not null).Select(memory => memory!).ToArray(),
             ResolveFactSidecarPath,
             TryWriteAllText,
-            BackgroundWork.Register);
+             BackgroundWork.Register);
+        RecoverBundleJournalOnStartup();
     }
 
     internal static void EnsureGitIgnore(string workspaceRoot)
@@ -658,6 +662,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true)
     {
         ArgumentNullException.ThrowIfNull(body);
+        using WorkspaceMutationLease workspaceMutationLock = AcquireWorkspaceMutationLock(
+            exclusive: false, timeout: timeout, cancellationToken: cancellationToken);
         AdmissionGate admissionGate = _scopeLockManager.AcquireAdmissionGate(scope);
         bool admitted = false;
         Stopwatch admissionTimer = Stopwatch.StartNew();
@@ -980,6 +986,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private T WithExclusiveLock<T>(string scope, Func<T> body, TimeSpan? timeout = null,
         Action<bool>? afterRecovery = null)
     {
+        using WorkspaceMutationLease workspaceMutationLock = AcquireWorkspaceMutationLock(
+            exclusive: false, timeout: timeout ?? ImportLockTimeout);
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout);
         var lk = _scopeLockManager.GetIndexLock(scope);
@@ -1338,7 +1346,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// or returns null when the scope holds none. The exact-name probe is one stat and answers the
     /// overwhelmingly common case; only a miss pays a directory enumeration.
     ///
-    /// <para>RULING (remote-mode-leftovers, Task 2): the fallback scan matches
+    /// <para>RULING (case-insensitive name resolution, Task 2): the fallback scan matches
     /// <see cref="StringComparison.OrdinalIgnoreCase"/> deliberately. <see cref="SanitizeName"/>
     /// does not fold case, so on a case-sensitive filesystem an exact-name probe alone answers
     /// "no such memory" for a sidecar differing only in casing — <c>forget("mixedcase")</c>
@@ -2444,13 +2452,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         FileEntityMutation mutation, CancellationToken cancellationToken = default) =>
         ExecuteFileEntityTransactionThroughBoundary(mutation, cancellationToken);
 
-    private Task<FileEntityMutationResult> ExecuteFileEntityTransactionThroughBoundary(
+    private async Task<FileEntityMutationResult> ExecuteFileEntityTransactionThroughBoundary(
         FileEntityMutation mutation, CancellationToken cancellationToken)
     {
+        using WorkspaceMutationLease workspaceMutationLock = AcquireWorkspaceMutationLock(
+            exclusive: false, timeout: ImportLockTimeout, cancellationToken: cancellationToken);
 #pragma warning disable CA1859 // Keep the production transaction boundary interface-typed.
         IFileEntityTransactionCoordinator coordinator = _fileEntityTransactions;
 #pragma warning restore CA1859
-        return coordinator.ExecuteAsync(mutation, cancellationToken);
+        return await coordinator.ExecuteAsync(mutation, cancellationToken).ConfigureAwait(false);
     }
 
     internal string[] PruneWholeArchives(IReadOnlyList<string> candidates, string operationId)
@@ -3169,9 +3179,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// The pipeline's one contact with the filesystem (D-04): resolves a <c>file</c> attribute value
     /// against this store's workspace root and hashes it, or returns null when it cannot — outside
     /// the workspace, missing, or unreadable.
-    /// <para>Supplying it here is what makes the baseline unconditional. The old rule was "hash
-    /// only when the store is local", which the remote store failed, so those writes got no
-    /// baseline at all; derivation runs inside whoever owns the workspace instead.</para>
+    /// <para>Supplying it here makes the baseline unconditional: derivation runs inside the
+    /// workspace-backed store that owns the path.</para>
     /// </summary>
     private string? HashWorkspaceFile(string relativePath)
     {
@@ -3364,6 +3373,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public List<ScopedArtifact> ListScoped(IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics) =>
         _listing.ListScoped(scopes, excludeTopics);
 
+    public IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(
+        IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics, string query, int limit) =>
+        _listing.SelectLexicalCandidates(scopes, excludeTopics, query, limit);
+
     /// <summary>
     /// Search orchestration is owned by <see cref="SearchService"/>; this is a one-line forwarder.
     /// Filters candidates and topics BEFORE the scorer's top-K cut, so a selective filter fills to
@@ -3398,6 +3411,219 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     public List<TopicInfo> GatherTopicInfos(IReadOnlyList<string>? scopes = null) => _listing.GatherTopicInfos(scopes);
 
     // ── Export/Import helpers ─────────────────────────────────────────────────
+
+    public async Task<BundleRestoreResult> RestoreBundleAsync(BundleRestorePlan plan,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (_bundleRecoveryBlocked)
+            throw new BundleImportException(BundleImportFailure.RecoveryRequired,
+                new IOException("A previous bundle restore has unprovable rollback evidence."),
+                BundleRestoreJournalPath);
+
+        ct.ThrowIfCancellationRequested();
+        using WorkspaceMutationLease bundleLock = AcquireWorkspaceMutationLock(
+            exclusive: true, timeout: ImportLockTimeout, cancellationToken: ct);
+        if (_bundleRecoveryBlocked)
+            throw new BundleImportException(BundleImportFailure.RecoveryRequired,
+                new IOException("A previous bundle restore has unprovable rollback evidence."),
+                BundleRestoreJournalPath);
+
+        BundleRestoreJournal journal = CreateBundleRestoreJournal();
+        var existingTopicNames = plan.Topics.ToDictionary(
+            topic => topic.Scope,
+            topic => LoadIndex(topic.Scope)
+                .Select(entry => entry.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforePreparedWrite, BundleRestoreJournalPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(BundleRestoreJournalPath)!);
+            DurableFile.AtomicWriteAllBytes(BundleRestoreJournalPath,
+                JsonSerializer.SerializeToUtf8Bytes(journal, BundleRestoreJournalJsonContext.Default.BundleRestoreJournal));
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.AfterPreparedWrite, BundleRestoreJournalPath);
+
+            foreach (BundleTopicRestore topic in plan.Topics)
+            {
+                ct.ThrowIfCancellationRequested();
+                ImportTopicEntries(topic.Scope, topic.Entries.ToList(),
+                    topic.ArtifactBytes.ToDictionary(pair => pair.Key, pair => pair.Value,
+                        StringComparer.OrdinalIgnoreCase), plan.Overwrite);
+            }
+
+            foreach (BundleFileEntityRestore file in plan.FileEntities)
+            {
+                ct.ThrowIfCancellationRequested();
+                WriteBundleFileEntity(file);
+            }
+
+            VerifyBundleRestore(plan);
+            int committedEntryCount = 0;
+            int committedTopicCount = 0;
+            foreach (BundleTopicRestore topic in plan.Topics)
+            {
+                HashSet<string> before = existingTopicNames[topic.Scope];
+                int committedForTopic = topic.Entries.Count(entry =>
+                    plan.Overwrite || !before.Contains(entry.Name));
+                committedEntryCount += committedForTopic;
+                if (committedForTopic > 0)
+                    committedTopicCount++;
+            }
+            ThrowIfRestoreJournalTransitionFails(RestoreJournalTransition.BeforeCleanupDelete, BundleRestoreJournalPath);
+            File.Delete(BundleRestoreJournalPath);
+            return new BundleRestoreResult(committedTopicCount, committedEntryCount,
+                plan.FileEntities.Count, BundleRestoreOutcome.Committed);
+        }
+        catch (Exception failure)
+        {
+            try
+            {
+                RestoreBundleSnapshot(journal);
+                File.Delete(BundleRestoreJournalPath);
+                throw new BundleImportException(BundleImportFailure.RolledBack, failure);
+            }
+            catch (BundleImportException)
+            {
+                throw;
+            }
+            catch (Exception rollbackFailure)
+            {
+                _bundleRecoveryBlocked = true;
+                throw new BundleImportException(BundleImportFailure.RecoveryRequired, rollbackFailure,
+                    BundleRestoreJournalPath);
+            }
+        }
+    }
+
+    private string BundleRestoreDirectory => Path.Combine(_workspaceRoot, ".scrinia");
+    private string BundleRestoreJournalPath => Path.Combine(BundleRestoreDirectory, ".bundle-restore-journal.json");
+    private string BundleRestoreLockPath => Path.Combine(BundleRestoreDirectory, ".bundle-restore.lock");
+
+    private WorkspaceMutationLease AcquireWorkspaceMutationLock(bool exclusive, TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_workspaceMutationDepth.Value > 0)
+        {
+            _workspaceMutationDepth.Value++;
+            return new WorkspaceMutationLease(this, null);
+        }
+
+        FileLock fileLock = exclusive
+            ? FileLock.AcquireExclusive(BundleRestoreLockPath, timeout ?? ImportLockTimeout, cancellationToken)
+            : FileLock.AcquireShared(BundleRestoreLockPath, timeout ?? ImportLockTimeout);
+        _workspaceMutationDepth.Value = 1;
+        return new WorkspaceMutationLease(this, fileLock);
+    }
+
+    private void ReleaseWorkspaceMutationLock(FileLock? fileLock)
+    {
+        int depth = --_workspaceMutationDepth.Value;
+        if (depth == 0)
+            fileLock?.Dispose();
+    }
+
+    private sealed class WorkspaceMutationLease(FileMemoryStore owner, FileLock? fileLock) : IDisposable
+    {
+        public void Dispose() => owner.ReleaseWorkspaceMutationLock(fileLock);
+    }
+
+    private BundleRestoreJournal CreateBundleRestoreJournal()
+    {
+        var snapshots = new List<BundleRestoreFileSnapshot>();
+        if (!Directory.Exists(BundleRestoreDirectory))
+            return new BundleRestoreJournal("scrinia.bundle-restore", "prepared", snapshots);
+
+        foreach (string path in Directory.EnumerateFiles(BundleRestoreDirectory, "*", SearchOption.AllDirectories))
+        {
+            if (string.Equals(path, BundleRestoreJournalPath, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(path, BundleRestoreLockPath, StringComparison.OrdinalIgnoreCase))
+                continue;
+            string relative = Path.GetRelativePath(BundleRestoreDirectory, path);
+            snapshots.Add(new BundleRestoreFileSnapshot(relative, true,
+                Convert.ToBase64String(File.ReadAllBytes(path))));
+        }
+        return new BundleRestoreJournal("scrinia.bundle-restore", "prepared", snapshots);
+    }
+
+    private void RecoverBundleJournalOnStartup()
+    {
+        if (!File.Exists(BundleRestoreJournalPath))
+            return;
+        try
+        {
+            using FileLock bundleLock = FileLock.AcquireExclusive(BundleRestoreLockPath, ImportLockTimeout);
+            BundleRestoreJournal? journal = JsonSerializer.Deserialize(File.ReadAllBytes(BundleRestoreJournalPath),
+                BundleRestoreJournalJsonContext.Default.BundleRestoreJournal);
+            if (journal is null || journal.Format != "scrinia.bundle-restore" || journal.State != "prepared")
+                throw new IOException("Bundle restore journal is invalid.");
+            RestoreBundleSnapshot(journal);
+            File.Delete(BundleRestoreJournalPath);
+        }
+        catch
+        {
+            _bundleRecoveryBlocked = true;
+        }
+    }
+
+    private void RestoreBundleSnapshot(BundleRestoreJournal journal)
+    {
+        var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (BundleRestoreFileSnapshot file in journal.Files)
+        {
+            string path = Path.GetFullPath(Path.Combine(BundleRestoreDirectory, file.RelativePath));
+            if (!PathContainment.IsWithin(BundleRestoreDirectory, path))
+                throw new IOException("Bundle restore journal contains an unsafe path.");
+            expected.Add(path);
+        }
+
+        if (Directory.Exists(BundleRestoreDirectory))
+        {
+            foreach (string path in Directory.EnumerateFiles(BundleRestoreDirectory, "*", SearchOption.AllDirectories)
+                .Where(path => !string.Equals(path, BundleRestoreJournalPath, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(path, BundleRestoreLockPath, StringComparison.OrdinalIgnoreCase)
+                    && !expected.Contains(path)))
+                File.Delete(path);
+        }
+
+        foreach (BundleRestoreFileSnapshot file in journal.Files)
+        {
+            string path = Path.GetFullPath(Path.Combine(BundleRestoreDirectory, file.RelativePath));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            DurableFile.AtomicWriteAllBytes(path, Convert.FromBase64String(file.ContentBase64 ?? string.Empty));
+        }
+    }
+
+    private void WriteBundleFileEntity(BundleFileEntityRestore file)
+    {
+        if (file.Kind is not ("skill" or "agent"))
+            throw new BundleValidationException($"INVALID_BUNDLE: unknown file-entity kind '{file.Kind}'.");
+        string directory = PathRouter.ToFileEntityDir(file.Kind, _workspaceRoot);
+        string destination = Path.GetFullPath(Path.Combine(directory, file.Name));
+        if (!PathContainment.IsWithin(directory, destination))
+            throw new BundleValidationException("INVALID_BUNDLE: file-entity path escapes its destination.");
+        Directory.CreateDirectory(directory);
+        DurableFile.AtomicWriteAllBytes(destination, file.Body);
+        if (file.Sidecar is not null)
+            DurableFile.AtomicWriteAllBytes(Path.Combine(directory,
+                Path.GetFileNameWithoutExtension(file.Name) + ".meta.json"), file.Sidecar);
+    }
+
+    private void VerifyBundleRestore(BundleRestorePlan plan)
+    {
+        foreach (BundleTopicRestore topic in plan.Topics)
+        foreach (ArtifactEntry entry in topic.Entries)
+        {
+            if (!File.Exists(FindArtifactPath(entry.Name, topic.Scope)))
+                throw new IOException($"Bundle restore verification failed for '{topic.Topic}/{entry.Name}'.");
+        }
+        foreach (BundleFileEntityRestore file in plan.FileEntities)
+        {
+            string path = Path.Combine(PathRouter.ToFileEntityDir(file.Kind, _workspaceRoot), file.Name);
+            if (!File.Exists(path))
+                throw new IOException($"Bundle restore verification failed for '{file.Kind}/{file.Name}'.");
+        }
+    }
 
     public List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) =>
         _listing.ListTopicArtifacts(topicScope);

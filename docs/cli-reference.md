@@ -27,6 +27,14 @@ warning: a completed command that found no matches, had no memories to list, cou
 because no chunks would be removed, or committed an append with a non-fatal warning. Warning
 output remains structured as `status: warning` or `status: success_with_warning`, not an error.
 
+#### Stable strict-safety errors
+
+JSON and MCP responses preserve the same machine-readable codes: `MALFORMED_ADDRESS`,
+`SCOPE_CONTAINMENT_FORBIDDEN`, `RESERVED_PATH_OPERATION_FORBIDDEN`, `INVALID_BUNDLE`,
+`BUNDLE_IMPORT_FAILED`, `BUNDLE_RECOVERY_REQUIRED`, `EMBEDDINGS_PROTOCOL_UNSUPPORTED`, and
+`EMBEDDINGS_PROTOCOL_INVALID`. Correct the logical address or reserved-path operation as indicated;
+do not treat a refusal as a successful migration.
+
 ### scri serve
 
 Start the MCP server over stdio transport. This is how MCP clients (Claude Code, Cursor, Copilot) connect to Scrinia.
@@ -64,6 +72,10 @@ scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
 
 Search memories using BM25 + weighted-field hybrid scoring. With the embeddings plugin active, semantic vector scores are blended in.
 
+Retrieval is bounded by `Scrinia:Search:CandidateLimit` (default `200`, inclusive range `1`–`1000`).
+Invalid values are configuration errors. Vector contributors score only the lexical candidate
+snapshot, so increasing this setting is an intentional work/latency trade-off.
+
 ```bash
 scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
 ```
@@ -82,11 +94,12 @@ because each invocation exits immediately.
 All CLI memory commands accept logical addresses. A bare subject is normalized as a persistent
 address; `/topic/subject` is a persistent topic address. `~name` and `/temp/name` are canonical and
 alias spellings for an ephemeral address, but the CLI refuses both with exit status 1 and a
-`forbidden_address_kind` error. Use an MCP client with the long-lived `scri serve` process when an
+`FORBIDDEN_ADDRESS_KIND` error. Use an MCP client with the long-lived `scri serve` process when an
 ephemeral memory is required.
 
 URI and physical-path inputs are not supported. URI syntax such as `file://` is rejected with
-`unsupported_input_form`; other malformed physical-path forms are rejected as malformed addresses.
+`UNSUPPORTED_INPUT_FORM`; other malformed physical-path forms are rejected as
+`MALFORMED_ADDRESS`.
 They are never resolved against the local filesystem. In .NET code,
 use `MemoryAddress.Parse(raw)` or `MemoryAddress.TryParse(raw, out address, out error)` to obtain
 the validated typed address used by store-facing APIs.

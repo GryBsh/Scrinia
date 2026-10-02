@@ -10,9 +10,8 @@ namespace Scrinia.Core;
 /// The single derivation pipeline: raw caller inputs in, derived metadata out.
 ///
 /// <para>It replaces four hand-rolled implementations of the same contract — MCP store
-/// (<c>MemoryTools.Core.cs</c> <c>Remember</c>), server store
-/// (<c>MemoryOrchestrator.StoreAsync</c>), MCP append (<c>BuildAppendMetadata</c>) and server
-/// append (<c>MemoryOrchestrator.AppendAsync</c>) — which had drifted, in four places far enough
+/// (<c>MemoryTools.Core.cs</c> <c>Remember</c>) and the append paths — which had drifted, in several
+/// places far enough
 /// to lose data. Every behavioural question this class answers was ruled in
 /// <c>docs/superpowers/analysis/2026-08-11-derivation-inventory.md</c>; each ruling is cited by
 /// its D-nn id at the line that implements it, so a later reader can trace behaviour back to the
@@ -26,9 +25,8 @@ namespace Scrinia.Core;
 /// <para><b>Raw in, derived out (D-01/D-29).</b> The keyword parameters carry the CALLER's raw
 /// keywords. A derived keyword list must never be handed back in as input: doing so reclassifies
 /// every auto-extracted term as agent-supplied and boosts it +5 instead of +2. That was the mistake
-/// the deleted <c>HttpMemoryStore.WriteArtifactAsync</c> made by sending MCP's already-merged
-/// keywords over the wire (see <c>CHANGELOG.md</c>'s "remote writes silently discarded the agent's
-/// metadata" entry), and it is still the mistake the one compact would make by round-tripping its
+/// an older write path made by sending already-merged keywords instead of raw caller keywords, and
+/// it is still the mistake the one compact would make by round-tripping its
 /// stored keyword list. There
 /// is deliberately no parameter on <see cref="ForStore"/> through which a previously-derived list
 /// could enter. (<see cref="ForAppend"/>'s <see cref="ExistingMetadata.Keywords"/> is the one
@@ -114,7 +112,7 @@ public static partial class MemoryDerivation
         attrs = AttributeExtractor.DropMentionsShadowedByTypedKeys(attrs);
 
         // D-06: canonicalize `review`. A bare date is re-emitted in ISO-8601 round-trip form so a
-        // REST write and an MCP write of "2026-01-01" persist the same value — `review` is scalar,
+        // Every write of "2026-01-01" persists the same value — `review` is scalar,
         // so the canonical form REPLACES the raw one in the carrier merge below.
         var (reviewAfter, reviewWhen) = SplitReview(attrs);
 
@@ -123,9 +121,8 @@ public static partial class MemoryDerivation
         if (string.IsNullOrWhiteSpace(reviewWhen) && !isEphemeral && CountPattern().IsMatch(joined))
             reviewWhen = CountReviewCondition;
 
-        // D-04: the drift baseline is always computed. It used to be skipped whenever the store
-        // was remote, so a remote write had no baseline at all; this pipeline runs inside the
-        // store, so whoever has the workspace supplies the hasher.
+    // D-04: the drift baseline is always computed by the workspace-backed store through its
+    // caller-supplied hasher.
         var fileHashes = HashFileRefs(attrs, fileHasher);
 
         var carrier = AttributeMigration.BuildCarrierAttributes(
@@ -134,12 +131,9 @@ public static partial class MemoryDerivation
         if (carrier.Count > 0)
             attrs = KnownAttributes.Merge(attrs, carrier);
 
-        // D-08 — the one deliberate ordering choice in the pipeline, and it inverts the "MCP wins"
-        // default. The complete attribute map is assembled FIRST, then seeded exactly ONCE, here,
-        // as the last step of attribute handling. This was the server's order; MCP's was to seed
-        // before folding its carrier, so tag/review/file values never seeded at all and anchor
-        // values seeded +2 from a separate pass. MCP's split is not expressible over one flat map —
-        // a map cannot say which keys were "carrier" — so the two paths converged on this one.
+        // D-08 — assemble the complete attribute map FIRST, then seed exactly ONCE as the last
+        // step of attribute handling. A flat map has no separate carrier phase, so this ordering
+        // keeps every attribute value searchable.
         // Deliberate, user-visible ranking change: tag/review/file 0 → +3, anchor +2 → +3.
         AttributeExtractor.SeedTermFrequencies(attrs, tf);
 
@@ -199,8 +193,7 @@ public static partial class MemoryDerivation
 
         var (routedNewAttributes, plainNewKeywords) = AttributeExtractor.RouteKeywords(keywords);
 
-        // D-12 — a data-loss fix, not a ranking tweak. The server's append passed null here, so
-        // every curated keyword on the memory was destroyed by a REST append. The memory's own
+        // D-12 — a data-loss fix, not a ranking tweak. The memory's own
         // keywords plus the caller's additions lead the merged list, so nothing the memory carried
         // can be crowded out of it by an auto term; that is the whole of what D-12 guarantees.
         string[] carriedKeywords = UnionDistinct(existing?.Keywords, plainNewKeywords);
@@ -250,8 +243,7 @@ public static partial class MemoryDerivation
         UnionCarriedKey(attrs, existing?.Attributes, incoming, KnownAttributes.TagKey);
         UnionCarriedKey(attrs, existing?.Attributes, incoming, KnownAttributes.AnchorKey);
 
-        // D-21 — the second data-loss fix. The server's append had no FileHashes at all: a REST
-        // append destroyed the memory's drift baseline. The baseline is carried forward, and its
+        // D-21 — the baseline is carried forward, and its
         // path keys are re-folded into `file` so the searchable key never falls behind the hashes.
         // This adds to it: a file the appended chunk references for the first time gets hashed
         // now, because otherwise its path reaches the searchable `file` attribute through
@@ -394,15 +386,12 @@ public static partial class MemoryDerivation
     /// invisible to every other mutation route. <c>EntityTypingEventHandler.PromoteAsync</c> and
     /// <c>MaintenanceEventSink</c>'s ref-linking change attributes too and computed nothing, so
     /// whether an attribute reached the index depended on which caller you came through. Worse,
-    /// over HTTP the caller-computed map could not travel at all — <c>PATCH</c> refuses
-    /// <c>TermFrequencies</c> from a body, correctly — so the same edit indexed locally and did not
-    /// index remotely, with a success reported both times.</para>
+    /// caller-computed term frequencies could be stale or incomplete, so deriving them here keeps
+    /// the same edit indexed consistently.</para>
     ///
     /// <para><b>The rule is here and applied by whoever holds the store</b>, i.e. inside
     /// <see cref="IMemoryStore.TryUpdateEntry"/>, which is what makes every mutation route get it.
-    /// While there was a wire, this placement was also what kept a derived value off it: the remote
-    /// client sent only the attributes and the server's own <c>FileMemoryStore</c> derived from
-    /// them.</para>
+    /// The store derives from the mutation rather than trusting caller-computed index data.</para>
     ///
     /// <para><b>Only the DELTA seeds.</b> Term frequencies are cumulative, so re-seeding the whole
     /// attribute map on every update would inflate every token without bound and make an unedited
@@ -505,8 +494,7 @@ public static partial class MemoryDerivation
     /// <summary>Back-parses <c>Attributes["review"]</c> into its date and free-text halves: the
     /// first date-parseable value is the review date, the rest join into the condition (D-06).
     /// The caller re-emits them through <c>BuildCarrierAttributes</c>, which writes the date in
-    /// ISO-8601 round-trip form — the canonicalization that closes the MCP/REST disagreement over
-    /// a bare date.</summary>
+    /// ISO-8601 round-trip form — the canonical representation for a bare date.</summary>
     private static (DateTimeOffset? ReviewAfter, string? ReviewWhen) SplitReview(
         Dictionary<string, string[]>? attributes)
     {
@@ -532,14 +520,9 @@ public static partial class MemoryDerivation
     /// <summary>
     /// Parses a review value to an instant, zone- and culture-independently.
     ///
-    /// <para>RULING (Task 2 review, 2026-08-12): invariant culture, and a bare date is UTC. MCP
-    /// used a bare <c>DateTimeOffset.TryParse</c>, which reads under <c>CurrentCulture</c> and
-    /// assumes the machine's LOCAL zone — so <c>ToString("o")</c> embedded the writer's UTC offset
-    /// and a store in UTC and a client in UTC+10 persisted different strings for the same
-    /// <c>"2026-01-01"</c>. D-06 exists to close "MCP and REST disagree on a bare date in a review
-    /// attribute"; keeping local-zone parsing would reopen it in a new coat, one machine at a time.
-    /// This technically departs from D-06's "keep MCP", on the grounds that MCP's output is
-    /// machine-dependent and therefore not a well-defined target to keep.</para>
+    /// <para>RULING (Task 2 review, 2026-08-12): invariant culture, and a bare date is UTC.
+    /// Parsing under the current culture or local time zone would persist different values on
+    /// different machines.</para>
     ///
     /// <para><b>Public because a review date has one parse, not one per writer.</b> Every path
     /// that turns caller text into a persisted <c>review</c> value calls this: the two derivation

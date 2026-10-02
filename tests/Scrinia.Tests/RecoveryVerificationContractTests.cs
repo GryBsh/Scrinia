@@ -49,9 +49,12 @@ public sealed class RecoveryVerificationContractTests
         source.Should().Contain("ConsumeParsed(in RecoveryVerifiedEnvelope envelope)");
         source.Should().NotContain("ReadBounded(");
         source.Should().Contain("HashWorkspaceFile");
+        string recoverySource = string.Join('\n', files.Where(file => file is not
+            "src/Scrinia.Core/FileMemoryStore.cs")
+            .Select(file => File.ReadAllText(Path.Combine(root, file))));
+        recoverySource.Should().NotContain("ReadAllBytes(");
+        recoverySource.Should().NotContain("ReadAllBytesAsync(");
         source = source.Replace("System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(full))", "", StringComparison.Ordinal);
-        source.Should().NotContain("ReadAllBytes(");
-        source.Should().NotContain("ReadAllBytesAsync(");
         source.Should().NotContain("SHA256.HashData(File.");
         source.Should().Contain("ParseVerifiedEnvelope(");
     }

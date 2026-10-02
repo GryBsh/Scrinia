@@ -372,12 +372,9 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
     {
-        // The whole store, not a narrowed one: the three local-only sections below are each skipped
-        // when the store is remote, leaving a valid, degraded context. Narrowing here instead
-        // would fail the whole call — including guide(), the first tool an agent calls in a
-        // session. Each section tests for a local store rather than relying on its best-effort
-        // catch to swallow a throw: same result, without making the normal remote path an
-        // exception. The catches stay — they guard genuine I/O failures, which is their job.
+        // The whole workspace is inspected. Each section is best-effort so one unavailable or
+        // unreadable context source does not fail guide(), the first tool an agent calls in a session.
+        // The catches guard genuine I/O failures.
         var store = CurrentStore;
         var warnings = new List<string>();
         var info = new List<string>();

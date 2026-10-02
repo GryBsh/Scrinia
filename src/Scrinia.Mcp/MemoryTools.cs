@@ -142,6 +142,10 @@ public sealed partial class ScriniaMcpTools
         {
             return RecoveryBlockedResponse(ex).ToYaml();
         }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
+        }
     }
 
     // ── Per-verb memory tools ────────────────────────────────────────────────
@@ -255,26 +259,12 @@ public sealed partial class ScriniaMcpTools
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
 
-        // Skill-path routing: '/skill/{name}' → SkillCreate.
-        var skillRoute = TryRouteSkillRemember(path, content, attributes, keywords, cancellationToken);
-        if (skillRoute is not null)
+        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+            ReservedPathOperation.Write, parsedPath,
+            new ReservedPathRequest(content, null, false, false), cancellationToken);
+        if (reservedResponse is not null)
         {
-            try
-            {
-                return (await skillRoute).ToYaml();
-            }
-            catch (DurableWriteException ex)
-            {
-                return DurableWriteFailureResponse(ex).ToYaml();
-            }
-            catch (ScopeReadOnlyException ex)
-            {
-                return DurableWriteFailureResponse(ex).ToYaml();
-            }
-            catch (FileLockTimeoutException ex)
-            {
-                return DurableWriteFailureResponse(ex).ToYaml();
-            }
+            return reservedResponse.ToYaml();
         }
 
         if (content is null || content.Length == 0)
@@ -301,6 +291,10 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
         }
         catch (DurableWriteException ex)
         {
@@ -518,20 +512,11 @@ public sealed partial class ScriniaMcpTools
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
 
-        // Skill-path routing: '/skill/...' → SkillLoad. Handles both '/skill/{name}' (load)
-        // and '/skill' or '/skill/' (list view).
-        var skillRoute = TryRouteSkillRecall(path, withBuiltin, cancellationToken);
-        if (skillRoute is not null)
-        {
-            try
-            {
-                return (await skillRoute).ToYaml();
-            }
-            catch (FileLockTimeoutException ex)
-            {
-                return DurableWriteFailureResponse(ex).ToYaml();
-            }
-        }
+        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+            ReservedPathOperation.Read, parsedPath,
+            new ReservedPathRequest(null, inlineArtifact, withBuiltin, false), cancellationToken);
+        if (reservedResponse is not null)
+            return reservedResponse.ToYaml();
 
         try
         {
@@ -540,6 +525,10 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
         }
     }
 
@@ -569,11 +558,24 @@ public sealed partial class ScriniaMcpTools
 
         try
         {
+            if (!string.IsNullOrWhiteSpace(pathPrefix) &&
+                TryParseLogicalAddress(pathPrefix, out MemoryAddress reservedAddress, out _))
+            {
+                McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+                    ReservedPathOperation.Search, reservedAddress,
+                    new ReservedPathRequest([query], null, false, false), cancellationToken);
+                if (reservedResponse is not null)
+                    return reservedResponse.ToYaml();
+            }
             return (await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken)).ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
         }
     }
 
@@ -663,6 +665,11 @@ public sealed partial class ScriniaMcpTools
         if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
+        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+            ReservedPathOperation.Append, parsedPath,
+            new ReservedPathRequest([content], null, false, false), cancellationToken);
+        if (reservedResponse is not null)
+            return reservedResponse.ToYaml();
         McpResponse response;
         try
         {
@@ -671,6 +678,10 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
         }
         catch (AppendStoreException ex) when (
             ex.Code == AppendStoreErrorCode.RecoveryRequired && ex.Recovery is not null)
@@ -708,12 +719,12 @@ public sealed partial class ScriniaMcpTools
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
 
-        // Skill-path routing: '/skill/{name}' → SkillDelete. Placed first, like recall and
-        // remember, so the three tools agree about who owns the namespace.
         try
         {
-            var skillRoute = TryRouteSkillForget(path, cancellationToken);
-            if (skillRoute is not null) return (await skillRoute).ToYaml();
+            McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+                ReservedPathOperation.Delete, parsedPath,
+                new ReservedPathRequest(null, null, false, false), cancellationToken);
+            if (reservedResponse is not null) return reservedResponse.ToYaml();
         }
         catch (FileLockTimeoutException ex)
         {
@@ -726,6 +737,10 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
         }
     }
 
@@ -749,6 +764,13 @@ public sealed partial class ScriniaMcpTools
         if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
+
+        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+            ReservedPathOperation.Compact, parsedPath,
+            new ReservedPathRequest(null, null, false, false), cancellationToken);
+        if (reservedResponse is not null)
+            return reservedResponse.ToYaml();
+
         try
         {
             return (await Compact(parsedPath, keepRecent, cancellationToken)).ToYaml();
@@ -756,6 +778,10 @@ public sealed partial class ScriniaMcpTools
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
+        }
+        catch (ScopeContainmentException ex)
+        {
+            return ResponseBuilder.Error(ex, "Use a canonical logical address and retry.").ToYaml();
         }
         catch (WholeMemoryTransactionException ex)
         {
@@ -819,133 +845,4 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
-    // ── Skill-path routing ────────────────────────────────────────────────────
-    //
-    // Skills are conceptually memory at a reserved path — we route /skill/{name}
-    // requests to SkillLoad / SkillCreate / SkillDelete inside recall, remember and
-    // forget rather than exposing a separate skill_* tool surface. The routing key is
-    // `path`, so a dedicated tool wouldn't reduce ambiguity — it would just
-    // create a second surface the agent has to choose between.
-
-    /// <summary>
-    /// Routes a recall call to <see cref="SkillLoad"/> when the path is under
-    /// /skill/. Handles both '/skill/{name}' (load one) and '/skill' or '/skill/'
-    /// (list available). Returns null when the call should fall through to normal recall.
-    /// </summary>
-    private static Task<McpResponse>? TryRouteSkillRecall(string? path, bool withBuiltin, CancellationToken ct)
-    {
-        if (!TryParseSkillPath(path, out string? skillName))
-            return null;
-        return SkillLoad(skillName, withBuiltin, ct);
-    }
-
-    /// <summary>
-    /// Routes a remember call to <see cref="SkillCreate"/> when the path is under
-    /// /skill/. Returns null when the call should fall through to normal remember.
-    /// <para>Takes <paramref name="attributes"/> and <paramref name="keywords"/> only so it can
-    /// report that it did not use them. A skill is markdown instructions on disk, not an indexed
-    /// memory, so there is nowhere for facets to live — but remember's schema spends two kilobytes
-    /// telling the caller what they do, and dropping them under a plain success reads as if they
-    /// were stored.</para>
-    /// </summary>
-    private static Task<McpResponse>? TryRouteSkillRemember(
-        string? path,
-        string[]? content,
-        Dictionary<string, string[]>? attributes,
-        string[]? keywords,
-        CancellationToken ct)
-    {
-        if (!TryParseSkillPath(path, out string? skillName))
-            return null;
-
-        if (content is null || content.Length == 0)
-            return Task.FromResult(ResponseBuilder.Error(
-                "remember on a /skill/... path requires 'content' with at least one element (the skill instructions).",
-                ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/my-helper', content: ['instructions here'] })"));
-
-        if (string.IsNullOrWhiteSpace(skillName))
-            return Task.FromResult(ResponseBuilder.Error(
-                "remember on a /skill/... path requires a skill name in the path.",
-                ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/your-name-here', content: [...] })"));
-
-        var create = SkillCreate(
-            name: skillName,
-            scaffold: "custom",
-            instructions: string.Join("\n\n", content),
-            tools: null,
-            ct);
-
-        // Conditional on purpose. A notice attached to every skill write is noise the caller
-        // learns to skip, which costs more than saying nothing.
-        var unused = new List<string>();
-        if (attributes is { Count: > 0 }) unused.Add("attributes");
-        if (keywords is { Length: > 0 }) unused.Add("keywords");
-        return unused.Count == 0 ? create : ReportUnusedSkillArgs(create, unused);
-    }
-
-    /// <summary>
-    /// Appends a note naming the remember arguments that a /skill/ write had no place to put.
-    /// No-op on an error response — an error already carries its own recovery text.
-    /// </summary>
-    private static async Task<McpResponse> ReportUnusedSkillArgs(
-        Task<McpResponse> create, List<string> unused)
-    {
-        McpResponse response = await create;
-        if (response.IsError) return response;
-
-        string names = string.Join(" and ", unused);
-        bool one = unused.Count == 1;
-        string verb = one ? "does" : "do";
-        return response.WithInfo([
-            .. response.Info ?? [],
-            $"{names} {verb} not apply to a skill and {(one ? "was" : "were")} not "
-            + "stored. A skill is markdown instructions on disk, not an indexed memory, so it has "
-            + "nowhere to hold facets. Put anything that must be searchable in the skill text, or "
-            + "store it as a memory at a path outside /skill/.",
-        ]);
-    }
-
-    /// <summary>
-    /// Routes a forget call to <see cref="SkillDelete"/> when the path is under
-    /// /skill/. Returns null when the call should fall through to normal forget.
-    /// </summary>
-    private static Task<McpResponse>? TryRouteSkillForget(string? path, CancellationToken ct)
-    {
-        if (!TryParseSkillPath(path, out string? skillName))
-            return null;
-
-        if (string.IsNullOrWhiteSpace(skillName))
-            return Task.FromResult(ResponseBuilder.Error(
-                "forget on a /skill/... path requires a skill name in the path.",
-                ErrorCodes.InvalidParameter,
-                "forget({ path: '/skill/the-one-to-delete' })",
-                "recall({ path: '/skill/' }) to list available skills"));
-
-        return SkillDelete(skillName, ct);
-    }
-
-    /// <summary>
-    /// True when <paramref name="path"/> is a /skill/... path (case-insensitive).
-    /// Sets <paramref name="skillName"/> to the parsed name, or null when the path
-    /// is just '/skill' or '/skill/' (the list view).
-    /// </summary>
-    private static bool TryParseSkillPath(string? path, out string? skillName)
-    {
-        skillName = null;
-        if (string.IsNullOrWhiteSpace(path)) return false;
-
-        if (!path.StartsWith("/skill/", StringComparison.OrdinalIgnoreCase) &&
-            !path.Equals("/skill", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        if (path.Length > "/skill/".Length)
-        {
-            skillName = path["/skill/".Length..].Trim().TrimEnd('/');
-            if (string.IsNullOrWhiteSpace(skillName))
-                skillName = null;
-        }
-        return true;
-    }
 }

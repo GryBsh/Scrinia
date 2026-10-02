@@ -127,8 +127,9 @@ public class SearchAllSinglePathTests
     public void SearchPipeline_IsSoleMaterializationPath()
     {
         // Pipeline exists with the expected shape: sole place that overwrites Candidates/SupplementalScores.
-        var method = typeof(SearchPipeline).GetMethod("ExecuteAsync",
-            BindingFlags.Public | BindingFlags.Static);
+        var method = typeof(SearchPipeline).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(method => method.Name == "ExecuteAsync" &&
+                method.GetParameters().Length == 8);
         method.Should().NotBeNull("SearchPipeline.ExecuteAsync must be the single scoring pipeline");
 
         method!.GetParameters().Should().Contain(p => p.ParameterType == typeof(IMemoryStore));

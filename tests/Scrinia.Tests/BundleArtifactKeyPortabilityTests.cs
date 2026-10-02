@@ -179,7 +179,7 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
                 }),
             };
             WriteText(zip, "topics/portable/index.json", index.ToJsonString());
-            WriteText(zip, "topics/portable/note.nmp2", "body");
+            WriteText(zip, "topics/portable/note.nmp2", Nmp2ChunkedEncoder.Encode("body"));
             WriteText(zip, "manifest.json", "{\"version\":1,\"topics\":[\"portable\"],\"totalEntries\":1}");
         }
         return stream.ToArray();
@@ -205,7 +205,7 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
                 }),
             };
             WriteText(zip, "topics/portable/index.json", index.ToJsonString());
-            WriteText(zip, "topics/portable/note.nmp2", "body");
+                WriteText(zip, "topics/portable/note.nmp2", Nmp2ChunkedEncoder.Encode("body"));
             WriteText(zip, "manifest.json", "{\"version\":1,\"topics\":[\"portable\"],\"totalEntries\":1}");
         }
         return stream.ToArray();

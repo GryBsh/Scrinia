@@ -14,6 +14,9 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class OnboardingOwnershipTests
 {
+    private const string HistoricalChangelogSha256 =
+        "1dce5eb7fdf8e817bd5d0a6509f297a548e0fa17a2dc2ff551546ccd93f1403e";
+
     private static readonly (string[] Path, string Sha256)[] HistoricalFiles =
     [
         (["docs", "superpowers", "plans", "2026-09-01-merge-retirement.md"],
@@ -22,7 +25,6 @@ public sealed class OnboardingOwnershipTests
             "f61e2fbfe3b268cbd0097ec3a7efb2ba191d0c12f8895c618631776dba555f8a"),
         (["docs", "superpowers", "reviews", "2026-08-31-shared-memory-global-tool-spec-review.md"],
             "3d1364da2278ee7652debcbd88de33b8c6e4a0ebb86ab7344344b10568f6f00a"),
-        (["CHANGELOG.md"], "f6480527c08e90076ab8d9c77d3e636f136b26c188c00817f422be82dd2ba49b"),
     ];
 
     private static readonly string[] OwnedPhase4Surfaces =
@@ -66,6 +68,29 @@ public sealed class OnboardingOwnershipTests
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant().Should().Be(
                 expectedSha256, $"dated historical document {Path.Combine(pathSegments)} must not be rewritten");
         }
+
+        byte[] changelog = File.ReadAllBytes(RepoPaths.Combine("CHANGELOG.md"));
+        const string firstDatedEntry = "## [0.6.0] — 2026-08-27";
+        byte[] marker = Encoding.UTF8.GetBytes(firstDatedEntry);
+        int historicalStart = FindBytes(changelog, marker);
+
+        historicalStart.Should().BeGreaterThanOrEqualTo(0,
+            "the changelog must retain a dated historical section after the current release section");
+        Convert.ToHexString(SHA256.HashData(changelog[historicalStart..])).ToLowerInvariant().Should().Be(
+            HistoricalChangelogSha256, "dated changelog entries must remain byte-identical");
+    }
+
+    private static int FindBytes(byte[] source, byte[] value)
+    {
+        for (int start = 0; start <= source.Length - value.Length; start++)
+        {
+            if (source.AsSpan(start, value.Length).SequenceEqual(value))
+            {
+                return start;
+            }
+        }
+
+        return -1;
     }
 
     private static string Read(string relative) =>

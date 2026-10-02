@@ -267,7 +267,7 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
-    private static async Task<FileEntityMutationResult> PublishFileEntityAsync(
+    internal static async Task<FileEntityMutationResult> PublishFileEntityAsync(
         string entityKind,
         string name,
         string bodyPath,
@@ -277,10 +277,11 @@ public sealed partial class ScriniaMcpTools
         byte[]? meta,
         bool deleteBody,
         bool deleteMeta,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<string>? deletePaths = null)
     {
         var mutation = new FileEntityMutation(
-            entityKind, name, bodyPath, metaPath, versionsDirectory, body, meta, deleteBody, deleteMeta);
+            entityKind, name, bodyPath, metaPath, versionsDirectory, body, meta, deleteBody, deleteMeta, deletePaths);
         return await new FileEntityTransactionCoordinator(FindWorkspaceRoot(bodyPath))
             .ExecuteAsync(mutation, cancellationToken);
     }
@@ -304,7 +305,7 @@ public sealed partial class ScriniaMcpTools
             $"Unexpected file-entity outcome {result.Outcome} while publishing '{entityScope}'.");
     }
 
-    private static McpResponse FileEntitySuccessResponse(
+    internal static McpResponse FileEntitySuccessResponse(
         FileEntityMutationResult result,
         string message,
         string action,

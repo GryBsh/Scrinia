@@ -61,7 +61,7 @@ public sealed class CliReviewGapTests
         output.Error.Should().Contain("exceeds 182 sanitized characters");
         using var document = JsonDocument.Parse(json);
         string[] expectedProperties = route == "compact"
-            ? ["error"]
+            ? ["error", "code"]
             : ["error", "category", "code"];
         AssertOnlyProperties(document.RootElement, expectedProperties);
     }

@@ -343,6 +343,16 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
 
+        if (!string.IsNullOrWhiteSpace(pathPrefix) &&
+            ScriniaMcpTools.TryParseLogicalAddress(pathPrefix, out MemoryAddress reservedAddress, out _))
+        {
+            var reservedResponse = await new ReservedPathDispatcher(new ScriniaMcpTools()).DispatchAsync(
+                ReservedPathOperation.Search, reservedAddress,
+                new ReservedPathRequest([query], null, false, false), cancellationToken);
+            if (reservedResponse is not null)
+                return EmitMcpResult(reservedResponse, json, "search");
+        }
+
         // Route through the same scoring pipeline as the MCP `search` tool so the CLI ranks with
         // the embeddings + entity-graph contributors it just loaded (not BM25-only) and surfaces
         // the same per-hit attributes/dates/anchors the tool does. MemoryStoreContext.Current is
@@ -516,7 +526,10 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Remember([content], address, description ?? "", tagArray,
+            response = await new ReservedPathDispatcher(tools).DispatchAsync(
+                ReservedPathOperation.Write, address,
+                new ReservedPathRequest([content], null, false, false), cancellationToken)
+                ?? await tools.Remember([content], address, description ?? "", tagArray,
                 keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
@@ -578,7 +591,10 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Recall(address, cancellationToken: cancellationToken);
+            response = await new ReservedPathDispatcher(tools).DispatchAsync(
+                ReservedPathOperation.Read, address,
+                new ReservedPathRequest(null, null, false, false), cancellationToken)
+                ?? await tools.Recall(address, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -635,7 +651,10 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Forget(address, cancellationToken);
+            response = await new ReservedPathDispatcher(tools).DispatchAsync(
+                ReservedPathOperation.Delete, address,
+                new ReservedPathRequest(null, null, false, false), cancellationToken)
+                ?? await tools.Forget(address, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -704,7 +723,10 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Append(content, address, cancellationToken: cancellationToken);
+            response = await new ReservedPathDispatcher(tools).DispatchAsync(
+                ReservedPathOperation.Append, address,
+                new ReservedPathRequest([content], null, false, false), cancellationToken)
+                ?? await tools.Append(content, address, cancellationToken: cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {
@@ -736,7 +758,10 @@ public partial class ScriniaCommands
         McpResponse response;
         try
         {
-            response = await tools.Compact(address, keepRecent, cancellationToken);
+            response = await new ReservedPathDispatcher(tools).DispatchAsync(
+                ReservedPathOperation.Compact, address,
+                new ReservedPathRequest(null, null, false, false), cancellationToken)
+                ?? await tools.Compact(address, keepRecent, cancellationToken);
         }
         catch (RestoreRecoveryException exception)
         {

@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
@@ -27,19 +28,21 @@ internal static class ImportFixture
     /// <summary>Seeds durable state under the fixture topic so a later import of the same name replaces.</summary>
     public static void Prepopulate(TestHelpers.StoreScope scope, string entryName)
     {
-        ArtifactEntry entry = Entry(entryName);
+        byte[] body = EncodedBody();
+        ArtifactEntry entry = Entry(entryName, body.Length);
         Store.Upsert(entry, Scope);
-        Store.WriteArtifactAsync(entry.Address, Content, CancellationToken.None).GetAwaiter().GetResult();
+        Store.WriteArtifactAsync(entry.Name, Scope, Encoding.UTF8.GetString(body), CancellationToken.None)
+            .GetAwaiter().GetResult();
         // Prove the seeded entry is a real, importable topic through the export path.
-        ValidateBundleThroughExport(entry, Encoding.UTF8.GetBytes(Content));
+        ValidateBundleThroughExport(entry, body);
     }
 
     /// <summary>Builds a valid one-topic bundle through the real export path and drives
     /// <c>ImportTopicEntries</c> directly, returning the per-memory import result.</summary>
     public static ImportMemoryResult ImportOneTopic(TestHelpers.StoreScope scope, string entryName)
     {
-        ArtifactEntry entry = Entry(entryName);
-        byte[] body = Encoding.UTF8.GetBytes(Content);
+        byte[] body = EncodedBody();
+        ArtifactEntry entry = Entry(entryName, body.Length);
         ValidateBundleThroughExport(entry, body);
         return Store.ImportTopicEntries(Scope, [entry], BodyMap(entry.Name, body), overwrite: true);
     }
@@ -54,7 +57,7 @@ internal static class ImportFixture
         Directory.CreateDirectory(root);
         using var seed = new FileMemoryStore(root);
         seed.Upsert(entry, Scope);
-        seed.WriteArtifactAsync(entry.Address, Encoding.UTF8.GetString(body), CancellationToken.None)
+        seed.WriteArtifactAsync(entry.Name, Scope, Encoding.UTF8.GetString(body), CancellationToken.None)
             .GetAwaiter().GetResult();
         using var stream = new MemoryStream();
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
@@ -70,8 +73,11 @@ internal static class ImportFixture
         topicCount.Should().Be(1, "the exported bundle must carry exactly the seeded topic");
     }
 
-    private static ArtifactEntry Entry(string name) =>
-        new ArtifactEntry(name, $"file://{name}", Encoding.UTF8.GetByteCount(Content), 1, DateTimeOffset.UtcNow);
+    private static ArtifactEntry Entry(string name, int length) =>
+        new ArtifactEntry(name, $"/findings/{name}", length, 1, DateTimeOffset.UtcNow);
+
+    private static byte[] EncodedBody() =>
+        Encoding.UTF8.GetBytes(Nmp2ChunkedEncoder.Encode(Content));
 
     private static Dictionary<string, byte[]> BodyMap(string name, byte[] body) =>
         new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase) { [name] = body };

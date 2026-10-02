@@ -372,3 +372,11 @@ internal static class RestoreJournalCodec
         Exception? innerException = null) =>
         new(scope, journalPath, RestoreRecoveryFailure.MalformedOrIntegrityFailed, message, innerException);
 }
+
+internal sealed record BundleRestoreFileSnapshot(string RelativePath, bool Existed, string? ContentBase64);
+internal sealed record BundleRestoreJournal(string Format, string State, IReadOnlyList<BundleRestoreFileSnapshot> Files);
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(BundleRestoreJournal))]
+[JsonSerializable(typeof(BundleRestoreFileSnapshot))]
+internal partial class BundleRestoreJournalJsonContext : JsonSerializerContext;

@@ -28,6 +28,17 @@ public readonly record struct SearchOutcome(
 /// </summary>
 public static class SearchPipeline
 {
+    public static Task<SearchOutcome> ExecuteAsync(
+        IMemoryStore store,
+        SearchQuery query,
+        ISearchScoreContributor? contributor,
+        EntityGraphScoreContributor? entityContributor,
+        string? context,
+        bool surfaceEntityFacts,
+        CancellationToken ct = default) =>
+        ExecuteAsync(store, query, contributor, entityContributor, context,
+            surfaceEntityFacts, candidateOptions: null, ct: ct);
+
     public static async Task<SearchOutcome> ExecuteAsync(
         IMemoryStore store,
         SearchQuery query,
@@ -35,6 +46,7 @@ public static class SearchPipeline
         EntityGraphScoreContributor? entityContributor,
         string? context = null,
         bool surfaceEntityFacts = false,
+        SearchCandidateOptions? candidateOptions = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -51,8 +63,12 @@ public static class SearchPipeline
         // supply candidates. When Candidates is set, suppress the store read entirely —
         // the store will FilterToQueryScopes rather than re-list (M2/M4).
         // This keeps scoring and entity-fact derivation on the same snapshot.
-        IReadOnlyList<ScopedArtifact> candidates = query.Candidates
-            ?? store.ListScoped(query.Scopes, query.ExcludeTopics);
+        var options = candidateOptions ?? SearchCandidateOptions.Current;
+        ScopedArtifact[] candidates = query.Candidates is { } supplied
+            ? SearchCandidateOptions.RankLexically(supplied, effectiveQuery)
+                .Take(options.CandidateLimit).ToArray()
+            : store.SelectLexicalCandidates(query.Scopes, query.ExcludeTopics, effectiveQuery,
+                options.CandidateLimit).ToArray();
 
         IReadOnlyDictionary<string, double>? supplemental = null;
         IReadOnlyDictionary<string, double>? entityScores = null;
@@ -60,9 +76,9 @@ public static class SearchPipeline
             supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, ct);
         if (entityContributor is not null)
         {
-            var factStore = query.Scopes is not { Count: > 0 } && query.ExcludeTopics is not { Count: > 0 }
-                ? store.GetEntityFactStore()                       // cached, no rebuild
-                : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
+            // Facts are a scoring input, not a separate corpus. Building from the snapshot keeps
+            // entity traversal bounded by the same lexical top-K that feeds every other signal.
+            var factStore = EntityFactDerivation.BuildStore(candidates);
             entityScores = entityContributor.Score(factStore, query: effectiveQuery);
         }
 
@@ -77,7 +93,7 @@ public static class SearchPipeline
         var filtered = store.SearchAll(effective);
 
         IReadOnlyList<EntityFactSummary> entityFacts = [];
-        if (surfaceEntityFacts && candidates.Count > 0)
+        if (surfaceEntityFacts && candidates.Length > 0)
             entityFacts = BuildEntityFacts(store, effectiveQuery, candidates);
 
         return new SearchOutcome(filtered, entityFacts);

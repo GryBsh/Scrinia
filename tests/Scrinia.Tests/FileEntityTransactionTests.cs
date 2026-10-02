@@ -62,9 +62,9 @@ public sealed class FileEntityTransactionTests
         string meta = Path.ChangeExtension(body, ".meta.json");
         File.WriteAllText(meta, "{\"v\":999}");
 
-        string response = await tools.MemoryRemember(path: "/skill/task6-newer", content: ["new instructions"]);
+        Func<Task> act = () => tools.MemoryRemember(path: "/skill/task6-newer", content: ["new instructions"]);
 
-        ResponseParser.Parse(response).ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
         File.ReadAllText(body).Should().Contain("old instructions");
         Directory.Exists(Path.Combine(Path.GetDirectoryName(body)!, "versions")).Should().BeFalse();
     }
@@ -80,10 +80,9 @@ public sealed class FileEntityTransactionTests
         File.WriteAllText(meta, "not-json");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
 
-        var response = ResponseParser.Parse(
-            await tools.MemoryRemember(path: "/skill/task6-malformed", content: ["new instructions"]));
+        Func<Task> act = () => tools.MemoryRemember(path: "/skill/task6-malformed", content: ["new instructions"]);
 
-        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        await act.Should().ThrowAsync<DurableWriteException>();
         File.ReadAllText(body).Should().Contain("old instructions");
         File.ReadAllText(meta).Should().Be("not-json");
         (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0).Should().Be(0);
@@ -100,10 +99,9 @@ public sealed class FileEntityTransactionTests
         File.WriteAllText(meta, "not-json");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
 
-        var response = ResponseParser.Parse(
-            await tools.MemoryRemember(path: "/agent/task6-malformed", content: ["new profile"]));
+        Func<Task> act = () => tools.MemoryRemember(path: "/agent/task6-malformed", content: ["new profile"]);
 
-        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        await act.Should().ThrowAsync<DurableWriteException>();
         File.ReadAllText(body).Should().Be("old profile");
         File.ReadAllText(meta).Should().Be("not-json");
         (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0).Should().Be(0);
@@ -120,10 +118,9 @@ public sealed class FileEntityTransactionTests
         File.WriteAllText(meta, "{\"v\":999}");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
 
-        var response = ResponseParser.Parse(
-            await tools.MemoryRemember(path: "/agent/task6-newer", content: ["new profile"]));
+        Func<Task> act = () => tools.MemoryRemember(path: "/agent/task6-newer", content: ["new profile"]);
 
-        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
         File.ReadAllText(body).Should().Be("old profile");
         File.ReadAllText(meta).Should().Contain("999");
         (Directory.Exists(versions) ? Directory.GetFiles(versions).Length : 0).Should().Be(0);
@@ -592,12 +589,9 @@ public sealed class FileEntityTransactionTests
         var tools = new ScriniaMcpTools();
         string path = $"/{entityKind}/{name}";
 
-        string response = await tools.MemoryRemember(path, ["content"]);
+        Func<Task> act = () => tools.MemoryRemember(path, ["content"]);
 
-        var parsed = ResponseParser.Parse(response);
-        parsed.Status.Should().Be("error");
-        parsed.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
-        parsed.Error.Should().Contain("Failed to acquire file lock");
+        await act.Should().ThrowAsync<FileLockTimeoutException>();
     }
 
     [Fact]

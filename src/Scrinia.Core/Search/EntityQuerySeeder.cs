@@ -3,8 +3,8 @@ namespace Scrinia.Core.Search;
 /// <summary>
 /// The query→entity seeding rule shared by <see cref="EntityGraph"/>'s PPR seeding and the
 /// retrieval auto-surface path: given a query and a set of <c>"type:value"</c> entity keys, return
-/// which keys the query names. A key is named when the lowercased query contains the key's surface
-/// value as a substring, OR every token of the surface appears among the query tokens. Extracted
+/// which keys the query names. A key is named when every normalized token of the surface appears
+/// among the normalized query tokens. Extracted
 /// into one place so the two consumers cannot drift. Pure, ordinal, culture-invariant.
 /// </summary>
 public static class EntityQuerySeeder
@@ -14,17 +14,11 @@ public static class EntityQuerySeeder
         var seeds = new List<string>();
         if (string.IsNullOrWhiteSpace(query) || entityKeys is null) return seeds;
 
-        string queryLower = query.ToLowerInvariant();
         var queryTokens = new HashSet<string>(TextAnalysis.Tokenize(query), StringComparer.OrdinalIgnoreCase);
 
         foreach (string key in entityKeys)
         {
             string surface = SurfaceOf(key);
-            if (queryLower.Contains(surface, StringComparison.Ordinal))
-            {
-                seeds.Add(key);
-                continue;
-            }
             var entityTokens = TextAnalysis.Tokenize(surface);
             if (entityTokens.Count > 0 && entityTokens.All(queryTokens.Contains))
                 seeds.Add(key);

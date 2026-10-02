@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -87,6 +88,9 @@ public class FakeMemoryStore : IMemoryStore
     public virtual List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) => throw NoWorkspace(nameof(ListTopicArtifacts));
     public virtual void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, byte[]> artifactBytes, bool overwrite) => throw NoWorkspace(nameof(ImportTopicEntries));
+    public virtual Task<BundleRestoreResult> RestoreBundleAsync(BundleRestorePlan plan, CancellationToken ct = default) =>
+        Task.FromResult(new BundleRestoreResult(plan.Topics.Count, plan.Topics.Sum(t => t.Entries.Count),
+            plan.FileEntities.Count, BundleRestoreOutcome.Committed));
 
     private static NotSupportedException NoWorkspace(string member) => new(
         $"{nameof(FakeMemoryStore)}.{member} has no workspace on disk. Override it on a subclass, "

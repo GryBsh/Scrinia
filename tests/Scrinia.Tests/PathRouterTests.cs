@@ -62,6 +62,18 @@ public class PathRouterTests : IDisposable
         act.Should().Throw<ArgumentException>().WithMessage("*Unknown scope*");
     }
 
+    [Theory]
+    [InlineData("local:../../escape")]
+    [InlineData("local-topic:../../escape")]
+    public void ToStoreDir_RejectsEscapingScopeBeforeFilesystemAccess(string scope)
+    {
+        var act = () => PathRouter.ToStoreDir(scope, _root);
+
+        act.Should().Throw<ScopeContainmentException>();
+        Directory.Exists(Path.Combine(_root, ".scrinia", "memories", "..", "..", "escape"))
+            .Should().BeFalse();
+    }
+
     [Fact]
     public void ToStoreDir_LocalTopicScope_ResolvesUnderMemoriesDir_PreSunset()
     {

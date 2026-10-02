@@ -5,6 +5,7 @@ using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Formats;
 using Scrinia.Core.Models;
+using Scrinia.Core.Encoding;
 
 namespace Scrinia.Tests.Formats;
 
@@ -63,7 +64,7 @@ public sealed class BundleFormatGateTests : IDisposable
                     }),
                     BundleFormatService.DefaultJsonOptions);
                 WriteZipText(zip, "topics/test/index.json", indexJson);
-                WriteZipText(zip, "topics/test/note.nmp2", "hello");
+                WriteZipText(zip, "topics/test/note.nmp2", Nmp2ChunkedEncoder.Encode("hello"));
 
                 var manifest = new BundleManifest(
                     Version: newerThanCurrent,
@@ -111,7 +112,7 @@ public sealed class BundleFormatGateTests : IDisposable
                     new BundleIndex(new List<ArtifactEntry> { entry }),
                     BundleFormatService.DefaultJsonOptions);
                 WriteZipText(zip, "topics/test/index.json", indexJson);
-                WriteZipText(zip, "topics/test/note.nmp2", "hello");
+                WriteZipText(zip, "topics/test/note.nmp2", Nmp2ChunkedEncoder.Encode("hello"));
 
                 // Manifest version 1 — at-or-below Current, so only the entry-level check fires.
                 var manifest = new BundleManifest(
@@ -137,8 +138,8 @@ public sealed class BundleFormatGateTests : IDisposable
         // test pass with the bundle gate disabled entirely -- the store gate caught it one layer
         // down and the message still matched. Defence in depth is real and welcome, but a test
         // named for the bundle-level check must fail when the bundle-level check is removed.
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage($"*Invalid bundle*schema version {newerThanCurrent}*");
+        act.Should().Throw<BundleValidationException>()
+            .WithMessage($"*INVALID_BUNDLE*schema version {newerThanCurrent}*");
 
         _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("test")).Should().BeEmpty();
     }
@@ -156,7 +157,7 @@ public sealed class BundleFormatGateTests : IDisposable
                     [new ArtifactEntry(rejectedName, "", 4, 1, DateTimeOffset.UtcNow)]);
                 WriteZipText(zip, "topics/test/index.json",
                     JsonSerializer.Serialize(index, BundleFormatService.DefaultJsonOptions));
-                WriteZipText(zip, $"topics/test/{rejectedName}.nmp2", "body");
+                WriteZipText(zip, $"topics/test/{rejectedName}.nmp2", Nmp2ChunkedEncoder.Encode("body"));
                 WriteZipText(zip, "manifest.json", """{"version":1,"topics":["test"],"totalEntries":1}""");
             }
             zipBytes = stream.ToArray();
@@ -198,7 +199,7 @@ public sealed class BundleFormatGateTests : IDisposable
                     [new ArtifactEntry("note", "", 5, 1, DateTimeOffset.UtcNow, "a note")]);
                 WriteZipText(zip, "topics/test/index.json",
                     JsonSerializer.Serialize(index, BundleFormatService.DefaultJsonOptions));
-                WriteZipText(zip, "topics/test/note.nmp2", "hello");
+                WriteZipText(zip, "topics/test/note.nmp2", Nmp2ChunkedEncoder.Encode("hello"));
                 WriteZipText(zip, "files/skills/planner.md", "# Planner");
                 WriteZipText(zip, "files/skills/planner.meta.json", $"{{\"v\":{newerThanCurrent}}}");
                 WriteZipText(zip, "manifest.json", """

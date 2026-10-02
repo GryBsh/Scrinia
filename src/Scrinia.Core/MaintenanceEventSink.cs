@@ -9,10 +9,7 @@ namespace Scrinia.Core;
 /// references (dual-reading legacy <c>ref:</c> keywords alongside the ref attribute).
 ///
 /// <para><b>The orphan marker is an ATTRIBUTE, not a keyword.</b> It used to be the bare keyword
-/// <c>"orphan"</c>. The defect that forced the change was a remote one — the metadata endpoint
-/// refused a body that changed <c>Keywords</c>, so every orphan write over HTTP came back 400 while
-/// the identical local write succeeded — and that endpoint is gone. The change stands on its own
-/// terms anyway: orphan-ness is not content-derived, it is a corpus-level fact about inbound
+/// <c>"orphan"</c>. The change stands on its own terms: orphan-ness is not content-derived, it is a corpus-level fact about inbound
 /// references, and it was only ever in the keyword list because that list happened to be
 /// searchable. As an attribute it gains an <c>attributeFilter</c> the magic keyword never had, and
 /// it stays searchable by the word "orphan" because attribute keys and values seed the
@@ -26,11 +23,7 @@ namespace Scrinia.Core;
 /// (<c>WeightedAttributeScorer.ScoreEntryTerm</c> matches attribute VALUES, never keys), so an entry
 /// with demonstrable inbound refs outranked the real orphans.</para>
 ///
-/// <para><b>The clear is one write.</b> It was two, and the reason was entirely remote: the
-/// metadata endpoint refused a body that changed <c>Keywords</c>, so bundling the keyword removal
-/// into the attribute's mutation made the server refuse BOTH and leave a non-orphan marked
-/// <c>orphan:true</c> indefinitely. Splitting them guaranteed the attribute cleared even when the
-/// keyword could not. With one store there is one sidecar and the entry is already in hand inside
+/// <para><b>The clear is one write.</b> With one store there is one sidecar and the entry is already in hand inside
 /// the callback, so both carriers come off together — which matters because this is the COMMON
 /// path, not a corner: marking deliberately leaves a legacy entry's keyword alone, so dual-marked
 /// entries are the normal outcome of migration.</para>
@@ -112,7 +105,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                 // TryUpdateEntry, not LoadIndex → mutate → Upsert: it runs under the per-scope
                 // write lock, and doing the "already linked?" check inside the callback keeps this
                 // to ONE index read. (The shape it replaced also discarded the link silently on the
-                // remote store, where Upsert was a no-op.)
+                // a discarded mutation.)
                 ArtifactEntry? AddReference(ArtifactEntry targetEntry)
                 {
                     // Write the ref attribute (unified attributes) — no more ref: keyword emission.
@@ -176,7 +169,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // state the normal outcome, and therefore what makes CLEARING the common path.
             //
             // CLEARING removes whichever carriers are present, together. It used to be two writes
-            // because a remote PATCH refused Keywords changes; see the type summary.
+                // so both carriers are cleared atomically; see the type summary.
             bool writeAttempted = false;
             bool markerDroppedByTheKeyCap = false;
             bool writePersisted = store.TryUpdateEntry(address, sourceEntry =>
@@ -247,8 +240,8 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // was discarded. Same channel this class already reports its own failures on.
             //
             // One message now, because there is one write. There were two, reporting separately,
-            // from when a refused keyword clean-up was the EXPECTED remote outcome and must not
-            // read as the attribute having failed. With one store a refusal is a refusal, and it
+            // from when keyword clean-up could be refused independently and must not read as the
+            // attribute having failed. With one store a refusal is a refusal, and it
             // leaves every carrier the entry had exactly as it was.
             if (markerDroppedByTheKeyCap)
                 Console.Error.WriteLine(

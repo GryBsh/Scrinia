@@ -631,7 +631,7 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
     }
 
     [Fact]
-    public void AnUndecodableArtifact_IsToleratedNotRejected_AndLeavesKeywordsNull()
+    public void AnUndecodableArtifact_IsRejectedBeforeMutation()
     {
         // A bundle is untrusted external input. Before this feature existed, import never decoded
         // artifact bytes at all, so a bundle carrying non-NMP/2 artifact content (hand-crafted,
@@ -673,23 +673,18 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
                 }.ToJsonString());
         }
 
-        (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) result;
-        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
-            result = BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
-
-        result.EntryCount.Should().Be(1, "the import must succeed rather than throw over one entry's undecodable artifact");
-
-        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("undecodable-topic"))
-            .Single(e => e.Name == "not-nmp2");
-
-        imported.Keywords.Should().BeNull(
-            "decline to enrich, not fabricate — a decode failure must leave Keywords in its " +
-            "exact prior state (never derived), not silently become an empty derived answer");
+        Action import = () =>
+        {
+            using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+        };
+        import.Should().Throw<BundleValidationException>().WithMessage("*invalid artifact body*");
+        _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("undecodable-topic")).Should().BeEmpty();
     }
 
     [Fact]
-    public void AnArtifactDeclaringMoreChunksThanTheBoundAllows_RoutesThroughTheSameTolerance()
+    public void AnArtifactDeclaringMoreChunksThanTheBoundAllows_IsRejectedBeforeMutation()
     {
         // The bound itself (DecodeAllChunksVerified rejecting a declared chunk count above
         // Nmp2Strategy.MaxChunkCount) is already pinned by
@@ -736,24 +731,18 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
                 }.ToJsonString());
         }
 
-        (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) result;
-        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
-            result = BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
-
-        result.EntryCount.Should().Be(1,
-            "hostile input tripping the chunk-count bound must not abort the whole import");
-
-        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("over-bound-topic"))
-            .Single(e => e.Name == "over-bound");
-
-        imported.Keywords.Should().BeNull(
-            "a forged over-limit chunk count is just another undecodable artifact from this " +
-            "method's point of view — same tolerance, same outcome");
+        Action import = () =>
+        {
+            using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+        };
+        import.Should().Throw<BundleValidationException>().WithMessage("*invalid artifact body*");
+        _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("over-bound-topic")).Should().BeEmpty();
     }
 
     [Fact]
-    public void AnArtifactWithANegativePadFooter_RoutesThroughTheSameTolerance()
+    public void AnArtifactWithANegativePadFooter_IsRejectedBeforeMutation()
     {
         // Nmp2Strategy parses the ##PAD:{n} footer with a bare int.TryParse, which accepts a
         // negative sign (Nmp2Strategy.cs:246-247, :306-308). A negative pad makes
@@ -804,20 +793,14 @@ public sealed class BundleRoundTripTotalityTests : IDisposable
                 }.ToJsonString());
         }
 
-        (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) result;
-        using (var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read))
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
-            result = BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
-
-        result.EntryCount.Should().Be(1,
-            "a negative-pad footer tripping ArgumentOutOfRangeException must not abort the whole import");
-
-        var imported = _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("negative-pad-topic"))
-            .Single(e => e.Name == "negative-pad");
-
-        imported.Keywords.Should().BeNull(
-            "a tampered footer that throws ArgumentOutOfRangeException is just another " +
-            "undecodable artifact from this method's point of view — same tolerance, same outcome");
+        Action import = () =>
+        {
+            using var stream = new FileStream(zipPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(zip, _store, filterTopics: null, overwrite: true);
+        };
+        import.Should().Throw<BundleValidationException>().WithMessage("*invalid artifact body*");
+        _store.LoadIndex(MemoryNaming.BuildScopedTopicScope("negative-pad-topic")).Should().BeEmpty();
     }
 
     [Fact]

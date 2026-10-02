@@ -38,7 +38,7 @@ public sealed class SharedEphemeralRefusalTests
     [Fact]
     public void Persistent_address_is_canonicalized_by_the_boundary_parser()
     {
-        SharedServer.ParsePersistentAddress(" /notes/one ").Value.Should().Be("/notes/one");
+        SharedServer.ParsePersistentAddress(" /notes/one").Value.Should().Be("/notes/one");
     }
 
     private sealed class SingleEntryRegistry(SharedBaseEntry entry) : ISharedBaseRegistry

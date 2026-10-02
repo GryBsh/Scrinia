@@ -64,18 +64,20 @@ public sealed class MaintenanceContractTests
         using var registry = new MaintenanceRunRegistry();
         string token = CreateToken(registry, out MaintenanceRunId run);
         using var started = new ManualResetEventSlim();
+        using var decoded = new ManualResetEventSlim();
         using var removed = new ManualResetEventSlim();
         var results = new ConcurrentBag<bool>();
 
         Task decode = Task.Run(() =>
         {
             started.Set();
-            while (!removed.IsSet)
-                results.Add(MaintenanceCursorCodec.TryDecode(token, registry, out _, out _));
+            results.Add(MaintenanceCursorCodec.TryDecode(token, registry, out _, out _));
+            decoded.Set();
+            removed.Wait();
         });
         Task revoke = Task.Run(() =>
         {
-            started.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            decoded.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
             registry.Remove(run).Should().BeTrue();
             removed.Set();
         });

@@ -2,6 +2,13 @@ using Scrinia.Core.Configuration;
 
 namespace Scrinia.Core;
 
+/// <summary>Raised when a scope cannot be proven to remain inside the memory store.</summary>
+public sealed class ScopeContainmentException : ArgumentException
+{
+    public ScopeContainmentException(string scope)
+        : base($"Scope '{scope}' is not a contained, portable memory scope.", nameof(scope)) { }
+}
+
 /// <summary>
 /// Resolves filesystem locations under <c>.scrinia/</c>: hand-authored file entities (skills, agent
 /// configs) to a top-level directory, and a store SCOPE to its directory under
@@ -117,24 +124,41 @@ public static class PathRouter
     {
         string memories = Path.Combine(workspaceRoot, ".scrinia", MemoriesDir);
         if (scope == "local")
-            return memories;
+            return EnsureContained(scope, memories, memories);
 
         // Recovery-compat read-only shim for legacy `local-topic:` journals. Sunset 2027-03-21; after sunset legacy inputs resolve to Unknown scope (see LocalTopicSunsetDate).
         if (DateTimeOffset.UtcNow < LocalTopicSunsetDate && scope.StartsWith("local-topic:", StringComparison.Ordinal))
         {
-            string target = Path.Combine(memories,
-                scope["local-topic:".Length..].Replace('/', Path.DirectorySeparatorChar));
-            if (!PathContainment.IsWithin(memories, target))
-                throw new ArgumentException($"Local-topic scope '{scope}' escapes the store directory.", nameof(scope));
-            return target;
+            string topic = scope["local-topic:".Length..];
+            return EnsureContained(scope, memories, BuildTopicPath(scope, topic, memories));
         }
 
-        // Shares the same un-guarded combine pattern as the local-topic: shim above, but is left as-is:
-        // a `local:` scope reaches here only after MemoryNaming/PathContainment already validated it upstream.
         if (scope.StartsWith("local:", StringComparison.Ordinal))
-            return Path.Combine(memories,
-                scope["local:".Length..].Replace('/', Path.DirectorySeparatorChar));
+        {
+            string topic = scope["local:".Length..];
+            return EnsureContained(scope, memories, BuildTopicPath(scope, topic, memories));
+        }
 
         throw new ArgumentException($"Unknown scope: {scope}");
+    }
+
+    private static string BuildTopicPath(string scope, string topic, string memories)
+    {
+        if (!MemoryNaming.TryBuildScopedTopicScope(topic, out string canonicalScope))
+            throw new ScopeContainmentException(scope);
+
+        string canonicalTopic = canonicalScope["local:".Length..];
+        string suppliedTopic = string.Join('/', topic.Split('/', StringSplitOptions.RemoveEmptyEntries));
+        if (!string.Equals(canonicalTopic, suppliedTopic, StringComparison.Ordinal))
+            throw new ScopeContainmentException(scope);
+
+        return Path.Combine(memories, canonicalTopic.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private static string EnsureContained(string scope, string memories, string candidate)
+    {
+        if (!PathContainment.IsWithin(memories, candidate))
+            throw new ScopeContainmentException(scope);
+        return candidate;
     }
 }

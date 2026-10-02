@@ -46,6 +46,8 @@ internal static class WorkspaceSetup
         // recompiling. Defaults (RankerOptions.Default) match the historical composition —
         // see RankerOptions docstring for the formula and calibration notes.
         var rankerOptions = RankerOptions.FromConfig(GetConfigValue);
+        SearchCandidateOptions.Default = SearchCandidateOptions.Parse(
+            GetConfigValue(SearchCandidateOptions.ConfigurationKey));
         var store = StoreFactory.Create(root, rankerOptions, participantAdapterFactory);
         MemoryStoreContext.Current = store;
         MemoryStoreContext.Default = store;

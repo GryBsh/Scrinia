@@ -9,8 +9,8 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Finding H3, seventh copy. The host used to re-express the chunking policy over the wire —
 /// one upsert for the joined text plus one per content element, windowing nothing. It now
-/// prefers a single `index` call so the shared indexer runs inside the plugin process, and
-/// falls back to the old two-call shape only for plugins that do not offer `index`.
+/// uses a single `index` call so the shared indexer runs inside the plugin process. Legacy
+/// upsert is retained by the child as compatibility-only surface, but the host never selects it.
 /// </summary>
 public sealed class McpPluginHostNegotiationTests
 {
@@ -60,19 +60,19 @@ public sealed class McpPluginHostNegotiationTests
         caller.Calls[0].Tool.Should().Be("index");
         // Equal, not BeEquivalentTo: element order determines chunk index on the plugin side, so
         // a reordered array must fail this assertion, not pass it.
-        ((string[])caller.Calls[0].Arguments["content"]!).Should().Equal("one", "two", "three");
+        var content = (System.Text.Json.JsonElement)caller.Calls[0].Arguments["content"]!;
+        content.EnumerateArray().Select(item => item.GetString()).Should().Equal("one", "two", "three");
     }
 
     [Fact]
-    public async Task PluginOfferingOnlyUpsert_StillReceivesTheLegacySequence()
+    public async Task PluginOfferingOnlyUpsert_IsNeverSelectedByTheHost()
     {
         var caller = new RecordingCaller();
         var host = new McpPluginHost(caller, ["upsert", "search", "remove"]);
 
         await host.OnStoredAsync(MemoryAddress.Parse("/note"), ["one", "two"], NewStore(), default);
 
-        caller.Calls.Should().OnlyContain(c => c.Tool == "upsert");
-        caller.Calls.Should().HaveCount(3, because: "one joined document vector plus one per element");
+        caller.Calls.Should().BeEmpty();
     }
 
     /// <summary>
@@ -101,7 +101,8 @@ public sealed class McpPluginHostNegotiationTests
 
         caller.Calls.Should().ContainSingle();
         caller.Calls[0].Tool.Should().Be("index");
-        ((string[])caller.Calls[0].Arguments["content"]!).Should().Equal("a", "b", "c");
+        var content = (System.Text.Json.JsonElement)caller.Calls[0].Arguments["content"]!;
+        content.EnumerateArray().Select(item => item.GetString()).Should().Equal("a", "b", "c");
     }
 
     [Theory]
@@ -110,7 +111,7 @@ public sealed class McpPluginHostNegotiationTests
     public async Task PluginFailureEnvelope_IsRetriedInsteadOfAcknowledged(string response)
     {
         var caller = new FailingCaller(response);
-        var host = new McpPluginHost(caller, ["upsert"]);
+        var host = new McpPluginHost(caller, ["index"]);
 
         for (int attempt = 0; attempt < 4; attempt++)
             await host.OnStoredAsync(MemoryAddress.Parse("/note"), ["content"], NewStore(), default);

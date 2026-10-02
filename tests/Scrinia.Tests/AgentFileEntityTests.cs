@@ -3,6 +3,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
+using Scrinia.Core.Encoding;
 using Scrinia.Mcp;
 using Xunit;
 
@@ -102,7 +103,7 @@ public class AgentFileEntityTests
         store.Upsert(
             new ArtifactEntry("note", "", 5, 1, DateTimeOffset.UtcNow, "an agent-topic note"),
             topicScope);
-        await store.WriteArtifactAsync("note", topicScope, "agent topic content");
+         await store.WriteArtifactAsync("note", topicScope, Nmp2ChunkedEncoder.Encode("agent topic content"));
 
         byte[] zipBytes;
         using (var ms = new MemoryStream())

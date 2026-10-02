@@ -301,10 +301,9 @@ public class RegisteredFormatsTests
         int versionsBefore = Directory.Exists(versionsDir)
             ? Directory.GetFiles(versionsDir).Length : 0;
 
-        var response = ResponseParser.Parse(
-            await tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]));
+        Func<Task> act = () => tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]);
 
-        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
 
         // An error envelope alone would miss a refusal after mutation: the archive and body write
         // have no rollback, so raw cold-disk bytes and the archive count prove refusal was early.
@@ -342,10 +341,9 @@ public class RegisteredFormatsTests
         int versionsBefore = Directory.Exists(agentVersions)
             ? Directory.GetFiles(agentVersions).Length : 0;
 
-        var response = ResponseParser.Parse(
-            await tools.MemoryRemember("/agent/profile", ["you are rewritten"]));
+        Func<Task> act = () => tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
 
-        response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        await act.Should().ThrowAsync<ScopeReadOnlyException>();
 
         _ = new FileMemoryStore(scope.WorkspaceDir);
         File.ReadAllBytes(agentPath).Should().Equal(bodyBefore,

@@ -28,80 +28,35 @@ public sealed class EmbeddingsTools(
             // locked vector file would stall for hours instead of failing fast. Retry belongs at
             // exactly one layer; CallToolWithRetryAsync is that layer for this process boundary.
             bool wrote = await indexer.IndexAsync(scope, name, content, ct, retryOnUnavailable: false);
-            return JsonSerializer.Serialize(new { ok = wrote });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(wrote, wrote ? null : "Index operation failed."));
         }
         catch (VectorStoreUnavailableException ex)
         {
-            return JsonSerializer.Serialize(new { error = ex.Message });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(false, ex.Message));
         }
     }
 
-    [McpServerTool(Name = "status")]
-    [Description("Returns plugin status as JSON.")]
-    public string Status()
-    {
-        return JsonSerializer.Serialize(new
-        {
-            provider = provider.GetType().Name,
-            available = provider.IsAvailable,
-            dimensions = provider.Dimensions,
-            vectorCount = vectorStore.Count(),
-        });
-    }
-
-    [McpServerTool(Name = "search")]
-    [Description("Semantic vector search. Returns JSON dict of key:score pairs.")]
-    public async Task<string> Search(
-        [Description("Query text")] string query,
-        [Description("Scopes to search")] string[] scopes,
-        CancellationToken ct = default)
-    {
-        var queryVec = await provider.EmbedAsync(query, ct);
-        if (queryVec is null)
-            return JsonSerializer.Serialize(new { error = "Query embedding failed" });
-
-        var scores = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string scope in scopes)
-        {
-            var vectors = vectorStore.GetVectors(scope);
-            if (vectors.Count == 0) continue;
-
-            var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
-            VectorScoreProjection.Project(
-                scope, topK.Select(t => (t.Entry, (double)t.Similarity)), options.SemanticWeight, scores);
-        }
-
-        return JsonSerializer.Serialize(scores);
-    }
-
+    [Obsolete("Compatibility-only protocol v1 tool. Hosts must use index after a successful handshake.")]
     [McpServerTool(Name = "upsert")]
-    [Description("Embed text and store/update the vector.")]
+    [Description("Deprecated compatibility operation for older embeddings clients; use index instead.")]
     public async Task<string> Upsert(
         [Description("Scope")] string scope,
         [Description("Memory name")] string name,
         [Description("Text to embed")] string text,
-        [Description(
-            "Legacy per-window chunk index. Any value passed here is below one chunk-index "
-            + "stride, so the read side resolves it to content element 0 — which does not exist "
-            + "— and the vector contributes to the memory's score but never to a chunk's. "
-            + "Use the `index` tool to get correctly-keyed per-element vectors.")]
-        int? chunkIndex = null,
+        [Description("Legacy chunk index")] int? chunkIndex = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return JsonSerializer.Serialize(new { ok = true });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(true, null));
 
         var vector = await provider.EmbedAsync(text, ct);
         if (vector is null)
-            return JsonSerializer.Serialize(new { error = "Embedding failed" });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(false, "Embedding failed"));
 
         if (provider.Dimensions > 0 && vector.Length != provider.Dimensions)
         {
-            return JsonSerializer.Serialize(new
-            {
-                error = $"Embedding returned {vector.Length} dimensions; expected {provider.Dimensions}."
-            });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(
+                false, $"Embedding returned {vector.Length} dimensions; expected {provider.Dimensions}."));
         }
 
         try
@@ -110,10 +65,49 @@ public sealed class EmbeddingsTools(
         }
         catch (VectorStoreUnavailableException ex)
         {
-            // Same error shape as a failed embed; the caller retries or falls back to BM25.
-            return JsonSerializer.Serialize(new { error = ex.Message });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(false, ex.Message));
         }
-        return JsonSerializer.Serialize(new { ok = true });
+
+        return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(true, null));
+    }
+
+    [McpServerTool(Name = "status")]
+    [Description("Returns plugin status as JSON.")]
+    public string Status()
+    {
+        return EmbeddingsProtocolJson.Serialize(new EmbeddingsStatusResponse(
+            EmbeddingsProtocol.Version,
+            EmbeddingsProtocol.RequiredCapabilities.ToArray(),
+            provider.IsAvailable,
+            provider.Dimensions,
+            vectorStore.ExpectedSignature ?? provider.Signature));
+    }
+
+    [McpServerTool(Name = "search")]
+    [Description("Semantic vector search. Returns JSON dict of key:score pairs.")]
+    public async Task<string> Search(
+        [Description("Query text")] string query,
+        [Description("Candidate memory names grouped by scope")] Dictionary<string, string[]> candidatesByScope,
+        CancellationToken ct = default)
+    {
+        var queryVec = await provider.EmbedAsync(query, ct);
+        if (queryVec is null)
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsSearchResponse(
+                new Dictionary<string, double>(), "Query embedding failed"));
+
+        var scores = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in candidatesByScope)
+        {
+            var vectors = vectorStore.GetCandidateVectors(pair.Key, pair.Value);
+            if (vectors.Count == 0) continue;
+
+            var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
+            VectorScoreProjection.Project(
+                pair.Key, topK.Select(t => (t.Entry, (double)t.Similarity)), options.SemanticWeight, scores);
+        }
+
+        return EmbeddingsProtocolJson.Serialize(new EmbeddingsSearchResponse(scores, null));
     }
 
     [McpServerTool(Name = "remove")]
@@ -129,8 +123,8 @@ public sealed class EmbeddingsTools(
         }
         catch (VectorStoreUnavailableException ex)
         {
-            return JsonSerializer.Serialize(new { error = ex.Message });
+            return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(false, ex.Message));
         }
-        return JsonSerializer.Serialize(new { ok = true });
+        return EmbeddingsProtocolJson.Serialize(new EmbeddingsOperationResponse(true, null));
     }
 }

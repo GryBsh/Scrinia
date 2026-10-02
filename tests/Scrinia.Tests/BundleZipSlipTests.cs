@@ -33,7 +33,7 @@ public sealed class BundleZipSlipTests : IDisposable
     }
 
     [Fact]
-    public void ImportBundle_WithUnknownCategoryKey_IsSkipped_ByAllowlist()
+    public void ImportBundle_WithUnknownCategoryKey_IsRejected_ByAllowlist()
     {
         // The real gate is BundleFormatService.CategoryToKind, an allowlist of known
         // category keys ("skills", "agent") checked in ImportFileEntities before any
@@ -62,7 +62,8 @@ public sealed class BundleZipSlipTests : IDisposable
         using (var readMs = new MemoryStream(zipBytes))
         using (var zipRead = new ZipArchive(readMs, ZipArchiveMode.Read))
         {
-            BundleFormatService.ImportTopicsFromZip(zipRead, _store, filterTopics: null, overwrite: true);
+            Action import = () => BundleFormatService.ImportTopicsFromZip(zipRead, _store, filterTopics: null, overwrite: true);
+            import.Should().Throw<BundleValidationException>().WithMessage("*unknown file-entity category*");
         }
 
         File.Exists(Path.Combine(sentinelDir, "pwned.md")).Should().BeFalse(

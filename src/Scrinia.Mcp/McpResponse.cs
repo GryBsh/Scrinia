@@ -1,5 +1,9 @@
 using System.Globalization;
 using System.Text;
+using Scrinia.Core;
+using Scrinia.Core.Bundles;
+using Scrinia.Core.Embeddings;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
 
@@ -33,6 +37,12 @@ public static class ErrorCodes
     /// <summary>Bundle content is missing, malformed, unsafe, or unsupported by this build.</summary>
     public const string InvalidBundle = "INVALID_BUNDLE";
 
+    /// <summary>The bundle commit failed but rollback was proven.</summary>
+    public const string BundleImportFailed = "BUNDLE_IMPORT_FAILED";
+
+    /// <summary>Bundle rollback could not be proven; recovery evidence is retained.</summary>
+    public const string BundleRecoveryRequired = "BUNDLE_RECOVERY_REQUIRED";
+
     /// <summary>Fallback for unexpected internal failures and uncategorised errors.</summary>
     public const string Internal = "INTERNAL";
 
@@ -48,6 +58,32 @@ public static class ErrorCodes
 
     /// <summary>The caller supplied a logical address that cannot be parsed.</summary>
     public const string MalformedAddress = "MALFORMED_ADDRESS";
+
+    /// <summary>The requested operation is not supported by a reserved namespace.</summary>
+    public const string ReservedPathOperationForbidden = "RESERVED_PATH_OPERATION_FORBIDDEN";
+
+    /// <summary>The scope could not be proven to remain within the workspace.</summary>
+    public const string ScopeContainmentForbidden = "SCOPE_CONTAINMENT_FORBIDDEN";
+
+    /// <summary>The embeddings child does not support protocol version 1.</summary>
+    public const string EmbeddingsProtocolUnsupported = "EMBEDDINGS_PROTOCOL_UNSUPPORTED";
+
+    /// <summary>The embeddings child returned an invalid protocol response.</summary>
+    public const string EmbeddingsProtocolInvalid = "EMBEDDINGS_PROTOCOL_INVALID";
+
+    /// <summary>Maps every strict-safety exception to its stable public code.</summary>
+    public static string ToStableCode(Exception error) => error switch
+    {
+        MemoryAddressException => MalformedAddress,
+        ScopeContainmentException => ScopeContainmentForbidden,
+        ReservedPathOperationException => ReservedPathOperationForbidden,
+        BundleValidationException => InvalidBundle,
+        BundleImportException { Failure: BundleImportFailure.RolledBack } => BundleImportFailed,
+        BundleImportException { Failure: BundleImportFailure.RecoveryRequired } => BundleRecoveryRequired,
+        EmbeddingsProtocolUnsupportedException => EmbeddingsProtocolUnsupported,
+        EmbeddingsProtocolInvalidException => EmbeddingsProtocolInvalid,
+        _ => throw new ArgumentException("The exception is not a strict-safety failure.", nameof(error), error)
+    };
 }
 
 /// <summary>
@@ -175,6 +211,13 @@ public static class ResponseBuilder
             ErrorCode = code,
             ActionNeeded = recovery.Length > 0 ? recovery : null,
         };
+
+    /// <summary>Creates a response for a strict-safety exception without relabelling it.</summary>
+    public static McpResponse Error(Exception error, params string[] recovery)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        return Error(error.Message, ErrorCodes.ToStableCode(error), recovery);
+    }
 
     public static McpResponse Warning(string? content = null)
     {

@@ -10,6 +10,20 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — strict-safety release integration
+
+- Address and scope refusals now use stable `MALFORMED_ADDRESS` and
+  `SCOPE_CONTAINMENT_FORBIDDEN` codes; reserved `/skill/...` and `/agent/...` operations use
+  `RESERVED_PATH_OPERATION_FORBIDDEN` instead of ordinary-memory fallback.
+- Bundle import is strict all-or-rollback. `INVALID_BUNDLE` is returned before mutation,
+  `BUNDLE_IMPORT_FAILED` means rollback was proven, and `BUNDLE_RECOVERY_REQUIRED` preserves
+  recovery evidence and blocks another import until recovery completes.
+- Embeddings publication is protocol v1 only. Unsupported or malformed handshakes return
+  `EMBEDDINGS_PROTOCOL_UNSUPPORTED` or `EMBEDDINGS_PROTOCOL_INVALID`; incompatible vectors are
+  quarantined and rebuilt with `scri reindex`.
+- Retrieval is bounded by `Scrinia:Search:CandidateLimit` (default `200`, range `1`–`1000`),
+  and all CLI/MCP adapters preserve the same machine-readable strict-safety codes.
+
 ### Added — immutable `scri` global tool and `SCRINIA_HOME` runtime layout
 
 - `scrinia` is now packaged as an immutable NuGet **global tool** whose single command is `scri`,

@@ -68,14 +68,23 @@ public readonly record struct MemoryAddress
             return false;
         }
 
-        if (MemoryNaming.IsEphemeralName(trimmed))
-            return TryParseEphemeralName(MemoryNaming.StripEphemeralPrefix(trimmed), out address, out error);
+        if (MemoryNaming.IsEphemeralName(trimmed) || MemoryNaming.IsEphemeralAlias(trimmed))
+        {
+            string canonicalName = MemoryNaming.CanonicalizeEphemeralAlias(trimmed);
+            return TryParseEphemeralName(MemoryNaming.StripEphemeralPrefix(canonicalName), out address, out error);
+        }
+
+        if (raw.EndsWith('.') || raw.EndsWith(' '))
+        {
+            error = MemoryAddressError.Create("Durable address segments must not end with a dot or space.");
+            return false;
+        }
 
         if (trimmed[0] != '/' || trimmed.StartsWith("//", StringComparison.Ordinal))
             return false;
 
         var segments = trimmed[1..].Split('/', StringSplitOptions.None);
-        if (segments.Length == 0 || segments.Any(segment => !IsLegalSegment(segment)))
+        if (segments.Length == 0 || segments.Any(segment => !IsLegalDurableSegment(segment)))
             return false;
 
         if (segments[0].Equals("temp", StringComparison.OrdinalIgnoreCase))
@@ -113,6 +122,12 @@ public readonly record struct MemoryAddress
         !string.IsNullOrEmpty(segment) && segment is not "." and not ".." &&
         segment.All(character => character is not '/' and not '\\' and not ':' and not '?' and not '#' and
             not '%' and not '*' and not '<' and not '>' and not '|' and not '"');
+
+    private static bool IsLegalDurableSegment(string segment) =>
+        IsLegalSegment(segment)
+        && !segment.EndsWith('.')
+        && !segment.EndsWith(' ')
+        && !Path.GetInvalidFileNameChars().Any(segment.Contains);
 
     private static bool ContainsPhysicalOrUriSyntax(string value) => MemoryNaming.IsUriLike(value);
 

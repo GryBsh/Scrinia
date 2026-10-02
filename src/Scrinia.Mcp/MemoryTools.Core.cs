@@ -158,38 +158,6 @@ public sealed partial class ScriniaMcpTools
                 "Provide a logical memory address or a complete NMP/2 artifact.");
         }
 
-        // ── Agent config: read .md file first, NMP/2 fallback ────────────
-        if (input.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
-        {
-            var agentStore = MemoryStoreContext.Current;
-            if (agentStore is not null)
-            {
-                string agentSubject = input["/agent/".Length..].Trim();
-                if (PathRouter.TryToFileEntityPath("agent", agentSubject, agentStore.WorkspaceRoot, out string agentFilePath)
-                    && File.Exists(agentFilePath))
-                {
-                    string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
-                    SessionBudget.RecordAccess(input, mdContent.Length);
-                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
-                        .WithTruncationAdvice(RecallTruncationAdvice);
-                }
-
-                // Disk miss: auto-promote a legacy local:agent NMP/2 entry, then serve the
-                // published file. No legacy entry (or a promotion that fails) leaves this block to
-                // fall through to the NMP/2 resolution below.
-                if (await PromoteLocalAgentAsync(agentStore, address, agentSubject, cancellationToken))
-                {
-                    string agentDir = PathRouter.ToFileEntityDir("agent", agentStore.WorkspaceRoot);
-                    string promotedPath = Path.Combine(agentDir, agentSubject + ".md");
-                    string mdContent = await File.ReadAllTextAsync(promotedPath, cancellationToken);
-                    SessionBudget.RecordAccess(input, mdContent.Length);
-                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel)
-                        .WithTruncationAdvice(RecallTruncationAdvice);
-                }
-            }
-            // Fall through to NMP/2 resolution for legacy entries
-        }
-
         string artifact;
 
         // Fast path: inline NMP/2 artifacts don't need a store
@@ -312,11 +280,8 @@ public sealed partial class ScriniaMcpTools
                     ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.");
 
-            // The /agent/ branch writes a .md file plus a JSON sidecar into the workspace. It used
-            // to be guarded here, at the point of use rather than at the method entry, so that a
-            // remote store refused only THIS path and still served every other remember(). With one
-            // store the guard could no longer fail, so it is gone and the branch reads `store`
-            // directly.
+            // The /agent/ branch writes a .md file plus a JSON sidecar into the workspace. The
+            // branch reads the configured workspace store directly after validating the subject.
             string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
             if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
@@ -441,7 +406,7 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Splits a user-facing name into the resolved <c>(scope, subject)</c> pair every
     /// store member takes. An ephemeral <c>~name</c> is its own whole address and keeps its prefix
     /// — the store routes it to ephemeral storage itself. Mirrors
-    /// <c>MemoryOrchestrator.Resolve</c>, deliberately: the two tool surfaces over the same store
+    /// the CLI resolver, deliberately: the two tool surfaces over the same store
     /// must resolve a name the same way.</summary>
     private static (bool Ephemeral, string Scope, string Subject) Resolve(IMemoryStore store, MemoryAddress address)
     {
@@ -541,8 +506,7 @@ public sealed partial class ScriniaMcpTools
     /// <see cref="MemoryDerivation.ForMetadataUpdate"/> unions the same terms into
     /// <c>AgentKeywords</c> uncapped. Keep the entry's total at or under
     /// <see cref="TextAnalysis.DefaultMaxMergedKeywords"/> (30), which is where every other write
-    /// path caps. Nothing FAILS past it any more — the bound that used to be enforced was the
-    /// promotion wire's, and it went with the server — so an over-long list now just grows,
+    /// path caps. Nothing FAILS past it any more, so an over-long list now just grows,
     /// diluting the entry's own term weights with no error to notice. See the comment on the union
     /// itself in <see cref="ApplyMetadataMutation"/>.</para>
     /// </summary>
@@ -613,9 +577,8 @@ public sealed partial class ScriniaMcpTools
             // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
             // used to have: it runs under FileMemoryStore's per-scope write lock, so
             // load→mutate→persist is atomic instead of a racy read-modify-write. (The shape it
-            // replaced was also how link() came to report "Linked 'a' <-> 'b'" while the `ref`
-            // attribute reached nothing — on the remote store Upsert was a deliberate no-op, so the
-            // mutated copy was handed to a method that discards it.) `found`/`changes` are captured out of the
+            // replaced could report a link while discarding the mutated copy.)
+            // `found`/`changes` are captured out of the
             // callback because a false return has three distinct causes the caller must tell apart:
             // no such entry, nothing to change, and "found but not persistable".
             //
@@ -714,10 +677,7 @@ public sealed partial class ScriniaMcpTools
         // (30); this union and ForMetadataUpdate's AgentKeywords union downstream of it are the only
         // two that do not.
         //
-        // Until the server was dropped, exceeding that count had a VISIBLE consequence: the entry
-        // became unpromotable, because the promotion wire refused more than the same constant and
-        // answered 400. That failure is gone, and its absence is the reason to state the bound here
-        // rather than assume something catches it — an over-long list now grows silently, diluting
+        // Exceeding that count grows silently, diluting
         // the entry's own term weights against every other entry's. link() used to be the one
         // production caller that got here, by minting a ref:-shaped keyword that degraded past
         // AttributeExtractor.MaxValueLength; it writes the attribute directly now, so today the
@@ -808,9 +768,7 @@ public sealed partial class ScriniaMcpTools
         // boost for the added keywords and attributes itself — caller-side derivation, at a
         // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
         // strings rather than index tokens (against D-14), and reachable only through UpdateMeta
-        // — no caller outside link() and the tests. (It could not persist over HTTP at all, so
-        // this write reported full success while discarding the boost, and a remote corpus ranked
-        // differently from a local one forever.) MemoryDerivation.ForMetadataUpdate re-derives it —
+        // — no caller outside link() and the tests. MemoryDerivation.ForMetadataUpdate re-derives it —
         // inside TryUpdateEntry on the persistent path, and at UpdateMeta's ephemeral branch, which
         // IS the store for a ~name.
         var updated = entry with
@@ -855,8 +813,7 @@ public sealed partial class ScriniaMcpTools
                 "list({ mode: 'full' })"));
         }
 
-        // Drift detection re-hashes files on disk. This used to be the one mode a remote store
-        // refused, guarded here rather than at the method entry so every other mode still listed.
+        // Drift detection re-hashes files on disk.
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
             return BuildDriftList(store);
 

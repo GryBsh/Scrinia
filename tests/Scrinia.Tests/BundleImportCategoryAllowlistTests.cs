@@ -16,8 +16,7 @@ namespace Scrinia.Tests;
 /// the existing containment check) and would otherwise let a crafted bundle write
 /// arbitrary files (e.g. <c>merge.config</c>) directly under <c>.scrinia</c>. Deleted
 /// categories (the former <c>workflows</c>) fall under the same gate: no
-/// <c>CategoryToKind</c> entry, so nothing is written, and the caller is told via
-/// <c>SkippedCategories</c> — see <see cref="ImportingABundleWithWorkflows_SucceedsAndReportsTheSkip"/>.
+/// <c>CategoryToKind</c> entry, so the import fails with <c>INVALID_BUNDLE</c> before writing.
 /// </summary>
 public sealed class BundleImportCategoryAllowlistTests : IDisposable
 {
@@ -68,11 +67,11 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
         }
 
         // Act — import via the real public bundle-import entry point.
-        using (var readMs = new MemoryStream(zipBytes))
-        using (var zipRead = new ZipArchive(readMs, ZipArchiveMode.Read))
-        {
-            BundleFormatService.ImportTopicsFromZip(zipRead, _store, filterTopics: null, overwrite: true);
-        }
+        using var readMs = new MemoryStream(zipBytes);
+        using var zipRead = new ZipArchive(readMs, ZipArchiveMode.Read);
+        Action import = () => BundleFormatService.ImportTopicsFromZip(
+            zipRead, _store, filterTopics: null, overwrite: true);
+        import.Should().Throw<BundleValidationException>().WithMessage("*unknown file-entity category*");
 
         // Assert — the malicious file was NOT written under .scrinia.
         string scriniaBase = Path.Combine(_workspaceRoot, ".scrinia");
@@ -81,11 +80,10 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
     }
 
     [Fact]
-    public void ImportingABundleWithWorkflows_SucceedsAndReportsTheSkip()
+    public void ImportingABundleWithWorkflows_IsRejectedRatherThanSilentlySkipped()
     {
-        // Workflows are deleted: nothing ever wrote one, so the category could only be
-        // populated by importing a bundle. Old bundles must still import cleanly, and the
-        // user must be told what was dropped rather than silently losing it.
+        // Workflows are deleted: nothing ever wrote one, so the category can only be
+        // populated by importing a malformed or incompatible bundle.
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
@@ -93,16 +91,15 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
         using (var zip = ZipFile.Open(bundlePath, ZipArchiveMode.Create))
         {
             WriteZipText(zip, "manifest.json", """
-                {"version":2,"topics":[],"fileEntities":{"workflows":["ci.json"]}}
+                {"version":2,"topics":[],"totalEntries":0,"fileEntities":{"workflows":["ci.json"]}}
                 """);
             WriteZipText(zip, "files/workflows/ci.json", """{"steps":["build"]}""");
         }
 
         using var readStream = new FileStream(bundlePath, FileMode.Open, FileAccess.Read);
         using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
-        var result = BundleFormatService.ImportTopicsFromZip(zipRead, store, filterTopics: null, overwrite: false);
-
-        result.SkippedCategories.Should().Contain("workflows");
+        Action import = () => BundleFormatService.ImportTopicsFromZip(zipRead, store, filterTopics: null, overwrite: false);
+        import.Should().Throw<BundleValidationException>().WithMessage("*unknown file-entity category*workflows*");
         Directory.Exists(Path.Combine(store.WorkspaceRoot, ".scrinia", "workflows"))
             .Should().BeFalse(because: "the category is deleted, not merely unwritten");
     }
@@ -174,7 +171,7 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
         Action act = () => BundleFormatService.ImportTopicsFromZip(
             zipRead, _store, filterTopics: null, overwrite: true);
 
-        act.Should().Throw<InvalidOperationException>().WithMessage("*skills*planner.md*outside*");
+        act.Should().Throw<BundleImportException>().Which.Failure.Should().Be(BundleImportFailure.RecoveryRequired);
         AssertSentinelsSurvived(sentinels);
     }
 

@@ -7,6 +7,16 @@ on other platforms.
 
 ## CLI Issues
 
+### Strict migration error codes
+
+Strict safety failures are stable across CLI and MCP. Correct `MALFORMED_ADDRESS` or
+`SCOPE_CONTAINMENT_FORBIDDEN` by using a canonical logical address; use the supported lifecycle
+when `/skill/...` or `/agent/...` returns `RESERVED_PATH_OPERATION_FORBIDDEN`.
+
+Bundle validation returns `INVALID_BUNDLE` before mutation. A failed commit returns
+`BUNDLE_IMPORT_FAILED` only after rollback is proven. `BUNDLE_RECOVERY_REQUIRED` means recovery
+evidence is retained: do not retry another import until the recovery command has completed.
+
 ### "No .scrinia/ directory found"
 
 The CLI walks up from the current directory looking for the nearest enclosing git repository and uses that repository's root as the resolved workspace root. If no repository encloses the current directory, `cwd` itself is the workspace root and no upward search happens. Either way, `.scrinia/` is created lazily by the first write; read-only commands against a workspace with no store create nothing.
@@ -56,6 +66,17 @@ missing from `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`, the configured HTTP or Vul
 unavailable, or the active provider failed to start. Verify the model is present (run `scri setup`),
 confirm the active provider with `scri config Scrinia:Embeddings:Provider`, and read the embedding
 provider warning on stderr.
+
+An embeddings executable that returns `EMBEDDINGS_PROTOCOL_UNSUPPORTED` or
+`EMBEDDINGS_PROTOCOL_INVALID` is disabled for the session. Upgrade or reinstall the executable;
+lexical search remains available. Vector files with an incompatible provider signature are
+quarantined, not reused. Run `scri reindex` after the active provider is healthy.
+
+### Search is slower or returns fewer candidates
+
+`Scrinia:Search:CandidateLimit` bounds the shared lexical candidate snapshot. It defaults to `200`
+and accepts `1` through `1000` only. Increase it deliberately for broader retrieval; invalid values
+fail configuration loading rather than silently scanning the whole corpus.
 
 ### Slow first search after startup
 

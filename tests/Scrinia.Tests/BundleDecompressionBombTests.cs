@@ -16,8 +16,8 @@ namespace Scrinia.Tests;
 /// <para>The guard caps the DECOMPRESSED size in <see cref="Nmp2Strategy"/>; a 256 KiB all-<c>A</c>
 /// payload compresses to a few hundred bytes, comfortably under the 96 MiB compressed-body bound at
 /// <c>BundleFormatService.ReadZipArtifactBytes</c>. Lowering <see cref="Nmp2Strategy.MaxDecodedBytes"/>
-/// to 8 KiB around import makes the decode fail fast with an <c>InvalidDataException</c> that import
-/// tolerates — the entry is kept with <c>Keywords</c> null rather than aborting the whole import.</para>
+/// to 8 KiB around import makes the decode fail fast and rejects the complete restore plan before
+/// any mutation.</para>
 ///
 /// <para>Mutates a process-wide static, so the test lives in a serial collection with
 /// <c>DisableParallelization</c> to isolate the lowered cap from every other test in the suite.</para>
@@ -26,7 +26,7 @@ namespace Scrinia.Tests;
 public sealed class BundleDecompressionBombTests
 {
     [Fact]
-    public void ImportTopicsFromZip_ToleratesDecompressionBomb_WithoutAbortingImport()
+    public void ImportTopicsFromZip_RejectsDecompressionBombBeforeMutation()
     {
         // Arrange — a 256 KiB highly-compressible payload; the NMP/2 artifact compresses to a few
         // hundred bytes, well under the compressed-body bound.
@@ -68,29 +68,14 @@ public sealed class BundleDecompressionBombTests
             {
                 Nmp2Strategy.MaxDecodedBytes = 8 * 1024;
 
-                (int topicCount, int entryCount, _, _) =
-                    ImportFromBytes(zipBytes, importStore);
-
-                topicCount.Should().Be(1, "the import must complete rather than abort on the bomb");
-                entryCount.Should().Be(1);
+                Action import = () => ImportFromBytes(zipBytes, importStore);
+                import.Should().Throw<BundleValidationException>().WithMessage("*invalid artifact body*");
             }
             finally
             {
                 Nmp2Strategy.MaxDecodedBytes = originalCap;
             }
 
-            // Assert — read through a COLD store so LoadIndex is a deterministic disk read rather
-            // than a race against the importing store's _scopeIndexCache fast lane. The bomb was
-            // gracefully tolerated: the entry exists but was never derived, so its Keywords stay
-            // null exactly as the bundle carried them.
-            using var cold = new FileMemoryStore(importRoot);
-            string scope = MemoryNaming.BuildScopedTopicScope("bomb");
-            var imported = cold.LoadIndex(scope);
-
-            imported.Should().NotBeEmpty("the topic must be imported");
-            imported.Single().Keywords.Should().BeNull(
-                because: "the MaxDecodedBytes cap fired during decode and import abstained from " +
-                         "enrichment rather than failing the whole bundle");
         }
         finally
         {
@@ -99,7 +84,7 @@ public sealed class BundleDecompressionBombTests
         }
     }
 
-    private static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories)
+    private static (int TopicCount, int EntryCount, List<string> Names)
         ImportFromBytes(byte[] zipBytes, IMemoryStore store)
     {
         using var ms = new MemoryStream(zipBytes);

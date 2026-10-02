@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Scrinia.Core.Models;
+using Scrinia.Core.Embeddings;
 
 namespace Scrinia.Services;
 
@@ -13,4 +14,12 @@ namespace Scrinia.Services;
 [JsonSerializable(typeof(MemorySearchRequest))]
 [JsonSerializable(typeof(MemoryListRequest))]
 [JsonSerializable(typeof(ArtifactEntry))]
+[JsonSerializable(typeof(EmbeddingsStatusResponse))]
+[JsonSerializable(typeof(EmbeddingsIndexRequest))]
+[JsonSerializable(typeof(EmbeddingsSearchRequest))]
+[JsonSerializable(typeof(EmbeddingsRemoveRequest))]
+[JsonSerializable(typeof(EmbeddingsOperationResponse))]
+[JsonSerializable(typeof(EmbeddingsSearchResponse))]
+[JsonSerializable(typeof(Dictionary<string, string[]>))]
+[JsonSerializable(typeof(Dictionary<string, double>))]
 internal partial class PluginClientJsonContext : JsonSerializerContext;

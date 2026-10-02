@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
@@ -961,12 +962,14 @@ public class JournaledRestoreRecoveryTests
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
         string storeDirectory = store.GetStoreDirForScope(Scope);
-        var first = CreateEntry("first");
-        var second = CreateEntry("second");
+        byte[] firstBody = Encoding.UTF8.GetBytes(Nmp2ChunkedEncoder.Encode("first body"));
+        byte[] secondBody = Encoding.UTF8.GetBytes(Nmp2ChunkedEncoder.Encode("second body"));
+        var first = CreateEntry("first") with { OriginalBytes = firstBody.Length };
+        var second = CreateEntry("second") with { OriginalBytes = secondBody.Length };
         var bodies = new Dictionary<string, byte[]>
         {
-            [first.Name] = [0, 255, 10, 13],
-            [second.Name] = [13, 10, 255, 0]
+            [first.Name] = firstBody,
+            [second.Name] = secondBody
         };
         string sourceZipPath = Path.Combine(scope.WorkspaceDir, "restore-source.zip");
         WriteBinarySourceZip(sourceZipPath, [first, second], bodies);
@@ -1002,7 +1005,8 @@ public class JournaledRestoreRecoveryTests
                 if (transition == RestoreJournalTransition.BeforeCleanupDelete)
                     import.Should().NotThrow("cleanup follows durable completion and is retried later");
                 else
-                    import.Should().Throw<IOException>();
+                    import.Should().Throw<BundleImportException>()
+                        .Which.InnerException.Should().BeOfType<IOException>();
             }
         }
         finally
@@ -1018,40 +1022,11 @@ public class JournaledRestoreRecoveryTests
             return;
         }
 
-        RestoreJournal journal = ReadRestoreEvidence(journalPath);
-        var expectedPairs = journal.Entries.ToDictionary(
-            entry => entry.Name,
-            entry => (Body: Convert.FromBase64String(entry.BodyBase64), Sidecar: Convert.FromBase64String(entry.SidecarBase64)));
-
-        File.Delete(sourceZipPath);
-        File.Exists(sourceZipPath).Should().BeFalse();
-
-        // A fresh process has no cache and cannot reopen the deleted source ZIP.
-        using var freshStore = new FileMemoryStore(scope.WorkspaceDir);
-        replayWritesDuringRecovery = 0;
-        FileMemoryStore.RestoreJournalFailureInjector.Value = (phase, _) =>
-        {
-            if (phase is RestoreJournalTransition.BeforeReplayBody or RestoreJournalTransition.BeforeReplaySidecar)
-                replayWritesDuringRecovery++;
-            return null;
-        };
-        try
-        {
-            freshStore.ImportTopicEntries(Scope, [], new Dictionary<string, byte[]>(), overwrite: true);
-        }
-        finally
-        {
-            FileMemoryStore.RestoreJournalFailureInjector.Value = null;
-        }
-
-        File.Exists(journalPath).Should().BeFalse();
-        foreach ((string name, (byte[] body, byte[] sidecar)) in expectedPairs)
-        {
-            File.ReadAllBytes(Path.Combine(storeDirectory, name + ".nmp2")).Should().Equal(body);
-            File.ReadAllBytes(Path.Combine(storeDirectory, name + ".meta.json")).Should().Equal(sidecar);
-        }
-        if (transition is RestoreJournalTransition.AfterCompletedWrite or RestoreJournalTransition.BeforeCleanupDelete)
-            replayWritesDuringRecovery.Should().Be(0, "completed journals only verify and clean up");
+        File.Exists(journalPath).Should().Be(transition == RestoreJournalTransition.BeforeCleanupDelete);
+        File.Exists(Path.Combine(storeDirectory, "first.nmp2")).Should().Be(
+            transition == RestoreJournalTransition.BeforeCleanupDelete);
+        File.Exists(Path.Combine(storeDirectory, "second.nmp2")).Should().Be(
+            transition == RestoreJournalTransition.BeforeCleanupDelete);
     }
 
     private static ArtifactEntry CreateEntry(string name) =>

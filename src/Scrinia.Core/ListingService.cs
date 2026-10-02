@@ -124,6 +124,41 @@ internal sealed class ListingService
         return result;
     }
 
+    internal IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(
+        IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics, string query, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        var selected = new List<ScopedArtifact>(limit);
+        IEnumerable<ScopedArtifact> source = EnumerateScoped(scopes, excludeTopics);
+        foreach (ScopedArtifact candidate in source)
+        {
+            selected.Add(candidate);
+            if (selected.Count <= limit)
+                continue;
+
+            selected = SearchCandidateOptions.RankLexically(selected, query).Take(limit).ToList();
+        }
+
+        return SearchCandidateOptions.RankLexically(selected, query);
+    }
+
+    private IEnumerable<ScopedArtifact> EnumerateScoped(
+        IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
+    {
+        if (_includesEphemeral(scopes))
+        {
+            foreach (ScopedArtifact artifact in _listEphemeral())
+                yield return artifact;
+        }
+
+        IReadOnlyList<string> resolved = excludeTopics is { Count: > 0 }
+            ? _resolveReadScopesWithExcludes(scopes, excludeTopics)
+            : _resolveReadScopes(scopes);
+        foreach (string scope in resolved)
+        foreach (ArtifactEntry entry in _loadIndex(scope))
+            yield return new ScopedArtifact(scope, entry);
+    }
+
     /// <summary>
     /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to, so
     /// a wider or differently-scoped SearchQuery.Candidates cannot change a search's answer. A list

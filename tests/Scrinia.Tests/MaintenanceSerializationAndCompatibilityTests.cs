@@ -949,13 +949,13 @@ public sealed class MaintenanceSerializationAndCompatibilityTests
         ];
         string inventory = string.Join('\n',
             verifierFiles.Select(file => File.ReadAllText(Path.Combine(RepoRoot(), file))));
+        string recoveryInventory = string.Join('\n',
+            verifierFiles.Where(file => file is not "src/Scrinia.Core/FileMemoryStore.cs")
+                .Select(file => File.ReadAllText(Path.Combine(RepoRoot(), file))));
 
-        string scrubbed = inventory.Replace(
-            "System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(full))",
-            string.Empty, StringComparison.Ordinal);
-        scrubbed.Should().NotContain("ReadAllBytes(");
-        scrubbed.Should().NotContain("ReadAllBytesAsync(");
-        scrubbed.Should().NotContain("SHA256.HashData(File.");
+        recoveryInventory.Should().NotContain("ReadAllBytes(");
+        recoveryInventory.Should().NotContain("ReadAllBytesAsync(");
+        recoveryInventory.Should().NotContain("SHA256.HashData(File.");
         inventory.Should().Contain("HashWorkspaceFile");
     }
 

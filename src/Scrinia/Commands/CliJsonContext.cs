@@ -77,7 +77,7 @@ internal sealed record CliShowOutput(string Name, string Content, int Length);
 internal sealed record CliStoreOutput(string Name, long OriginalBytes, string Message);
 internal sealed record CliForgetOutput(string Name, string Message);
 internal sealed record CliExportOutput(string Message);
-internal sealed record CliImportOutput(string Message);
+internal sealed record CliImportOutput(string Message, string? ErrorCode = null, string? Status = null);
 internal sealed record CliBundleOutput(string Path, int FileCount, string Topic, long BundleBytes, string Message);
 internal sealed record CliConfigOutput(Dictionary<string, string>? Settings, string? Key, string? Value);
 internal sealed record CliReindexOutput(int Embedded, int Total, int Skipped, int Failed, string Message);

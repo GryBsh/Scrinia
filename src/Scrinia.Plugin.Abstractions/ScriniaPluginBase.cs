@@ -9,5 +9,4 @@ public abstract class ScriniaPluginBase : IScriniaPlugin
 {
     public abstract string Name { get; }
     public abstract string Version { get; }
-    public virtual int Order => 0;
 }

@@ -70,7 +70,8 @@ internal sealed record FileEntityRecoveryBody(
     [property: JsonPropertyName("archiveMetaPath")] string? ArchiveMetaPath,
     [property: JsonPropertyName("committedBody")] RecoveryMemberSnapshot? CommittedBody,
     [property: JsonPropertyName("committedMeta")] RecoveryMemberSnapshot? CommittedMeta,
-    [property: JsonPropertyName("state")] string State) : RecoveryBody;
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("deletedMembers")] IReadOnlyList<RecoveryMemberSnapshot>? DeletedMembers = null) : RecoveryBody;
 
 internal sealed class RecoveryOperationJsonConverter : JsonConverter<RecoveryOperation>
 {
@@ -843,7 +844,9 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             ArchiveBodyPath = CanonicalizeOptionalArchive(body.ArchiveBodyPath, expectedEvidenceDirectory, entityName,
                 metadataOnly ? MemberRole.Meta : MemberRole.Body, bodyFileName, evidencePath),
             ArchiveMetaPath = CanonicalizeOptionalArchive(body.ArchiveMetaPath, expectedEvidenceDirectory, entityName,
-                MemberRole.Meta, body.ArchiveBodyPath, evidencePath)
+                MemberRole.Meta, body.ArchiveBodyPath, evidencePath),
+            DeletedMembers = CanonicalizeDeletedMembers(body.DeletedMembers, expectedEvidenceDirectory, entityName,
+                evidencePath)
         };
 
         ValidateFileEntitySnapshotShape(body, validated.State, evidencePath);
@@ -946,6 +949,25 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         {
             Path = CanonicalizeMemberPath(member.Path, directory, entityName, role, allowVersions: false, evidencePath)
         };
+    }
+
+    private static IReadOnlyList<RecoveryMemberSnapshot>? CanonicalizeDeletedMembers(
+        IReadOnlyList<RecoveryMemberSnapshot>? members, string directory, string entityName, string evidencePath)
+    {
+        if (members is not { Count: > 0 })
+            return members;
+
+        return members.Select(member =>
+        {
+            string fileName = Path.GetFileName(member.Path);
+            MemberRole role = fileName.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase)
+                ? MemberRole.Meta : MemberRole.Body;
+            return member with
+            {
+                Path = CanonicalizeMemberPath(member.Path, Path.Combine(directory, "versions"), entityName,
+                    role, allowVersions: true, evidencePath)
+            };
+        }).ToArray();
     }
 
     private static string? CanonicalizeOptionalArchive(string? path, string directory,

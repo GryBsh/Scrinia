@@ -234,17 +234,20 @@ public static class BundleFormatService
     /// Read and import topics from a zip archive into the store.
     /// </summary>
     /// <returns>
-    /// Tuple of (imported topic count, imported entry count, topic names, skipped file-entity
-    /// categories — manifest categories with no <see cref="CategoryToKind"/> entry, reported
-    /// rather than silently dropped).
+    /// Tuple of (committed topic count, committed entry count, and topic names).
     /// </returns>
-    /// <exception cref="InvalidOperationException">If bundle is malformed.</exception>
-    public static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportTopicsFromZip(
+    /// <exception cref="BundleValidationException">If the bundle is malformed or unsupported.</exception>
+    public static (int TopicCount, int EntryCount, List<string> Names) ImportTopicsFromZip(
         ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)
+        => ImportTopicsFromZipAsync(zip, store, filterTopics, overwrite).GetAwaiter().GetResult();
+
+    public static async Task<(int TopicCount, int EntryCount, List<string> Names)> ImportTopicsFromZipAsync(
+        ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite,
+        CancellationToken ct = default)
     {
         // Read manifest
         var manifestEntry = zip.GetEntry("manifest.json")
-            ?? throw new InvalidOperationException("Invalid bundle — manifest.json not found.");
+            ?? throw new BundleValidationException("INVALID_BUNDLE: manifest.json not found.");
 
         string manifestJson = ReadZipEntryText(manifestEntry);
 
@@ -256,27 +259,37 @@ public static class BundleFormatService
 
         if (FormatVersion.Evaluate(DurableFormats.BundleManifest, declaredVersion)
             == FormatDisposition.Refuse)
-            throw new InvalidOperationException(
-                $"Invalid bundle — manifest declares version {declaredVersion}, but this build " +
+            throw new BundleValidationException(
+                $"INVALID_BUNDLE: manifest declares version {declaredVersion}, but this build " +
                 $"of scri supports up to {DurableFormats.BundleManifest.Current}. " +
                 "Re-export the bundle with a matching version, or upgrade scri.");
 
         if (!root.TryGetProperty("topics", out var topicsElement))
-            throw new InvalidOperationException("Invalid bundle — no topics in manifest.");
+            throw new BundleValidationException("INVALID_BUNDLE: no topics in manifest.");
+        if (topicsElement.ValueKind != JsonValueKind.Array)
+            throw new BundleValidationException("INVALID_BUNDLE: manifest topics must be an array.");
 
         var availableTopics = new List<string>();
+        var topicNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var t in topicsElement.EnumerateArray())
         {
-            string? topicName = t.GetString();
-            if (topicName is not null)
-                availableTopics.Add(topicName);
+            if (t.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(t.GetString()))
+                throw new BundleValidationException("INVALID_BUNDLE: manifest contains a non-string topic name.");
+            string topicName = t.GetString()!;
+            if (!topicNames.Add(topicName))
+                throw new BundleValidationException($"INVALID_BUNDLE: manifest contains duplicate topic '{topicName}'.");
+            availableTopics.Add(topicName);
         }
 
         // Filter topics
-        var topicsToImport = filterTopics is { Length: > 0 }
+        var selectedTopicNames = filterTopics is { Length: > 0 }
             ? availableTopics.Where(t => filterTopics.Any(f =>
-                f.Trim().Equals(t, StringComparison.OrdinalIgnoreCase))).ToList()
-            : availableTopics;
+                f.Trim().Equals(t, StringComparison.OrdinalIgnoreCase)))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : availableTopics.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Validation is complete even for a filtered restore. Filtering controls the immutable
+        // plan, not which declared archive members are allowed to be malformed or missing.
+        var topicsToImport = availableTopics;
 
         // Task 13: validate EVERY manifest topic before writing anything. The scope constructor
         // throws for a topic it cannot build (a trailing dot, a bare ".", NUL), and this loop
@@ -297,13 +310,14 @@ public static class BundleFormatService
         foreach (string topic in topicsToImport)
         {
             if (!MemoryNaming.TryBuildScopedTopicScope(topic, out _))
-                throw new InvalidOperationException(
-                    $"Invalid bundle — manifest topic '{topic}' is not a usable scope name.");
+                throw new BundleValidationException(
+                    $"INVALID_BUNDLE: manifest topic '{topic}' is not a usable scope name.");
         }
 
-        int importedTopics = 0;
-        int importedEntries = 0;
-        var importedTopicNames = new List<string>();
+        int declaredTotalEntries = root.TryGetProperty("totalEntries", out var totalEl)
+            && totalEl.TryGetInt32(out int total) ? total : -1;
+        if (declaredTotalEntries < 0)
+            throw new BundleValidationException("INVALID_BUNDLE: manifest totalEntries is missing or invalid.");
 
         // BUILD PASS — parse and validate every topic before writing any of them. The malformed-
         // index InvalidOperationException below used to live inside the write loop, which meant a
@@ -330,7 +344,8 @@ public static class BundleFormatService
 
             var indexZipEntry = zip.GetEntry($"topics/{bundleTopic}/index.json");
             if (indexZipEntry is null)
-                continue;
+                throw new BundleValidationException(
+                    $"INVALID_BUNDLE: manifest topic '{topic}' declares a missing index.json.");
 
             string indexJson = ReadZipEntryText(indexZipEntry);
 
@@ -348,7 +363,7 @@ public static class BundleFormatService
             // Deserialize) closes the whole class of "this topic's index.json is unreadable" —
             // structurally invalid JSON text, not only a validly-shaped value this type rejects —
             // rather than the one path a narrower catch would have named. Converting to
-            // InvalidOperationException keeps the contract this method documents (:125) true, and
+             // BundleValidationException keeps the contract this method documents (:125) true, and
             // names the topic so the bad entry is findable.
             BundleIndex? index;
             try
@@ -359,8 +374,8 @@ public static class BundleFormatService
                     // whole topic while other topics still imported — a silent partial restore,
                     // and the pre-branch code threw here (JsonElement.TryGetProperty throws on a
                     // non-object). Refuse it like any other unreadable index, before any write.
-                    throw new InvalidOperationException(
-                        $"Invalid bundle — topic '{topic}' has an unreadable index: " +
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' has an unreadable index: " +
                         "the index root is not a JSON object.");
 
                 BundleLegacyKeys.NormalizeIndex(indexObject);
@@ -369,8 +384,8 @@ public static class BundleFormatService
             }
             catch (Exception ex) when (ex is JsonException or ArgumentException)
             {
-                throw new InvalidOperationException(
-                    $"Invalid bundle — topic '{topic}' has an unreadable index: {ex.Message}", ex);
+                throw new BundleValidationException(
+                    $"INVALID_BUNDLE: topic '{topic}' has an unreadable index: {ex.Message}", ex);
             }
             if (index?.Entries is not { Count: > 0 })
                 continue;
@@ -402,8 +417,8 @@ public static class BundleFormatService
                 // This runs in the build pass, before any topic is written, so refusing here
                 // cannot leave an earlier valid topic half-imported.
                 if (!deserialized.Address.IsValid)
-                    throw new InvalidOperationException(
-                        $"Invalid bundle — topic '{topic}' has an entry at index {entryIndex} " +
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' has an entry at index {entryIndex} " +
                         "with a missing or invalid address.");
 
                 string subject = SubjectFromAddress(deserialized.Address);
@@ -413,8 +428,8 @@ public static class BundleFormatService
                 }
                 catch (InvalidMemoryWriteException ex)
                 {
-                    throw new InvalidOperationException(
-                        $"Invalid bundle — topic '{topic}' has an entry '{subject}' that {ex.Message}", ex);
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' has an entry '{subject}' that {ex.Message}", ex);
                 }
 
                 // Same "refuse before any write" reasoning as the nameless-entry check above.
@@ -426,8 +441,8 @@ public static class BundleFormatService
                 // here, so the policy stays in the one table instead of being restated at a site.
                 if (FormatVersion.Evaluate(DurableFormats.BundleEntry, deserialized.SchemaVersion)
                     == FormatDisposition.Refuse)
-                    throw new InvalidOperationException(
-                        $"Invalid bundle — topic '{topic}' has an entry '{deserialized.Name}' " +
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' has an entry '{deserialized.Name}' " +
                         $"with schema version {deserialized.SchemaVersion}, but this build of " +
                         $"scri supports up to {DurableFormats.BundleEntry.Current}. " +
                         "Re-export the bundle with a matching version, or upgrade scri.");
@@ -437,6 +452,11 @@ public static class BundleFormatService
                 // FALLBACK, not a merge: an entry carrying both "fields" and legacy "tags" keeps
                 // only the tags-derived attributes, exactly as it does today.
                 var entry = deserialized.NormalizeAttributesKey() with { Name = subject };
+
+                if (entries.Any(existing => string.Equals(existing.Name, entry.Name,
+                        StringComparison.OrdinalIgnoreCase)))
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' contains duplicate entry '{entry.Name}'.");
 
                 // The deleted hand-parse defaulted a missing "chunkCount" to 1; the deserializer
                 // leaves it at 0. Modern bundles always carry the key, so this only bites
@@ -448,9 +468,22 @@ public static class BundleFormatService
 
                 string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(entry.Name)}.nmp2";
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
-                if (artifactZipEntry is not null)
+                if (artifactZipEntry is null)
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' declares artifact '{entry.Name}' but its body is missing.");
+                artifactBytes[entry.Name] = ReadZipArtifactBytes(artifactZipEntry);
+
+                string[] validatedChunks;
+                try
                 {
-                    artifactBytes[entry.Name] = ReadZipArtifactBytes(artifactZipEntry);
+                    validatedChunks = Nmp2ChunkedEncoder.DecodeAllChunksVerified(
+                        System.Text.Encoding.UTF8.GetString(artifactBytes[entry.Name])).Chunks;
+                }
+                catch (Exception ex) when (ex is FormatException or InvalidDataException
+                    or InvalidOperationException or OverflowException or ArgumentOutOfRangeException)
+                {
+                    throw new BundleValidationException(
+                        $"INVALID_BUNDLE: topic '{topic}' entry '{entry.Name}' has an invalid artifact body.", ex);
                 }
 
                 // A null Keywords means this entry was never derived — `scri bundle` packages
@@ -463,28 +496,14 @@ public static class BundleFormatService
                 // CANNOT be re-derived (AgentKeywords, FileHashes, timestamps); this fills what
                 // was never there. Attributes are never rewritten here — the bundle's are
                 // authoritative and round-trip intact.
-                if (entry.Keywords is null && artifactBytes.TryGetValue(entry.Name, out byte[]? artifactBytesForEntry))
+                if (entry.Keywords is null)
                 {
-                    // A bundle is untrusted external input — hand-crafted, foreign, or corrupted —
-                    // and before this feature existed, import never decoded artifact bytes at all,
-                    // so such a bundle still imported successfully. Two decisions sit side by side
-                    // in this method that can look contradictory unless the distinction is written
-                    // down: a malformed `createdAt` (":230-244" above) REFUSES the whole import,
-                    // while an undecodable artifact here is TOLERATED. They are not the same kind
-                    // of failure.
-                    //   - A malformed timestamp would make us INVENT metadata — guessing "now" is
-                    //     the CreatedAt-reset defect this branch exists to remove.
-                    //   - An undecodable artifact makes us DECLINE TO ENRICH. Leaving Keywords null
-                    //     preserves its exact prior meaning — "never derived" — so nothing is
-                    //     fabricated and nothing that was there is lost.
-                    // One fabricates; the other abstains. Making decode failure fatal here would
-                    // make this derivation step — purely additive by design — newly REJECT bundles
-                    // that imported fine a moment ago, an acceptance regression caused by an
-                    // enrichment feature. So one entry's artifact failing to decode must not abort
-                    // the whole import; it must fall through with Keywords left exactly as the
-                    // bundle carried it (still null).
-                    //
-                    // The catch list below was determined by reading the decode path, not guessed:
+                // A bundle is untrusted external input. Every declared artifact body is required
+                // restore data, so decode failure refuses the complete plan before any mutation.
+                // This is intentionally stricter than the old enrichment-only path, which could
+                // import an undecodable body while leaving Keywords null.
+                //
+                // The catch list below was determined by reading the decode path, not guessed:
                     //   - FormatException: Nmp2Strategy.Base64UrlDecode -> Convert.FromBase64String
                     //     on data that isn't valid base64 (confirmed via a real run against
                     //     non-NMP/2 plain text).
@@ -510,34 +529,12 @@ public static class BundleFormatService
                     //     branches of DecodeAllChunksVerified. This was removed in an earlier round
                     //     as "unreachable" — true of DecodeChunk's own index bounds, false of this
                     //     route, which is why the reason is recorded here rather than the verdict.
-                    string[]? chunks;
-                    try
-                    {
-                        // The shared decode path, not a local one: it carries the chunk-count
-                        // bound, the MaxDecodedBytes decompression-bomb budget and the CRC/length
-                        // integrity check, and it decompresses each chunk once rather than twice.
-                        // Bundle content is untrusted, so all three matter here. A hand-rolled
-                        // per-chunk loop over Nmp2ChunkedEncoder.GetChunkCount/DecodeChunk used to
-                        // live here; it duplicated the chunk-count bound and omitted the other two,
-                        // making it a seventh decode path on top of six existing production callers
-                        // of this exact method — the drift this branch exists to stop.
-                        string artifact = System.Text.Encoding.UTF8.GetString(artifactBytesForEntry);
-                        chunks = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks;
-                    }
-                    catch (Exception ex) when (ex is FormatException or InvalidDataException
-                        or InvalidOperationException or OverflowException
-                        or ArgumentOutOfRangeException)
-                    {
-                        chunks = null;
-                    }
-
-                    if (chunks is not null)
                     {
                         // fileHasher is null deliberately: hashing this machine's files against
                         // paths captured on the exporting machine would fabricate a drift baseline
                         // that never existed. A bundle's own FileHashes is preserved as-is above.
                         var derived = MemoryDerivation.ForStore(
-                            chunks, keywords: entry.AgentKeywords, fileHasher: null);
+                            validatedChunks, keywords: entry.AgentKeywords, fileHasher: null);
 
                         entry = entry with
                         {
@@ -552,36 +549,49 @@ public static class BundleFormatService
                 entries.Add(entry);
             }
 
-            if (entries.Count > 0)
+            if (entries.Count > 0 && selectedTopicNames.Contains(topic))
                 toWrite.Add((topicScope, topic, entries, artifactBytes));
         }
 
-        ImmutableArray<FileEntityWrite> fileEntityWrites;
-        List<string> skippedCategories;
-        (fileEntityWrites, skippedCategories) = BuildFileEntityWrites(zip, root, store);
+        if (declaredTotalEntries != availableTopics.Sum(topic =>
+                topic.Equals(string.Empty, StringComparison.Ordinal) ? 0 :
+                ReadDeclaredEntryCount(zip, topic)))
+            throw new BundleValidationException("INVALID_BUNDLE: manifest totalEntries does not match declared topic entries.");
 
-        // WRITE PASS — nothing above this point has touched the store, so every throw in the
-        // build pass above happens before any side effect. Holding every topic's entries and
-        // artifact text in memory here is acceptable and consistent with the rest of this file,
-        // which already reads whole artifacts into memory during export; this is not a streaming
-        // path and should not become one.
-        foreach (var (topicScope, topic, entries, artifactBytes) in toWrite)
+        // File entities are archive-wide rather than topic-scoped. A partial topic selection must
+        // therefore leave them untouched; otherwise a filtered restore would still mutate the
+        // unselected skill/agent surface. When the filter selects the complete topic set, the
+        // archive is effectively unfiltered and its file entities remain part of the restore.
+        bool restoreFileEntities = selectedTopicNames.Count == availableTopics.Count;
+        IReadOnlyList<BundleFileEntityRestore> fileEntities = restoreFileEntities
+            ? BuildFileEntityWrites(zip, root, store)
+            : [];
+        var planTopics = toWrite.Select(item => new BundleTopicRestore(
+            item.TopicScope, item.Topic, item.Entries, item.ArtifactBytes)).ToList();
+        var plan = new BundleRestorePlan(planTopics, fileEntities, overwrite);
+        BundleRestoreResult result = await store.RestoreBundleAsync(plan, ct).ConfigureAwait(false);
+        return (result.TopicCount, result.EntryCount, planTopics.Select(t => t.Topic).ToList());
+    }
+
+    private static int ReadDeclaredEntryCount(ZipArchive zip, string topic)
+    {
+        string scope = MemoryNaming.BuildScopedTopicScope(topic);
+        string key = MemoryNaming.FormatScopeLabel(scope);
+        ZipArchiveEntry entry = zip.GetEntry($"topics/{key}/index.json")
+            ?? throw new BundleValidationException($"INVALID_BUNDLE: topic '{topic}' has no index.");
+        try
         {
-            // The interface keeps the void contract; the per-memory outcome flows through the
-            // concrete store method. Captured for the FromImport boundary mapping but deliberately
-            // NOT folded into the summary below — the multi-topic summary and its facade envelope
-            // stay byte-identical to pre-B1.
-            ImportMemoryResult importResult = ((FileMemoryStore)store).ImportTopicEntries(
-                topicScope, entries, artifactBytes, overwrite);
-            importedTopics++;
-            importedEntries += entries.Count;
-            importedTopicNames.Add(topic);
-            _ = importResult;
+            using JsonDocument document = JsonDocument.Parse(ReadZipEntryText(entry));
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("entries", out JsonElement entries)
+                || entries.ValueKind != JsonValueKind.Array)
+                throw new BundleValidationException($"INVALID_BUNDLE: topic '{topic}' index has no entries.");
+            return entries.GetArrayLength();
         }
-
-        WriteFileEntities(fileEntityWrites);
-
-        return (importedTopics, importedEntries, importedTopicNames, skippedCategories);
+        catch (JsonException ex)
+        {
+            throw new BundleValidationException($"INVALID_BUNDLE: topic '{topic}' index is malformed.", ex);
+        }
     }
 
     private static JsonDocument ParseManifest(string manifestJson)
@@ -592,8 +602,8 @@ public static class BundleFormatService
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException(
-                $"Invalid bundle — manifest.json is not valid JSON: {ex.Message}", ex);
+            throw new BundleValidationException(
+                $"INVALID_BUNDLE: manifest.json is not valid JSON: {ex.Message}", ex);
         }
     }
 
@@ -636,7 +646,7 @@ public static class BundleFormatService
         // alongside the streaming cap below. Shared by the artifact and file-entity import
         // paths so the guard lives in one place (design-review finding #2).
         if (entry.Length > maximumBytes)
-            throw new InvalidOperationException($"Invalid bundle — '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
+            throw new BundleValidationException($"INVALID_BUNDLE: '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
 
         try
         {
@@ -649,7 +659,7 @@ public static class BundleFormatService
             {
                 totalBytes = checked(totalBytes + read);
                 if (totalBytes > maximumBytes)
-                    throw new InvalidOperationException($"Invalid bundle — member '{entry.FullName}' exceeds the maximum raw size.");
+                    throw new BundleValidationException($"INVALID_BUNDLE: member '{entry.FullName}' exceeds the maximum raw size.");
 
                 bytes.Write(buffer, 0, read);
             }
@@ -740,47 +750,47 @@ public static class BundleFormatService
         return fileEntities;
     }
 
-    private sealed record FileEntityWrite(string Category, string FileName, string Destination, byte[] Bytes);
+    private sealed record FileEntityWrite(string Kind, string Name, byte[] Body, byte[]? Sidecar);
 
     /// <summary>
     /// Builds the approved file-entity writes without creating directories or replacing files.
     /// A v1 manifest without <c>fileEntities</c> has no file-entity work.
     /// </summary>
-    private static (ImmutableArray<FileEntityWrite> Writes, List<string> SkippedCategories) BuildFileEntityWrites(
+    private static ImmutableArray<BundleFileEntityRestore> BuildFileEntityWrites(
         ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
     {
-        var skippedCategories = new List<string>();
-        var writes = ImmutableArray.CreateBuilder<FileEntityWrite>();
+        var writes = ImmutableArray.CreateBuilder<BundleFileEntityRestore>();
 
         if (!manifestRoot.TryGetProperty("fileEntities", out var fileEntitiesEl))
-            return (writes.ToImmutable(), skippedCategories);
+            return writes.ToImmutable();
 
         if (fileEntitiesEl.ValueKind != JsonValueKind.Object)
-            throw new InvalidOperationException(
-                "Invalid bundle — manifest fileEntities must be a JSON object when present.");
+            throw new BundleValidationException(
+                "INVALID_BUNDLE: manifest fileEntities must be a JSON object when present.");
 
         foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
         {
             string category = categoryProp.Name;
 
-            // CategoryToKind is the single allowlist: it doubles as both "is this category
-            // recognised" and "where does it live on disk". A category with no kind (deleted,
-            // like "workflows", or an unrecognised/crafted key) is reported, never written.
-            if (!CategoryToKind.ContainsKey(category))
-            {
-                skippedCategories.Add(category);
-                continue;
-            }
+            // CategoryToKind is the single allowlist. Unknown categories are not optional data:
+            // accepting them would make a restore silently incomplete.
+            if (!CategoryToKind.TryGetValue(category, out string? kind))
+                throw new BundleValidationException($"INVALID_BUNDLE: unknown file-entity category '{category}'.");
 
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
-                throw new InvalidOperationException(
-                    $"Invalid bundle — file category '{category}' must be an array.");
+                throw new BundleValidationException(
+                    $"INVALID_BUNDLE: file category '{category}' must be an array.");
 
-            string categoryDir = CategoryDir(store, category)!;
-
-            foreach (var fileEl in categoryProp.Value.EnumerateArray())
+            var names = new List<string?>();
+            foreach (JsonElement fileElement in categoryProp.Value.EnumerateArray())
             {
-                string? fileName = fileEl.GetString();
+                if (fileElement.ValueKind != JsonValueKind.String)
+                    throw InvalidFileEntity(category, null, "contains a non-string filename");
+                names.Add(fileElement.GetString());
+            }
+            var declaredNames = names.OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (string? fileName in names)
+            {
                 if (!IsSupportedFileEntityName(fileName))
                     throw InvalidFileEntity(category, fileName, "has an unsafe or unsupported filename");
 
@@ -790,42 +800,32 @@ public static class BundleFormatService
                 if (zipEntry is null)
                     throw InvalidFileEntity(category, fileName, "is declared but missing from the archive");
 
-                string destPath = Path.Combine(categoryDir, approvedFileName);
-                string fullDest = Path.GetFullPath(destPath);
-                if (!PathContainment.IsWithin(categoryDir, fullDest))
-                    throw InvalidFileEntity(category, fileName, "resolves outside its destination directory");
-
                 byte[] content = ReadZipEntryBytes(zipEntry);
 
                 ValidateFileEntityMetadata(category, approvedFileName, content);
-                writes.Add(new FileEntityWrite(category, approvedFileName, fullDest, content));
+                if (!approvedFileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                {
+                    string bodyName = approvedFileName[..^".meta.json".Length] + ".md";
+                    if (!declaredNames.Contains(bodyName))
+                        throw InvalidFileEntity(category, approvedFileName, "is declared without its file body");
+                    continue;
+                }
+
+                string sidecarName = Path.GetFileNameWithoutExtension(approvedFileName) + ".meta.json";
+                byte[]? sidecar = null;
+                if (names.Any(name => string.Equals(name, sidecarName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    ZipArchiveEntry sidecarEntry = zip.GetEntry($"files/{category}/{sidecarName}")
+                        ?? throw InvalidFileEntity(category, sidecarName, "is declared but missing from the archive");
+                    sidecar = ReadZipEntryBytes(sidecarEntry);
+                    ValidateFileEntityMetadata(category, sidecarName, sidecar);
+                }
+
+                writes.Add(new BundleFileEntityRestore(kind, approvedFileName, content, sidecar));
             }
         }
 
-        return (writes.ToImmutable(), skippedCategories);
-    }
-
-    /// <summary>
-    /// Writes an already-approved bundle file set. This is deliberately prefix-consistent: each
-    /// selected file is atomically replaced, but a failure can leave an applied prefix and an
-    /// untouched suffix. Journaled restore recovery is not provided here.
-    /// </summary>
-    private static void WriteFileEntities(ImmutableArray<FileEntityWrite> writes)
-    {
-        foreach (var write in writes)
-        {
-            string directory = Path.GetDirectoryName(write.Destination)!;
-            try
-            {
-                Directory.CreateDirectory(directory);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                throw new DurableWriteException("create directory", directory, exception);
-            }
-
-            DurableFile.AtomicWriteAllBytes(write.Destination, write.Bytes);
-        }
+        return writes.ToImmutable();
     }
 
     private static bool IsSupportedFileEntityName(string? fileName)
@@ -881,7 +881,7 @@ public static class BundleFormatService
         }
     }
 
-    private static InvalidOperationException InvalidFileEntity(
+    private static BundleValidationException InvalidFileEntity(
         string category, string? fileName, string reason, Exception? innerException = null) =>
-        new($"Invalid bundle — file entity '{category}/{fileName ?? "<missing>"}' {reason}.", innerException);
+        new($"INVALID_BUNDLE: file entity '{category}/{fileName ?? "<missing>"}' {reason}.", innerException);
 }

@@ -123,6 +123,42 @@ public sealed class VectorStore : IDisposable, IVectorStore
         }
     }
 
+    public IReadOnlyList<VectorEntry> GetCandidateVectors(
+        string canonicalScope, IReadOnlyCollection<string> candidateNames)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(canonicalScope);
+        ArgumentNullException.ThrowIfNull(candidateNames);
+        if (candidateNames.Count == 0)
+            return [];
+
+        var allowedNames = candidateNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (_scopeVectors.TryGetValue(canonicalScope, out var cached))
+            return cached.Where(vector => allowedNames.Contains(vector.Name)).ToArray();
+
+        var lk = GetLock(canonicalScope);
+        if (!lk.Wait(TimeSpan.FromSeconds(30)))
+            throw new TimeoutException("VectorStore lock acquisition timed out after 30 seconds.");
+        try
+        {
+            if (_scopeVectors.TryGetValue(canonicalScope, out cached))
+                return cached.Where(vector => allowedNames.Contains(vector.Name)).ToArray();
+
+            if (MemoryArtifactSource.IsEphemeral(canonicalScope))
+                return [];
+
+            string path = GetFilePath(canonicalScope);
+            MigrateLegacyScopeFileIfPresent(canonicalScope, path);
+            if (!File.Exists(path))
+                return [];
+
+            return FileRetry.Run(() => LoadCandidateVectors(canonicalScope, path, allowedNames));
+        }
+        finally
+        {
+            lk.Release();
+        }
+    }
+
     /// <summary>
     /// Probes exactly the supplied canonical scopes for vector-file health.
     /// Missing scopes are returned as empty snapshots; existing files are loaded through the
@@ -469,7 +505,8 @@ public sealed class VectorStore : IDisposable, IVectorStore
         }
 
         // Validate through the single scope constructor before any Path.Combine.
-        // Ephemeral is allowed as-is; everything else must be buildable.
+        // Ephemeral is allowed as-is; everything else must be buildable without rewriting
+        // the caller's identity into a different scope.
         if (!MemoryArtifactSource.IsEphemeral(scope))
         {
             string topic = scope.StartsWith("local:", StringComparison.OrdinalIgnoreCase)
@@ -481,6 +518,9 @@ public sealed class VectorStore : IDisposable, IVectorStore
                 // Single constructor is the validation gate; SanitizeSegment is not.
                 if (!MemoryNaming.TryBuildScopedTopicScope(topic, out string normalized))
                     throw new ArgumentException($"Scope '{scope}' is not a valid scope.", nameof(scope));
+                string suppliedTopic = string.Join('/', topic.Split('/', StringSplitOptions.RemoveEmptyEntries));
+                if (!string.Equals(normalized["local:".Length..], suppliedTopic, StringComparison.Ordinal))
+                    throw new ArgumentException($"Scope '{scope}' is not a portable scope.", nameof(scope));
                 // Reject any segment that after sanitization still contains traversal tokens
                 foreach (var seg in normalized.Split([':', '/'], StringSplitOptions.RemoveEmptyEntries))
                 {
@@ -699,6 +739,106 @@ public sealed class VectorStore : IDisposable, IVectorStore
 
             return [];
         }
+    }
+
+    private List<VectorEntry> LoadCandidateVectors(
+        string scope, string path, HashSet<string> allowedNames)
+    {
+        using var fileLock = FileLock.AcquireShared(GetVectorLockPath(path));
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var reader = new BinaryReader(fs);
+        byte[] magic = reader.ReadBytes(4);
+        ushort dims;
+        if (magic.AsSpan().SequenceEqual(MagicSvf1))
+        {
+            if (_expectedSignature is not null)
+            {
+                fileLock.Dispose();
+                fs.Dispose();
+                QuarantineStaleFile(scope, path, "unsigned (SVF1)");
+                return [];
+            }
+
+            dims = reader.ReadUInt16();
+            uint count = reader.ReadUInt32();
+            var entries = new List<VectorEntry>();
+            for (uint i = 0; i < count; i++)
+            {
+                ushort nameLength = reader.ReadUInt16();
+                string name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLength));
+                int chunk = reader.ReadInt32();
+                if (allowedNames.Contains(name))
+                {
+                    float[] vector = new float[dims];
+                    for (int dimension = 0; dimension < dims; dimension++)
+                        vector[dimension] = reader.ReadSingle();
+                    entries.Add(new VectorEntry(name, chunk == -1 ? null : chunk, vector));
+                }
+                else
+                {
+                    reader.BaseStream.Seek(sizeof(float) * dims, SeekOrigin.Current);
+                }
+            }
+            return entries;
+        }
+
+        if (!magic.AsSpan().SequenceEqual(MagicSvf2) && !magic.AsSpan().SequenceEqual(MagicSvf3))
+            return [];
+
+        dims = reader.ReadUInt16();
+        if (magic.AsSpan().SequenceEqual(MagicSvf3))
+        {
+            ushort signatureLength = reader.ReadUInt16();
+            string signature = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(signatureLength));
+            if (_expectedSignature is not null && !string.Equals(signature, _expectedSignature, StringComparison.Ordinal))
+            {
+                fileLock.Dispose();
+                fs.Dispose();
+                QuarantineStaleFile(scope, path, signature);
+                return [];
+            }
+        }
+
+        return ReadCandidateEntryOps(reader, dims, allowedNames);
+    }
+
+    private static List<VectorEntry> ReadCandidateEntryOps(
+        BinaryReader reader, ushort dims, HashSet<string> allowedNames)
+    {
+        var entries = new Dictionary<string, VectorEntry>(StringComparer.OrdinalIgnoreCase);
+        while (reader.BaseStream.Position < reader.BaseStream.Length)
+        {
+            byte op = reader.ReadByte();
+            ushort nameLength = reader.ReadUInt16();
+            string name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLength));
+            int chunkValue = reader.ReadInt32();
+            string key = $"{name}|{chunkValue}";
+            bool wanted = allowedNames.Contains(name);
+            if (op == 0)
+            {
+                if (wanted)
+                {
+                    float[] vector = new float[dims];
+                    for (int dimension = 0; dimension < dims; dimension++)
+                        vector[dimension] = reader.ReadSingle();
+                    entries[key] = new VectorEntry(name, chunkValue == -1 ? null : chunkValue, vector);
+                }
+                else
+                {
+                    reader.BaseStream.Seek(sizeof(float) * dims, SeekOrigin.Current);
+                }
+            }
+            else if (op == 1)
+            {
+                entries.Remove(key);
+            }
+            else
+            {
+                throw new InvalidDataException("Vector file contains an unknown operation.");
+            }
+        }
+
+        return entries.Values.ToList();
     }
 
     private void QuarantineStaleFile(string scope, string path, string oldSignature)
