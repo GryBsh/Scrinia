@@ -32,6 +32,7 @@
     <ProjectReference Include="..\..\src\Scrinia\Scrinia.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\Scrinia.TestDoubles\Scrinia.TestDoubles.csproj" />
+    <ProjectReference Include="..\Scrinia.TestProcess\Scrinia.TestProcess.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

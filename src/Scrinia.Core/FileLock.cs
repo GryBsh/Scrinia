@@ -83,10 +83,24 @@ public sealed class FileLock : IDisposable
     public static FileLock AcquireShared(string lockPath, TimeSpan? timeout = null, ILogger? logger = null)
     {
         string? dir = Path.GetDirectoryName(lockPath);
-        if (dir is not null && !Directory.Exists(dir))
-            return new FileLock();
+        if (dir is not null)
+        {
+            try { _ = File.GetAttributes(dir); }
+            catch (FileNotFoundException) { return new FileLock(); }
+            catch (DirectoryNotFoundException) { return new FileLock(); }
+        }
 
         return Acquire(lockPath, FileAccess.Read, FileShare.Read, FileLockMode.Shared, timeout ?? TimeSpan.FromSeconds(5), logger);
+    }
+
+    internal static FileLock AcquireShared(string lockPath, TimeSpan timeout, CancellationToken cancellationToken,
+        ILogger? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(lockPath);
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "The lock timeout must be positive.");
+        cancellationToken.ThrowIfCancellationRequested();
+        return Acquire(lockPath, FileAccess.Read, FileShare.Read, FileLockMode.Shared, timeout, logger, cancellationToken);
     }
 
     private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, FileLockMode mode, TimeSpan timeout, ILogger? logger)
@@ -109,16 +123,6 @@ public sealed class FileLock : IDisposable
             try
             {
                 stream = new FileStream(lockPath, FileMode.OpenOrCreate, access, share);
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // Benign collision on deterministic sidecar content (see EnsureGitIgnore:241
-                // race comment and FileMemoryStore LoadIndexUnsafe migration write-back).
-                // The file that won the race left correct bytes; do not loop, do not throw.
-                // Return a lock over nothing so the caller can proceed to read the correct file.
-                if (File.Exists(lockPath))
-                    return new FileLock();
-                throw;
             }
             catch (IOException ex)
             {
@@ -172,7 +176,9 @@ public sealed class FileLock : IDisposable
                 contended = true;
                 LockContended(log, lockPath, sw.ElapsedMilliseconds, null);
             }
-            if (cancellationToken.WaitHandle.WaitOne(delayMs))
+            int waitMs = Math.Min(delayMs, Math.Max(1, (int)Math.Min(int.MaxValue,
+                Math.Ceiling((timeout - sw.Elapsed).TotalMilliseconds))));
+            if (cancellationToken.WaitHandle.WaitOne(waitMs))
                 cancellationToken.ThrowIfCancellationRequested();
             delayMs = Math.Min(delayMs * 2, 500);
         }
