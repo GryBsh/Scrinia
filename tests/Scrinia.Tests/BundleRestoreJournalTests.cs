@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json.Nodes;
 using FluentAssertions;
@@ -241,4 +243,61 @@ public sealed class BundleRestoreJournalTests
         }
         finally { Directory.Delete(link); }
     }
+
+    [Fact]
+    public void RejectsJournalSymlinkPreservingEvidence()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var journal = BundleRestoreJournalCodec.CreatePrepared("op", scope.WorkspaceDir, [Member()], BundleReadLimits.Default);
+        byte[] evidence = BundleRestoreJournalCodec.SerializeValidated(journal, scope.WorkspaceDir, BundleReadLimits.Default);
+        string target = Path.Combine(scope.WorkspaceDir, ".scrinia", "evidence.json");
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json");
+        File.WriteAllBytes(target, evidence);
+        File.CreateSymbolicLink(path, target);
+        Action read = () => BundleRestoreJournalCodec.ReadValidated(path, scope.WorkspaceDir, BundleReadLimits.Default);
+        read.Should().Throw<BundleImportException>().Where(e => e.Failure == BundleImportFailure.RecoveryRequired);
+        File.ReadAllBytes(target).Should().Equal(evidence);
+        new FileInfo(path).LinkTarget.Should().NotBeNull();
+    }
+
+    [SkippableFact]
+    public void UnixFifoMemberIsRejectedWithoutOpeningOrChangingEvidence()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix FIFO regression requires Unix.");
+        using var scope = new TestHelpers.StoreScope();
+        var journal = BundleRestoreJournalCodec.CreatePrepared("op", scope.WorkspaceDir, [Member()], BundleReadLimits.Default);
+        byte[] evidence = BundleRestoreJournalCodec.SerializeValidated(journal, scope.WorkspaceDir, BundleReadLimits.Default);
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json");
+        File.WriteAllBytes(path, evidence);
+        string member = Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "one.nmp2");
+        Directory.CreateDirectory(Path.GetDirectoryName(member)!);
+        MakeFifo(member, 0x180).Should().Be(0); // owner read/write (0600)
+        Action read = () => BundleRestoreJournalCodec.ReadValidated(path, scope.WorkspaceDir, BundleReadLimits.Default);
+        read.Should().Throw<BundleImportException>().Where(e => e.Failure == BundleImportFailure.RecoveryRequired);
+        // Keep this after the non-opening read assertion: the unfixed preflight would block on the FIFO.
+        Action preflight = () => BundleRestoreJournalCodec.PreflightCurrentState(journal, scope.WorkspaceDir, default);
+        preflight.Should().Throw<BundleImportException>().Where(e => e.Failure == BundleImportFailure.RecoveryRequired);
+        File.ReadAllBytes(path).Should().Equal(evidence);
+        File.Exists(member).Should().BeTrue();
+    }
+
+    [SkippableFact]
+    public void LinuxFifoJournalIsRejectedByClassificationBeforeContentAccess()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "The nonblocking test guard relies on Linux FIFO read/write-open behavior.");
+        using var scope = new TestHelpers.StoreScope();
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json");
+        MakeFifo(path, 0x180).Should().Be(0);
+        // Linux O_RDWR opens a FIFO immediately. This guard ensures even the unfixed reader
+        // cannot hang while waiting for a writer; the expected error still requires classification.
+        using var guard = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        Action read = () => BundleRestoreJournalCodec.ReadValidated(path, scope.WorkspaceDir, BundleReadLimits.Default);
+        read.Should().Throw<BundleImportException>().Where(e => e.Failure == BundleImportFailure.RecoveryRequired
+            && e.InnerException is InvalidDataException);
+        File.Exists(path).Should().BeTrue();
+    }
+
+    [DllImport("libc", EntryPoint = "mkfifo", SetLastError = true)]
+    [SuppressMessage("Globalization", "CA2101", Justification = "Unix paths use explicitly marshalled UTF-8, not UTF-16.")]
+    private static extern int MakeFifo([MarshalAs(UnmanagedType.LPUTF8Str)] string path, uint mode);
 }
