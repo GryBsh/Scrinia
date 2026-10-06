@@ -109,14 +109,19 @@ public static class DurableFormats
         new("multi-memory-transaction", Current: 1, AbsentMeans: null,
             FormatDisposition.Refuse, FormatDisposition.Refuse);
 
+    /// <summary>Operation-owned bundle restore evidence. Unknown versions are retained without replay.</summary>
+    public static readonly FormatContract BundleRestoreJournal =
+        new("bundle-restore-journal", Current: 1, AbsentMeans: null,
+            FormatDisposition.Refuse, FormatDisposition.Refuse);
+
     public static IReadOnlyList<FormatContract> All { get; } =
     [
         ArtifactSidecar, BundleEntry, EntityFacts, Nmp2Body, BundleManifest, LegacyIndex, SkillMeta, AgentMeta,
-        RestoreJournal, AppendJournal, RecoveryEnvelope, MultiMemoryTransaction
+        RestoreJournal, AppendJournal, RecoveryEnvelope, MultiMemoryTransaction, BundleRestoreJournal
     ];
 
     /// <summary>Sole source of truth for every durable format name and version contract. Derived
-    /// from <see cref="All"/> so the twelve formats are declared exactly once: <see cref="All"/>
+    /// from <see cref="All"/> so the thirteen formats are declared exactly once: <see cref="All"/>
     /// is the single canonical declaration and <see cref="Registry"/> is a keyed view over it.
     /// Every consumer imports this Registry; no consumer declares a second copy or hard-codes a
     /// version disposition.</summary>

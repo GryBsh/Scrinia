@@ -12,6 +12,30 @@ namespace Scrinia.Core;
 /// </summary>
 internal static class DurableFile
 {
+    private static readonly AsyncLocal<Func<DurableDeletePhase, string, Exception?>?> DeleteFailureInjectorContext = new();
+
+    internal static Func<DurableDeletePhase, string, Exception?>? DeleteFailureInjector
+    {
+        get => DeleteFailureInjectorContext.Value;
+        set => DeleteFailureInjectorContext.Value = value;
+    }
+
+    internal static void DeleteAndSync(string path)
+    {
+        ThrowDeleteInjected(DurableDeletePhase.BeforeDelete, path);
+        File.Delete(path);
+        ThrowDeleteInjected(DurableDeletePhase.AfterDelete, path);
+        ThrowDeleteInjected(DurableDeletePhase.BeforeDirSync, path);
+        SyncDirectory(path);
+        ThrowDeleteInjected(DurableDeletePhase.AfterDirSync, path);
+    }
+
+    private static void ThrowDeleteInjected(DurableDeletePhase phase, string path)
+    {
+        Exception? failure = DeleteFailureInjector?.Invoke(phase, path);
+        if (failure is not null) throw failure;
+    }
+
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
     private static readonly AsyncLocal<Func<DurableWritePhase, string, Exception?>?> FailureInjectorContext = new();
 
@@ -321,4 +345,12 @@ internal enum DurableWritePhase
     BeforeFlush,
     BeforeMove,
     BeforeDirSync
+}
+
+internal enum DurableDeletePhase
+{
+    BeforeDelete,
+    AfterDelete,
+    BeforeDirSync,
+    AfterDirSync
 }

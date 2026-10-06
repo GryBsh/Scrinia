@@ -7,6 +7,53 @@ namespace Scrinia.Tests;
 
 public sealed class DurableFileDirectorySyncTests
 {
+    [Theory]
+    [InlineData(0, true, false)]
+    [InlineData(1, false, false)]
+    [InlineData(2, false, false)]
+    [InlineData(3, false, true)]
+    public void DeleteAndSyncFaultPreservesObservableDeletion(
+        int phaseValue, bool exists, bool syncAttempted)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia", "evidence.json");
+        File.WriteAllText(path, "evidence");
+        bool synced = false;
+        DurableFile.FailureInjector = (phase, _) => { synced |= phase == DurableWritePhase.BeforeDirSync; return null; };
+        DurableFile.DeleteFailureInjector = (phase, _) => phase == (DurableDeletePhase)phaseValue ? new IOException("delete fault") : null;
+        try
+        {
+            Action delete = () => DurableFile.DeleteAndSync(path);
+            delete.Should().Throw<IOException>();
+            File.Exists(path).Should().Be(exists);
+            synced.Should().Be(syncAttempted);
+            Directory.Exists(Path.GetDirectoryName(path)).Should().BeTrue();
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+            DurableFile.DeleteFailureInjector = null;
+        }
+    }
+
+    [Fact]
+    public void DeleteAndSyncDeletesOnlyEvidenceAndSyncsParent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia", "evidence.json");
+        string other = Path.Combine(scope.WorkspaceDir, ".scrinia", "other.json");
+        File.WriteAllText(path, "evidence");
+        File.WriteAllText(other, "keep");
+        var phases = new List<DurableDeletePhase>();
+        DurableFile.DeleteFailureInjector = (phase, _) => { phases.Add(phase); return null; };
+        try { DurableFile.DeleteAndSync(path); }
+        finally { DurableFile.DeleteFailureInjector = null; }
+        File.Exists(path).Should().BeFalse();
+        File.ReadAllText(other).Should().Be("keep");
+        phases.Should().Equal(DurableDeletePhase.BeforeDelete, DurableDeletePhase.AfterDelete,
+            DurableDeletePhase.BeforeDirSync, DurableDeletePhase.AfterDirSync);
+    }
+
     [Fact]
     public async Task AppendAsync_DirectoryIsFsyncedAfterAtomicRename()
     {
