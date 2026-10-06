@@ -15,7 +15,7 @@ namespace Scrinia.Tests;
 ///
 /// <para>The guard caps the DECOMPRESSED size in <see cref="Nmp2Strategy"/>; a 256 KiB all-<c>A</c>
 /// payload compresses to a few hundred bytes, comfortably under the 96 MiB compressed-body bound at
-/// <c>BundleFormatService.ReadZipArtifactBytes</c>. Lowering <see cref="Nmp2Strategy.MaxDecodedBytes"/>
+/// the bundle archive reader. Lowering <see cref="Nmp2Strategy.MaxDecodedBytes"/>
 /// to 8 KiB around import makes the decode fail fast and rejects the complete restore plan before
 /// any mutation.</para>
 ///

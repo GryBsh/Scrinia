@@ -174,12 +174,22 @@ public sealed partial class ScriniaMcpTools
     }
 
     internal static (FileStream Stream, ZipArchive Archive) OpenBundleForImport(string path)
+        => OpenBundleForImport(path, BundleReadLimits.Default);
+
+    internal static (FileStream Stream, ZipArchive Archive) OpenBundleForImport(string path, BundleReadLimits limits)
     {
         FileStream? stream = null;
         try
         {
             stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+            if (stream.Length > limits.CompressedFileBytes)
+                throw new BundleValidationException("INVALID_BUNDLE: archive exceeds the compressed file size budget.");
             return (stream, new ZipArchive(stream, ZipArchiveMode.Read));
+        }
+        catch (BundleValidationException)
+        {
+            stream?.Dispose();
+            throw;
         }
         catch (InvalidDataException exception)
         {

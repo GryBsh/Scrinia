@@ -241,15 +241,23 @@ public static class BundleFormatService
         ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)
         => ImportTopicsFromZipAsync(zip, store, filterTopics, overwrite).GetAwaiter().GetResult();
 
-    public static async Task<(int TopicCount, int EntryCount, List<string> Names)> ImportTopicsFromZipAsync(
+    public static Task<(int TopicCount, int EntryCount, List<string> Names)> ImportTopicsFromZipAsync(
         ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite,
         CancellationToken ct = default)
+        => ImportTopicsFromZipAsync(zip, store, filterTopics, overwrite, BundleReadLimits.Default, ct);
+
+    internal static async Task<(int TopicCount, int EntryCount, List<string> Names)> ImportTopicsFromZipAsync(
+        ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite,
+        BundleReadLimits limits, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        var budget = new BundleReadBudget(limits);
+        budget.AdmitArchive(zip);
         // Read manifest
         var manifestEntry = zip.GetEntry("manifest.json")
             ?? throw new BundleValidationException("INVALID_BUNDLE: manifest.json not found.");
 
-        string manifestJson = ReadZipEntryText(manifestEntry);
+        string manifestJson = ReadZipEntryText(manifestEntry, budget, limits.JsonBytes);
 
         using var manifestDoc = ParseManifest(manifestJson);
         var root = manifestDoc.RootElement;
@@ -328,6 +336,7 @@ public static class BundleFormatService
         // side effect"). Fixed here by the same rule: nothing in this loop calls
         // ImportTopicEntries. Parsed results are collected and written only in the pass below.
         var toWrite = new List<(string TopicScope, string Topic, List<ArtifactEntry> Entries, Dictionary<string, byte[]> ArtifactBytes)>();
+        long logicalEntities = 0;
 
         foreach (string topic in topicsToImport)
         {
@@ -347,7 +356,7 @@ public static class BundleFormatService
                 throw new BundleValidationException(
                     $"INVALID_BUNDLE: manifest topic '{topic}' declares a missing index.json.");
 
-            string indexJson = ReadZipEntryText(indexZipEntry);
+            string indexJson = ReadZipEntryText(indexZipEntry, budget, limits.JsonBytes);
 
             // Deserialize through the SAME source-generated context that ExportTopicsToZip
             // serializes with, so the round trip is total by construction. This replaced a
@@ -389,6 +398,10 @@ public static class BundleFormatService
             }
             if (index?.Entries is not { Count: > 0 })
                 continue;
+
+            logicalEntities += index.Entries.Count;
+            if (logicalEntities > limits.LogicalEntities)
+                throw new BundleValidationException("INVALID_BUNDLE: archive has too many logical entities.");
 
             var entries = new List<ArtifactEntry>(index.Entries.Count);
             var artifactBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
@@ -471,7 +484,7 @@ public static class BundleFormatService
                 if (artifactZipEntry is null)
                     throw new BundleValidationException(
                         $"INVALID_BUNDLE: topic '{topic}' declares artifact '{entry.Name}' but its body is missing.");
-                artifactBytes[entry.Name] = ReadZipArtifactBytes(artifactZipEntry);
+                artifactBytes[entry.Name] = budget.Read(artifactZipEntry, limits.BodyBytes);
 
                 string[] validatedChunks;
                 try
@@ -555,7 +568,7 @@ public static class BundleFormatService
 
         if (declaredTotalEntries != availableTopics.Sum(topic =>
                 topic.Equals(string.Empty, StringComparison.Ordinal) ? 0 :
-                ReadDeclaredEntryCount(zip, topic)))
+                ReadDeclaredEntryCount(zip, topic, budget, limits.JsonBytes)))
             throw new BundleValidationException("INVALID_BUNDLE: manifest totalEntries does not match declared topic entries.");
 
         // File entities are archive-wide rather than topic-scoped. A partial topic selection must
@@ -563,9 +576,11 @@ public static class BundleFormatService
         // unselected skill/agent surface. When the filter selects the complete topic set, the
         // archive is effectively unfiltered and its file entities remain part of the restore.
         bool restoreFileEntities = selectedTopicNames.Count == availableTopics.Count;
-        IReadOnlyList<BundleFileEntityRestore> fileEntities = restoreFileEntities
-            ? BuildFileEntityWrites(zip, root, store)
-            : [];
+        IReadOnlyList<BundleFileEntityRestore> validatedFileEntities = BuildFileEntityWrites(zip, root, store, budget, limits);
+        logicalEntities += validatedFileEntities.Count;
+        if (logicalEntities > limits.LogicalEntities)
+            throw new BundleValidationException("INVALID_BUNDLE: archive has too many logical entities.");
+        IReadOnlyList<BundleFileEntityRestore> fileEntities = restoreFileEntities ? validatedFileEntities : [];
         var planTopics = toWrite.Select(item => new BundleTopicRestore(
             item.TopicScope, item.Topic, item.Entries, item.ArtifactBytes)).ToList();
         var plan = new BundleRestorePlan(planTopics, fileEntities, overwrite);
@@ -573,7 +588,7 @@ public static class BundleFormatService
         return (result.TopicCount, result.EntryCount, planTopics.Select(t => t.Topic).ToList());
     }
 
-    private static int ReadDeclaredEntryCount(ZipArchive zip, string topic)
+    private static int ReadDeclaredEntryCount(ZipArchive zip, string topic, BundleReadBudget budget, long jsonLimit)
     {
         string scope = MemoryNaming.BuildScopedTopicScope(topic);
         string key = MemoryNaming.FormatScopeLabel(scope);
@@ -581,7 +596,7 @@ public static class BundleFormatService
             ?? throw new BundleValidationException($"INVALID_BUNDLE: topic '{topic}' has no index.");
         try
         {
-            using JsonDocument document = JsonDocument.Parse(ReadZipEntryText(entry));
+            using JsonDocument document = JsonDocument.Parse(ReadZipEntryText(entry, budget, jsonLimit));
             if (document.RootElement.ValueKind != JsonValueKind.Object
                 || !document.RootElement.TryGetProperty("entries", out JsonElement entries)
                 || entries.ValueKind != JsonValueKind.Array)
@@ -617,66 +632,21 @@ public static class BundleFormatService
     }
 
     /// <summary>
-    /// Reads one archive member while retaining an archive I/O failure as the inner cause of a
-    /// durable import failure. JSON parsing failures remain invalid-bundle refusals at their own
-    /// boundary.
+    /// Decodes admitted bytes with the legacy BOM detection. Archive I/O and size validation
+    /// belong to the budget and complete before any text or JSON is constructed.
     /// </summary>
-    private static string ReadZipEntryText(ZipArchiveEntry entry)
+    private static string ReadZipEntryText(ZipArchiveEntry entry, BundleReadBudget budget, long memberLimit)
     {
-        try
+        using var reader = new StreamReader(new MemoryStream(budget.Read(entry, memberLimit), writable: false));
+        var text = new System.Text.StringBuilder();
+        var buffer = new char[4096];
+        int count;
+        while ((count = reader.Read(buffer, 0, buffer.Length)) != 0)
         {
-            using var reader = new StreamReader(entry.Open());
-            return reader.ReadToEnd();
+            text.Append(buffer, 0, count);
         }
-        catch (Exception exception) when (exception is IOException or InvalidDataException)
-        {
-            throw new DurableWriteException("read bundle", entry.FullName, exception);
-        }
+        return text.ToString();
     }
-
-    /// <summary>
-    /// Reads one zip member while enforcing a hard byte cap (the same raw-body bound the NMP/2
-    /// artifact path uses). Streams instead of loading the whole member into memory at once, so a
-    /// hostile, highly-compressible member cannot blow the process heap. Shared by the artifact and
-    /// file-entity import paths — the decompression-bomb guard lives in one place.
-    /// </summary>
-    private static byte[] ReadZipEntryBounded(ZipArchiveEntry entry, long maximumBytes)
-    {
-        // Refuse an oversized declared member before allocating any body — defense in depth
-        // alongside the streaming cap below. Shared by the artifact and file-entity import
-        // paths so the guard lives in one place (design-review finding #2).
-        if (entry.Length > maximumBytes)
-            throw new BundleValidationException($"INVALID_BUNDLE: '{entry.FullName}' exceeds the maximum raw NMP/2 body size.");
-
-        try
-        {
-            using var input = entry.Open();
-            using var bytes = new MemoryStream(maximumBytes > 0 && maximumBytes < int.MaxValue ? (int)Math.Min(maximumBytes, int.MaxValue) : 0);
-            var buffer = new byte[81920];
-            long totalBytes = 0;
-            int read;
-            while ((read = input.Read(buffer, 0, buffer.Length)) != 0)
-            {
-                totalBytes = checked(totalBytes + read);
-                if (totalBytes > maximumBytes)
-                    throw new BundleValidationException($"INVALID_BUNDLE: member '{entry.FullName}' exceeds the maximum raw size.");
-
-                bytes.Write(buffer, 0, read);
-            }
-
-            return bytes.ToArray();
-        }
-        catch (Exception exception) when (exception is IOException or InvalidDataException)
-        {
-            throw new DurableWriteException("read bundle", entry.FullName, exception);
-        }
-    }
-
-    private static byte[] ReadZipEntryBytes(ZipArchiveEntry entry) =>
-        ReadZipEntryBounded(entry, RestoreJournalCodec.MaxRawNmp2BodyBytes);
-
-    private static byte[] ReadZipArtifactBytes(ZipArchiveEntry entry) =>
-        ReadZipEntryBounded(entry, RestoreJournalCodec.MaxRawNmp2BodyBytes);
 
     // ── File entity helpers ─────────────────────────────────────────────────
 
@@ -757,7 +727,7 @@ public static class BundleFormatService
     /// A v1 manifest without <c>fileEntities</c> has no file-entity work.
     /// </summary>
     private static ImmutableArray<BundleFileEntityRestore> BuildFileEntityWrites(
-        ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
+        ZipArchive zip, JsonElement manifestRoot, IMemoryStore store, BundleReadBudget budget, BundleReadLimits limits)
     {
         var writes = ImmutableArray.CreateBuilder<BundleFileEntityRestore>();
 
@@ -800,7 +770,8 @@ public static class BundleFormatService
                 if (zipEntry is null)
                     throw InvalidFileEntity(category, fileName, "is declared but missing from the archive");
 
-                byte[] content = ReadZipEntryBytes(zipEntry);
+                byte[] content = budget.Read(zipEntry, approvedFileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                    ? limits.JsonBytes : limits.BodyBytes);
 
                 ValidateFileEntityMetadata(category, approvedFileName, content);
                 if (!approvedFileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
@@ -817,7 +788,7 @@ public static class BundleFormatService
                 {
                     ZipArchiveEntry sidecarEntry = zip.GetEntry($"files/{category}/{sidecarName}")
                         ?? throw InvalidFileEntity(category, sidecarName, "is declared but missing from the archive");
-                    sidecar = ReadZipEntryBytes(sidecarEntry);
+                    sidecar = budget.Read(sidecarEntry, limits.JsonBytes);
                     ValidateFileEntityMetadata(category, sidecarName, sidecar);
                 }
 
