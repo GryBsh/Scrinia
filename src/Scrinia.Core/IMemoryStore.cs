@@ -184,6 +184,33 @@ public interface IMemoryStore : IPluginStore
         SearchCandidateOptions.RankLexically(ListScoped(scopes, excludeTopics), query).Take(limit).ToArray();
 
     /// <summary>
+    /// Returns the deterministic lexical top-K snapshot after applying the query's scopes,
+    /// path prefix and attributes. Supplied candidates are constrained to the query's scopes;
+    /// otherwise the default reads the complete listing before selecting candidates.
+    /// </summary>
+    IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(SearchQuery query, int limit)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+        IEnumerable<ScopedArtifact> source;
+        if (query.Candidates is { } candidates)
+        {
+            var allowed = new HashSet<string>(
+                ResolveReadScopes(query.Scopes, query.ExcludeTopics), StringComparer.OrdinalIgnoreCase);
+            if (TopicDiscoveryService.IncludesEphemeral(query.Scopes))
+                allowed.Add("ephemeral");
+            source = candidates.Where(candidate => allowed.Contains(candidate.Scope));
+        }
+        else
+        {
+            source = ListScoped(query.Scopes, query.ExcludeTopics);
+        }
+
+        return SearchCandidateSelection.Select(source, query, limit, FormatQualifiedName);
+    }
+
+    /// <summary>
     /// True if any entry in <paramref name="scopes"/> (or across every readable scope when null)
     /// matches <paramref name="predicate"/>. Answers a boolean without requiring the caller to
     /// materialize the listing it would otherwise call <see cref="ListScoped(IReadOnlyList{string}?)"/> and

@@ -142,6 +142,18 @@ internal sealed class ListingService
         return SearchCandidateOptions.RankLexically(selected, query);
     }
 
+    internal IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(
+        SearchQuery query, int limit, Func<string, string, string> formatQualifiedLabel)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+        IEnumerable<ScopedArtifact> source = query.Candidates is { } candidates
+            ? FilterToQueryScopes(candidates, query.Scopes, query.ExcludeTopics)
+            : EnumerateScoped(query.Scopes, query.ExcludeTopics);
+        return SearchCandidateSelection.Select(source, query, limit, formatQualifiedLabel);
+    }
+
     private IEnumerable<ScopedArtifact> EnumerateScoped(
         IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics)
     {

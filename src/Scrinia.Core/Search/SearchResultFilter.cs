@@ -29,11 +29,26 @@ public static class SearchResultFilter
             && MatchesAttributes(candidate.Entry.Attributes, attributeFilter);
     }
 
+    internal static bool SelectionCandidateMatches(
+        ScopedArtifact candidate, SearchQuery query, Func<string, string, string> formatQualifiedLabel)
+    {
+        string? prefix = query.Address?.ToString() ?? query.PathPrefix;
+        if (CandidateMatches(candidate, prefix, query.AttributeFilter, formatQualifiedLabel))
+            return true;
+
+        return query.AttributeFilter is not { Count: > 0 }
+            && candidate.Scope.StartsWith("local:", StringComparison.Ordinal)
+            && ScopeLabelMatches(candidate.Scope, prefix);
+    }
+
     /// <summary>Keep-predicate for a topic. Topics carry no attributes, so a topic is kept only
     /// when no attribute filter is active AND its scope label matches the path prefix. Callers
     /// that have an active attribute filter should drop all topics without calling this.</summary>
     public static bool TopicMatches(TopicInfo topic, string? pathPrefix)
-        => MatchesPathPrefix(MemoryNaming.FormatScopeLabel(topic.Scope), pathPrefix);
+        => ScopeLabelMatches(topic.Scope, pathPrefix);
+
+    internal static bool ScopeLabelMatches(string scope, string? pathPrefix)
+        => MatchesPathPrefix(MemoryNaming.FormatScopeLabel(scope), pathPrefix);
 
     private static bool MatchesPathPrefix(string label, string? pathPrefix)
         => string.IsNullOrWhiteSpace(pathPrefix)

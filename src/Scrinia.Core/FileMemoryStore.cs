@@ -3450,6 +3450,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics, string query, int limit) =>
         SearchCandidateOptions.RankLexically(ListScoped(scopes, excludeTopics), query).Take(limit).ToArray();
 
+    /// <summary>Returns the query-eligible lexical top-K snapshot under workspace read admission.</summary>
+    public IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(SearchQuery query, int limit)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+
+        return IsEphemeralOnly(query.Scopes)
+            ? CreateEphemeralListing().SelectLexicalCandidates(query, limit, FormatQualifiedName)
+            : WithWorkspaceSnapshot(lease => CreateListingUnderLease(lease)
+                .SelectLexicalCandidates(query, limit, FormatQualifiedName));
+    }
+
     /// <summary>
     /// Search orchestration is owned by <see cref="SearchService"/>; this is a one-line forwarder.
     /// Filters candidates and topics BEFORE the scorer's top-K cut, so a selective filter fills to
