@@ -349,11 +349,35 @@ public sealed class MultiMemoryTransactionAdmissionTests
         using FileMemoryStore store = CreateStore();
         var request = new MultiMemoryTransactionRequest("local:notes", [Participant("/notes/a", "op-1")]);
 
-        MultiMemoryAdmissionResult result = await new MultiMemoryTransactionCoordinator(store,
-            TimeSpan.FromMilliseconds(1)).AdmitAsync(request, (_, _) =>
-            Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-1")));
+        string ignore = Path.Combine(store.WorkspaceRoot, ".scrinia", ".gitignore");
+        bool materialized = false, adapterAdmitted = false;
+        DurableFile.FailureInjector = (phase, path) =>
+        {
+            if (phase == DurableWritePhase.BeforeWrite && path == ignore)
+            {
+                materialized = true;
+                Thread.Sleep(TimeSpan.FromSeconds(2));
+            }
+            return null;
+        };
+        MultiMemoryAdmissionResult result;
+        try
+        {
+            result = await new MultiMemoryTransactionCoordinator(store,
+                TimeSpan.FromSeconds(1)).AdmitAsync(request, (_, _) =>
+            {
+                adapterAdmitted = true;
+                return Task.FromResult<IMultiMemoryParticipantAdapter>(new TestAdapter("a", "op-1"));
+            });
+        }
+        finally { DurableFile.FailureInjector = null; }
 
-        result.IsAdmitted.Should().BeTrue();
+        materialized.Should().BeTrue("the existing scope materialization seam must exceed the acquisition budget");
+        File.Exists(ignore).Should().BeTrue("entered durable materialization must complete");
+        adapterAdmitted.Should().BeTrue();
+        result.IsAdmitted.Should().BeTrue(
+            "failure={0}; warning={1}; evidencePath={2}; cleanupFailed={3}",
+            result.Failure, result.Warning, result.EvidencePath, result.CleanupFailed);
     }
 
     private static MultiMemoryParticipantRequest Participant(string address, string operationId) =>

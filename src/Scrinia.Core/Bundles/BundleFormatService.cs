@@ -113,12 +113,19 @@ public static class BundleFormatService
     private sealed record StagedFileEntity(string Category, string Name, byte[] Bytes);
 
     private static (List<StagedExportTopic> Staged, List<string> ExportedTopics, int TotalEntries, List<StagedFileEntity> Files)
-        BuildExportStaging(IMemoryStore store, string[] topics) => store is FileMemoryStore files
-            ? files.WithWorkspaceSnapshot(lease => BuildExportStagingUnderLease(store, topics, lease))
-            : BuildExportStagingUnderLease(store, topics, null);
+        BuildExportStaging(IMemoryStore store, string[] topics)
+    {
+        if (store is FileMemoryStore files)
+            return files.WithWorkspaceSnapshot(lease => BuildExportStagingUnderLease(store, topics, lease));
+
+        var admission = new WorkspaceAdmission(store.WorkspaceRoot,
+            (lease, ct) => BundleRestoreCoordinator.RecoverUnderLease(lease, BundleReadLimits.Default, ct));
+        using WorkspaceLease lease = admission.EnterRead(TimeSpan.FromMinutes(5), CancellationToken.None);
+        return BuildExportStagingUnderLease(store, topics, lease);
+    }
 
     private static (List<StagedExportTopic> Staged, List<string> ExportedTopics, int TotalEntries, List<StagedFileEntity> Files)
-        BuildExportStagingUnderLease(IMemoryStore store, string[] topics, WorkspaceLease? lease)
+        BuildExportStagingUnderLease(IMemoryStore store, string[] topics, WorkspaceLease lease)
     {
         var staged = new List<StagedExportTopic>();
         var exportedTopics = new List<string>();
@@ -131,7 +138,7 @@ public static class BundleFormatService
             // de-aliasing — "topic." survived it intact and became a second scope string over the
             // "topic" directory.
             string topicScope = MemoryNaming.BuildScopedTopicScope(topic.Trim());
-            var snapshot = store is FileMemoryStore files && lease is not null
+            var snapshot = store is FileMemoryStore files
                 ? files.CaptureBundleTopicUnderLease(lease, topicScope)
                 : (store.LoadIndex(topicScope), store.ListTopicArtifacts(topicScope)
                     .Select(a => (a.Name, File.ReadAllText(a.FilePath))).ToList());
@@ -156,7 +163,7 @@ public static class BundleFormatService
         }
 
         return (staged, exportedTopics, totalEntries,
-            lease?.CapturedAbsentWorkspace == true ? [] : CaptureFileEntities(store));
+            lease.CapturedAbsentWorkspace ? [] : CaptureFileEntities(store, lease));
     }
 
     /// <summary>
@@ -683,51 +690,68 @@ public static class BundleFormatService
     };
 
     /// <summary>
-    /// Resolves a file-entity category's directory, or null when the category has no
-    /// file-entity kind. Every kind resolves the same way now — the agent special-case is
-    /// gone because agent no longer lives inside the memory store.
+    /// Resolves an approved bundle category to its file-entity directory.
     /// </summary>
-    private static string? CategoryDir(IMemoryStore store, string category) =>
-        CategoryToKind.TryGetValue(category, out string? kind)
-            ? PathRouter.ToFileEntityDir(kind, store.WorkspaceRoot)
-            : null;
+    private static string CategoryDir(IMemoryStore store, string category) =>
+        PathRouter.ToFileEntityDir(CategoryToKind[category], store.WorkspaceRoot);
 
     /// <summary>
-    /// Scans each file-entity category's directory for exportable files and writes them
-    /// into the zip under <c>files/{category}/{filename}</c>.
+    /// Captures complete file-entity categories under shared category ownership after
+    /// workspace admission. Pending evidence is refused before any source bytes are accepted.
     /// Skips the <c>versions/</c> subdirectory within each category.
     /// </summary>
-    private static List<StagedFileEntity> CaptureFileEntities(IMemoryStore store)
+    private static List<StagedFileEntity> CaptureFileEntities(IMemoryStore store, WorkspaceLease lease)
     {
-        var fileEntities = new List<StagedFileEntity>();
-
-        foreach (string category in CategoryToKind.Keys)
+        lease.AssertValid(store.WorkspaceRoot);
+        var directories = CategoryToKind.Keys
+            .Select(category => (Category: category, Directory: CategoryDir(store, category)))
+            .Where(item => Directory.Exists(item.Directory))
+            .OrderBy(item => item.Directory, StringComparer.Ordinal)
+            .ToArray();
+        var locks = new List<FileLock>(directories.Length);
+        try
         {
-            string? categoryDir = CategoryDir(store, category);
-            if (categoryDir is null || !Directory.Exists(categoryDir))
-                continue;
+            // A publisher owns its category until both members commit or rollback. Keep
+            // that complete unit stable before inspecting evidence or capturing any bytes.
+            foreach (var item in directories)
+                locks.Add(FileLock.AcquireShared(Path.Combine(item.Directory, ".lock")));
 
-            var files = Directory.EnumerateFiles(categoryDir, "*.*", SearchOption.TopDirectoryOnly)
-                .Where(f =>
-                {
-                    string ext = Path.GetExtension(f);
-                    return ext.Equals(".json", StringComparison.OrdinalIgnoreCase)
-                        || ext.Equals(".md", StringComparison.OrdinalIgnoreCase);
-                })
-                .OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (files.Count == 0)
-                continue;
-
-            foreach (string filePath in files)
+            string root = Path.Combine(store.WorkspaceRoot, ".scrinia");
+            string scope = Path.GetFileName(root);
+            RecoveryDiscoveryResult discovery = new RecoveryDiscoveryCoordinator().Discover(scope, root);
+            if (discovery.BlockingEvidence is not null)
+                throw FileMemoryStore.CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+            if (discovery.CoordinatorRecord is { } coordinator)
+                throw FileMemoryStore.CreateDiscoveryRecoveryException(new RecoveryBlock(scope,
+                    MultiMemoryTransactionRecordCodec.GetPath(root), null, coordinator.TransactionId,
+                    RecoveryBlockReason.Inconsistent,
+                    "Coordinator recovery evidence must be resolved before exporting file entities."));
+            if (discovery.Candidates.Count > 0)
             {
-                string fileName = Path.GetFileName(filePath);
-                fileEntities.Add(new(category, fileName, File.ReadAllBytes(filePath)));
+                RecoveryCandidate candidate = discovery.Candidates[0];
+                throw FileMemoryStore.CreateDiscoveryRecoveryException(new RecoveryBlock(scope,
+                    candidate.EvidencePath, candidate.Operation, candidate.OperationId,
+                    RecoveryBlockReason.Inconsistent,
+                    "Recovery evidence must be resolved before exporting file entities."));
             }
-        }
 
-        return fileEntities;
+            var fileEntities = new List<StagedFileEntity>();
+            foreach (var item in directories)
+            {
+                var files = Directory.EnumerateFiles(item.Directory, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(file => Path.GetExtension(file).Equals(".json", StringComparison.OrdinalIgnoreCase)
+                        || Path.GetExtension(file).Equals(".md", StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase);
+                foreach (string filePath in files)
+                    fileEntities.Add(new(item.Category, Path.GetFileName(filePath), File.ReadAllBytes(filePath)));
+            }
+            return fileEntities;
+        }
+        finally
+        {
+            for (int index = locks.Count - 1; index >= 0; index--)
+                locks[index].Dispose();
+        }
     }
 
     private sealed record FileEntityWrite(string Kind, string Name, byte[] Body, byte[]? Sidecar);

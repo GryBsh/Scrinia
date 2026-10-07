@@ -3602,8 +3602,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         WithWorkspaceSnapshot(lease => CreateListingUnderLease(lease).ListScoped(scopes, excludeTopics));
 
     public IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(
-        IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics, string query, int limit) =>
-        SearchCandidateOptions.RankLexically(ListScoped(scopes, excludeTopics), query).Take(limit).ToArray();
+        IReadOnlyList<string>? scopes, IReadOnlyList<string>? excludeTopics, string query, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        return IsEphemeralOnly(scopes)
+            ? CreateEphemeralListing().SelectLexicalCandidates(scopes, excludeTopics, query, limit)
+            : WithWorkspaceSnapshot(lease => CreateListingUnderLease(lease)
+                .SelectLexicalCandidates(scopes, excludeTopics, query, limit));
+    }
 
     /// <summary>Returns the query-eligible lexical top-K snapshot under workspace read admission.</summary>
     public IReadOnlyList<ScopedArtifact> SelectLexicalCandidates(SearchQuery query, int limit)
@@ -4162,7 +4168,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             "Terminal recovery evidence must be retired before a new scope mutation."));
     }
 
-    private static Exception CreateDiscoveryRecoveryException(RecoveryBlock block)
+    internal static Exception CreateDiscoveryRecoveryException(RecoveryBlock block)
     {
         if (block.Operation == RecoveryOperation.Append)
             return new AppendStoreException(
