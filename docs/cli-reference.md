@@ -33,7 +33,10 @@ JSON and MCP responses preserve the same machine-readable codes: `MALFORMED_ADDR
 `SCOPE_CONTAINMENT_FORBIDDEN`, `RESERVED_PATH_OPERATION_FORBIDDEN`, `INVALID_BUNDLE`,
 `BUNDLE_IMPORT_FAILED`, `BUNDLE_RECOVERY_REQUIRED`, `EMBEDDINGS_PROTOCOL_UNSUPPORTED`, and
 `EMBEDDINGS_PROTOCOL_INVALID`. Correct the logical address or reserved-path operation as indicated;
-do not treat a refusal as a successful migration.
+do not treat a refusal as a successful migration. Recovery codes preserve evidence; follow
+[evidence-preserving troubleshooting](troubleshooting.md#bundle-recovery-required). A durable
+bundle commit remains success when evidence cleanup is deferred, but retained bundle evidence
+blocks later persistent operations until supported verification/cleanup succeeds.
 
 ### scri serve
 
@@ -73,8 +76,10 @@ scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
 Search memories using BM25 + weighted-field hybrid scoring. With the embeddings plugin active, semantic vector scores are blended in.
 
 Retrieval is bounded by `Scrinia:Search:CandidateLimit` (default `200`, inclusive range `1`–`1000`).
-Invalid values are configuration errors. Vector contributors score only the lexical candidate
-snapshot, so increasing this setting is an intentional work/latency trade-off.
+Invalid values are configuration errors. Scope, excluded-topic, path/address, and attribute
+eligibility precede lexical ranking and K. All scoring contributors, entity facts, and surfaced
+facts receive that same bounded snapshot, using the context-augmented query. K is separate from
+`--limit`; increasing K deliberately increases retrieval work/latency.
 
 ```bash
 scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
@@ -106,6 +111,10 @@ the validated typed address used by store-facing APIs.
 
 `scri store --json` emits `name`, `originalBytes`, and `message`. Consumers must stop reading
 `chunkCount`; use the documented input echo and response message instead.
+Successful ordinary, `/skill/name`, and `/agent/name` writes report the persisted identity
+without a post-commit response-projection failure. Ordinary stored spelling is preserved;
+reserved names report their canonical reserved path. Warnings and recovery errors keep their
+status, operation/recovery metadata, and stable code.
 
 > **Ephemeral memories are not available from the CLI.** `~name` and its `/temp/...` alias live
 > only in the process that creates them, and the CLI exits immediately — so a CLI ephemeral write
@@ -200,14 +209,22 @@ scri append session-notes ./more.md
 echo "another paragraph" | scri append session-notes
 ```
 
-If the target memory doesn't exist, `append` falls back to creating it as a
-single-chunk memory (equivalent to `store`).
+If an ordinary target memory does not exist, `append` creates a single-chunk memory. Missing
+`/skill/name` and `/agent/name` targets return `NOT_FOUND`; an existing embedded built-in skill
+can be promoted to a disk override.
+
+Reserved append reads the complete body under the entity lock, including text beyond response
+display caps. It appends without repeating skill scaffolds, preserves curated/unknown metadata,
+and archives the complete prior body and metadata. Serial concurrent appends retain both
+suffixes. Skill lookup is disk override, then embedded built-in; legacy NMP/2 skills are not a
+fallback.
 
 Append responses include an `operationId` for correlating the request with durable journal and
 event records. A committed append with non-fatal cleanup or event-delivery trouble returns the
 structured `success_with_warning` status and warning fields; callers should preserve the committed
 result while treating the command as a warning outcome (exit status 1). Recovery-required results
-retain journal evidence and identify the recovery action instead of claiming success.
+retain journal evidence and diagnostics; follow [recovery guidance](troubleshooting.md#bundle-recovery-required)
+instead of assuming a dedicated repair command exists.
 
 Persistent memory subjects may be at most 182 characters after filename sanitization. The limit
 applies to the sanitized persistent subject, not the whole scoped display path.
@@ -297,12 +314,27 @@ the MCP `restore` call makes.
 scri restore [--workspace-root <path>] [--json]
 ```
 
+This command restores agent context, not transaction evidence or filesystem backups.
+
+Maintenance handles bounded archive and terminal-evidence cleanup; it is not a universal bundle
+journal repair. File-entity cleanup verifies committed existence as well as bytes. Unexpected
+entries or unprovable inspection retain evidence; preserve it and use the
+[recovery procedure](troubleshooting.md#bundle-recovery-required).
+
 ### scri bundle export
 
 Export one or more topics to a portable `.scrinia-bundle` file (ZIP format).
 
 `scri bundle export --json` emits `message`. Consumers must stop reading `path`; use the response
 message and command options instead.
+
+Export captures one admitted persistent snapshot, prepares and validates the complete ZIP, and
+only then replaces its destination. Empty exports and failed publication preserve an existing
+output, including an automatically generated filename collision. Cleanup removes only files
+owned by this attempt. A detected destination change or unproven compensation retains owned
+evidence and reports its paths; preserve it for investigation. Denied cleanup after proven
+publication can leave owned sibling files while export remains successful. External writers can
+still race between the final ownership check and filesystem mutation.
 
 ```bash
 scri bundle export <topics> [--workspace-root <path>] [-o filename]
@@ -319,6 +351,26 @@ Import topics from a `.scrinia-bundle` file.
 ```bash
 scri bundle import <path> [--workspace-root <path>] [--topics api,arch] [--overwrite]
 ```
+
+Default `--overwrite=false` reserves each logical body/metadata pair: if either destination
+member exists, the entire entity is skipped. `--overwrite` replaces the exact pair and removes
+a stale destination sidecar when the bundle has none. Ordinary memory names resolve
+case-insensitively while preserving existing stored spelling; file entities retain their
+existing exact-spelling behavior.
+
+Success counts reflect committed memory entries and file entities, not requested entries.
+A file-only import succeeds. An all-skipped import reports no changes with warning status and
+exit 1. Skill/agent file entities are included only when the selected topics cover the complete
+archive topic set; all declarations are still validated when a filter excludes publication.
+
+Import uses a bounded workspace transaction over ordinary memories and selected file entities.
+Stop all old writers before upgrading. Legacy/unknown retained evidence is refused, not converted
+automatically. See [exact archive/journal limits](security.md#bundle-and-journal-limits) and
+[backup/recovery guidance](troubleshooting.md#bundle-recovery-required).
+`INVALID_BUNDLE` is an invalid archive, `BUNDLE_IMPORT_FAILED` is a refusal before mutation or
+proven rollback, and `BUNDLE_RECOVERY_REQUIRED` retains unproven evidence. A proven durable
+commit remains success despite cleanup failure; later persistent operations require verified
+cleanup. Derived vectors, facts, and configuration are outside the bundle rollback manifest.
 
 ### scri bundle pack
 

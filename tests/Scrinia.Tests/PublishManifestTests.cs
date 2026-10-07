@@ -42,6 +42,9 @@ public sealed class PublishManifestTests
         ["Scrinia.Benchmarks"] =
             "Benchmark harness under tests/ — run from source via `dotnet run`, never distributed " +
             "to users.",
+        ["Scrinia.TestProcess"] =
+            "Child-process harness for admission and vector integration tests; built by the " +
+            "solution for tests and never distributed to users.",
     };
 
     /// <summary>

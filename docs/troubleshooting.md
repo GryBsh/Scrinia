@@ -13,9 +13,11 @@ Strict safety failures are stable across CLI and MCP. Correct `MALFORMED_ADDRESS
 `SCOPE_CONTAINMENT_FORBIDDEN` by using a canonical logical address; use the supported lifecycle
 when `/skill/...` or `/agent/...` returns `RESERVED_PATH_OPERATION_FORBIDDEN`.
 
-Bundle validation returns `INVALID_BUNDLE` before mutation. A failed commit returns
-`BUNDLE_IMPORT_FAILED` only after rollback is proven. `BUNDLE_RECOVERY_REQUIRED` means recovery
-evidence is retained: do not retry another import until the recovery command has completed.
+Bundle validation returns `INVALID_BUNDLE` before mutation. `BUNDLE_IMPORT_FAILED` means either
+refusal before mutation (for example, prior-state journal capacity) or a failed publication with
+proven rollback. `BUNDLE_RECOVERY_REQUIRED` retains evidence and refuses further persistent
+operations until supported recovery succeeds. See [bundle recovery](#bundle-recovery-required);
+there is no dedicated recovery CLI.
 
 ### "No .scrinia/ directory found"
 
@@ -75,8 +77,11 @@ quarantined, not reused. Run `scri reindex` after the active provider is healthy
 ### Search is slower or returns fewer candidates
 
 `Scrinia:Search:CandidateLimit` bounds the shared lexical candidate snapshot. It defaults to `200`
-and accepts `1` through `1000` only. Increase it deliberately for broader retrieval; invalid values
-fail configuration loading rather than silently scanning the whole corpus.
+and accepts `1` through `1000` only. Scope, excluded-topic, path/address, and attribute eligibility
+are applied before K. Selective filters do not require a larger K merely to get past ineligible
+entries. Increase K deliberately for broader eligible retrieval at higher work/latency; it is
+separate from the result limit. Invalid values fail configuration loading rather than scanning
+the whole corpus.
 
 ### Slow first search after startup
 
@@ -180,40 +185,68 @@ combines the same sources by rank instead of raw score. If results seem wrong:
 
 ### Cross-process conflicts
 
-Multiple processes against one workspace — several CLI invocations, or a CLI alongside a running
-`scri serve` — use OS-enforced file locks (`.lock` files per scope). If you see stale `.lock` files
-after a crash, first stop `scri serve` and every other concurrent Scrinia CLI process. Do not delete
-lock files while a Scrinia process is still running: an active process may still be using the lock,
-and removing the file does not release its OS lock; another process could then write concurrently.
-After all Scrinia processes have stopped:
+Cooperating CLI and `scri serve` processes use workspace admission at
+`.scrinia/.bundle-restore.lock` and scope/entity locks. The existence of a lock file does not mean
+a process owns the OS lock, and deleting a filename does not release an active lock. Check active
+processes and permissions instead of deleting lock files to force progress.
 
-**Fix:** In a POSIX shell, remove the lock files under the memories root and its topic
-subdirectories:
+Before upgrading to the repaired protocol, stop every old `scri serve` and concurrent CLI writer.
+Reopen with compatible builds only. Direct filesystem edits and older writers are not coordinated
+by the new admission boundary. A lock-file cleanup is not transaction recovery.
 
-```sh
-find .scrinia/memories -type f -name .lock -delete
-```
+### `RECOVERY_BLOCKED` in a persistent scope
 
-They are recreated automatically.
+The standalone per-scope `.restore-journal.json` records roll-forward final bytes.
+`prepared` replays and verifies them; `completed` verifies terminal bytes and cleans evidence.
+Malformed, unsupported, integrity-failed, or unreplayable scope evidence is retained and blocks
+that scope. A verified terminal scope/coordinator snapshot can remain readable when cleanup is
+deferred; new bundle publication still refuses retained scope/coordinator evidence.
 
-### `RECOVERY_BLOCKED` during a memory or bundle operation
+Record the reported scope, operation ID, journal path, and reason. Stop writers and preserve a
+filesystem backup before intervention. Resolve permissions, free-space, or other reported I/O
+problems, then retry with a compatible build when the evidence is supported. Do not edit or delete
+journals to bypass validation. These scope journals are distinct from workspace bundle evidence.
 
-An interrupted bundle restore may leave `.restore-journal.json` in one persistent topic scope. Scrinia
-automatically rolls that scope forward before reads and writes. If the retained journal is malformed,
-fails integrity verification, requires a newer Scrinia version, or cannot be replayed because of an
-I/O failure, only that scope is blocked; other topics and ephemeral memories remain available.
+### Bundle recovery required
 
-**Fix:** Use the scope and journal path in the error. For a newer journal, upgrade Scrinia and retry.
-For a malformed or integrity-failed journal, preserve the journal, inspect or restore it with a
-compatible Scrinia build, then retry. For replay failures, check permissions and free disk space before
-retrying. Do not delete or edit the journal to force recovery: Scrinia deliberately retains failed
-journals as evidence and never rolls back or rereads the source bundle.
+`BUNDLE_RECOVERY_REQUIRED` identifies workspace bundle evidence at `.scrinia/.bundle-restore-journal.json`; the similarly named
+`.bundle-restore.lock` is only the admission lock. The journal owns ordinary-memory and
+skill/agent pairs across the import. Recovery validates the whole manifest and preflights every
+current member before changing any member. `prepared` evidence restores only owned prior
+states; `committed` and `rolled-back` evidence verify terminal states and clean up. Recovery
+never rereads the source ZIP.
 
-This recovery is per topic scope only. A multi-topic bundle and skill/agent file entities are not a
-single transaction, so an interruption can leave one topic awaiting its next access while another has
-already completed.
+A proven durable commit is success even when cleanup fails: imported counts still describe
+committed changes. Retained bundle evidence blocks later persistent operations until verified
+cleanup succeeds. An uncertain decision, unknown/legacy journal, terminal mismatch, or third
+state refuses recovery without speculative compensation. Explicit ephemeral-only operations and
+the embedded guide remain available.
+
+1. Stop every writer, including older builds.
+2. Preserve a filesystem copy of the entire `.scrinia` tree, including journals, sidecars,
+   archives, and other retained evidence. Export from a blocked workspace is not a backup.
+3. Record the exact error code, operation ID if reported, evidence path, and underlying reason.
+4. Correct reported permissions, disk capacity, or other I/O failures. Retry the original
+   operation using a compatible repaired build only when it supports that evidence.
+5. If evidence is legacy or cannot be proven, retain it for investigation. Restoring a known-good
+   complete filesystem backup requires an explicit operator procedure with all writers stopped;
+   upgrading alone does not convert unknown evidence.
+
+Direct evidence edits are not an automatic repair procedure. There is no dedicated bundle
+recovery command. `scri restore` restores agent context, `scri reindex` rebuilds derived vectors,
+and `scri maintenance` handles its documented bounded cases. Maintenance does not universally
+repair bundle journals. Committed file-entity cleanup checks expected absence separately from
+an empty file; unexpected entries and unprovable inspection retain evidence. New scope mutations
+refuse retained terminal scope/coordinator evidence, while bounded verified reads and explicit
+recovery cleanup remain available. A legacy read requiring a sidecar rewrite also waits for cleanup.
+
+See [exact limits](security.md#bundle-and-journal-limits) and
+[protocol details](architecture/core.md#journaled-bundle-restore-recovery).
 
 ### Version retention
+
+For interruption recovery, first follow [evidence-preserving backup guidance](#bundle-recovery-required).
+Per-memory archives below are manual history, distinct from whole-workspace transaction evidence.
 
 There is **no limit on the number of memories** you can store, and the currently-active body of
 every memory is preserved indefinitely. The retention below is the size of the **rollback history**

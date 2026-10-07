@@ -240,8 +240,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     {
         if (deleted)
         {
-            if (File.Exists(path))
-                throw new IOException($"File-entity member was not deleted: {path}");
+            RecoveryAbsenceVerifier.RequireMissing(path, cancellationToken);
             return;
         }
 

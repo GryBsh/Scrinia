@@ -10,9 +10,9 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Proves the B1 remember-facade refactor is behaviour-preserving. The golden-render case pins the
 /// four <c>remember</c> envelopes (Created / Replaced / SuccessWithWarning / RecoveryRequired) to the
-/// pre-B1 baselines; the mapping case pins <see cref="B0ResultWrappers.FromWhole"/> to the shared
-/// whole-memory outcome mapper. B1 only re-routes the <c>success_with_warning</c> promotion through
-/// <c>FromWhole</c> — every rendered field must stay byte-identical to the captured baseline.
+/// pre-B1 baselines plus the approved persisted-identity fields on successful writes; the mapping
+/// case pins <see cref="B0ResultWrappers.FromWhole"/> to the shared whole-memory outcome mapper.
+/// All other rendered fields remain byte-identical, including warning and recovery metadata.
 /// </summary>
 public class B0ResultFacadeMappingTests
 {
@@ -40,7 +40,7 @@ public class B0ResultFacadeMappingTests
         Assert.Equal("op-remember", b0.CorrelationId);
     }
 
-    /// <summary>The live remember facade must still render each envelope exactly as captured pre-B1.
+    /// <summary>The live remember facade must render each approved persisted-identity envelope exactly.
     /// Fields that are a pure function of the input (status / action / content) compare byte-for-byte;
     /// volatile fields (operationId GUID, temp workspace path) are normalised so the pin is structural,
     /// not timestamp- or machine-dependent — the same rule the existing response-golden harness applies.</summary>

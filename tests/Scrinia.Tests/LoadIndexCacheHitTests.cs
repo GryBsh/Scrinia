@@ -71,7 +71,7 @@ public class LoadIndexCacheHitTests
     }
 
     [Fact]
-    public void LoadIndex_DoesNotSeeAnotherStoreInstancesWrite_WhichIsWhyTheLockBuysNothingHere()
+    public void LoadIndexSeesAnotherStoreInstancesWrite()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
@@ -82,11 +82,7 @@ public class LoadIndexCacheHitTests
         other.Upsert(Entry("theirs"), "local");
 
         store.LoadIndex("local").Select(e => e.Name)
-            .Should().BeEquivalentTo(["mine"],
-                because: "nothing invalidates _indexCache across store instances or processes, "
-                       + "so a cache hit was ALREADY stale with respect to an outside write — "
-                       + "with the shared lock or without it. This is pre-existing behaviour, "
-                       + "pinned here because it is the whole argument for moving the lock: a "
-                       + "lock cannot protect the freshness of an answer that was never fresh.");
+            .Should().BeEquivalentTo(["mine", "theirs"],
+                because: "a fresh admitted snapshot must observe another store's completed write");
     }
 }

@@ -279,67 +279,70 @@ public class FileMemoryStoreWriteSurfaceTests
     // ── Rollback ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// A re-store whose sidecar write fails must leave the memory's PREVIOUS content on disk.
-    ///
-    /// <para>Leaving the new bytes there is not a benign no-op: the artifact would hold the new
-    /// content while the index entry still described the old, and the divergence propagates — the
-    /// next <c>AppendAsync</c> reads the stale entry's <c>ChunkEntries</c> but numbers the appended
-    /// one from the artifact's real chunk count, producing a non-contiguous set. Deleting instead
-    /// (which is what <c>MemoryOrchestrator.StoreAsync</c> used to do, before it was repointed here)
-    /// is worse still: nothing reads <c>versions/</c> back, so a transient sidecar failure would
-    /// destroy a memory the caller only asked to overwrite, with no recovery path. The server-path
-    /// counterpart is
-    /// <c>Scrinia.Server.Tests.MemoryOrchestratorWriteSurfaceTests.StoreAsync_FailedReStore_LeavesThePreviousContentReadable</c>.</para>
-    ///
-    /// <para>The failure is forced by putting a DIRECTORY where the sidecar file belongs, so
-    /// <c>WriteSidecar</c>'s atomic temp-then-move cannot land — a rename onto a directory fails on
-    /// every filesystem this runs on. The artifact path is untouched, so the write that must be
-    /// rolled back still succeeds first. The archive assertion is load-bearing as a PRECONDITION
-    /// check: <c>ArchiveVersion</c> runs only when the existing entry actually resolved, so if it
-    /// ever stopped resolving this test would fail there rather than passing vacuously.</para>
+    /// A failed replacement preserves the previous artifact and complete archived predecessor.
+    /// The real sidecar obstruction is installed after identity resolution and snapshot/archive
+    /// capture, so authoritative cache refresh cannot misclassify the replacement as a creation.
+    /// Failed rollback retains evidence and blocks reads until consistency can be proven.
     /// </summary>
     [Fact]
     public async Task StoreAsync_RestoresThePreviousContentWhenPersistingTheEntryFails()
     {
         using var tmp = new TempWorkspace();
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith("/") || "target".StartsWith("~") ? "target" : "/" + "target"), "local", ["the original body"]));
-
-        // Task 2 (write-path cost): a write against a previously-uncached scope now leaves the
-        // index cache absent rather than eagerly rebuilding it, so the store above does not warm
-        // "local"'s cache. Warm it explicitly so the re-store's own LoadIndex-based identity
-        // resolution is a cache hit and finds the entry via the in-memory list rather than a cold
-        // Directory.EnumerateFiles scan — which silently skips the sidecar path once it is replaced
-        // by a directory below, misresolving this as a brand-new memory instead of an existing one.
+        await tmp.Store.StoreAsync(
+            MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["the original body"]));
         tmp.Store.LoadIndex("local").Should().ContainSingle();
 
         string storeDir = tmp.Store.GetStoreDirForScope("local");
         string artifact = Path.Combine(storeDir, "target.nmp2");
-        byte[] originalArtifact = await File.ReadAllBytesAsync(artifact);
         string sidecar = Path.Combine(storeDir, "target.meta.json");
-        File.Delete(sidecar);
-        Directory.CreateDirectory(sidecar);
+        byte[] originalArtifact = await File.ReadAllBytesAsync(artifact);
+        byte[] originalSidecar = await File.ReadAllBytesAsync(sidecar);
+        bool boundaryReached = false;
+        FileMemoryStore.WholeMemoryFaultInjector = (point, _) =>
+        {
+            if (point == WholeMemoryFaultPoint.LiveSidecarWrite)
+            {
+                boundaryReached = true;
+                File.Delete(sidecar);
+                Directory.CreateDirectory(sidecar);
+            }
+            return null;
+        };
 
-        var restore = async () => await tmp.Store.StoreAsync(
-            MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith("/") || "target".StartsWith("~") ? "target" : "/" + "target"), "local", ["the replacement body"]));
+        try
+        {
+            var restore = async () => await tmp.Store.StoreAsync(
+                MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["the replacement body"]));
 
-        await restore.Should().ThrowAsync<Exception>(
-            because: "a store that could not persist its entry must not report success");
+            await restore.Should().ThrowAsync<WholeMemoryTransactionException>()
+                .Where(exception => exception.Code == WholeMemoryErrorCode.RecoveryRequired,
+                    because: "the real sidecar obstruction prevents publication and proven rollback");
+            boundaryReached.Should().BeTrue(
+                because: "the failure must occur after the intact predecessor was captured and archived");
 
-        Directory.GetFiles(Path.Combine(storeDir, "versions"), "target_*.nmp2").Should().ContainSingle(
-            because: "the existing entry resolved and its version was archived — without that this " +
-                     "test would be asserting the brand-new-memory path instead");
-        (await File.ReadAllBytesAsync(artifact)).Should().Equal(originalArtifact,
-            because: "the failed re-store must preserve the previous raw artifact bytes");
+            string archive = Directory.GetFiles(Path.Combine(storeDir, "versions"), "target_*.nmp2")
+                .Should().ContainSingle(
+                    because: "the existing entry resolved and its version was archived").Which;
+            (await File.ReadAllBytesAsync(archive)).Should().Equal(originalArtifact);
+            (await File.ReadAllBytesAsync(Path.ChangeExtension(archive, ".meta.json")))
+                .Should().Equal(originalSidecar);
+            (await File.ReadAllBytesAsync(artifact)).Should().Equal(originalArtifact,
+                because: "the failed re-store must preserve the previous raw artifact bytes");
 
-        string journalPath = Path.Combine(storeDir, "versions", AppendJournal.FileName);
-        File.Exists(journalPath).Should().BeTrue(
-            because: "unresolved pre-commit evidence must remain available for recovery");
-        var read = async () => await tmp.Store.ReadAsync(MemoryAddress.Parse("/target"));
-        await read.Should().ThrowAsync<AppendStoreException>()
-            .Where(exception => exception.Code == AppendStoreErrorCode.RecoveryRequired,
-                because: "the fail-closed read barrier must block reads while consistency is unprovable");
-
-        Directory.Delete(sidecar);
+            string journalPath = Path.Combine(storeDir, "versions", AppendJournal.FileName);
+            File.Exists(journalPath).Should().BeTrue(
+                because: "unresolved pre-commit evidence must remain available for recovery");
+            var read = async () => await tmp.Store.ReadAsync(MemoryAddress.Parse("/target"));
+            await read.Should().ThrowAsync<AppendStoreException>()
+                .Where(exception => exception.Code == AppendStoreErrorCode.RecoveryRequired,
+                    because: "the fail-closed read barrier must block reads while consistency is unprovable");
+        }
+        finally
+        {
+            FileMemoryStore.WholeMemoryFaultInjector = null;
+            if (Directory.Exists(sidecar))
+                Directory.Delete(sidecar);
+        }
     }
 
     /// <summary>

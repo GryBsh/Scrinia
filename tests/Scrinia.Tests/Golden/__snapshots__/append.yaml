@@ -1,5 +1,6 @@
 status: success
 action: appended
+path: /findings/auth-flow
 operationId: <OPERATION_ID>
 content: |
   Appended chunk 2 to /findings/auth-flow (2 chunks, 44 B).

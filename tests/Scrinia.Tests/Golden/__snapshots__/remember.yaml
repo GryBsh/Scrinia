@@ -1,5 +1,6 @@
 status: success
 action: remembered
+path: /findings/new-note
 content: |
   Remembered: /findings/new-note (2 chunks, 23 B).
   Files in .scrinia/ were updated — these are your changes.

@@ -520,6 +520,9 @@ public sealed class DualModeParseTests : IDisposable
     [Fact]
     public void ResolveReadScopes_ReservedDeviceFilter_MatchesNothing()
     {
+        // Exercise filter grammar in an existing workspace; absent reads intentionally return empty.
+        Directory.CreateDirectory(Path.Combine(_root, ".scrinia", "memories"));
+
         // The device-name rule reaches the read path through the same constructor. NUL is
         // refused, so the filter matches nothing; the names that demonstrably work are not.
         _store.ResolveReadScopes(["nul"]).Should().BeEmpty();
@@ -529,6 +532,9 @@ public sealed class DualModeParseTests : IDisposable
     [Fact]
     public void ResolveReadScopes_UnconstructableFilter_MatchesNothingInsteadOfThrowing()
     {
+        // Exercise filter grammar in an existing workspace; absent reads intentionally return empty.
+        Directory.CreateDirectory(Path.Combine(_root, ".scrinia", "memories"));
+
         // READ callers take the non-throwing form. An aliased scope can never name a stored
         // memory (ArtifactEntry has no scope field; DiscoverTopics re-derives scopes from on-disk
         // directory names), so "matches nothing" is the correct answer, not leniency.
@@ -539,6 +545,9 @@ public sealed class DualModeParseTests : IDisposable
     [Fact]
     public void ResolveReadScopes_AliasingFilters_AreClosedAtTheFilterSurfaceToo()
     {
+        // Exercise filter grammar in an existing workspace; absent reads intentionally return empty.
+        Directory.CreateDirectory(Path.Combine(_root, ".scrinia", "memories"));
+
         // The empty-topic and redundant-separator aliases are pinned at the constructor above,
         // but NormalizeScopeFilters is the one surface they were actually reachable from.
         // "local:" resolves to the memories ROOT, i.e. it aliased the bare "local" scope.
@@ -571,6 +580,9 @@ public sealed class DualModeParseTests : IDisposable
     [Fact]
     public void ResolveReadScopes_LocalPrefixedFilter_IsNormalizedRatherThanPassedThroughRaw()
     {
+        // Exercise filter grammar in an existing workspace; absent reads intentionally return empty.
+        Directory.CreateDirectory(Path.Combine(_root, ".scrinia", "memories"));
+
         // This branch used to `return [s]` verbatim. That meant "local:a*b" became a scope string
         // no write could ever produce, and "LOCAL:api" reached ToStoreDir — whose prefix test is
         // Ordinal — as an unknown scope.

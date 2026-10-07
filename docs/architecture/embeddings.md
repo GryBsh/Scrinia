@@ -57,14 +57,31 @@ Another already-warm instance may continue reading its earlier snapshot until it
 or reload. This write coherence repair does not add a read-cache invalidation protocol. Derived
 vectors remain outside the authoritative memory bundle transaction and its rollback manifest.
 
+Persistent mutation rereads and rewrites the complete scope file, so cost grows with scope size.
+Serialization and its final byte-array copy require additional complete-payload memory. Exclusive
+cold reads serialize with writers. Existing signature quarantine, unsupported-format refusal,
+and bounded retry behavior remain; synchronous read/move retries have cooperative-cancellation
+limits.
+
+Windows and Ubuntu Linux process tests cover independent writers, cancellation/reuse, and
+migration interleaving. macOS has classifier contract coverage only, with no executed host gate.
+
 Ephemeral memories are never reindexed from disk. Their vectors live only for the store instance.
 
 ## Search flow
 
 Keyword search remains the baseline. When embeddings are available, `HybridReranker` embeds the
-query, reads vectors for the keyword candidate scopes, computes vector scores, and combines them
-with the configured ranking strategy. Missing or unavailable embeddings degrade to keyword search;
-they do not make memory writes fail.
+query, scores the same bounded eligible lexical snapshot supplied to the other contributors,
+and combines scores with the configured ranking strategy. Missing or unavailable embeddings degrade to keyword search;
+they do not make memory writes fail. Scope, excluded-topic, path/address, and attribute filters
+precede candidate K; the final result limit remains separate.
+
+The unchanged Windows benchmark lanes measured single-memory synthetic writes at 0.5262–0.6727
+times the prior elapsed time, with allocations at 0.5129–1.0043 times the prior values. These
+short-iteration measurements have broad intervals and do not establish a statistically certain
+speedup. The separate growing 49-fact lane measured BM25 at 2,089.1 → 2,126.1 ms and Model2Vec at
+2,338.1 → 2,703.0 ms (15.6% higher). That lane reports no allocations. Full-scope read/write work
+and temporary buffers remain explicit costs of writer coherence.
 
 ## Reindexing
 

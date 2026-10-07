@@ -16,6 +16,13 @@ using Scrinia.Core.Search;
 
 namespace Scrinia.Core;
 
+internal enum ScopeAdmissionPurpose
+{
+    Mutation,
+    VerifiedReadPreparation,
+    RecoveryCleanup
+}
+
 internal enum RestoreJournalTransition
 {
     BeforeRecoveryBarrierRead,
@@ -150,6 +157,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private readonly MemoryValidationOptions _writeValidationOptions;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ScopeLockManager _scopeLockManager;
+    internal Action<string, string>? IndexProjectionObserverForTest { get; set; }
     private readonly ScopeIndexCache _scopeIndexCache;
     private readonly ConcurrentDictionary<string, string> _scopeSnapshotFingerprints = new(StringComparer.OrdinalIgnoreCase);
     private readonly TopicDiscoveryService _topicDiscoveryService;
@@ -459,7 +467,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             {
                 RemoveUnderLease(lease, subject, scope);
                 return DeleteArtifactUnsafe(subject, scope);
-            });
+            }, cancellationToken: ct);
         }
         return ValueTask.CompletedTask;
     }
@@ -644,14 +652,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         Path.Combine(GetStoreDirUnderLease(scope), ".lock");
 
     internal async Task<T> WithExclusiveScopeAdmissionAsync<T>(string scope, TimeSpan timeout,
-        Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true)
+        Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true,
+        ScopeAdmissionPurpose purpose = ScopeAdmissionPurpose.Mutation)
     {
         using WorkspaceLease lease = EnterWorkspaceMutation(timeout, cancellationToken);
-        return await WithExclusiveScopeAdmissionAsync(lease, scope, timeout, body, cancellationToken, recoverCoordinator).ConfigureAwait(false);
+        return await WithExclusiveScopeAdmissionAsync(lease, scope, timeout, body, cancellationToken, recoverCoordinator, purpose).ConfigureAwait(false);
     }
 
     internal async Task<T> WithExclusiveScopeAdmissionAsync<T>(WorkspaceLease lease, string scope, TimeSpan timeout,
-        Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true)
+        Func<Task<T>> body, CancellationToken cancellationToken, bool recoverCoordinator = true,
+        ScopeAdmissionPurpose purpose = ScopeAdmissionPurpose.Mutation)
     {
         lease.AssertValid(_workspaceRoot);
         ArgumentNullException.ThrowIfNull(body);
@@ -670,7 +680,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 throw new FileLockTimeoutException(GetLockPath(scope), timeout);
             EnsureMaterialized(scope);
             using FileLock fileLock = FileLock.AcquireExclusive(GetLockPath(scope), remaining, cancellationToken);
-            RecoverScopeUnsafe(lease, scope, GetStoreDirUnderLease(scope), recoverCoordinator, cancellationToken);
+            bool retained = RecoverScopeUnsafe(lease, scope, GetStoreDirUnderLease(scope), recoverCoordinator, cancellationToken);
+            if (purpose == ScopeAdmissionPurpose.Mutation)
+                RefuseMutationWithRetainedEvidence(scope, GetStoreDirUnderLease(scope), retained, cancellationToken);
             return await body().ConfigureAwait(false);
         }
         finally
@@ -743,7 +755,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 lease, scope, lockTimeout,
                 () => Task.FromResult(ExecuteMaintenanceScopeUnderLock(
                     lease, scope, remainingJournalBudget, deadlineUtc, cancellationToken)),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, purpose: ScopeAdmissionPurpose.RecoveryCleanup).ConfigureAwait(false);
         }
         catch (AppendStoreException)
         {
@@ -978,24 +990,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// "writes materialize, reads do not" holds in one place.
     /// </summary>
     private T WithExclusiveLock<T>(string scope, Func<T> body, TimeSpan? timeout = null,
-        Action<bool>? afterRecovery = null)
+        Action<bool>? afterRecovery = null, ScopeAdmissionPurpose purpose = ScopeAdmissionPurpose.Mutation)
     {
         using WorkspaceLease lease = EnterWorkspaceMutation(timeout: timeout);
-        return WithExclusiveLock(lease, scope, body, timeout, afterRecovery);
+        return WithExclusiveLock(lease, scope, body, timeout, afterRecovery, purpose);
     }
 
     private T WithExclusiveLock<T>(WorkspaceLease lease, string scope, Func<T> body, TimeSpan? timeout = null,
-        Action<bool>? afterRecovery = null)
+        Action<bool>? afterRecovery = null, ScopeAdmissionPurpose purpose = ScopeAdmissionPurpose.Mutation,
+        CancellationToken cancellationToken = default)
     {
         lease.AssertValid(_workspaceRoot);
         EnsureMaterialized(scope);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout ?? TimeSpan.FromSeconds(5), cancellationToken);
         var lk = _scopeLockManager.GetIndexLock(scope);
         lk.EnterWriteLock();
         try
         {
-            bool completedJournalRetained = RecoverScopeUnsafe(lease, scope, GetStoreDirUnderLease(scope));
+            bool completedJournalRetained = RecoverScopeUnsafe(lease, scope, GetStoreDirUnderLease(scope), cancellationToken: cancellationToken);
             afterRecovery?.Invoke(completedJournalRetained);
+            if (purpose == ScopeAdmissionPurpose.Mutation)
+                RefuseMutationWithRetainedEvidence(scope, GetStoreDirUnderLease(scope), completedJournalRetained, cancellationToken);
             return body();
         }
         finally
@@ -1005,8 +1020,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     private void WithExclusiveLock(string scope, Action body, TimeSpan? timeout = null,
-        Action<bool>? afterRecovery = null) =>
-        WithExclusiveLock(scope, () => { body(); return true; }, timeout, afterRecovery);
+        Action<bool>? afterRecovery = null, ScopeAdmissionPurpose purpose = ScopeAdmissionPurpose.Mutation) =>
+        WithExclusiveLock(scope, () => { body(); return true; }, timeout, afterRecovery, purpose);
 
     /// <summary>
     /// Holds the scope's shared lock across a persistent read. If a journal is present, releases
@@ -1014,9 +1029,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     /// read. Keeping the check and read in one lock lifetime prevents a reader from observing a
     /// prepared journal after its pre-check but before its body or sidecar access.
     /// </summary>
-    private sealed class ReadPreparationRequired(string scope) : Exception
+    private enum ReadPreparationReason
+    {
+        ScopeRecovery,
+        IndexProjection,
+        LayoutOnly
+    }
+
+    private sealed class ReadPreparationRequired(string scope,
+        ReadPreparationReason reason = ReadPreparationReason.ScopeRecovery) : Exception
     {
         internal string Scope { get; } = scope;
+        internal ReadPreparationReason Reason { get; } = reason;
     }
 
     internal T WithWorkspaceSnapshot<T>(Func<WorkspaceLease, T> read, CancellationToken ct = default)
@@ -1025,43 +1049,161 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         while (true)
         {
             string? prepareScope = null;
+            ReadPreparationReason preparationReason = ReadPreparationReason.ScopeRecovery;
             using (WorkspaceLease lease = _workspaceAdmission.EnterRead(ImportLockTimeout, ct))
             {
                 if (lease.RecoveryPerformed) InvalidateCaches();
                 foreach (var proof in prepared) lease.SetVerifiedScopeSnapshot(proof.Key, proof.Value);
                 if (lease.CapturedAbsentWorkspace) return read(lease);
                 if (!_layoutChecked && StoreLayoutMigration.NeedsMigration(_workspaceRoot))
+                {
                     prepareScope = "local";
+                    preparationReason = ReadPreparationReason.LayoutOnly;
+                }
                 else
                 {
                     _layoutChecked = true;
                     try { return read(lease); }
-                    catch (ReadPreparationRequired preparation) { prepareScope = preparation.Scope; }
+                    catch (ReadPreparationRequired preparation)
+                    {
+                        prepareScope = preparation.Scope;
+                        preparationReason = preparation.Reason;
+                    }
                 }
             }
             using WorkspaceLease mutation = EnterWorkspaceMutation(ct: ct);
-            bool terminalRetained = false;
-            string fingerprint = WithExclusiveLock(mutation, prepareScope!, () =>
+            // EnterWorkspaceMutation has completed layout migration. Re-enter shared discovery;
+            // layout-only work neither owns scope recovery nor establishes a verified snapshot.
+            if (preparationReason == ReadPreparationReason.LayoutOnly) continue;
+            if (preparationReason == ReadPreparationReason.IndexProjection)
             {
-                LoadIndexUnsafe(prepareScope!);
-                return terminalRetained ? CaptureScopeSnapshotFingerprint(prepareScope!) : string.Empty;
-            }, afterRecovery: retained => terminalRetained = retained);
+                PrepareIndexProjection(mutation, prepareScope!, ct);
+                continue;
+            }
+            bool terminalRetained = false;
+            string fingerprint = WithExclusiveLock(mutation, prepareScope!,
+                () => terminalRetained ? CaptureScopeSnapshotFingerprint(prepareScope!) : string.Empty,
+                afterRecovery: retained => terminalRetained = retained,
+                purpose: ScopeAdmissionPurpose.VerifiedReadPreparation, cancellationToken: ct);
             if (terminalRetained) prepared[prepareScope!] = fingerprint;
         }
     }
 
-    private T WithRecoveryReadBarrier<T>(string scope, Func<T> read, CancellationToken ct = default) =>
-        WithWorkspaceSnapshot(lease => lease.CapturedAbsentWorkspace ? default! : WithRecoveryReadBarrier(lease, scope, read), ct);
 
-    private T WithRecoveryReadBarrier<T>(WorkspaceLease lease, string scope, Func<T> read)
+    private static readonly TimeSpan IndexProjectionAdmissionTimeout = TimeSpan.FromSeconds(5);
+
+    private TimeSpan RemainingProjectionBudget(Stopwatch timer, string scope, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        TimeSpan remaining = IndexProjectionAdmissionTimeout - timer.Elapsed;
+        if (remaining <= TimeSpan.Zero)
+            throw new FileLockTimeoutException(GetLockPath(scope), IndexProjectionAdmissionTimeout);
+        return remaining;
+    }
+
+    private void PrepareIndexProjection(WorkspaceLease lease, string scope, CancellationToken cancellationToken)
+    {
+        lease.AssertValid(_workspaceRoot);
+        Stopwatch timer = Stopwatch.StartNew();
+        IndexProjectionObserverForTest?.Invoke(scope, "requested");
+        AdmissionGate gate = _scopeLockManager.AcquireAdmissionGate(scope);
+        bool acquired = false;
+        try
+        {
+            IndexProjectionObserverForTest?.Invoke(scope, "gate-wait");
+            acquired = gate.Semaphore.Wait(RemainingProjectionBudget(timer, scope, cancellationToken), cancellationToken);
+            if (!acquired)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new FileLockTimeoutException(GetLockPath(scope), IndexProjectionAdmissionTimeout);
+            }
+            IndexProjectionObserverForTest?.Invoke(scope, "gate-acquired");
+            PrepareIndexProjectionUnderAdmission(lease, scope, timer, cancellationToken);
+        }
+        finally
+        {
+            if (acquired) gate.Semaphore.Release();
+            _scopeLockManager.ReleaseAdmissionGate(scope, gate);
+        }
+    }
+
+    private async Task PrepareIndexProjectionAsync(WorkspaceLease lease, string scope, CancellationToken cancellationToken)
+    {
+        lease.AssertValid(_workspaceRoot);
+        Stopwatch timer = Stopwatch.StartNew();
+        IndexProjectionObserverForTest?.Invoke(scope, "requested");
+        AdmissionGate gate = _scopeLockManager.AcquireAdmissionGate(scope);
+        bool acquired = false;
+        try
+        {
+            IndexProjectionObserverForTest?.Invoke(scope, "gate-wait");
+            acquired = await gate.Semaphore.WaitAsync(RemainingProjectionBudget(timer, scope, cancellationToken), cancellationToken)
+                .ConfigureAwait(false);
+            if (!acquired)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new FileLockTimeoutException(GetLockPath(scope), IndexProjectionAdmissionTimeout);
+            }
+            IndexProjectionObserverForTest?.Invoke(scope, "gate-acquired");
+            PrepareIndexProjectionUnderAdmission(lease, scope, timer, cancellationToken);
+        }
+        finally
+        {
+            if (acquired) gate.Semaphore.Release();
+            _scopeLockManager.ReleaseAdmissionGate(scope, gate);
+        }
+    }
+
+    private void PrepareIndexProjectionUnderAdmission(WorkspaceLease lease, string scope, Stopwatch timer,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Gate ownership coordinates this instance only. The shared file barrier and fresh
+            // fingerprint decide whether the old request still requires a durable projection.
+            WithRecoveryReadBarrier(lease, scope, () => LoadIndexUnderRecoveryBarrier(scope),
+                RemainingProjectionBudget(timer, scope, cancellationToken), cancellationToken);
+            IndexProjectionObserverForTest?.Invoke(scope, "recheck-current");
+            return;
+        }
+        catch (ReadPreparationRequired preparation) when (
+            string.Equals(preparation.Scope, scope, StringComparison.OrdinalIgnoreCase))
+        {
+            // Shared file/index ownership has unwound before exclusive admission below.
+        }
+
+        IndexProjectionObserverForTest?.Invoke(scope, "before-exclusive");
+        bool terminalRetained = false;
+        WithExclusiveLock(lease, scope, () =>
+        {
+            IndexProjectionObserverForTest?.Invoke(scope, "exclusive-start");
+            RefuseMutationWithRetainedEvidence(scope, GetStoreDirUnderLease(scope), terminalRetained, cancellationToken);
+            // A peer may publish in the shared-to-exclusive gap. Never use the preflight cache
+            // as authority for this projection under its newly acquired exclusive handle.
+            RefreshScopeSnapshot(scope);
+            return LoadIndexUnsafe(scope);
+        }, RemainingProjectionBudget(timer, scope, cancellationToken),
+            afterRecovery: retained => terminalRetained = retained,
+            purpose: ScopeAdmissionPurpose.VerifiedReadPreparation, cancellationToken: cancellationToken);
+        // No snapshot permission escapes this helper. The caller retries ordinary fresh admission.
+    }
+
+    private T WithRecoveryReadBarrier<T>(string scope, Func<T> read, CancellationToken ct = default) =>
+        WithWorkspaceSnapshot(lease => lease.CapturedAbsentWorkspace ? default! : WithRecoveryReadBarrier(lease, scope, read, cancellationToken: ct), ct);
+
+    private T WithRecoveryReadBarrier<T>(WorkspaceLease lease, string scope, Func<T> read,
+        TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
         lease.AssertValid(_workspaceRoot);
         string storeDir = GetStoreDirUnderLease(scope);
         if (!Directory.Exists(storeDir)) return read();
-        using var scopeRead = FileLock.AcquireShared(GetLockPath(scope));
+        cancellationToken.ThrowIfCancellationRequested();
+        using var scopeRead = timeout is null && !cancellationToken.CanBeCanceled
+            ? FileLock.AcquireShared(GetLockPath(scope))
+            : FileLock.AcquireShared(GetLockPath(scope), timeout ?? TimeSpan.FromSeconds(5), cancellationToken);
         if (lease.MatchesVerifiedScopeSnapshot(scope, () => CaptureScopeSnapshotFingerprint(scope)))
             return read();
-        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir);
+        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, storeDir, cancellationToken: cancellationToken);
         if (discovery.BlockingEvidence is not null)
             throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
         if (discovery.Candidates.Count > 0 && discovery.Candidates[0].Operation == RecoveryOperation.Append &&
@@ -1083,13 +1225,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         while (true)
         {
             string? prepareScope = null;
+            ReadPreparationReason preparationReason = ReadPreparationReason.ScopeRecovery;
             using (WorkspaceLease lease = _workspaceAdmission.EnterRead(ImportLockTimeout, ct))
             {
                 if (lease.RecoveryPerformed) InvalidateCaches();
                 foreach (var proof in prepared) lease.SetVerifiedScopeSnapshot(proof.Key, proof.Value);
                 if (lease.CapturedAbsentWorkspace) throw new FileNotFoundException("The workspace contains no persistent memories.");
                 if (!_layoutChecked && StoreLayoutMigration.NeedsMigration(_workspaceRoot))
+                {
                     prepareScope = scope;
+                    preparationReason = ReadPreparationReason.LayoutOnly;
+                }
                 else
                 {
                     _layoutChecked = true;
@@ -1112,16 +1258,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                                 "Append recovery evidence must be resolved before reading the affected scope."));
                         return await read().ConfigureAwait(false);
                     }
-                    catch (ReadPreparationRequired preparation) { prepareScope = preparation.Scope; }
+                    catch (ReadPreparationRequired preparation)
+                    {
+                        prepareScope = preparation.Scope;
+                        preparationReason = preparation.Reason;
+                    }
                 }
             }
             using WorkspaceLease mutation = EnterWorkspaceMutation(ct: ct);
-            bool terminalRetained = false;
-            string fingerprint = WithExclusiveLock(mutation, prepareScope!, () =>
+            // EnterWorkspaceMutation has completed layout migration. Re-enter shared discovery;
+            // layout-only work neither owns scope recovery nor establishes a verified snapshot.
+            if (preparationReason == ReadPreparationReason.LayoutOnly) continue;
+            if (preparationReason == ReadPreparationReason.IndexProjection)
             {
-                LoadIndexUnsafe(prepareScope!);
-                return terminalRetained ? CaptureScopeSnapshotFingerprint(prepareScope!) : string.Empty;
-            }, afterRecovery: retained => terminalRetained = retained);
+                await PrepareIndexProjectionAsync(mutation, prepareScope!, ct).ConfigureAwait(false);
+                continue;
+            }
+            bool terminalRetained = false;
+            string fingerprint = WithExclusiveLock(mutation, prepareScope!,
+                () => terminalRetained ? CaptureScopeSnapshotFingerprint(prepareScope!) : string.Empty,
+                afterRecovery: retained => terminalRetained = retained,
+                purpose: ScopeAdmissionPurpose.VerifiedReadPreparation, cancellationToken: ct);
             if (terminalRetained) prepared[prepareScope!] = fingerprint;
         }
     }
@@ -1309,16 +1466,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         // legacy fields are never cleared, so scoring (Math.Max over legacy + attribute
         // reads) is unchanged.
         //
-        // The write-back runs under LoadIndex's SHARED lock, so concurrent same-process cold
-        // loads race to atomically replace the same sidecar. Unique per-call temp names (see
-        // WriteSidecar) keep the temp writes independent, but the final File.Move(overwrite)
-        // onto the shared destination can still collide — on Windows the loser surfaces as
-        // UnauthorizedAccessException (ERROR_ACCESS_DENIED), which FileRetry does not retry.
-        // That collision is benign: every writer serializes identical deterministic content,
-        // so whichever move lands leaves the sidecar correct, and the in-memory upgrade below
-        // already makes THIS read correct regardless. Persistence here is a best-effort
-        // optimization (idempotent via MigratesTo — retried on the next cold load if a whole
-        // round loses), so a failed write-back must never propagate out of a plain read path.
+        // A shared read requests preparation before any durable rewrite. Projection admission
+        // coalesces this instance's requests, rechecks under shared file ownership, and performs
+        // required write-back under exclusive file/index ownership. Persistence remains best-effort:
+        // an I/O failure leaves the in-memory upgrade intact and may be retried on a later cold load.
         for (int i = 0; i < entries.Count; i++)
         {
             if (AttributeMigration.MigratesTo(entries[i], out var upgraded))
@@ -1340,7 +1491,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 // file, which has already migrated its own shape anyway.
                 if (ArtifactSidecarPolicy.IsReadOnly(upgraded)) continue;
 
-                if (!persistMigration) throw new ReadPreparationRequired(scope);
+                if (!persistMigration) throw new ReadPreparationRequired(scope, ReadPreparationReason.IndexProjection);
                 try { WriteSidecar(upgraded, storeDir); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort; see above */ }
             }
@@ -2417,7 +2568,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         EnsureMaterialized(scope);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         string storeDirectory = GetStoreDirUnderLease(scope);
-        RecoverScopeUnsafe(lease, scope, storeDirectory, cancellationToken: cancellationToken);
+        bool retained = RecoverScopeUnsafe(lease, scope, storeDirectory, cancellationToken: cancellationToken);
+        RefuseMutationWithRetainedEvidence(scope, storeDirectory, retained, cancellationToken);
         await _recoveryConductor.RecoverAppendUnsafeAsync(scope, storeDirectory, "store-recovery", cancellationToken).ConfigureAwait(false);
 
         ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope)
@@ -2624,7 +2776,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             // that journal before deciding whether this is a create or an append; otherwise a
             // missing live artifact can enter CreateForAppendAsync and bypass the recovery barrier.
             string storeDirectory = GetStoreDirUnderLease(scope);
-            RecoverScopeUnsafe(lease, scope, storeDirectory, cancellationToken: ct);
+            bool retained = RecoverScopeUnsafe(lease, scope, storeDirectory, cancellationToken: ct);
+            RefuseMutationWithRetainedEvidence(scope, storeDirectory, retained, ct);
             await _recoveryConductor.RecoverAppendUnsafeAsync(scope, storeDirectory, operationId, ct);
             ArtifactEntry? canonicalEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
                 entry => MemoryNaming.NameEquals(entry.Name, subject));
@@ -3986,6 +4139,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     private static RestoreRecoveryException ReplayIoFailed(string scope, string journalPath, Exception exception) =>
         new(scope, journalPath, RestoreRecoveryFailure.ReplayIoFailed,
             $"Restore replay failed for topic scope '{scope}'.", exception);
+
+    private void RefuseMutationWithRetainedEvidence(string scope, string directory, bool retained,
+        CancellationToken cancellationToken = default)
+    {
+        if (!retained) return;
+        RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, directory,
+            cancellationToken: cancellationToken);
+        if (discovery.BlockingEvidence is not null)
+            throw CreateDiscoveryRecoveryException(discovery.BlockingEvidence);
+        RecoveryCandidate? candidate = discovery.Candidates.Count == 0 ? null : discovery.Candidates[0];
+        string evidencePath = discovery.CoordinatorRecord is not null
+            ? MultiMemoryTransactionRecordCodec.GetPath(directory)
+            : candidate?.EvidencePath ?? GetRestoreJournalPath(directory);
+        string operationId = discovery.CoordinatorRecord?.TransactionId
+            ?? candidate?.OperationId ?? "retained-terminal";
+        throw CreateDiscoveryRecoveryException(new RecoveryBlock(scope, evidencePath,
+            discovery.CoordinatorRecord is null ? candidate?.Operation : null, operationId,
+            RecoveryBlockReason.Inconsistent,
+            "Terminal recovery evidence must be retired before a new scope mutation."));
+    }
 
     private static Exception CreateDiscoveryRecoveryException(RecoveryBlock block)
     {

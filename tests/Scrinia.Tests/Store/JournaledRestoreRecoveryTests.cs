@@ -136,6 +136,40 @@ public class JournaledRestoreRecoveryTests
     }
 
     [Fact]
+    public async Task PreparedScopeRecoveryKeepsMigrationDryRunReadOnly()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.WriteArtifactAsync("note", Scope, "old");
+        var recovered = CreateEntry("note") with
+        {
+            FileHashes = new Dictionary<string, string> { ["src/recovered.cs"] = "hash" }
+        };
+        byte[] body = Encoding.UTF8.GetBytes("recovered");
+        WritePreparedJournal(store, Scope, recovered, body);
+        string storeDirectory = store.GetStoreDirForScope(Scope);
+        string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
+        RestoreJournal journal = ReadRestoreEvidence(journalPath);
+        byte[] expectedSidecar = Scrinia.Core.RestoreJournalCodec.DecodeAndVerifyPayloads(
+            journal.Entries.Single(), Scope, journalPath).Sidecar;
+
+        AttributeMigration.MigrateSummary preview = AttributeMigration.MigrateStore(store, dryRun: true);
+
+        preview.Total.Should().Be(1);
+        preview.Migrated.Should().Be(1);
+        File.ReadAllBytes(Path.Combine(storeDirectory, "note.nmp2")).Should().Equal(body);
+        byte[] actualSidecar = File.ReadAllBytes(Path.Combine(storeDirectory, "note.meta.json"));
+        actualSidecar.Should().Equal(expectedSidecar,
+            "necessary journal replay must not be followed by incidental migration writes during dry-run");
+        using (JsonDocument raw = JsonDocument.Parse(actualSidecar))
+            raw.RootElement.TryGetProperty("attributes", out _).Should().BeFalse();
+        File.Exists(journalPath).Should().BeFalse();
+
+        AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
+        AttributeMigration.MigrateStore(store).Migrated.Should().Be(0);
+    }
+
+    [Fact]
     public async Task GetEntityFactStore_WhenAWarmCacheGainsAPreparedJournal_RebuildsOnlyAfterRecovery()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -971,8 +1005,6 @@ public class JournaledRestoreRecoveryTests
             [first.Name] = firstBody,
             [second.Name] = secondBody
         };
-        string sourceZipPath = Path.Combine(scope.WorkspaceDir, "restore-source.zip");
-        WriteBinarySourceZip(sourceZipPath, [first, second], bodies);
         string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
         int replayWritesDuringRecovery = 0;
         bool injected = false;
@@ -998,16 +1030,11 @@ public class JournaledRestoreRecoveryTests
 
         try
         {
-            using (var zipStream = File.OpenRead(sourceZipPath))
-            using (var zip = new ZipArchive(zipStream, ZipArchiveMode.Read))
-            {
-                Action import = () => BundleFormatService.ImportTopicsFromZip(zip, store, filterTopics: null, overwrite: true);
-                if (transition == RestoreJournalTransition.BeforeCleanupDelete)
-                    import.Should().NotThrow("cleanup follows durable completion and is retried later");
-                else
-                    import.Should().Throw<BundleImportException>()
-                        .Which.InnerException.Should().BeOfType<IOException>();
-            }
+            Action import = () => store.ImportTopicEntries(Scope, [first, second], bodies, overwrite: true);
+            if (transition == RestoreJournalTransition.BeforeCleanupDelete)
+                import.Should().NotThrow("cleanup follows durable completion and is retried later");
+            else
+                import.Should().Throw<IOException>().WithMessage("Injected journal transition failure.");
         }
         finally
         {
@@ -1019,14 +1046,168 @@ public class JournaledRestoreRecoveryTests
         {
             File.Exists(journalPath).Should().BeFalse();
             File.Exists(Path.Combine(storeDirectory, "first.nmp2")).Should().BeFalse();
+            File.Exists(Path.Combine(storeDirectory, "second.nmp2")).Should().BeFalse();
             return;
         }
 
-        File.Exists(journalPath).Should().Be(transition == RestoreJournalTransition.BeforeCleanupDelete);
-        File.Exists(Path.Combine(storeDirectory, "first.nmp2")).Should().Be(
-            transition == RestoreJournalTransition.BeforeCleanupDelete);
-        File.Exists(Path.Combine(storeDirectory, "second.nmp2")).Should().Be(
-            transition == RestoreJournalTransition.BeforeCleanupDelete);
+        File.Exists(journalPath).Should().BeTrue("scope recovery owns the retained journal");
+        RestoreJournal retained = ReadRestoreEvidence(journalPath);
+        var expectedPairs = retained.Entries.ToDictionary(e => e.Name,
+            e => Scrinia.Core.RestoreJournalCodec.DecodeAndVerifyPayloads(e, Scope, journalPath));
+        bodies.Clear(); // Recovery must use its durable payload, independently of the caller.
+        replayWritesDuringRecovery = 0;
+        FileMemoryStore.RestoreJournalFailureInjector.Value = (phase, _) =>
+        {
+            if (phase is RestoreJournalTransition.BeforeReplayBody or RestoreJournalTransition.BeforeReplaySidecar)
+                replayWritesDuringRecovery++;
+            return null;
+        };
+        try
+        {
+            using var fresh = new FileMemoryStore(scope.WorkspaceDir);
+            fresh.LoadIndex(Scope).Select(e => e.Name).Should().BeEquivalentTo(["first", "second"]);
+        }
+        finally
+        {
+            FileMemoryStore.RestoreJournalFailureInjector.Value = null;
+        }
+
+        foreach (var pair in expectedPairs)
+        {
+            File.ReadAllBytes(Path.Combine(storeDirectory, pair.Key + ".nmp2")).Should().Equal(pair.Value.Body);
+            File.ReadAllBytes(Path.Combine(storeDirectory, pair.Key + ".meta.json")).Should().Equal(pair.Value.Sidecar);
+        }
+        replayWritesDuringRecovery.Should().Be(
+            transition is RestoreJournalTransition.AfterCompletedWrite or RestoreJournalTransition.BeforeCleanupDelete ? 0 : 4,
+            "completed evidence verifies destinations without replaying them");
+        File.Exists(journalPath).Should().BeFalse();
+
+    }
+
+    [Theory]
+    [InlineData((int)BundleFaultPoint.BeforeMember, "first.nmp2")]
+    [InlineData((int)BundleFaultPoint.AfterMember, "first.nmp2")]
+    [InlineData((int)BundleFaultPoint.BeforeMember, "first.meta.json")]
+    [InlineData((int)BundleFaultPoint.AfterMember, "first.meta.json")]
+    [InlineData((int)BundleFaultPoint.BeforeMember, "second.nmp2")]
+    [InlineData((int)BundleFaultPoint.AfterMember, "second.nmp2")]
+    [InlineData((int)BundleFaultPoint.BeforeMember, "second.meta.json")]
+    [InlineData((int)BundleFaultPoint.AfterMember, "second.meta.json")]
+    public async Task PublicBundleMemoryPairFailuresRestoreExactPriorPairs(int pointValue, string memberName)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var fixture = await PreparePublicMemoryBundle(store, scope.WorkspaceDir);
+        bool fired = false;
+        BundleRestoreCoordinator.FailureInjector.Value = (point, path) =>
+        {
+            if (fired || point != (BundleFaultPoint)pointValue || !Path.GetFileName(path).Equals(memberName, StringComparison.Ordinal))
+                return null;
+            fired = true;
+            return new IOException("public memory member fault");
+        };
+        try
+        {
+            using var stream = File.OpenRead(fixture.ZipPath);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            Action import = () => BundleFormatService.ImportTopicsFromZip(zip, store, null, overwrite: true);
+            import.Should().Throw<BundleImportException>()
+                .Which.Failure.Should().Be(BundleImportFailure.RolledBack);
+        }
+        finally
+        {
+            BundleRestoreCoordinator.FailureInjector.Value = null;
+        }
+        fired.Should().BeTrue();
+        AssertMemoryPairBytes(fixture.Directory, fixture.Before);
+        File.Exists(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json")).Should().BeFalse();
+        File.Exists(Path.Combine(fixture.Directory, ".restore-journal.json")).Should().BeFalse();
+        using var fresh = new FileMemoryStore(scope.WorkspaceDir);
+        fresh.LoadIndex(Scope).Select(e => e.Name).Should().BeEquivalentTo(["first", "second"]);
+        AssertMemoryPairBytes(fixture.Directory, fixture.Before);
+    }
+
+    [Theory]
+    [InlineData((int)BundleFaultPoint.BeforeCommitDecision, false)]
+    [InlineData((int)BundleFaultPoint.AfterCommitDecision, true)]
+    [InlineData((int)BundleFaultPoint.Cleanup, true)]
+    public async Task PublicBundleMemoryDecisionFailuresPreserveTheDurableOutcome(int pointValue, bool committed)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        var fixture = await PreparePublicMemoryBundle(store, scope.WorkspaceDir);
+        bool fired = false;
+        BundleRestoreCoordinator.FailureInjector.Value = (point, _) =>
+        {
+            if (point != (BundleFaultPoint)pointValue) return null;
+            fired = true;
+            return new IOException("public memory decision fault");
+        };
+        try
+        {
+            using var stream = File.OpenRead(fixture.ZipPath);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            if (committed)
+            {
+                var result = BundleFormatService.ImportTopicsFromZip(zip, store, null, overwrite: true);
+                result.TopicCount.Should().Be(1);
+                result.EntryCount.Should().Be(2);
+                result.Names.Should().Equal("notes");
+            }
+            else
+            {
+                Action import = () => BundleFormatService.ImportTopicsFromZip(zip, store, null, overwrite: true);
+                import.Should().Throw<BundleImportException>()
+                    .Which.Failure.Should().Be(BundleImportFailure.RecoveryRequired);
+            }
+            fired.Should().BeTrue();
+            string journalPath = Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json");
+            using JsonDocument evidence = JsonDocument.Parse(File.ReadAllBytes(journalPath));
+            evidence.RootElement.GetProperty("state").GetString().Should().Be(committed ? "committed" : "prepared");
+            AssertMemoryPairBytes(fixture.Directory, fixture.After);
+            File.Exists(Path.Combine(fixture.Directory, ".restore-journal.json")).Should().BeFalse();
+        }
+        finally
+        {
+            BundleRestoreCoordinator.FailureInjector.Value = null;
+        }
+        using var fresh = new FileMemoryStore(scope.WorkspaceDir);
+        fresh.LoadIndex(Scope).Select(e => e.Name).Should().BeEquivalentTo(["first", "second"]);
+        AssertMemoryPairBytes(fixture.Directory, committed ? fixture.After : fixture.Before);
+        File.Exists(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json")).Should().BeFalse();
+    }
+
+    private static async Task<(string ZipPath, string Directory, Dictionary<string, byte[]> Before,
+        Dictionary<string, byte[]> After)> PreparePublicMemoryBundle(FileMemoryStore store, string root)
+    {
+        foreach (string name in new[] { "first", "second" })
+            await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/notes/" + name), Scope, ["old " + name]));
+        string directory = store.GetStoreDirForScope(Scope);
+        var before = Directory.GetFiles(directory)
+            .Where(p => p.EndsWith(".nmp2", StringComparison.Ordinal) || p.EndsWith(".meta.json", StringComparison.Ordinal))
+            .ToDictionary(p => Path.GetFileName(p), File.ReadAllBytes);
+        ArtifactEntry[] incoming = [CreateEntry("first") with { Keywords = [] }, CreateEntry("second") with { Keywords = [] }];
+        var bodies = incoming.ToDictionary(e => e.Name,
+            e => Encoding.UTF8.GetBytes(Nmp2ChunkedEncoder.Encode("new " + e.Name)));
+        var after = new Dictionary<string, byte[]>();
+        foreach (ArtifactEntry entry in incoming)
+        {
+            after[entry.Name + ".nmp2"] = bodies[entry.Name];
+            after[entry.Name + ".meta.json"] = Encoding.UTF8.GetBytes(FileMemoryStore.SerializeBundleSidecar(entry with
+            {
+                Address = MemoryAddress.Parse("/notes/" + entry.Name),
+                ArtifactKey = "artifacts/notes/" + entry.Name + ".nmp2"
+            }));
+        }
+        string zipPath = Path.Combine(root, "public-memory-bundle.zip");
+        WriteBinarySourceZip(zipPath, incoming, bodies);
+        return (zipPath, directory, before, after);
+    }
+
+    private static void AssertMemoryPairBytes(string directory, Dictionary<string, byte[]> expected)
+    {
+        foreach (var pair in expected)
+            File.ReadAllBytes(Path.Combine(directory, pair.Key)).Should().Equal(pair.Value, pair.Key);
     }
 
     private static ArtifactEntry CreateEntry(string name) =>

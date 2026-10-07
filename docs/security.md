@@ -41,6 +41,36 @@ trusting the header:
 `BundleFormatService` applies all three on import, which is the one path where bytes you did not
 write reach the decoder.
 
+### Bundle and journal limits
+
+Bundle admission bounds compressed CLI input and actual expanded entries, in addition to the
+NMP/2 decode constraints above. MiB means 1,048,576 bytes. These fixed limits have no configuration
+override.
+
+| Resource | Limit |
+|---|---:|
+| Compressed CLI bundle input | 256 MiB |
+| Physical ZIP entries, including unused entries | 4,096 |
+| Logical memories plus file entities across the archive | 1,000 |
+| Each manifest, topic-index, or metadata JSON entry | 16 MiB |
+| Each expanded artifact or Markdown body | 96 MiB |
+| Aggregate distinct expanded archive entries | 128 MiB |
+| Aggregate prior bytes in the workspace bundle journal | 128 MiB |
+| Workspace bundle journal members | 2,000 |
+| Encoded workspace bundle journal JSON | 230,161,068 bytes |
+
+Repeated reads of one ZIP entry do not double-charge the expanded total. All declared topics and
+file entities are validated even when a topic filter excludes them from publication.
+Prior-state journal capacity is checked before publishing recovery evidence or changing members.
+
+An invalid archive returns `INVALID_BUNDLE`. Invalid retained journal evidence returns
+`BUNDLE_RECOVERY_REQUIRED`. A valid archive whose destination's prior state cannot fit the
+journal returns `BUNDLE_IMPORT_FAILED` before mutation. The journal document bound is
+`4 * ceil(128 MiB / 3) + 2,000 * (6 * 4,096 + 1,024) + 4,096`; relative member paths are bounded
+to 4,096 UTF-8 bytes, operation IDs to 64, and SHA-256 hashes to fixed lowercase text.
+The standalone scope journal has its own 181,009,068-byte document bound; see
+[recovery protocols](architecture/core.md#journaled-bundle-restore-recovery).
+
 ### Path traversal
 
 `PathParser` rejects `\`, `:`, `..`, and control characters in memory names. Bundle import paths are
@@ -54,6 +84,13 @@ paths are rejected rather than resolved. Persisted `ArtifactKey` values are opaq
 keys; callers must not use them as URIs or bypass the store's path validation. Shared roots are
 registered with `scri shared base add <name> <absolute-root>` and always use `project-git` tracking.
 
+Recovery validates the complete owned manifest and preflights all current members before any
+replay. Only approved ordinary-memory and skill/agent body-metadata locations are
+admitted; physical collisions and non-regular members are refused. Compensation touches only the
+operation's members. SHA-256 hashes prove consistency with recorded states, not authenticity
+against a hostile editor who can alter workspace evidence. An uncoordinated external process can
+still race between a path/hash check and its open, rename, or delete.
+
 ### Response injection
 
 MCP responses are hand-built YAML. The serialiser escapes control characters and quotes problematic
@@ -62,11 +99,28 @@ ones, so a memory body containing YAML syntax cannot restructure the envelope ar
 
 ### Concurrent writes
 
-- **Cross-process races** — OS-enforced file locks (`FileLock`) serialise index mutations across
-  processes. Contention logs at `Warning`, timeouts at `Error`, with structured `{LockPath}` and
-  `{ElapsedMs}`.
-- **In-process** — `VectorStore` serialises writes with a per-scope `SemaphoreSlim`;
-  `FileMemoryStore` uses per-scope reader-writer locks.
+Persistent operations take shared workspace admission before scope/entity locks; bundle
+publication and recovery take exclusive admission at `.scrinia/.bundle-restore.lock`. Permission
+errors fail closed. Scope locks and in-process gates then serialize the relevant mutations.
+Contention logs at `Warning`, timeouts at `Error`, with structured lock path and elapsed time.
+
+Stop all old `scri serve` and CLI writers before reopening a workspace with the repaired build.
+Old writers cannot participate in the workspace admission protocol. Direct filesystem writers
+remain outside it.
+
+A workspace bundle transaction owns its ordinary-memory and file-entity manifest, not every file
+under `.scrinia`. Configuration and derived facts/vectors are outside rollback. Persistent vector
+mutations independently reread fresh scope state under an exclusive file lock and publish a
+complete replacement before their local cache. Other warm readers can retain earlier vector
+snapshots until mutation or reload.
+
+A durable committed bundle remains committed if evidence cleanup fails. Unsupported legacy
+bundle evidence is retained and refused rather than converted automatically. Preserve the whole
+workspace before intervention; [recovery guidance](troubleshooting.md#bundle-recovery-required)
+describes the supported diagnostic and operator boundaries. New scope mutations and legacy index
+rewrites refuse retained terminal scope/coordinator evidence. File-entity cleanup proves expected
+absence separately from empty content; existing entries or failed inspection cannot authorize
+evidence deletion.
 
 ## Threats NOT addressed
 

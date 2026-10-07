@@ -12,13 +12,9 @@ using Xunit;
 namespace Scrinia.Tests.Golden;
 
 /// <summary>
-/// Pins the import facade's YAML envelope so the B1 wiring of the per-memory
-/// <c>ImportMemoryResult</c> through <c>FileMemoryStore.ImportTopicEntries</c> and
-/// <c>BundleFormatService.ImportTopicsFromZip</c> cannot change the multi-topic summary a model
-/// sees. The facade write pass now captures the journaled outcome but discards it
-/// (<c>_ = importResult</c>); the summary string is the only thing <c>Bundle('import')</c>
-/// renders, so this golden is the guard against reintroducing an <c>operationId</c>/<c>entry</c>/
-/// <c>recovery</c> clause into the success path.
+/// Pins the import facade's YAML envelope, including the actual memory and file-entity counts.
+/// The workspace transaction result supplies the success summary; the facade does not add
+/// operation IDs or recovery evidence to an ordinary successful import.
 ///
 /// <para>Two seeded topics are exported through the real <see cref="BundleFormatService.ExportTopicsToZip"/>
 /// path and imported through the real facade; the manifest preserves export order, so the

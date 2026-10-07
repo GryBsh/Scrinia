@@ -74,7 +74,7 @@ public sealed class McpWholeMemoryTransactionTests
 
         response.Status.Should().Be("success_with_warning");
         response.OperationId.Should().NotBeNullOrWhiteSpace();
-        response.Path.Should().BeNull();
+        response.Path.Should().Be("/transaction/warning");
     }
 
     [Fact]

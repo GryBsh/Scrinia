@@ -261,7 +261,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public void DiscoverTopics_CachedAfterFirstCall()
+    public void DiscoverTopicsReflectsExternalDeletionImmediately()
     {
         string topicDir = Path.Combine(_tempDir, ".scrinia", "memories", "cached-topic");
         Directory.CreateDirectory(topicDir);
@@ -274,7 +274,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.Delete(topicDir, recursive: true);
 
         var second = _store.DiscoverTopics();
-        second.Should().Contain("local:cached-topic", "cached result should persist within TTL");
+        second.Should().NotContain("local:cached-topic", "discovery must reflect external deletion immediately");
     }
 
     [Fact]
@@ -821,13 +821,66 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void LayoutOnlyPathLookupDoesNotAcquireAnUnrelatedScopeLock()
+    {
+        string legacyDirectory = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(legacyDirectory);
+        byte[] raw = System.Text.Encoding.UTF8.GetBytes("""
+            {"name":"layout-only","uri":"file:///layout-only.nmp2","originalBytes":1,"chunkCount":1,"createdAt":"2026-01-01T00:00:00+00:00","keywords":["person:maria"]}
+            """);
+        File.WriteAllBytes(Path.Combine(legacyDirectory, "layout-only.meta.json"), raw);
+        string destination = Path.Combine(_tempDir, ".scrinia", "memories");
+        using var held = FileLock.AcquireExclusive(Path.Combine(destination, ".lock"));
+        StoreLayoutMigration.NeedsMigration(_tempDir).Should().BeTrue(
+            "the destination lock must not make the legacy-layout preparation vacuous");
+
+        string? resolved = null;
+        Exception? failure = Record.Exception(() => resolved = _store.GetStoreDirForScope("local"));
+
+        StoreLayoutMigration.NeedsMigration(_tempDir).Should().BeFalse();
+        File.Exists(Path.Combine(legacyDirectory, "layout-only.meta.json")).Should().BeFalse();
+        File.ReadAllBytes(Path.Combine(destination, "layout-only.meta.json")).Should().Equal(raw,
+            "layout preparation must relocate raw metadata without index forward-fill");
+        failure.Should().BeNull("a completed layout-only path lookup needs no exclusive scope ownership");
+        resolved.Should().Be(destination);
+    }
+
+    [Fact]
+    public async Task LayoutOnlyAsyncArtifactReadKeepsSharedScopeOwnership()
+    {
+        string legacyDirectory = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(legacyDirectory);
+        string artifact = Nmp2ChunkedEncoder.Encode("async layout body");
+        byte[] raw = System.Text.Encoding.UTF8.GetBytes("""
+            {"name":"layout-async","uri":"file:///layout-async.nmp2","originalBytes":17,"chunkCount":1,"createdAt":"2026-01-01T00:00:00+00:00","keywords":[],"attributes":{}}
+            """);
+        File.WriteAllText(Path.Combine(legacyDirectory, "layout-async.nmp2"), artifact);
+        File.WriteAllBytes(Path.Combine(legacyDirectory, "layout-async.meta.json"), raw);
+        string destination = Path.Combine(_tempDir, ".scrinia", "memories");
+        Directory.CreateDirectory(destination);
+        using var held = FileLock.AcquireShared(Path.Combine(destination, ".lock"));
+        StoreLayoutMigration.NeedsMigration(_tempDir).Should().BeTrue(
+            "the shared destination lock must not bypass legacy-layout preparation");
+
+        string? actual = null;
+        Exception? failure = await Record.ExceptionAsync(async () =>
+            actual = await _store.ReadArtifactAsync(MemoryAddress.Parse("/layout-async")));
+
+        StoreLayoutMigration.NeedsMigration(_tempDir).Should().BeFalse();
+        File.Exists(Path.Combine(legacyDirectory, "layout-async.nmp2")).Should().BeFalse();
+        File.ReadAllBytes(Path.Combine(destination, "layout-async.meta.json")).Should().Equal(raw);
+        File.ReadAllText(Path.Combine(destination, "layout-async.nmp2")).Should().Be(artifact);
+        failure.Should().BeNull("the actual async read is compatible with existing shared scope ownership");
+        actual.Should().Be(artifact);
+    }
+
+    [Fact]
     public void LoadIndex_ConcurrentColdLoads_ForwardFillWriteBackDoesNotRace()
     {
-        // Seed a single legacy-shaped sidecar so all racing cold loads try to upgrade + write
-        // the SAME sidecar concurrently under LoadIndex's shared lock. Exercises both races:
-        // the writer-side temp/File.Move collision (unique per-call temp names + best-effort
-        // write-back) and the reader-side File.Move replace window (FileRetry around the
-        // sidecar ReadAllText, so a transient lock retries instead of being dropped as "corrupt").
+        // All64 concurrent readers must observe the legacy entry and projected attributes.
+        // Layout preparation preserves raw metadata; required forward-fill runs under exclusive
+        // scope ownership before readers resume. Neither lock contention nor publication windows
+        // may make a successful cold read lose the entry. Keep the original concurrency oracle.
         string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
         Directory.CreateDirectory(storeDir);
         string legacyMeta = """
@@ -1063,6 +1116,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void ResolveReadScopes_Default_StartsWithLocal()
     {
+        Directory.CreateDirectory(Path.Combine(_tempDir, ".scrinia", "memories"));
         var scopes = _store.ResolveReadScopes();
         scopes.Should().StartWith("local",
             because: "local scope must always be first in default read order");
@@ -1071,6 +1125,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void ResolveReadScopes_ExplicitFilter_ParsesCorrectly()
     {
+        Directory.CreateDirectory(Path.Combine(_tempDir, ".scrinia", "memories"));
         var scopes = _store.ResolveReadScopes(["local", "dotnet"]);
         scopes.Should().Equal(["local", "local:dotnet"],
             because: "explicit scope filter must normalize bare topic names to the flat local-topic scope");

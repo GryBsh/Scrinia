@@ -442,11 +442,16 @@ public sealed partial class SidecarVersioningTests
         AddUnknownKeyToSidecarOnDisk(scope, "local:notes", "seed", "futureThing");
         var prior = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["new content"]));
-        var rebuilt = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
+        var rebuilt = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), "local:notes", ["new content"]));
 
         rebuilt.Unknown.Should().NotBeSameAs(prior.Unknown);
-        rebuilt.Unknown.Should().BeEquivalentTo(prior.Unknown);
+        JsonElement.DeepEquals(
+            JsonSerializer.SerializeToElement(rebuilt.Unknown),
+            JsonSerializer.SerializeToElement(prior.Unknown)).Should().BeTrue();
+        var persisted = store.LoadIndex("local:notes").Single(e => e.Name == "seed");
+        JsonElement.DeepEquals(
+            JsonSerializer.SerializeToElement(persisted.Unknown),
+            JsonSerializer.SerializeToElement(rebuilt.Unknown)).Should().BeTrue();
     }
 
     // ── Write path: refusal ──────────────────────────────────────────────────────────────

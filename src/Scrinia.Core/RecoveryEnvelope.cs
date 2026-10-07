@@ -895,6 +895,16 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
         if (snapshot is null)
             throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
                 "Committed file-entity evidence is missing a snapshot.", evidencePath);
+        if (!snapshot.Existed)
+        {
+            try { RecoveryAbsenceVerifier.RequireMissing(snapshot.Path, cancellationToken); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,
+                    "Committed file-entity absence could not be proven.", evidencePath);
+            }
+            return;
+        }
         byte[] expected = RecoveryPayload.DecodeBase64(snapshot.Payload ?? string.Empty);
         string directory = Path.GetDirectoryName(evidencePath)!;
         RecoveryVerificationResult verification = RecoveryEvidenceVerifier.VerifySingleAsync(

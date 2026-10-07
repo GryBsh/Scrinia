@@ -1,5 +1,6 @@
 status: success_with_warning
 action: stored
+path: /b1/remember-warning
 operationId: <OPERATION_ID>
 scope: "local:b1"
 journalPath: .append-journal.json

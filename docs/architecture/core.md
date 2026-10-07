@@ -233,7 +233,14 @@ Agent-provided keywords get a +5 boost to their term frequency. Auto-extracted k
 
 ### Top-K Selection
 
-Results use a min-heap (`PriorityQueue`) for efficient top-K without sorting the full result set. Tie-breaking: by score descending, then by creation date descending.
+Candidate K and the final result limit are separate. Scope, excluded-topic, path/address, and
+attribute eligibility are applied before lexical ranking and truncation to K. The pipeline ranks
+with the context-augmented query and materializes one bounded eligible snapshot for supplemental
+contributors, entity scoring, final search, and surfaced facts. Topic-support entries preserve
+topic-summary parity with direct search.
+
+Final results use a min-heap (`PriorityQueue`). Ties are deterministic; final score ties use
+creation date descending.
 
 ### Deduplication
 
@@ -311,7 +318,7 @@ This is a **forward-only migration**: `Attributes` is `null` for entries written
 ### IMemoryStore
 
 The whole storage contract, filesystem layout included. Abstract members a conforming store must
-implement, plus six with default bodies a store may override for efficiency.
+implement, plus default-bodied helpers a store may override for efficiency.
 
 `IMemoryStore` is the single local filesystem store contract. `FileMemoryStore` is its sole
 implementation, so paths, the workspace root, and bundle operations are part of the same contract
@@ -366,7 +373,7 @@ bundle export/import, conflict scanning and drift detection all resolve from it.
 
 **Scope resolution:** `ResolveReadScopes(scopes)`
 
-**Default-bodied members (a store may override for efficiency)** — six of them: `TryUpdateEntry`
+**Default-bodied members (a store may override for efficiency):** `TryUpdateEntry`
 (non-atomic load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart
 — an unsynchronized load→mutate→store unless overridden; `FileMemoryStore` overrides it as a
 compare-and-swap retry loop instead, so a concurrent writer's change is re-applied to the newer
@@ -383,6 +390,13 @@ both for efficient scope-level filtering. There is no `SearchAll(..., excludeTop
 overload anymore: `excludeTopics` for search travels as `SearchQuery.ExcludeTopics`, one field
 among several on the single `SearchAll` method above, not a separate overload. The MCP `list` and
 `search` actions accept `excludeTopics` so agents can scope queries to specific topic subsets.
+
+Both lexical selectors also have default bodies:
+`SelectLexicalCandidates(scopes, excludeTopics, query, limit)` remains compatible with existing
+callers. The additive `SelectLexicalCandidates(SearchQuery query, int limit)` applies complete
+query eligibility before lexical ranking and K, using the complete listing or the supplied
+candidate set constrained to the resolved scopes. `FileMemoryStore` overrides this selector
+under workspace admission. This overload does not change the abstract `SearchAll` contract.
 
 `GenerateContentPreview` is not a store member at all — it moved to the static
 `Scrinia.Core.ContentPreview.Generate(string content, int maxLength = 500)`. The two store
@@ -410,72 +424,55 @@ supplied file URIs.
 
 ### Journaled Bundle Restore Recovery
 
-Bundle topic imports use a private, versioned `.restore-journal.json` in the affected persistent
-scope. Before replacing any imported artifact, the journal records the transaction's final raw body
-and serialized sidecar bytes with SHA-256 hashes. A pending journal is recovered synchronously before
-that scope returns cached or on-disk data, or accepts a write: `prepared` journals replay and verify
-their final bytes, while `completed` journals verify and clean up without replacing destinations.
+Workspace bundle imports coordinate ordinary memories and skill/agent body-metadata pairs with
+one operation-owned manifest at `.scrinia/.bundle-restore-journal.json`. Under exclusive workspace
+admission, preparation captures bounded prior bytes and proposed hashes before publication.
+Recovery validates the complete manifest, approved relative paths, member kinds, physical
+collisions, and every current member before replaying any member. It never rereads the source
+bundle or rolls unrelated workspace files back.
 
-Recovery is demand-driven and scoped to one persistent topic. A pending or blocked journal neither
-stops another topic nor affects ephemeral memories. Journal admission is bounded to 1,000 entries,
-96 MiB per body, 16 MiB per sidecar, 128 MiB of decoded payload in total, and a 181,009,068-byte
-journal document; malformed, integrity-failed, unsupported-version, or unreplayable journals remain
-unchanged and block only their own scope.
+A `prepared` journal restores only its owned members to their prior state. A `committed` or
+`rolled-back` journal verifies the corresponding terminal state and cleans evidence. A proven
+durable commit remains successful when evidence cleanup fails; returned counts describe committed
+changes. An uncertain decision, unknown/legacy evidence, or a member matching neither expected
+state is refused with `BUNDLE_RECOVERY_REQUIRED`. Retained bundle evidence blocks subsequent
+persistent operations until supported verification and cleanup succeed. Explicit ephemeral-only
+operations remain available.
 
-This is roll-forward recovery, not rollback. It does not make a whole bundle, multiple topic scopes,
-or skill/agent file entities one transaction, and it never reopens the source bundle to recover.
-The journal is private control data: discovery, sidecar enumeration, and bundle export ignore it.
+The existing standalone per-scope `.restore-journal.json` is a separate roll-forward protocol.
+Its `prepared` state replays final bytes; `completed` verifies and cleans. Its limits remain
+1,000 entries, 96 MiB per body, 16 MiB per sidecar, 128 MiB decoded total, and a
+181,009,068-byte journal document. Malformed or unreplayable scope evidence produces
+`RECOVERY_BLOCKED`. Verified terminal scope/coordinator evidence can permit a bounded read
+snapshot without rewriting proof-covered bytes. New scope mutations, standalone import,
+multi-memory execution, and bundle publication refuse retained scope/coordinator evidence.
+A legacy index projection that needs a sidecar rewrite also refuses until evidence is retired.
+
+The workspace bundle journal instead permits 2,000 owned members, 128 MiB aggregate prior bytes,
+and 230,161,068 encoded JSON bytes. See [bundle limits](../security.md#bundle-and-journal-limits)
+and [evidence-preserving recovery](../troubleshooting.md#bundle-recovery-required).
+Derived vectors, facts, and configuration are outside this authoritative rollback manifest.
+Committed file-entity cleanup verifies both expected existence and content. An absent member
+requires a positively inspected missing path under validated directory parents; an unexpected
+file, directory, link, or inspection failure retains evidence. Explicit recovery and maintenance
+cleanup remain available under their existing locks.
 
 ### CachedIndex
 
-Internal structure holding a scope's cached index entries:
+Each persistent scope caches index entries in `CachedIndex`. `LoadIndex` returns its
+`IReadOnlyList<ArtifactEntry>` directly; writes publish a replacement list rather than mutating
+a previously handed-out list.
 
-```csharp
-internal sealed class CachedIndex
-{
-    /// <summary>The cached entries. Handed out by reference from LoadIndex — callers get a
-    /// live view of this list, not a copy.</summary>
-    public List<ArtifactEntry> Entries { get; }
-}
-```
+Before reuse, the store checks a sorted fingerprint of sidecar filenames and SHA-256 content
+hashes under workspace admission. Changed names or bytes reload the authoritative index,
+including changes made by another process or by source-control operations. Topic discovery
+enumerates current directories rather than relying on an indefinite process cache. A cache hit
+therefore includes authoritative filesystem I/O and hashing; it is not O(1).
 
-`Entries` is the list `LoadIndex` hands back directly on a cache hit — see **Keyword-Only Index
-Scans**, below, for why that is safe.
-
-The class previously also carried `NameToPosition`, `Rebuild()` and `GetOrComputeCorpusStats()`.
-None had a reader anywhere in the repo, and `NameToPosition` was rebuilt on every cache write for
-nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted the position map,
-and as of 2026-08-17 neither reloads the scope from sidecars to update the cache either: each
-builds a new `Entries` list with the written entry's slot replaced (or appended, or omitted for a
-remove) and installs a new `CachedIndex` over it — a single write no longer costs a full directory
-enumeration plus one read-and-parse per existing entry. `TryUpdateEntry` updates the cache the same
-way; it does read one sidecar — the entry it is about to mutate, see below — but never the scope.
-When the scope isn't already cached, a write leaves it uncached rather than installing a partial
-one; the
-next read cold-loads the whole scope from sidecars. This is the same handed-out-by-reference
-aliasing invariant described above — swap the whole object, never mutate `Entries` in place — the
-write path now satisfies it more cheaply than before. See
-`docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md` for why the invariant matters
-and `docs/superpowers/analysis/2026-08-17-write-path-cost-measurements.md` for the before/after
-cost of this change. Corpus stats are computed directly by `WeightedAttributeScorer` on every
-search.
-
-**A write is no longer a resync point, and that is a real behaviour change.** Nothing invalidates
-`_indexCache` across processes — it never did — but while every write invalidated the cache and
-rebuilt it from disk, each write was an accidental resync: out-of-band changes to a scope's
-sidecars surfaced in a long-lived process on its next write to that scope. Copy-on-write removes
-that, so out-of-band changes now stay invisible to a running process indefinitely. This matters
-here specifically because `.scrinia/memories/**/*.meta.json` are git-tracked in workspaces that
-version their memory, so `git pull`, `git merge` and `git checkout` all produce exactly this
-state — under a live `scri serve`, that process keeps serving the pre-pull index. The accepted
-cost of the optimisation; restart the process (or write from it to a scope it has not cached) to
-pick the changes up.
-
-One deliberate exception: `TryUpdateEntry` reads the entry it is about to mutate off disk, inside
-the per-scope cross-process lock, and re-seats that entry's cached slot from what it persisted.
-That is not an optimisation but a correctness requirement — it writes back a complete entry derived
-from what it read, so a stale read would republish stale fields over another process's write. It
-resyncs one entry, not the scope.
+Read recovery preparation runs before a cached snapshot can be returned. Mutations read their
+authoritative predecessor under the appropriate ownership boundary. Copy-on-write retains list
+ownership safety without making an old cached list an authoritative mutation baseline. Corpus
+statistics are computed by `WeightedAttributeScorer` for each search's candidate set.
 
 ### Artifact LRU Cache
 
@@ -487,37 +484,35 @@ resyncs one entry, not the scope.
 
 ### Cross-Process File Locking
 
-`FileLock` in `Scrinia.Core` provides OS-enforced shared/exclusive file locks for safe multi-process access. Per-scope `.lock` files (`.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) prevent concurrent index corruption when multiple processes access the same workspace.
+Persistent operations first enter workspace admission through
+`.scrinia/.bundle-restore.lock`, before scope or file-entity locks. Ordinary persistent reads,
+writes, and export snapshots share admission; bundle publication and recovery require exclusive
+admission. Internal nested work receives an explicit validated `WorkspaceLease`; a cache hit does
+not bypass admission. A read that discovers recovery work releases shared admission before
+requesting exclusive recovery, avoiding a lock upgrade while readers remain admitted.
+Ephemeral-only operations bypass filesystem admission.
 
-- **Shared locks** for cold reads (multiple readers allowed) — a `LoadIndex` call that hits the
-  in-memory cache takes no file lock at all; see **Keyword-Only Index Scans**, below.
-- **Exclusive locks** for writes (single writer, no readers)
-- Exponential backoff retry on contention
-- Unique PID-based `.tmp` filenames prevent write collisions
-
-`FileMemoryStore` uses file locks for all cold index reads and all index/artifact writes; a
-cached `LoadIndex` takes no file lock.
+`FileLock` supplies OS-enforced shared/exclusive scope locks with bounded contention retry.
+Permission and unrelated I/O errors fail closed. A leftover filename is not proof of ownership.
+Cold index loads also use scope locks; cache reuse still performs admission and freshness checks.
+All cooperating writers must use this protocol: stop every older writer before upgrading.
+Uncoordinated filesystem editors can still race between a path check and its subsequent open.
 
 ### Concurrency
 
-- Per-scope `ReaderWriterLockSlim` for in-process index CRUD
-- Per-scope `CachedIndex` updated copy-on-write on write, not invalidated-then-rebuilt — see
-  **CachedIndex** above
-- `ConcurrentDictionary` for ephemeral store, scope locks, scope caches
-- Topic discovery cache (`_cachedTopics`), no TTL — invalidated event-driven, not on a timer. All
-  three write paths follow the same rule: clear it only when the topic list can actually have
-  changed. `DiscoverTopics` lists a directory exactly when it holds at least one
-  `.nmp2`/`.meta.json`, so `Upsert` and `Remove` clear it only on a scope-lifecycle transition (a
-  `local:`-scoped directory gaining its first sidecar or losing its last), not on every write, and
-  `TryUpdateEntry` never clears it — it requires an existing sidecar and only ever adds or replaces
-  one, so the scope was and stays non-empty. (`SaveIndex` and `PersistMigratedEntry` still clear it
-  for any `local:` scope they touch: both can rewrite a scope's whole sidecar set, including
-  emptying it.)
-- Cross-process `FileLock` for filesystem-level coordination
+- Per-scope `ReaderWriterLockSlim` protects in-process index CRUD.
+- Persistent index snapshots use copy-on-write publication and authoritative freshness checks.
+- Topic discovery observes the current directory set.
+- `ConcurrentDictionary` holds ephemeral state and lock/cache registries.
+- Workspace admission precedes cross-process scope/entity ownership; bundle recovery and
+  publication hold the exclusive workspace lease across all owned members.
 
 ### Keyword-Only Index Scans
 
-Index entries carry `Keywords` so consumers can filter without decoding artifacts. `LoadIndex(scope)` returns `IReadOnlyList<ArtifactEntry>` (O(1) on a cache hit — the cached list itself, not a copy). Filtering on keywords (e.g. `status:active`, `tag:onboarder`) lets callers reduce a large index to a small candidate set before decoding any payload — important for keeping `list` and `search` responsive on large stores.
+Index entries carry keywords, so filtering need not decode artifacts. `LoadIndex(scope)` returns
+the cached list without copying after admission, recovery preparation, and sidecar fingerprint
+validation. Keyword filtering can reduce subsequent payload work; cache validation still reads
+authoritative sidecar bytes.
 
 ### Version Archiving
 
@@ -579,6 +574,10 @@ public interface ISearchScoreContributor
         IMemoryStore store, CancellationToken ct);
 }
 ```
+
+Each contributor receives the same bounded eligible lexical candidate snapshot, selected with
+the context-augmented query after scope/path/attribute filtering. Entity derivation and surfaced
+facts use that snapshot too. Contributors cannot broaden retrieval beyond it.
 
 Scores are keyed by `"{scope}|{name}"` for entries or `"{scope}|{name}|{chunkIndex}"` for chunks.
 

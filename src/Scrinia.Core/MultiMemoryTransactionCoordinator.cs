@@ -243,7 +243,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         {
             using WorkspaceLease lease = _store.EnterWorkspaceMutation(_lockTimeout, cancellationToken);
             return await _store.WithExclusiveScopeAdmissionAsync(lease, scope, _lockTimeout,
-                () => RecoverUnderLockAsync(lease, scope, cancellationToken), cancellationToken, recoverCoordinator: false).ConfigureAwait(false);
+                () => RecoverUnderLockAsync(lease, scope, cancellationToken), cancellationToken, recoverCoordinator: false,
+                purpose: ScopeAdmissionPurpose.RecoveryCleanup).ConfigureAwait(false);
         }
         catch (FileLockTimeoutException)
         {

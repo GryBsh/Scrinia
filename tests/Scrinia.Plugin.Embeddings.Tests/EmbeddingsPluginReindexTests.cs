@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
@@ -33,11 +34,18 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// </summary>
 public sealed class EmbeddingsPluginReindexTests : IDisposable
 {
+    private readonly ProcessEnvironmentLock _environmentLock;
+    private readonly EnvironmentVariableScope _homeScope;
+    private readonly string _home;
     private readonly string _root;
     private readonly FileMemoryStore _store;
 
     public EmbeddingsPluginReindexTests()
     {
+        _environmentLock = ProcessEnvironmentLock.Acquire();
+        _home = Path.Combine(Path.GetTempPath(), $"scrinia_reindex_home_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_home);
+        _homeScope = new EnvironmentVariableScope("SCRINIA_HOME", _home);
         _root = Path.Combine(Path.GetTempPath(), $"scrinia_vulkan_reindex_ns_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_root);
         _store = new FileMemoryStore(_root);
@@ -47,6 +55,9 @@ public sealed class EmbeddingsPluginReindexTests : IDisposable
     {
         _store.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch { }
+        _homeScope.Dispose();
+        try { Directory.Delete(_home, recursive: true); } catch { }
+        _environmentLock.Dispose();
     }
 
     private void SeedEntry(string scope, string name, string content)
