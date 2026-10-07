@@ -76,6 +76,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         string bodySnapshotPath = mutation.BodyPath;
         bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
             Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
+        byte[]? sourceBodyToArchive = mutation.SourceBodyToArchive;
+        if (sourceBodyToArchive is not null && (oldBody.Existed || sidecarOnly || mutation.DeleteBody))
+            throw new ArgumentException("A logical source archive requires an absent physical body being published.", nameof(mutation));
         bool metadataMutation = mutation.DeleteMeta || mutation.NewMeta is not null;
         string? evidencePath = null;
         string? archiveBody = null;
@@ -84,13 +87,14 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            (archiveBody, archiveMeta) = BuildArchivePaths(mutation, oldBody, oldMeta);
+            (archiveBody, archiveMeta) = BuildArchivePaths(mutation, oldBody, oldMeta, sourceBodyToArchive is not null);
             evidencePath = EvidencePath(entityDirectory, operationId);
             WriteEvidence(evidencePath, mutation, oldBody, oldMeta, archiveBody, archiveMeta,
                 RecoveryLifecycleState.Prepared, null, null, oldDeletePaths);
 
             if (!sidecarOnly)
-                Archive(oldBody, archiveBody, FileEntityFaultPoint.ArchiveBodyWrite);
+                Archive(sourceBodyToArchive ?? (oldBody.Existed ? oldBody.Bytes : null),
+                    archiveBody, FileEntityFaultPoint.ArchiveBodyWrite);
             Archive(oldMeta, archiveMeta, FileEntityFaultPoint.ArchiveMetaWrite);
             if (!sidecarOnly)
                 Publish(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, FileEntityFaultPoint.BodyWrite);
@@ -207,13 +211,16 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             return RawMemberSnapshot.Capture(path, true, verification.SourceContent.Bytes.ToArray());
     }
 
-    private void Archive(RawMemberSnapshot snapshot, string? path, FileEntityFaultPoint point)
+    private void Archive(RawMemberSnapshot snapshot, string? path, FileEntityFaultPoint point) =>
+        Archive(snapshot.Existed ? snapshot.Bytes : null, path, point);
+
+    private void Archive(byte[]? bytes, string? path, FileEntityFaultPoint point)
     {
-        if (!snapshot.Existed || path is null)
+        if (bytes is null || path is null)
             return;
         ThrowIfFault(point);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        DurableFile.AtomicWriteAllBytes(path, snapshot.Bytes);
+        DurableFile.AtomicWriteAllBytes(path, bytes);
     }
 
     private void Publish(string path, bool delete, byte[] bytes, FileEntityFaultPoint point)
@@ -280,11 +287,13 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     private static (string? Body, string? Meta) BuildArchivePaths(
         FileEntityMutation mutation,
         RawMemberSnapshot oldBody,
-        RawMemberSnapshot oldMeta)
+        RawMemberSnapshot oldMeta,
+        bool hasSourceBodyToArchive)
     {
         bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
             Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
-        if (!oldBody.Existed && !oldMeta.Existed)
+        bool archiveBody = oldBody.Existed || hasSourceBodyToArchive;
+        if (!archiveBody && !oldMeta.Existed)
             return (null, null);
 
         Directory.CreateDirectory(mutation.VersionsDirectory);
@@ -299,7 +308,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             body = Path.Combine(mutation.VersionsDirectory, $"{stem}_{timestamp}-{suffix++}{extension}");
         if (sidecarOnly)
             return (null, oldMeta.Existed ? body : null);
-        return (oldBody.Existed ? body : null, oldMeta.Existed ? Path.ChangeExtension(body, ".meta.json") : null);
+        return (archiveBody ? body : null, oldMeta.Existed ? Path.ChangeExtension(body, ".meta.json") : null);
     }
 
     private static string EvidencePath(string directory, string operationId) =>
@@ -331,7 +340,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         Path.GetFileName(Path.GetDirectoryName(entityDirectory) ?? entityDirectory);
 
     private static RecoveryMemberSnapshot ToRecoverySnapshot(RawMemberSnapshot snapshot) =>
-        new(snapshot.Path, snapshot.Existed, Convert.ToBase64String(snapshot.Bytes), snapshot.Sha256);
+        new(snapshot.Path, snapshot.Existed,
+            snapshot.Existed ? Convert.ToBase64String(snapshot.Bytes) : null, snapshot.Sha256);
 
     private void WriteEvidence(
         string path,
@@ -446,11 +456,11 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             Restore(ToRawSnapshot(body.OldMeta));
             foreach (RecoveryMemberSnapshot snapshot in body.DeletedMembers ?? [])
                 Restore(ToRawSnapshot(snapshot));
+            Delete(body.ArchiveBodyPath);
+            Delete(body.ArchiveMetaPath);
         }
 
-        Delete(body.ArchiveBodyPath);
-        Delete(body.ArchiveMetaPath);
-            File.Delete(evidencePath);
+        File.Delete(evidencePath);
         return new RecoveryOutcome(false, validated.State == RecoveryLifecycleState.Committed,
             false, expectedScope, evidencePath, validated.OperationId, null, null);
     }

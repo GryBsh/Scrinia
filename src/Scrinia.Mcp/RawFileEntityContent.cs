@@ -14,7 +14,16 @@ internal enum FileEntityContentSource
 }
 
 internal sealed record RawFileEntityContent<TMeta>(
-    string Body, TMeta? Metadata, FileEntityContentSource Source) where TMeta : class;
+    string Body, TMeta? Metadata, FileEntityContentSource Source) where TMeta : class
+{
+    private byte[]? _sourceBodyToArchive;
+
+    internal byte[]? SourceBodyToArchive
+    {
+        get => _sourceBodyToArchive?.ToArray();
+        init => _sourceBodyToArchive = value?.ToArray();
+    }
+}
 
 public sealed partial class ScriniaMcpTools
 {
@@ -44,8 +53,11 @@ public sealed partial class ScriniaMcpTools
         try
         {
             string artifact = await store.ReadArtifactAsync(MemoryAddress.Parse($"/agent/{name}"), ct);
-            return new(DecodeFileEntityBody(Nmp2Strategy.Instance.Decode(artifact)), metadata,
-                FileEntityContentSource.PromotedAgent);
+            byte[] originalBody = Nmp2Strategy.Instance.Decode(artifact);
+            return new(DecodeFileEntityBody(originalBody), metadata, FileEntityContentSource.PromotedAgent)
+            {
+                SourceBodyToArchive = originalBody
+            };
         }
         catch (FileNotFoundException)
         {

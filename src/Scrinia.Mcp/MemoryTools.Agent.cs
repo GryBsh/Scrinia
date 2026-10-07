@@ -98,7 +98,8 @@ public sealed partial class ScriniaMcpTools
                         metadata, ScriniaMcpJsonContext.Default.AgentFileMeta));
                     FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
                     return new FileEntityMutation(target.EntityKind, target.Name,
-                        target.BodyPath, target.MetaPath, target.VersionsDirectory, body, meta, false, false);
+                        target.BodyPath, target.MetaPath, target.VersionsDirectory, body, meta, false, false,
+                        sourceBodyToArchive: raw.SourceBodyToArchive);
                 }, cancellationToken);
             if (promoted && result.Outcome is WholeMemoryOutcome.Created or WholeMemoryOutcome.Replaced)
             {

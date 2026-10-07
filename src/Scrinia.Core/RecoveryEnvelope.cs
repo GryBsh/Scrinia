@@ -267,7 +267,8 @@ internal static partial class RecoveryEnvelopeCodec
     {
         if (string.IsNullOrWhiteSpace(member.Path) || string.IsNullOrWhiteSpace(member.Sha256) ||
             (!member.Existed && member.Payload is not null) ||
-            (member.Existed && string.IsNullOrWhiteSpace(member.Payload)))
+            (member.Existed && (member.Payload is null ||
+                (member.Payload.Length > 0 && string.IsNullOrWhiteSpace(member.Payload)))))
             throw new JsonException("File-entity recovery member is incomplete.");
         try
         {
@@ -881,9 +882,6 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
             VerifyCommittedSnapshot(body.CommittedBody, evidencePath, envelope.Scope, cancellationToken);
         VerifyCommittedSnapshot(body.CommittedMeta, evidencePath, envelope.Scope, cancellationToken);
         List<string> failures = [];
-        if (!metadataOnly)
-            TryDelete(body.ArchiveBodyPath, failures);
-        TryDelete(body.ArchiveMetaPath, failures);
         TryDelete(evidencePath, failures);
         return failures.Count == 0
             ? new RecoveryOutcome(false, true, false, envelope.Scope, evidencePath, envelope.OperationId, null, null)

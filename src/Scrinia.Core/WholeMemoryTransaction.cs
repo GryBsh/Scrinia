@@ -223,6 +223,7 @@ internal sealed record FileEntityMutation
 {
     private readonly byte[] _newBody;
     private readonly byte[]? _newMeta;
+    private readonly byte[]? _sourceBodyToArchive;
 
     internal FileEntityMutation(
         string entityKind,
@@ -234,7 +235,8 @@ internal sealed record FileEntityMutation
         byte[]? newMeta,
         bool deleteBody,
         bool deleteMeta,
-        IReadOnlyCollection<string>? deletePaths = null)
+        IReadOnlyCollection<string>? deletePaths = null,
+        byte[]? sourceBodyToArchive = null)
     {
         EntityKind = RequireText(entityKind, nameof(entityKind));
         Name = RequireText(name, nameof(name));
@@ -244,6 +246,7 @@ internal sealed record FileEntityMutation
         ArgumentNullException.ThrowIfNull(newBody);
         _newBody = newBody.ToArray();
         _newMeta = newMeta?.ToArray();
+        _sourceBodyToArchive = sourceBodyToArchive?.ToArray();
         DeleteBody = deleteBody;
         DeleteMeta = deleteMeta;
         DeletePaths = deletePaths?.ToArray() ?? [];
@@ -256,6 +259,8 @@ internal sealed record FileEntityMutation
     internal string VersionsDirectory { get; }
     internal byte[] NewBody => _newBody.ToArray();
     internal byte[]? NewMeta => _newMeta?.ToArray();
+    // A logical source revision to archive, independent of the physical rollback pre-image.
+    internal byte[]? SourceBodyToArchive => _sourceBodyToArchive?.ToArray();
     internal bool DeleteBody { get; }
     internal bool DeleteMeta { get; }
     internal IReadOnlyList<string> DeletePaths { get; }
