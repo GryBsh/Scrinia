@@ -21,6 +21,42 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public class BundleExitCodeTests
 {
+    [Theory]
+    [InlineData("skill", "show")]
+    [InlineData("agent", "show")]
+    [InlineData("skill", "forget")]
+    [InlineData("agent", "forget")]
+    [InlineData("skill", "store")]
+    [InlineData("agent", "store")]
+    [InlineData("skill", "append")]
+    [InlineData("agent", "append")]
+    [InlineData("skill", "compact")]
+    [InlineData("agent", "compact")]
+    public async Task ReservedCliErrorResponsesPreserveTheirStableCode(string kind, string operation)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json"), "invalid");
+        string input = Path.Combine(scope.WorkspaceDir, "input.txt");
+        File.WriteAllText(input, "content");
+        string address = "/" + kind + "/profile";
+        var commands = new ScriniaCommands();
+        var (exit, output) = await CaptureJsonAsync(() => operation switch
+        {
+            "show" => commands.Show(address, workspaceRoot: scope.WorkspaceDir, json: true),
+            "forget" => commands.Forget(address, workspaceRoot: scope.WorkspaceDir, json: true),
+            "store" => commands.Store(address, input, workspaceRoot: scope.WorkspaceDir, json: true),
+            "append" => commands.Append(address, input, workspaceRoot: scope.WorkspaceDir, json: true),
+            _ => commands.Compact(address, workspaceRoot: scope.WorkspaceDir, json: true)
+        });
+        using (output)
+        {
+            exit.Should().Be(1);
+            // Compact is forbidden for file entities before any persistent read is attempted.
+            string expected = operation == "compact" ? ErrorCodes.ReservedPathOperationForbidden : ErrorCodes.BundleRecoveryRequired;
+            output.RootElement.GetProperty("code").GetString().Should().Be(expected);
+        }
+    }
+
     [Fact]
     public async Task GuideRemainsAvailableWithRetainedBundleEvidence()
     {

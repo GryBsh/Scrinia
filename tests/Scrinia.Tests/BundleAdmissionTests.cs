@@ -66,6 +66,12 @@ public sealed class BundleAdmissionTests
             await restore.Should().ThrowAsync<BundleImportException>().Where(e => e.Failure == BundleImportFailure.RolledBack);
         }
         finally { FileMemoryStore.RestoreJournalFailureInjector.Value = null; }
+        if (operation == "store" && !excluded)
+        {
+            using var cold = new FileMemoryStore(scope.WorkspaceDir);
+            (await cold.ReadAsync(address))!.ContentPreview.Should().Contain("after",
+                "an acknowledged child write must survive the failed bundle rollback");
+        }
         excluded.Should().BeTrue("a child flow must acquire its own workspace admission");
         await writer.StoreAsync(new MemoryWrite(address, ["survives"u8.ToArray()], new Dictionary<string, IReadOnlyList<string>>(), []));
         (await writer.ReadAsync(address))!.ContentPreview.Should().Contain("survives");

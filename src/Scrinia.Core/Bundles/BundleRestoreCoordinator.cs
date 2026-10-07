@@ -141,14 +141,16 @@ internal sealed class BundleRestoreCoordinator(FileMemoryStore store, WorkspaceA
             foreach (ArtifactEntry entry in topic.Entries)
             {
                 string directory = PathRouter.ToStoreDir(topic.Scope, lease.WorkspaceRoot);
-                string body = Path.Combine(directory, entry.Name + ".nmp2");
-                string meta = Path.Combine(directory, entry.Name + ".meta.json");
+                string subject = ResolveMemorySubjectUnderLease(lease, directory, entry.Name);
+                string body = Path.Combine(directory, subject + ".nmp2");
+                string meta = Path.Combine(directory, subject + ".meta.json");
                 if (!plan.Overwrite && (File.Exists(body) || File.Exists(meta))) continue;
-                string address = topic.Scope == "local" ? "/" + entry.Name : MemoryNaming.FormatQualifiedName(topic.Scope, entry.Name);
+                string address = topic.Scope == "local" ? "/" + subject : MemoryNaming.FormatQualifiedName(topic.Scope, subject);
                 ArtifactEntry mapped = entry with
                 {
+                    Name = subject,
                     Address = MemoryAddress.Parse(address),
-                    ArtifactKey = ArtifactIdentityMapper.BuildArtifactKey(entry.Name, topic.Scope),
+                    ArtifactKey = ArtifactIdentityMapper.BuildArtifactKey(subject, topic.Scope),
                     CreatedAt = entry.CreatedAt == default ? DateTimeOffset.UtcNow : entry.CreatedAt
                 };
                 Add(body, "memory-body", topic.ArtifactBytes[entry.Name]);
@@ -215,6 +217,24 @@ internal sealed class BundleRestoreCoordinator(FileMemoryStore store, WorkspaceA
             members.Add(new(evidence with { BeforeExists = before is not null, BeforeBytes = before,
                 BeforeSha256 = Hash(before), AfterExists = after is not null, AfterSha256 = Hash(after) }, after));
         }
+    }
+
+    private static string ResolveMemorySubjectUnderLease(WorkspaceLease lease, string directory, string incoming)
+    {
+        lease.AssertValid(lease.WorkspaceRoot, requireExclusive: true);
+        if (!Directory.Exists(directory)) return incoming;
+        var matches = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string path in Directory.EnumerateFiles(directory))
+        {
+            string file = Path.GetFileName(path);
+            string? subject = file.EndsWith(".meta.json", StringComparison.Ordinal) ? file[..^10]
+                : file.EndsWith(".nmp2", StringComparison.Ordinal) ? file[..^5] : null;
+            if (subject is not null && subject.Equals(incoming, StringComparison.OrdinalIgnoreCase))
+                matches.Add(subject);
+        }
+        if (matches.Count > 1)
+            throw new BundleValidationException("INVALID_BUNDLE: existing memory has ambiguous case-only member names.");
+        return matches.Count == 1 ? matches.Single() : incoming;
     }
 
     private static void RefuseForwardVersion(byte[] bytes, string kind, string path)

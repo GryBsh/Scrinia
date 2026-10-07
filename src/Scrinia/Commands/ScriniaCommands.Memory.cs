@@ -562,7 +562,7 @@ public partial class ScriniaCommands
                     return 1;
                 }
                 MemoryError? writeError = ClassifyWriteError(response, false, "store");
-                WriteJsonError(response.Error ?? "unknown error", writeError);
+                WriteJsonError(response.Error ?? "unknown error", writeError, response.ErrorCode);
                 return 1;
             }
             MemoryError? textWriteError = ClassifyWriteError(response, false, "store");
@@ -622,7 +622,7 @@ public partial class ScriniaCommands
         // genuine not-found.
         if (response.IsError)
         {
-            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            if (json) { WriteJsonError(response.Error ?? "unknown error", code: response.ErrorCode); return 1; }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
@@ -684,7 +684,7 @@ public partial class ScriniaCommands
         // Same dead guard as Show — `scri forget` reported success on a real not-found.
         if (response.IsError)
         {
-            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            if (json) { WriteJsonError(response.Error ?? "unknown error", code: response.ErrorCode); return 1; }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }

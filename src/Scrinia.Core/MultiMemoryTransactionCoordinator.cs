@@ -856,15 +856,19 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             }
             allParticipantsVerified = true;
             _store.InvalidateCommittedScope(record.Scope);
-            MultiMemoryTransactionRecord proofRecord = MultiMemoryTransactionRecordCodec.WithCompletionProof(
-                record, adapters.Select(adapter => new MultiMemoryParticipantCompletion(
-                    adapter.Subject, adapter.OperationId, adapter.Kind, adapter.EvidencePath)).ToArray(),
-                DateTimeOffset.UtcNow);
+            var completions = adapters.Select(adapter => new MultiMemoryParticipantCompletion(
+                adapter.Subject, adapter.OperationId, adapter.Kind, adapter.EvidencePath)).ToArray();
             try
             {
-                Publish(StoreDirectory(record.Scope), proofRecord,
-                    MultiMemoryTransactionTransition.CompletionProofPublished);
-                record = proofRecord;
+                // Retrying cleanup must not rewrite an identical durable terminal proof.
+                if (record.CompletedParticipants is null || !record.CompletedParticipants.SequenceEqual(completions))
+                {
+                    MultiMemoryTransactionRecord proofRecord = MultiMemoryTransactionRecordCodec.WithCompletionProof(
+                        record, completions, DateTimeOffset.UtcNow);
+                    Publish(StoreDirectory(record.Scope), proofRecord,
+                        MultiMemoryTransactionTransition.CompletionProofPublished);
+                    record = proofRecord;
+                }
             }
             catch (Exception)
             {

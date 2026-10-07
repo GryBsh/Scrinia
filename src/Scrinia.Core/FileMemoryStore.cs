@@ -1044,7 +1044,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             string fingerprint = WithExclusiveLock(mutation, prepareScope!, () =>
             {
                 LoadIndexUnsafe(prepareScope!);
-                return CaptureScopeSnapshotFingerprint(prepareScope!);
+                return terminalRetained ? CaptureScopeSnapshotFingerprint(prepareScope!) : string.Empty;
             }, afterRecovery: retained => terminalRetained = retained);
             if (terminalRetained) prepared[prepareScope!] = fingerprint;
         }
@@ -1120,7 +1120,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             string fingerprint = WithExclusiveLock(mutation, prepareScope!, () =>
             {
                 LoadIndexUnsafe(prepareScope!);
-                return CaptureScopeSnapshotFingerprint(prepareScope!);
+                return terminalRetained ? CaptureScopeSnapshotFingerprint(prepareScope!) : string.Empty;
             }, afterRecovery: retained => terminalRetained = retained);
             if (terminalRetained) prepared[prepareScope!] = fingerprint;
         }
@@ -3516,7 +3516,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         string directory = PathRouter.ToStoreDir(scope, _workspaceRoot);
         if (!Directory.Exists(directory)) return;
         using var scopeLock = FileLock.AcquireExclusive(Path.Combine(directory, ".lock"), ImportLockTimeout, ct);
-        RecoverScopeUnsafe(lease, scope, directory, cancellationToken: ct);
+        if (RecoverScopeUnsafe(lease, scope, directory, cancellationToken: ct))
+        {
+            string coordinator = MultiMemoryTransactionRecordCodec.GetPath(directory);
+            string evidence = File.Exists(coordinator) ? coordinator : GetRestoreJournalPath(directory);
+            throw new RestoreRecoveryException(scope, evidence, RestoreRecoveryFailure.ReplayIoFailed,
+                "Terminal scope recovery evidence must be removed before bundle publication.");
+        }
         _recoveryConductor.RecoverAppendUnsafeAsync(scope, directory, "bundle-recovery", ct).GetAwaiter().GetResult();
     }
 
