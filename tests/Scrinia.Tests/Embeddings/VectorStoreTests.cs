@@ -154,6 +154,101 @@ public class VectorStoreTests : IDisposable
         vectors2.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData("upsert")]
+    [InlineData("remove")]
+    [InlineData("replace")]
+    public async Task UnsupportedDiskFormatRefusesMutationEvenWithWarmCache(string operation)
+    {
+        await _store.UpsertAsync("local", "original", null, [1f, 0f]);
+        string path = Path.Combine(_tempDir, "local", "vectors.bin");
+        byte[] unsupported = "SVF9future-data"u8.ToArray();
+        File.WriteAllBytes(path, unsupported);
+
+        Func<Task> mutate = operation switch
+        {
+            "upsert" => () => _store.UpsertAsync("local", "original", null, [0f, 1f]),
+            "remove" => () => _store.RemoveAsync("local", "original"),
+            _ => () => _store.ReplaceMemoryVectorsAsync("local", "original", []),
+        };
+        await mutate.Should().ThrowAsync<VectorStoreUnavailableException>();
+
+        _store.GetVectors("local").Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
+        File.ReadAllBytes(path).Should().Equal(unsupported);
+        Directory.GetFiles(_tempDir, "*.tmp", SearchOption.AllDirectories).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("upsert")]
+    [InlineData("remove")]
+    [InlineData("replace")]
+    public async Task UnreadableDiskRefusesMutationEvenWithWarmCache(string operation)
+    {
+        await _store.UpsertAsync("local", "original", null, [1f, 0f]);
+        string path = Path.Combine(_tempDir, "local", "vectors.bin");
+        byte[] before = File.ReadAllBytes(path);
+        using (var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Func<Task> mutate = operation switch
+            {
+                "upsert" => () => _store.UpsertAsync("local", "original", null, [0f, 1f]),
+                "remove" => () => _store.RemoveAsync("local", "original"),
+                _ => () => _store.ReplaceMemoryVectorsAsync("local", "original", []),
+            };
+            await mutate.Should().ThrowAsync<VectorStoreUnavailableException>();
+            _store.GetVectors("local").Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
+        }
+        File.ReadAllBytes(path).Should().Equal(before);
+    }
+
+    [Fact]
+    public async Task FailedLegacyMigrationCannotBecomeMissingWriteBaseline()
+    {
+        string legacyPath = Path.Combine(_tempDir, "local_api", "vectors.bin");
+        Directory.CreateDirectory(legacyPath);
+        string marker = Path.Combine(legacyPath, "unreadable-source");
+        File.WriteAllBytes(marker, "source"u8.ToArray());
+
+        Func<Task> mutate = () => _store.UpsertAsync("local:api", "new", null, [1f]);
+        await mutate.Should().ThrowAsync<VectorStoreUnavailableException>();
+
+        File.Exists(Path.Combine(_tempDir, "local", "api", "vectors.bin")).Should().BeFalse();
+        File.ReadAllBytes(marker).Should().Equal("source"u8.ToArray());
+        _store.Count().Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task PersistentMutationRetainsLegacyFormatPayloads(int version)
+    {
+        string path = Path.Combine(_tempDir, "local", "vectors.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var buffer = new MemoryStream();
+        using (var writer = new BinaryWriter(buffer, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(System.Text.Encoding.UTF8.GetBytes($"SVF{version}"));
+            writer.Write((ushort)2);
+            if (version == 1)
+                writer.Write((uint)1);
+            else
+                writer.Write((byte)0);
+            writer.Write((ushort)6);
+            writer.Write("legacy"u8);
+            writer.Write(-1);
+            writer.Write(0.25f);
+            writer.Write(0.75f);
+        }
+        File.WriteAllBytes(path, buffer.ToArray());
+
+        await _store.UpsertAsync("local", "new", null, [1f, 0f]);
+
+        using var fresh = new VectorStore(_tempDir);
+        fresh.GetVectors("local").Should().HaveCount(2);
+        fresh.GetVectors("local").Single(entry => entry.Name == "legacy").Vector.Should().Equal(0.25f, 0.75f);
+        File.ReadAllBytes(path).Take(4).Should().Equal("SVF3"u8.ToArray());
+    }
+
     [Fact]
     public async Task TotalVectorCount_SumsAllScopes()
     {
@@ -199,10 +294,10 @@ public class VectorStoreTests : IDisposable
             .Should().BeEmpty("only stale results from the requested scopes should be returned");
     }
 
-    // -- SVF2 append-only format tests --
+    // -- Persistent mutation behavior tests --
 
     [Fact]
-    public async Task Svf2_AppendOnly_UpsertAppends()
+    public async Task PersistentUpsertPreservesOtherEntries()
     {
         await _store.UpsertAsync("local", "first", null, [0.1f, 0.2f, 0.3f]);
         await _store.UpsertAsync("local", "second", null, [0.4f, 0.5f, 0.6f]);
@@ -212,7 +307,7 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Svf2_SurvivesNewInstance()
+    public async Task PersistentUpsertsSurviveNewInstance()
     {
         await _store.UpsertAsync("local", "svf2-persist", null, [0.1f, 0.2f]);
         await _store.UpsertAsync("local", "svf2-persist2", null, [0.3f, 0.4f]);
@@ -225,7 +320,7 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Svf2_UpsertExisting_DeletesAndAdds()
+    public async Task PersistentUpsertReplacesExistingPayload()
     {
         await _store.UpsertAsync("local", "update-me", null, [0.1f, 0.2f]);
         await _store.UpsertAsync("local", "update-me", null, [0.3f, 0.4f]);
@@ -237,7 +332,7 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Svf2_Remove_AppendsDeleteOp()
+    public async Task PersistentRemoveDeletesOnlyMatchingName()
     {
         await _store.UpsertAsync("local", "del-me", null, [0.1f, 0.2f]);
         await _store.UpsertAsync("local", "keep", null, [0.3f, 0.4f]);

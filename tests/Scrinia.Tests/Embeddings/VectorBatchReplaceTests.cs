@@ -25,6 +25,60 @@ public sealed class VectorBatchReplaceTests : IDisposable
     private static (int? ChunkIndex, float[] Vector)[] Plan(int count) =>
         Enumerable.Range(1, count).Select(i => ((int?)i, new[] { (float)i, 0f, 0f })).ToArray();
 
+    [Theory]
+    [InlineData("replace")]
+    [InlineData("upsert")]
+    [InlineData("remove")]
+    public async Task IndependentInstancesMutateFreshScopeState(string operation)
+    {
+        using var a = new VectorStore(_dir, "test");
+        using var b = new VectorStore(_dir, "test");
+        await a.ReplaceMemoryVectorsAsync("local", "alpha", Plan(2));
+        await b.ReplaceMemoryVectorsAsync("local", "beta", Plan(1));
+
+        switch (operation)
+        {
+            case "replace": await a.ReplaceMemoryVectorsAsync("local", "alpha", Plan(1)); break;
+            case "upsert": await a.UpsertAsync("local", "alpha", 1, [9f, 0f, 0f]); break;
+            case "remove": await a.RemoveAsync("local", "beta"); break;
+        }
+
+        string[] expectedNames = operation == "remove" ? ["alpha"] : ["alpha", "beta"];
+        a.GetVectors("local").Select(v => v.Name).Distinct().Should().BeEquivalentTo(expectedNames);
+        using var fresh = new VectorStore(_dir, "test");
+        fresh.GetVectors("local").Select(v => v.Name).Distinct().Should().BeEquivalentTo(expectedNames);
+        fresh.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector))
+            .Should().BeEquivalentTo(a.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector)));
+    }
+
+    [Theory]
+    [InlineData("replace")]
+    [InlineData("upsert")]
+    [InlineData("remove")]
+    public async Task FailedPublicationDoesNotPublishAttemptedCache(string operation)
+    {
+        using var store = new VectorStore(_dir, "test");
+        await store.ReplaceMemoryVectorsAsync("local", "note", Plan(2));
+        var before = store.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector.ToArray())).ToArray();
+        VectorStore.RewriteFailureInjector = _ => new IOException("injected publication failure");
+        try
+        {
+            Func<Task> mutate = operation switch
+            {
+                "replace" => () => store.ReplaceMemoryVectorsAsync("local", "note", Plan(1)),
+                "upsert" => () => store.UpsertAsync("local", "note", 1, [9f, 0f, 0f]),
+                _ => () => store.RemoveAsync("local", "note"),
+            };
+            await mutate.Should().ThrowAsync<IOException>();
+            store.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector))
+                .Should().BeEquivalentTo(before);
+        }
+        finally { VectorStore.RewriteFailureInjector = null; }
+        using var fresh = new VectorStore(_dir, "test");
+        fresh.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector))
+            .Should().BeEquivalentTo(before);
+    }
+
     [Fact]
     public async Task BatchReplace_MatchesTheRemoveThenLoop_ForTheSameInput()
     {
@@ -33,10 +87,8 @@ public sealed class VectorBatchReplaceTests : IDisposable
         Directory.CreateDirectory(loopDir);
         Directory.CreateDirectory(batchDir);
 
-        // A non-empty prior state so the compared write goes through the supersede path
-        // (P > 0 delete ops), not just an insert into an empty store — an empty starting
-        // point can never distinguish "wrote the right number of delete ops" from "wrote
-        // none," which is the entire reason this method exists (finding I-1).
+        // A non-empty prior state checks that both approaches remove superseded chunks,
+        // rather than merely inserting a batch into an empty store (finding I-1).
         var priorPlan = Plan(7);
         var plan = Plan(5);
 
@@ -138,8 +190,8 @@ public sealed class VectorBatchReplaceTests : IDisposable
     public async Task BatchReplace_ShrinkingAMemory_DropsStaleHigherChunkIndices_OnDiskAfterReload()
     {
         // The in-memory shrink test above only reads the live cache, which would pass even if
-        // the delete ops for superseded entries were never written to disk. This closes that
-        // gap by forcing a fresh load from the SVF3 op-log.
+        // the durable replacement retained superseded entries. This closes that gap by
+        // forcing a fresh load from the SVF3 snapshot.
         using (var store = new VectorStore(_dir, expectedSignature: null))
         {
             await store.ReplaceMemoryVectorsAsync("local", "note", Plan(6));
@@ -149,7 +201,7 @@ public sealed class VectorBatchReplaceTests : IDisposable
         using var reloaded = new VectorStore(_dir, expectedSignature: null);
         reloaded.GetVectors("local").Select(v => v.ChunkIndex)
             .Should().BeEquivalentTo([1, 2],
-                because: "a reload replays the on-disk op-log, so stale higher chunk indices "
+                because: "a reload reads the durable snapshot, so stale higher chunk indices "
                        + "would resurface here if the batch write only fixed the in-memory copy");
     }
 
@@ -191,22 +243,55 @@ public sealed class VectorBatchReplaceTests : IDisposable
         store.GetVectors("local").Where(v => v.Name == "note").Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Nothing to remove and nothing to add touches the file at all — the RemoveAsync-then-loop
-    /// this replaces never did either (RemoveAsync early-returns on nothing-to-remove and zero
-    /// Upserts follow), so probing here would newly risk a VectorStoreUnavailableException on a
-    /// call that used to be free.
-    /// </summary>
+    // A persistent no-op still takes the coordination lease and checks fresh disk state.
     [Fact]
-    public async Task BatchReplace_WithNothingToRemoveAndNothingToAdd_TouchesNoFile()
+    public async Task BatchReplaceWithNothingToRemoveAndNothingToAddPublishesNoVectorFile()
     {
         using var store = new VectorStore(_dir, expectedSignature: null);
 
         await store.ReplaceMemoryVectorsAsync("local", "ghost", []);
 
         store.GetVectors("local").Should().BeEmpty();
-        Directory.GetFiles(_dir, "*", SearchOption.AllDirectories).Should().BeEmpty(
-            because: "a no-op replace must not create a vector file for a scope that has none");
+        Directory.GetFiles(_dir, "vectors.bin", SearchOption.AllDirectories).Should().BeEmpty();
+        Directory.GetFiles(_dir, "*.tmp", SearchOption.AllDirectories).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("replace")]
+    [InlineData("remove")]
+    public async Task PersistentNoOpRefreshesCacheFromAnotherWriter(string operation)
+    {
+        using var store = new VectorStore(_dir, "test");
+        store.GetVectors("local").Should().BeEmpty();
+        using var writer = new VectorStore(_dir, "test");
+        await writer.ReplaceMemoryVectorsAsync("local", "other", Plan(2));
+        string path = Path.Combine(_dir, "local", "vectors.bin");
+        byte[] before = File.ReadAllBytes(path);
+
+        if (operation == "replace")
+            await store.ReplaceMemoryVectorsAsync("local", "absent", []);
+        else
+            await store.RemoveAsync("local", "absent");
+
+        store.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector))
+            .Should().BeEquivalentTo(writer.GetVectors("local").Select(v => (v.Name, v.ChunkIndex, v.Vector)));
+        File.ReadAllBytes(path).Should().Equal(before);
+        Directory.GetFiles(_dir, "*.tmp", SearchOption.AllDirectories).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task EmptyBatchRemovesMemoryCreatedAfterCacheWasLoaded()
+    {
+        using var store = new VectorStore(_dir, "test");
+        store.GetVectors("local").Should().BeEmpty();
+        using var writer = new VectorStore(_dir, "test");
+        await writer.ReplaceMemoryVectorsAsync("local", "note", Plan(2));
+
+        await store.ReplaceMemoryVectorsAsync("local", "note", []);
+
+        store.GetVectors("local").Should().BeEmpty();
+        using var fresh = new VectorStore(_dir, "test");
+        fresh.GetVectors("local").Should().BeEmpty();
     }
 
     /// <summary>
