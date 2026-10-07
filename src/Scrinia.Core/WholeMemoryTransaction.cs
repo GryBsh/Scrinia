@@ -276,8 +276,18 @@ internal sealed record FileEntityMutation
 
 }
 
+internal sealed record FileEntityTarget(
+    string EntityKind, string Name, string BodyPath, string MetaPath, string VersionsDirectory);
+
+internal sealed record FileEntityCurrentState(RawMemberSnapshot Body, RawMemberSnapshot Meta);
+
 internal interface IFileEntityTransactionCoordinator
 {
+    Task<FileEntityMutationResult> TransformAsync(
+        FileEntityTarget target,
+        Func<FileEntityCurrentState, CancellationToken, ValueTask<FileEntityMutation>> prepare,
+        CancellationToken cancellationToken = default);
+
     Task<FileEntityMutationResult> ExecuteAsync(
         FileEntityMutation mutation,
         CancellationToken cancellationToken = default);

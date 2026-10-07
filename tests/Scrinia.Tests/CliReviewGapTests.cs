@@ -35,6 +35,31 @@ public sealed class CliReviewGapTests
     }
 
     [Theory]
+    [InlineData("/findings/identity")]
+    [InlineData("/skill/identity")]
+    [InlineData("/agent/identity")]
+    [InlineData("MixedCase")]
+    public async Task StoreJsonReturnsCommittedIdentity(string address)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        using var provider = EmbeddingsHost.OverrideEmbeddingProviderForTest(null);
+        string input = Path.Combine(scope.TempDir, "input.txt");
+        await File.WriteAllTextAsync(input, "body");
+        var (exit, json) = await RunJsonAsync(() =>
+            new ScriniaCommands().Store(address, input, scope.WorkspaceDir, json: true));
+        exit.Should().Be(0);
+        var output = JsonSerializer.Deserialize(json, CliJsonContext.Default.CliStoreOutput)!;
+        output.Name.Should().Be(address);
+        output.Message.Should().StartWith("status: success");
+        if (address.StartsWith("/skill/", StringComparison.Ordinal) || address.StartsWith("/agent/", StringComparison.Ordinal))
+        {
+            string kind = address.Split('/')[1];
+            File.Exists(Path.Combine(PathRouter.ToFileEntityDir(kind, scope.WorkspaceDir), "identity.md"))
+                .Should().BeTrue();
+        }
+    }
+
+    [Theory]
     [InlineData("store")]
     [InlineData("append-create")]
     [InlineData("compact")]

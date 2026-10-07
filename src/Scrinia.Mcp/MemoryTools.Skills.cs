@@ -175,20 +175,27 @@ public sealed partial class ScriniaMcpTools
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
         if (!File.Exists(metaPath)) return null;
 
+        return ReadSidecarSnapshotOrRefuse(
+            RawMemberSnapshot.Capture(metaPath, true, File.ReadAllBytes(metaPath)), filePath, typeInfo);
+    }
+
+    private static T? ReadSidecarSnapshotOrRefuse<T>(
+        RawMemberSnapshot snapshot, string filePath, JsonTypeInfo<T> typeInfo) where T : class
+    {
+        if (!snapshot.Existed)
+            return null;
         T? existing;
         try
         {
-            string json = File.ReadAllText(metaPath);
-            existing = JsonSerializer.Deserialize(json, typeInfo);
+            existing = JsonSerializer.Deserialize(DecodeFileEntityBody(snapshot.Bytes), typeInfo);
         }
         catch (JsonException exception)
         {
-            throw new DurableWriteException("read sidecar", metaPath, exception);
+            throw new DurableWriteException("read sidecar", snapshot.Path, exception);
         }
-
         if (existing is null)
             throw new DurableWriteException(
-                "read sidecar", metaPath,
+                "read sidecar", snapshot.Path,
                 new InvalidDataException("The sidecar must contain a JSON object."));
 
         var (contract, declared) = ContractAndVersion(existing);
@@ -314,16 +321,17 @@ public sealed partial class ScriniaMcpTools
         if (result.Outcome == WholeMemoryOutcome.RecoveryRequired)
             return FileEntityFailureResponse(result, entityScope);
 
-        McpResponse response = result.Outcome == WholeMemoryOutcome.SuccessWithWarning
+        bool hasWarning = result.Outcome == WholeMemoryOutcome.SuccessWithWarning || result.Warning is not null;
+        McpResponse response = hasWarning
             ? ResponseBuilder.SuccessWithWarning(message)
                 .WithInfo(result.Warning ?? "File-entity publication committed with a warning.")
             : ResponseBuilder.Success(message);
-        if (result.Outcome == WholeMemoryOutcome.SuccessWithWarning)
+        if (hasWarning)
             response = response.WithOperationId(result.OperationId);
         if (result.Recovery is not null)
             response = response.WithRecovery(
                 entityScope, SafeRecoveryEvidencePath(result.Recovery.EvidencePath));
-        return response.WithFileChanges().WithAction(action);
+        return response.WithFileChanges().WithAction(action).WithPersistedIdentity($"/{entityScope}");
     }
 
     private static string FindWorkspaceRoot(string filePath)
@@ -466,6 +474,59 @@ public sealed partial class ScriniaMcpTools
             return FileEntitySuccessResponse(
                 result, $"Stored as .scrinia/skills/{name}.md.", "created", $"skill/{name}")
                 .WithPath($"/skill/{name}");
+        }
+        catch (WholeMemoryTransactionException exception)
+        {
+            return WholeMemoryFailureResponse(exception, $"skill/{name}");
+        }
+    }
+
+    internal static async Task<McpResponse> AppendSkillAsync(
+        string name, string[] content, CancellationToken cancellationToken)
+    {
+        var store = CurrentStore;
+        if (!PathRouter.TryToFileEntityPath("skill", name, store.WorkspaceRoot, out string filePath))
+            return ResponseBuilder.Error("Invalid skill name.", ErrorCodes.InvalidParameter);
+        string directory = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
+        var target = new FileEntityTarget("skill", name, filePath,
+            Path.ChangeExtension(filePath, ".meta.json"), Path.Combine(directory, "versions"));
+        try
+        {
+            FileEntityMutationResult result = await new FileEntityTransactionCoordinator(store.WorkspaceRoot)
+                .TransformAsync(target, (current, ct) =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    SkillFileMeta? existing = ReadSidecarSnapshotOrRefuse(
+                        current.Meta, filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
+                    RawFileEntityContent<SkillFileMeta> raw = LoadRawSkill(name,
+                        current.Body.Existed ? DecodeFileEntityBody(current.Body.Bytes) : null, existing)
+                        ?? throw new FileNotFoundException($"Skill '{name}' not found.");
+                    string now = DateTimeOffset.UtcNow.ToString("o");
+                    SkillFileMeta metadata = raw.Metadata is { } prior
+                        ? prior with
+                        {
+                            UpdatedAt = now,
+                            Unknown = prior.Unknown is { } unknown ? new Dictionary<string, JsonElement>(unknown) : null
+                        }
+                        : new SkillFileMeta(
+                            BuiltInSkills.TryGetValue(name, out string? builtIn)
+                                ? Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(builtIn))) : null,
+                            null, null, null, now, now);
+                    string updated = raw.Body + "\n\n" + string.Join("\n\n", content);
+                    byte[] body = Encoding.UTF8.GetBytes(updated);
+                    byte[] meta = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
+                        metadata, ScriniaMcpJsonContext.Default.SkillFileMeta));
+                    FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
+                    return ValueTask.FromResult(new FileEntityMutation(target.EntityKind, target.Name,
+                        target.BodyPath, target.MetaPath, target.VersionsDirectory, body, meta, false, false));
+                }, cancellationToken);
+            return FileEntitySuccessResponse(result,
+                $"Appended to /skill/{name}.", "appended", $"skill/{name}");
+        }
+        catch (FileNotFoundException exception)
+        {
+            return ResponseBuilder.Error(exception.Message, ErrorCodes.NotFound,
+                "recall({ path: '/skill/' }) to list available skills");
         }
         catch (WholeMemoryTransactionException exception)
         {
@@ -642,7 +703,9 @@ public sealed partial class ScriniaMcpTools
             diskContent = await File.ReadAllTextAsync(filePath, ct);
         }
 
-        string? overrideContent = diskContent;
+        RawFileEntityContent<SkillFileMeta>? raw = LoadRawSkill(skillName, diskContent,
+            diskContent is null ? null : ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.SkillFileMeta));
+        string? overrideContent = raw?.Source == FileEntityContentSource.Disk ? raw.Body : null;
         string sourceLabel = "file";
 
         if (withBuiltin && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
@@ -658,8 +721,8 @@ public sealed partial class ScriniaMcpTools
 
         if (overrideContent is null)
         {
-            if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
-                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in")
+            if (raw is not null)
+                return ResponseBuilder.Success(raw.Body).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in")
                     .WithTruncationAdvice(SkillContentTruncationAdvice);
             return ResponseBuilder.Error(
                 $"Skill '{skillName}' not found.",
@@ -675,8 +738,7 @@ public sealed partial class ScriniaMcpTools
 
             if (diskContent is not null)
             {
-                var meta = ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
-                storedHash = meta?.BasedOn;
+                storedHash = raw?.Metadata?.BasedOn;
             }
 
             if (storedHash is not null)

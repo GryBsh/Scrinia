@@ -15,37 +15,67 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     internal void FailOnceAt(FileEntityFaultPoint point) =>
         B0FaultSeam.FailOnceAt(B0FaultSeam.MapFileEntityFaultPoint(point), point.ToString());
 
-    public async Task<FileEntityMutationResult> ExecuteAsync(
+    public Task<FileEntityMutationResult> ExecuteAsync(
         FileEntityMutation mutation,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(mutation);
-        ValidatePaths(mutation);
+        ValidateDeletePaths(mutation);
+        return TransformAsync(
+            new FileEntityTarget(mutation.EntityKind, mutation.Name, mutation.BodyPath,
+                mutation.MetaPath, mutation.VersionsDirectory),
+            (_, _) => ValueTask.FromResult(mutation), cancellationToken);
+    }
+
+    public async Task<FileEntityMutationResult> TransformAsync(
+        FileEntityTarget target,
+        Func<FileEntityCurrentState, CancellationToken, ValueTask<FileEntityMutation>> prepare,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(prepare);
+        ValidatePaths(target);
         cancellationToken.ThrowIfCancellationRequested();
 
         var admission = new WorkspaceAdmission(_workspaceRoot,
             (lease, ct) => Bundles.BundleRestoreCoordinator.RecoverUnderLease(lease, Bundles.BundleReadLimits.Default, ct));
         using WorkspaceLease workspaceLease = admission.EnterMutation(TimeSpan.FromMinutes(5), cancellationToken);
-        string operationId = Guid.NewGuid().ToString("N");
-        bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
-            Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
-        string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
-        string bodySnapshotPath = mutation.BodyPath;
-        using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"));
-        ValidateDeletePaths(mutation);
-
+        string entityDirectory = Path.GetDirectoryName(target.BodyPath)!;
+        using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"),
+            TimeSpan.FromSeconds(5), cancellationToken);
         FileEntityMutationResult? recovery = RecoverPendingEvidence(entityDirectory,
-            mutation.EntityKind, mutation.Name, cancellationToken);
+            target.EntityKind, target.Name, cancellationToken);
         if (recovery is not null)
             return recovery;
 
+        bool sidecarOnly = AreSamePath(target.BodyPath, target.MetaPath,
+            Path.GetDirectoryName(Path.GetFullPath(target.BodyPath))!);
         RawMemberSnapshot oldBody = sidecarOnly
-            ? RawMemberSnapshot.Capture(bodySnapshotPath, false, [])
-            : Capture(mutation.BodyPath, FileEntityFaultPoint.RawBodyRead, cancellationToken);
-        RawMemberSnapshot oldMeta = Capture(mutation.MetaPath, FileEntityFaultPoint.RawMetaRead, cancellationToken);
+            ? RawMemberSnapshot.Capture(target.BodyPath, false, [])
+            : Capture(target.BodyPath, FileEntityFaultPoint.RawBodyRead, cancellationToken);
+        RawMemberSnapshot oldMeta = Capture(target.MetaPath, FileEntityFaultPoint.RawMetaRead, cancellationToken);
+        FileEntityMutation mutation = await prepare(new FileEntityCurrentState(oldBody, oldMeta), cancellationToken);
+        ArgumentNullException.ThrowIfNull(mutation);
+        if (mutation.EntityKind != target.EntityKind || mutation.Name != target.Name ||
+            mutation.BodyPath != target.BodyPath || mutation.MetaPath != target.MetaPath ||
+            mutation.VersionsDirectory != target.VersionsDirectory)
+            throw new ArgumentException("The prepared mutation must retain the exact file-entity target.", nameof(prepare));
+        ValidateDeletePaths(mutation);
         RawMemberSnapshot[] oldDeletePaths = mutation.DeletePaths
             .Select(path => Capture(path, FileEntityFaultPoint.RawMetaRead, cancellationToken))
             .ToArray();
+        return PublishUnderLock(mutation, oldBody, oldMeta, oldDeletePaths, cancellationToken);
+    }
+
+    private FileEntityMutationResult PublishUnderLock(
+        FileEntityMutation mutation, RawMemberSnapshot oldBody, RawMemberSnapshot oldMeta,
+        RawMemberSnapshot[] oldDeletePaths, CancellationToken cancellationToken)
+    {
+        string operationId = Guid.NewGuid().ToString("N");
+        string entityDirectory = Path.GetDirectoryName(mutation.BodyPath)!;
+        string bodySnapshotPath = mutation.BodyPath;
+        bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
+            Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
         bool metadataMutation = mutation.DeleteMeta || mutation.NewMeta is not null;
         string? evidencePath = null;
         string? archiveBody = null;
@@ -139,15 +169,17 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         }
     }
 
-    private void ValidatePaths(FileEntityMutation mutation)
+    private void ValidatePaths(FileEntityTarget target)
     {
-        string body = Path.GetFullPath(mutation.BodyPath);
-        string meta = Path.GetFullPath(mutation.MetaPath);
-        string versions = Path.GetFullPath(mutation.VersionsDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(target.EntityKind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(target.Name);
+        string body = Path.GetFullPath(target.BodyPath);
+        string meta = Path.GetFullPath(target.MetaPath);
+        string versions = Path.GetFullPath(target.VersionsDirectory);
         if (!PathContainment.IsWithin(_workspaceRoot, body)
             || !PathContainment.IsWithin(_workspaceRoot, meta)
             || !PathContainment.IsWithin(_workspaceRoot, versions))
-            throw new ArgumentException("File-entity paths must remain within the workspace root.", nameof(mutation));
+            throw new ArgumentException("File-entity paths must remain within the workspace root.", nameof(target));
     }
 
     private void ValidateDeletePaths(FileEntityMutation mutation)

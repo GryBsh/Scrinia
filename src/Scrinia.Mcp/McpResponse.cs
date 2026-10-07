@@ -250,6 +250,12 @@ public static class ResponseBuilder
     public static McpResponse WithPath(this McpResponse r, string path) =>
         r with { Path = path };
 
+    internal static McpResponse WithPersistedIdentity(this McpResponse response, string persistedIdentity)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(persistedIdentity);
+        return response with { Path = persistedIdentity, PersistedPath = persistedIdentity };
+    }
+
     /// <summary>Attaches the canonical address produced by a completed write without changing the
     /// rendered MCP response.</summary>
     public static McpResponse WithPersistedPath(this McpResponse r, string path) =>

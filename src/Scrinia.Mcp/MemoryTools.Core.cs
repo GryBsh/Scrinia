@@ -437,9 +437,9 @@ public sealed partial class ScriniaMcpTools
                       + FormatBytes(entry.OriginalBytes);
         return ephemeral
             ? ResponseBuilder.Success($"Remembered: {qualifiedName} ({counts}) [ephemeral]")
-                .WithPersistedPath(qualifiedName).WithAction(actionLabel)
+                .WithPersistedIdentity(qualifiedName).WithAction(actionLabel)
             : ResponseBuilder.Success($"Remembered: {qualifiedName} ({counts}).")
-                .WithFileChanges().WithPersistedPath(qualifiedName).WithAction(actionLabel);
+                .WithFileChanges().WithPersistedIdentity(qualifiedName).WithAction(actionLabel);
     }
 
     private static McpResponse InvalidMemoryWriteResponse(InvalidMemoryWriteException exception) =>
@@ -1400,7 +1400,7 @@ public sealed partial class ScriniaMcpTools
             ? StoredResponse(entry, qualifiedName, ephemeral, "created")
             : ResponseBuilder.Success($"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
                 .WithFileChanges().WithAction("appended");
-        response = response.WithOperationId(appendResult.OperationId);
+        response = response.WithOperationId(appendResult.OperationId).WithPersistedIdentity(qualifiedName);
         var responseInfo = new List<string>();
         if (appendResult.Warning is not null)
             responseInfo.AddRange(

@@ -1,6 +1,5 @@
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
-using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Mcp.SharedContracts;
 using System.Text;
@@ -67,11 +66,60 @@ public sealed partial class ScriniaMcpTools
         if (content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
 
-        using WorkspaceLease lease = EnterFileEntityAdmission(CurrentStore, mutation: true, cancellationToken);
-        McpResponse current = await ReadAgentAsync(subject, cancellationToken);
-        if (current.IsError)
-            return current;
-        return await WriteAgentAsync(subject, [current.Content ?? string.Empty, string.Join("\n", content)], cancellationToken);
+        var store = CurrentStore;
+        if (!PathRouter.TryToFileEntityPath("agent", subject, store.WorkspaceRoot, out string filePath))
+            return ResponseBuilder.Error("Invalid agent config name.", ErrorCodes.InvalidParameter);
+        string directory = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
+        var target = new FileEntityTarget("agent", subject, filePath,
+            Path.ChangeExtension(filePath, ".meta.json"), Path.Combine(directory, "versions"));
+        bool promoted = false;
+        try
+        {
+            FileEntityMutationResult result = await new FileEntityTransactionCoordinator(store.WorkspaceRoot)
+                .TransformAsync(target, async (current, ct) =>
+                {
+                    AgentFileMeta? existing = ReadSidecarSnapshotOrRefuse(
+                        current.Meta, filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
+                    RawFileEntityContent<AgentFileMeta> raw = await LoadRawAgentAsync(store, subject,
+                        current.Body.Existed ? DecodeFileEntityBody(current.Body.Bytes) : null, existing, ct)
+                        ?? throw new FileNotFoundException($"Agent '{subject}' not found.");
+                    promoted = raw.Source == FileEntityContentSource.PromotedAgent;
+                    string now = DateTimeOffset.UtcNow.ToString("o");
+                    AgentFileMeta metadata = raw.Metadata is { } prior
+                        ? prior with
+                        {
+                            UpdatedAt = now,
+                            Unknown = prior.Unknown is { } unknown ? new Dictionary<string, JsonElement>(unknown) : null
+                        }
+                        : new AgentFileMeta(now, now);
+                    string updated = raw.Body + "\n" + string.Join("\n", content);
+                    byte[] body = Encoding.UTF8.GetBytes(updated);
+                    byte[] meta = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
+                        metadata, ScriniaMcpJsonContext.Default.AgentFileMeta));
+                    FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
+                    return new FileEntityMutation(target.EntityKind, target.Name,
+                        target.BodyPath, target.MetaPath, target.VersionsDirectory, body, meta, false, false);
+                }, cancellationToken);
+            if (promoted && result.Outcome is WholeMemoryOutcome.Created or WholeMemoryOutcome.Replaced)
+            {
+                using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
+                MemoryAddress address = MemoryAddress.Parse($"/agent/{subject}");
+                (string scope, string legacySubject) = store.ResolveAddress(address);
+                store.Remove(address);
+                store.DeleteArtifact(legacySubject, scope);
+            }
+            return FileEntitySuccessResponse(result,
+                $"Appended to /agent/{subject}.", "appended", $"agent/{subject}");
+        }
+        catch (FileNotFoundException exception)
+        {
+            return ResponseBuilder.Error(exception.Message, ErrorCodes.NotFound,
+                "remember({ path: '/agent/profile', content: [...] })");
+        }
+        catch (WholeMemoryTransactionException exception)
+        {
+            return WholeMemoryFailureResponse(exception, $"agent/{subject}");
+        }
     }
 
     internal async Task<McpResponse> ReadAgentAsync(string subject, CancellationToken cancellationToken)
@@ -102,7 +150,10 @@ public sealed partial class ScriniaMcpTools
                 "remember({ path: '/agent/profile', content: [...] })");
         }
 
-        string content = await File.ReadAllTextAsync(filePath, cancellationToken);
+        RawFileEntityContent<AgentFileMeta>? raw = await LoadRawAgentAsync(store, subject,
+            await File.ReadAllTextAsync(filePath, cancellationToken),
+            ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.AgentFileMeta), cancellationToken);
+        string content = (raw ?? throw new InvalidOperationException("The captured agent body is missing.")).Body;
         SessionBudget.RecordAccess($"/agent/{subject}", content.Length);
         return ResponseBuilder.Success(content).WithPath($"/agent/{subject}").WithAction("loaded");
     }
@@ -185,17 +236,11 @@ public sealed partial class ScriniaMcpTools
     internal static async Task<bool> PromoteLocalAgentAsync(
         IMemoryStore store, MemoryAddress address, string agentSubject, CancellationToken cancellationToken)
     {
-        string legacyArtifact;
-        try
-        {
-            legacyArtifact = await store.ReadArtifactAsync(address, cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
+        RawFileEntityContent<AgentFileMeta>? raw = await LoadRawAgentAsync(
+            store, agentSubject, null, null, cancellationToken);
+        if (raw is null)
             return false;
-        }
-
-        byte[] body = Nmp2Strategy.Instance.Decode(legacyArtifact);
+        byte[] body = Encoding.UTF8.GetBytes(raw.Body);
         string dir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
         string bodyPath = Path.Combine(dir, agentSubject + ".md");
         string metaPath = Path.ChangeExtension(bodyPath, ".meta.json");

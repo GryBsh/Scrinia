@@ -165,11 +165,7 @@ internal sealed class ReservedPathDispatcher
         if (request.Content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
 
-        McpResponse loaded = await ScriniaMcpTools.SkillLoad(subject, false, cancellationToken);
-        if (loaded.IsError)
-            return loaded;
-        string existing = loaded.Content ?? string.Empty;
-        return await ScriniaMcpTools.SkillCreate(subject, "custom", existing + "\n\n" + string.Join("\n\n", request.Content), null, cancellationToken);
+        return await ScriniaMcpTools.AppendSkillAsync(subject, request.Content, cancellationToken);
     }
 
     private static McpResponse Forbidden(ReservedPathOperation operation, ReservedPathKind kind) =>
