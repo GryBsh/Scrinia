@@ -22,7 +22,7 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// The <c>SCRINIA_HOME</c> environment variable is process-wide, so this class runs in a dedicated
 /// sequential collection and never in parallel with tests that read the same resolver.
 /// </summary>
-[Collection("ModelDownloadIntegrity")]
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class ModelDownloadIntegrityTests : IDisposable
 {
     private readonly string _home;
@@ -730,10 +730,10 @@ public sealed class ModelDownloadIntegrityTests : IDisposable
         => new(identifier, $"https://example.test/{identifier}/model", "model.safetensors",
             Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant());
 
-    private IEnumerable<string> TempFiles(string modelDir)
+    private string[] TempFiles(string modelDir)
         => Directory.GetFiles(modelDir, "*.tmp", SearchOption.AllDirectories);
 
-    private bool NoTempFiles(string modelDir) => TempFiles(modelDir).Any() == false;
+    private bool NoTempFiles(string modelDir) => TempFiles(modelDir).Length == 0;
 
     private static bool TryCreateDirSymlink(string link, string target)
     {

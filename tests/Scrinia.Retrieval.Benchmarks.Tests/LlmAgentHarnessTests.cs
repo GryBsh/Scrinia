@@ -15,6 +15,8 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 /// </summary>
 public class LlmAgentHarnessTests : IDisposable
 {
+    private static readonly string[] ExpectedPersonTopic = new[] { "person", "topic" };
+
     private const string AttributesKeywordsJson =
         "{\"attributes\":{\"person\":[\"maria\"],\"topic\":[\"home renovation\"]},\"keywords\":[\"kitchen remodel\",\"renovation\"]}";
 
@@ -28,6 +30,7 @@ public class LlmAgentHarnessTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         try { if (File.Exists(_cachePath)) File.Delete(_cachePath); } catch { /* best-effort */ }
     }
 
@@ -64,7 +67,7 @@ public class LlmAgentHarnessTests : IDisposable
         var result = await harness.GenerateIngestAsync("content", CancellationToken.None);
 
         result.Should().NotBeNull();
-        result!.Attributes.Keys.Should().BeEquivalentTo(new[] { "person", "topic" });
+        result!.Attributes.Keys.Should().BeEquivalentTo(ExpectedPersonTopic);
         result.Keywords.Should().Equal("kitchen remodel", "renovation");
         // One shot: the single call produced both attributes and keywords — the faithful mirror of `remember`.
         fake.CompleteCallCount.Should().Be(1);

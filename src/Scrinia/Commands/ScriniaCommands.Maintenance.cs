@@ -7,21 +7,11 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>
-    /// Runs one bounded Core maintenance batch for eligible archive pairs and verified
-    /// terminal recovery evidence, then renders the shared typed result.
-    /// </summary>
-    /// <remarks>
-    /// This handler is transport only: it validates arguments, configures the workspace,
-    /// builds the <see cref="MaintenanceRequest"/>, invokes the shared Core service, and
-    /// renders the result. It never enumerates candidates, classifies protection, deletes
-    /// files, or retries — all of that is owned by
-    /// <see cref="FileMemoryMaintenanceService"/>.
-    /// </remarks>
+    /// <summary>Clean eligible archive pairs and verified terminal recovery evidence.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="scopes">Comma-separated scopes to maintain (e.g. local,api). Omit for the resolved workspace set.</param>
-    /// <param name="batchSize">Journal cleanup batch override, 1..50. Omit for the configured value. Never raises the configured ceiling.</param>
-    /// <param name="continuationToken">Opaque continuation token from a previous batch. Framing is checked locally; every other check is Core-owned.</param>
+    /// <param name="batchSize">Batch size from 1 through 50; uses the configured value when omitted.</param>
+    /// <param name="continuationToken">Opaque token from a previous batch.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
     public async Task<int> Maintenance(
         string? workspaceRoot = null,

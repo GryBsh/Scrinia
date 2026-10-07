@@ -49,7 +49,7 @@ public sealed class CoreEmbeddingEventHandlerEphemeralAppendTests : IDisposable
 
         // Seed through the real ephemeral store path (StoreAsync), so this lands exactly where a
         // real `remember(name: "~note", ...)` call would.
-        await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~note".StartsWith("/") || "~note".StartsWith("~") ? "~note" : "/" + "~note"), "local", ["first element"]));
+        await _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~note".StartsWith('/') || "~note".StartsWith('~') ? "~note" : "/" + "~note"), "local", ["first element"]));
 
         string embeddingsDir = Path.Combine(_root, ".scrinia", "embeddings");
         Directory.CreateDirectory(embeddingsDir);
@@ -66,7 +66,7 @@ public sealed class CoreEmbeddingEventHandlerEphemeralAppendTests : IDisposable
 
         // Grow the memory (still ephemeral) and drive the append path — mirrors
         // MemoryTools.Core.cs's append call site, which passes only the appended fragment.
-        await _store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("~note".StartsWith("/") || "~note".StartsWith("~") ? "~note" : "/" + "~note"), "local", ["second element"]));
+        await _store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("~note".StartsWith('/') || "~note".StartsWith('~') ? "~note" : "/" + "~note"), "local", ["second element"]));
         await handler.OnAppendedAsync(MemoryAddress.Parse(qualifiedName), "second element", _store, CancellationToken.None);
 
         // Assertion 1: vectors exist for EVERY element, under the (scope, subject) the store path

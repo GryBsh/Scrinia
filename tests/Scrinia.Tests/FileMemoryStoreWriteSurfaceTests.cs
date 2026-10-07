@@ -55,8 +55,8 @@ public class FileMemoryStoreWriteSurfaceTests
         using var tmp = new TempWorkspace();
         string subject = new('x', MaxPersistentSubjectLength);
 
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(subject.StartsWith("/") || subject.StartsWith("~") ? subject : "/" + subject), "local", ["first"]));
-        await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse(subject.StartsWith("/") || subject.StartsWith("~") ? subject : "/" + subject), "local", ["second"]));
+        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(subject.StartsWith('/') || subject.StartsWith('~') ? subject : "/" + subject), "local", ["first"]));
+        await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse(subject.StartsWith('/') || subject.StartsWith('~') ? subject : "/" + subject), "local", ["second"]));
 
         tmp.Store.LoadIndex("local").Should().ContainSingle(e => e.Name == subject);
         (await DecodeAsync(tmp.Store, subject)).Should().Be("firstsecond");
@@ -68,7 +68,7 @@ public class FileMemoryStoreWriteSurfaceTests
         using var tmp = new TempWorkspace();
         string subject = new('x', MaxPersistentSubjectLength + 1);
 
-        Action construct = () => _ = MemoryWrite.Create(MemoryAddress.Parse(subject.StartsWith("/") || subject.StartsWith("~") ? subject : "/" + subject), "local", ["body"]);
+        Action construct = () => _ = MemoryWrite.Create(MemoryAddress.Parse(subject.StartsWith('/') || subject.StartsWith('~') ? subject : "/" + subject), "local", ["body"]);
 
         var error = construct.Should().Throw<InvalidMemoryWriteException>().Which;
         error.MaxPersistentSubjectLength.Should().Be(MemoryWrite.MaxPersistentSubjectLength);
@@ -82,7 +82,7 @@ public class FileMemoryStoreWriteSurfaceTests
     {
         string raw = new string('x', 181) + "_";
 
-        Action construct = () => _ = MemoryWrite.Create(MemoryAddress.Parse(raw.StartsWith("/") || raw.StartsWith("~") ? raw : "/" + raw), "local", ["body"]);
+        Action construct = () => _ = MemoryWrite.Create(MemoryAddress.Parse(raw.StartsWith('/') || raw.StartsWith('~') ? raw : "/" + raw), "local", ["body"]);
 
         construct.Should().NotThrow();
     }
@@ -93,7 +93,7 @@ public class FileMemoryStoreWriteSurfaceTests
         using var tmp = new TempWorkspace();
         string name = "~" + new string('x', 1_000);
 
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(name.StartsWith("/") || name.StartsWith("~") ? name : "/" + name), "ignored", ["body"]));
+        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(name.StartsWith('/') || name.StartsWith('~') ? name : "/" + name), "ignored", ["body"]));
 
         tmp.Store.GetEphemeral(name[1..]).Should().NotBeNull();
         tmp.Store.LoadIndex("local").Should().BeEmpty();
@@ -155,7 +155,7 @@ public class FileMemoryStoreWriteSurfaceTests
     {
         using var tmp = new TempWorkspace();
 
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("persisted".StartsWith("/") || "persisted".StartsWith("~") ? "persisted" : "/" + "persisted"), "local", ["body"]));
+        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("persisted".StartsWith('/') || "persisted".StartsWith('~') ? "persisted" : "/" + "persisted"), "local", ["body"]));
 
         tmp.Store.LoadIndex("local").Should().ContainSingle(e => e.Name == "persisted");
         (await DecodeAsync(tmp.Store, "persisted")).Should().Be("body");
@@ -222,8 +222,8 @@ public class FileMemoryStoreWriteSurfaceTests
         using var tmp = new TempWorkspace();
         string[] counting = ["this workspace ships 7 tools today"];
 
-        var persistent = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("counted".StartsWith("/") || "counted".StartsWith("~") ? "counted" : "/" + "counted"), "local", counting));
-        var ephemeral = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~counted".StartsWith("/") || "~counted".StartsWith("~") ? "~counted" : "/" + "~counted"), "local", counting));
+        var persistent = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("counted".StartsWith('/') || "counted".StartsWith('~') ? "counted" : "/" + "counted"), "local", counting));
+        var ephemeral = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~counted".StartsWith('/') || "~counted".StartsWith('~') ? "~counted" : "/" + "~counted"), "local", counting));
 
         persistent.Attributes!["review"].Should().Contain(MemoryDerivation.CountReviewCondition);
         (ephemeral.Attributes?.ContainsKey("review") ?? false).Should().BeFalse(
@@ -235,7 +235,7 @@ public class FileMemoryStoreWriteSurfaceTests
     {
         using var tmp = new TempWorkspace();
 
-        var entry = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["a passing thought"]));
+        var entry = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith('/') || "~scratch".StartsWith('~') ? "~scratch" : "/" + "~scratch"), "local", ["a passing thought"]));
 
         entry.Name.Should().Be("scratch", because: "the ~ is addressing, not part of the name");
         tmp.Store.GetEphemeral("scratch").Should().NotBeNull();
@@ -258,9 +258,9 @@ public class FileMemoryStoreWriteSurfaceTests
     public async Task StoreAsync_ResolvesAMismatchedCasingAndKeepsTheExistingMemorysOwn()
     {
         using var tmp = new TempWorkspace();
-        var first = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("MixedCase".StartsWith("/") || "MixedCase".StartsWith("~") ? "MixedCase" : "/" + "MixedCase"), "local", ["the original body"]));
+        var first = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("MixedCase".StartsWith('/') || "MixedCase".StartsWith('~') ? "MixedCase" : "/" + "MixedCase"), "local", ["the original body"]));
 
-        var second = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("MIXEDCASE".StartsWith("/") || "MIXEDCASE".StartsWith("~") ? "MIXEDCASE" : "/" + "MIXEDCASE"), "local", ["the replacement body"]));
+        var second = await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("MIXEDCASE".StartsWith('/') || "MIXEDCASE".StartsWith('~') ? "MIXEDCASE" : "/" + "MIXEDCASE"), "local", ["the replacement body"]));
 
         second.Name.Should().Be("MixedCase",
             because: "the memory that already existed keeps its own casing, as every other resolved name does");
@@ -355,9 +355,9 @@ public class FileMemoryStoreWriteSurfaceTests
     public async Task AppendAsync_ResolvesAMismatchedCasingRatherThanReplacingTheMemory()
     {
         using var tmp = new TempWorkspace();
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("MixedCase".StartsWith("/") || "MixedCase".StartsWith("~") ? "MixedCase" : "/" + "MixedCase"), "local", ["the original body"]));
+        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("MixedCase".StartsWith('/') || "MixedCase".StartsWith('~') ? "MixedCase" : "/" + "MixedCase"), "local", ["the original body"]));
 
-        var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("mixedcase".StartsWith("/") || "mixedcase".StartsWith("~") ? "mixedcase" : "/" + "mixedcase"), "local", ["the appended body"]));
+        var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("mixedcase".StartsWith('/') || "mixedcase".StartsWith('~') ? "mixedcase" : "/" + "mixedcase"), "local", ["the appended body"]));
 
         appended.Entry!.Name.Should().Be("MixedCase");
         appended.Entry.ChunkCount.Should().Be(2);
@@ -382,7 +382,7 @@ public class FileMemoryStoreWriteSurfaceTests
 
         await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/carrier"), "local", ["the first chunk", "the second chunk"], description: "a curated description", attributes: new(StringComparer.OrdinalIgnoreCase) { ["file"] = ["tracked.cs"] }, keywords: ["vulpine"]));
 
-        var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("carrier".StartsWith("/") || "carrier".StartsWith("~") ? "carrier" : "/" + "carrier"), "local", ["the third chunk"]));
+        var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("carrier".StartsWith('/') || "carrier".StartsWith('~') ? "carrier" : "/" + "carrier"), "local", ["the third chunk"]));
 
         appended.Entry!.Keywords.Should().Contain("vulpine",
             because: "an append that dropped the memory's curated keywords would destroy them");
@@ -402,7 +402,7 @@ public class FileMemoryStoreWriteSurfaceTests
     {
         using var tmp = new TempWorkspace();
 
-        var entry = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("brand-new".StartsWith("/") || "brand-new".StartsWith("~") ? "brand-new" : "/" + "brand-new"), "local", ["the only body"]));
+        var entry = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("brand-new".StartsWith('/') || "brand-new".StartsWith('~') ? "brand-new" : "/" + "brand-new"), "local", ["the only body"]));
 
         entry.Entry!.ChunkCount.Should().Be(1);
         entry.Entry.UpdatedAt.Should().BeNull(because: "nothing was updated — this is a first write");
@@ -413,10 +413,10 @@ public class FileMemoryStoreWriteSurfaceTests
     public async Task AppendAsync_RefusesMoreThanOneChunk()
     {
         using var tmp = new TempWorkspace();
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith("/") || "target".StartsWith("~") ? "target" : "/" + "target"), "local", ["the body"]));
+        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith('/') || "target".StartsWith('~') ? "target" : "/" + "target"), "local", ["the body"]));
 
         var refuse = async () => await tmp.Store.AppendAsync(
-            MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith("/") || "target".StartsWith("~") ? "target" : "/" + "target"), "local", ["one", "two"]));
+            MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith('/') || "target".StartsWith('~') ? "target" : "/" + "target"), "local", ["one", "two"]));
 
         await refuse.Should().ThrowAsync<ArgumentException>(
             because: "an append adds exactly one chunk, and silently merging two would lose the second's entry");
@@ -426,9 +426,9 @@ public class FileMemoryStoreWriteSurfaceTests
     public async Task AppendAsync_AppendsToAnEphemeralMemoryInPlace()
     {
         using var tmp = new TempWorkspace();
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["the first thought"]));
+        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith('/') || "~scratch".StartsWith('~') ? "~scratch" : "/" + "~scratch"), "local", ["the first thought"]));
 
-        var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["the second thought"]));
+        var appended = await tmp.Store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith('/') || "~scratch".StartsWith('~') ? "~scratch" : "/" + "~scratch"), "local", ["the second thought"]));
 
         appended.Entry!.ChunkCount.Should().Be(2);
         tmp.Store.GetEphemeral("scratch")!.ChunkCount.Should().Be(2);
@@ -453,7 +453,7 @@ public class FileMemoryStoreWriteSurfaceTests
         using var tmp = new TempWorkspace();
 
         var written = await tmp.Store.StoreAsync(
-            MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["a thought about boats"], keywords: ["portcullis"]));
+            MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith('/') || "~scratch".StartsWith('~') ? "~scratch" : "/" + "~scratch"), "local", ["a thought about boats"], keywords: ["portcullis"]));
         written.AgentKeywords.Should().Equal(["portcullis"],
             because: "precondition: the write recorded it");
 

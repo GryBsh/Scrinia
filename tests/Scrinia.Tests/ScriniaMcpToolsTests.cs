@@ -2649,7 +2649,7 @@ public sealed class ScriniaMcpToolsTests
         // must appear with weight ≥ 2 (the anchor-tokenization boost).
         entry.TermFrequencies.Should().NotBeNull();
         entry.TermFrequencies!.Should().ContainKey("foo");
-        entry.TermFrequencies["foo"].Should().BeGreaterThanOrEqualTo(2,
+        entry.TermFrequencies!["foo"].Should().BeGreaterThanOrEqualTo(2,
             because: "anchor tokenization must seed TF at the +2 weight so BM25 picks up anchor vocabulary");
 
         // (4): A query in the anchor's vocabulary surfaces the entry. We expect it
@@ -2791,7 +2791,7 @@ public sealed class ScriniaMcpToolsTests
         scores.Should().NotBeNull();
         scores!.Should().ContainKey("local:findings/auth-refactor|notes",
             because: "the candidate whose path contains 'auth' must receive a lift");
-        scores["local:findings/auth-refactor|notes"].Should().BeApproximately(8.0, 0.01);
+        scores!["local:findings/auth-refactor|notes"].Should().BeApproximately(8.0, 0.01);
         scores.Should().NotContainKey("local:archive|shopping",
             because: "candidates with no path-token overlap must receive no entry (additive, not penalizing)");
     }

@@ -127,6 +127,7 @@ public sealed class ConfigEnvVarConventionTests : IDisposable
 /// safe: <c>WorkspaceSetup.OverrideRoot</c> is <c>AsyncLocal</c>, so a concurrent collection's
 /// override cannot leak into this one's, or vice versa.</para></summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class EnvVarConventionCollection
 {
     public const string Name = "EnvVarConvention";

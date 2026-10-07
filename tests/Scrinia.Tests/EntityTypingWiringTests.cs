@@ -44,7 +44,7 @@ public class EntityTypingWiringTests
             Attributes: new(StringComparer.OrdinalIgnoreCase) { ["mention"] = ["seraphim"] }), "local:findings");
 
         var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
-        IMemoryEventSink sink = new CompositeEventSink([
+        CompositeEventSink sink = new CompositeEventSink([
             new MaintenanceEventSink(),
             new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3)),
         ]);

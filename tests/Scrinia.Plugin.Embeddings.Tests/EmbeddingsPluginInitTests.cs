@@ -24,6 +24,7 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// real model, which would require a GPU + GGUF model (see task report for the
 /// corresponding manual/integration verification plan).
 /// </summary>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class EmbeddingsPluginInitTests : IDisposable
 {
     private readonly ProcessEnvironmentLock _environmentLock;

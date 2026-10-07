@@ -140,6 +140,6 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     public override ValueTask DisposeAsync()
     {
         _scope.Dispose();
-        return ValueTask.CompletedTask;
+        return base.DisposeAsync();
     }
 }

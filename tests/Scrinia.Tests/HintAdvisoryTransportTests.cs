@@ -342,6 +342,15 @@ public sealed class HintAdvisoryTransportTests
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             => Task.Run(() => ReadCore(buffer, offset, count));
 
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int count = Math.Min(buffer.Length, Math.Min(_chunkSize, _data.Length - _position));
+            _data.AsMemory(_position, count).CopyTo(buffer);
+            _position += count;
+            return ValueTask.FromResult(count);
+        }
+
         private int ReadCore(byte[] buffer, int offset, int count)
         {
             if (_position >= _data.Length)
@@ -382,6 +391,12 @@ public sealed class HintAdvisoryTransportTests
 
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             => Task.Run(async () =>
             {
@@ -417,6 +432,9 @@ public sealed class HintAdvisoryTransportTests
 
         public override int Read(byte[] buffer, int offset, int count)
             => throw new IOException("simulated stdin read failure");
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValueTask.FromException<int>(new IOException("simulated stdin read failure"));
 
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             => Task.FromException<int>(new IOException("simulated stdin read failure"));

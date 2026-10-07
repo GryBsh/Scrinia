@@ -44,4 +44,8 @@
   <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests')) AND !$(MSBuildProjectName.EndsWith('.Benchmarks'))">
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests')) OR $(MSBuildProjectName.EndsWith('.Benchmarks'))">
+    <!-- Underscore test names and deliberate synchronous test assertions are intentional. -->
+    <NoWarn>$(NoWarn);CA1707;xUnit1030;xUnit1031</NoWarn>
+  </PropertyGroup>
 </Project>

@@ -14,6 +14,7 @@ public class PathRouterTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         if (Directory.Exists(_root))
             Directory.Delete(_root, recursive: true);
     }

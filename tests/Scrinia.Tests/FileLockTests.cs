@@ -17,6 +17,7 @@ public class FileLockTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         try { Directory.Delete(_tempDir, true); } catch { }
     }
 
@@ -144,7 +145,8 @@ public class FileLockTests : IDisposable
         private sealed class NullScope : IDisposable
         {
             public static readonly NullScope Instance = new();
-            public void Dispose() { }
+            public void Dispose() {
+        GC.SuppressFinalize(this); }
         }
     }
 

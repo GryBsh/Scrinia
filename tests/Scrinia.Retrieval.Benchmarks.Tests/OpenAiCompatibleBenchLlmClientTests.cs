@@ -98,11 +98,11 @@ public class OpenAiCompatibleBenchLlmClientTests
     public async Task CompleteAsync_PostsChatCompletions_WithSystemAndUserMessages()
     {
         string? capturedBody = null;
-        var handler = new StubHandler(async (req, _) =>
+        var handler = new StubHandler(async (req, cancellationToken) =>
         {
             req.Method.Should().Be(HttpMethod.Post);
             req.RequestUri!.ToString().Should().Be("http://stub.test/v1/chat/completions");
-            capturedBody = await req.Content!.ReadAsStringAsync();
+            capturedBody = await req.Content!.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(Chat("A short reply."), Encoding.UTF8, "application/json"),
@@ -128,9 +128,9 @@ public class OpenAiCompatibleBenchLlmClientTests
     public async Task CompleteAsync_OmitsResponseFormat_WhenJsonModeFalse()
     {
         string? capturedBody = null;
-        var handler = new StubHandler(async (req, _) =>
+        var handler = new StubHandler(async (req, cancellationToken) =>
         {
-            capturedBody = await req.Content!.ReadAsStringAsync();
+            capturedBody = await req.Content!.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(Chat("ok"), Encoding.UTF8, "application/json"),
@@ -149,9 +149,9 @@ public class OpenAiCompatibleBenchLlmClientTests
     public async Task CompleteAsync_SetsResponseFormat_WhenJsonModeTrue()
     {
         string? capturedBody = null;
-        var handler = new StubHandler(async (req, _) =>
+        var handler = new StubHandler(async (req, cancellationToken) =>
         {
-            capturedBody = await req.Content!.ReadAsStringAsync();
+            capturedBody = await req.Content!.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(Chat("""{"k":"v"}"""), Encoding.UTF8, "application/json"),

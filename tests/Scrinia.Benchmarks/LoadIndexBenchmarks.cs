@@ -17,6 +17,7 @@ namespace Scrinia.Benchmarks;
 /// question with its own analysis.
 /// </summary>
 [MemoryDiagnoser]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "BenchmarkDotNet invokes GlobalCleanup Cleanup, which disposes _store.")]
 public class LoadIndexBenchmarks
 {
     [Params(100, 1_000, 5_000)]

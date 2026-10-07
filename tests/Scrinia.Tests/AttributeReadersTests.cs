@@ -6,6 +6,11 @@ namespace Scrinia.Tests;
 
 public sealed class AttributeReadersTests
 {
+    private static readonly string[] ExpectedX = new[] { "x" };
+    private static readonly string[] ExpectedAfterRefactorX = new[] { "after refactor X" };
+    private static readonly string[] Expected2026 = new[] { "2026" };
+    private static readonly string[] ExpectedAB = new[] { "a", "b" };
+
     private static readonly DateTimeOffset Now = new(2026, 07, 12, 0, 0, 0, TimeSpan.Zero);
     private static Dictionary<string, string[]> F(params (string k, string[] v)[] kv)
         => kv.ToDictionary(x => x.k, x => x.v, StringComparer.OrdinalIgnoreCase);
@@ -30,7 +35,7 @@ public sealed class AttributeReadersTests
         date.Should().BeNull();
         condition.Should().BeNull();
 
-        var found2 = AttributeReaders.TryReadReview(F(("tag", new[] { "x" })), out var date2, out var condition2);
+        var found2 = AttributeReaders.TryReadReview(F(("tag", ExpectedX)), out var date2, out var condition2);
         found2.Should().BeFalse();
         date2.Should().BeNull();
         condition2.Should().BeNull();
@@ -49,7 +54,7 @@ public sealed class AttributeReadersTests
     [Fact]
     public void ReviewStatus_needsReview_from_fields_condition_only()
     {
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { "after refactor X" })), Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", ExpectedAfterRefactorX)), Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeTrue();
     }
@@ -76,7 +81,7 @@ public sealed class AttributeReadersTests
     [Fact]
     public void ReviewStatus_condition_that_looks_numeric_is_not_a_date()
     {
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { "2026" })), Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", Expected2026)), Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeTrue(); // "2026" is not round-trip("o") format → treated as condition
     }
@@ -107,12 +112,12 @@ public sealed class AttributeReadersTests
     // ---- DisplayTags ----
     [Fact]
     public void DisplayTags_reads_fields_tag()
-        => AttributeReaders.DisplayTags(F(("tag", new[] { "a", "b" })))
+        => AttributeReaders.DisplayTags(F(("tag", ExpectedAB)))
             .Should().Equal("a", "b");
 
     [Fact]
     public void DisplayTags_empty_when_no_tag_key()
-        => AttributeReaders.DisplayTags(F(("review", new[] { "x" })))
+        => AttributeReaders.DisplayTags(F(("review", ExpectedX)))
             .Should().BeEmpty();
 
     [Fact]
@@ -122,12 +127,12 @@ public sealed class AttributeReadersTests
     // ---- DisplayAnchors (mirrors DisplayTags with KnownAttributes.AnchorKey / "anchor") ----
     [Fact]
     public void DisplayAnchors_reads_fields_anchor()
-        => AttributeReaders.DisplayAnchors(F((KnownAttributes.AnchorKey, new[] { "a", "b" })))
+        => AttributeReaders.DisplayAnchors(F((KnownAttributes.AnchorKey, ExpectedAB)))
             .Should().Equal("a", "b");
 
     [Fact]
     public void DisplayAnchors_empty_when_no_anchor_key()
-        => AttributeReaders.DisplayAnchors(F(("review", new[] { "x" })))
+        => AttributeReaders.DisplayAnchors(F(("review", ExpectedX)))
             .Should().BeEmpty();
 
     [Fact]

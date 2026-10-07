@@ -6,6 +6,9 @@ namespace Scrinia.Tests;
 
 public sealed class EntityFactStoreScoringAdjacencyTests
 {
+    private static readonly string[] ExpectedLocalM1LocalMemoryApiM2 = new[] { "local|m1", "local:memory/api|m2" };
+    private static readonly string[] ExpectedPersonAPlaceParis = new[] { "person:a", "place:paris" };
+
     private static EntityFactStore Store() => new(new[]
     {
         new MemoryEntities("local", "m1", default,
@@ -28,9 +31,9 @@ public sealed class EntityFactStoreScoringAdjacencyTests
 
         e2d.Should().ContainKey("person:a");
         e2d.Should().ContainKey("place:paris");
-        e2d["person:a"].Should().BeEquivalentTo(new[] { "local|m1", "local:memory/api|m2" });
+        e2d["person:a"].Should().BeEquivalentTo(ExpectedLocalM1LocalMemoryApiM2);
         d2e.Should().ContainKey("local:memory/api|m2");
-        d2e["local:memory/api|m2"].Should().BeEquivalentTo(new[] { "person:a", "place:paris" });
+        d2e["local:memory/api|m2"].Should().BeEquivalentTo(ExpectedPersonAPlaceParis);
     }
 
     [Fact]

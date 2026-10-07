@@ -22,12 +22,12 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Download embedding models for built-in providers and installed plugins.</summary>
+    /// <summary>Set up embeddings and optional agent hooks.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="noOllama">Skip Ollama auto-detection even if it is running. Use to force local-only setup.</param>
-    /// <param name="hooks">Install SessionStart/UserPromptSubmit hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
-    /// <param name="uninstallHooks">Remove scrinia-managed hooks from agent CLIs and exit.</param>
-    /// <param name="project">With --hooks / --uninstall-hooks, target workspace-local config (.claude/...) instead of user-global (~/.claude/...).</param>
+    /// <param name="noOllama">Skip Ollama detection and use local setup.</param>
+    /// <param name="hooks">Install SessionStart and UserPromptSubmit hooks.</param>
+    /// <param name="uninstallHooks">Remove Scrinia-managed hooks and exit.</param>
+    /// <param name="project">With hook options, target workspace config instead of user-global config.</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool noOllama = false,
@@ -659,7 +659,7 @@ public partial class ScriniaCommands
             .ConfigureAwait(false);
     }
 
-    /// <summary>Get or set workspace configuration.</summary>
+    /// <summary>Get, set, list, or remove workspace configuration.</summary>
     /// <param name="key">Config key (e.g. plugins:embeddings). Omit to list all.</param>
     /// <param name="value">Value to set. Omit to read current value.</param>
     /// <param name="unset">Remove the setting.</param>
@@ -816,8 +816,7 @@ public partial class ScriniaCommands
         }
     }
 
-    /// <summary>Rebuild vector embeddings for every persistent memory in the workspace.
-    /// Use after switching embedding model or recovering from a corrupted vector file.</summary>
+    /// <summary>Rebuild vector embeddings for every persistent memory.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Emit result as JSON instead of human-readable progress.</param>
     public async Task<int> Reindex(

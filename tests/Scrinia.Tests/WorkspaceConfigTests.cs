@@ -7,7 +7,11 @@ public class WorkspaceConfigTests : IDisposable
 {
     private readonly TestHelpers.StoreScope _scope = new();
 
-    public void Dispose() => _scope.Dispose();
+    public void Dispose()
+    {
+        _scope.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     [Fact]
     public void Load_NoFile_ReturnsEmptyDict()

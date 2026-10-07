@@ -15,6 +15,13 @@ namespace Scrinia.Tests.Store;
 
 public class JournaledRestoreRecoveryTests
 {
+    private static readonly JsonSerializerOptions SidecarJsonOptions = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            };
+
     private const string Scope = "local:notes";
     private const string JournalPath = "/workspace/.scrinia/memories/notes/.restore-journal.json";
 
@@ -40,12 +47,7 @@ public class JournaledRestoreRecoveryTests
             {
                 Address = MemoryAddress.Parse("/notes/daily-log"),
                 ArtifactKey = $"artifacts/notes/{incoming.Name}.nmp2"
-            }, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-            }));
+            }, SidecarJsonOptions));
     }
 
     [Fact]
@@ -72,7 +74,7 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith("/") || "note".StartsWith("~") ? "note" : "/" + "note"), Scope, ["old"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith('/') || "note".StartsWith('~') ? "note" : "/" + "note"), Scope, ["old"]));
         store.LoadIndex(Scope).Should().ContainSingle();
 
         var recovered = CreateEntry("note") with { ContentPreview = "recovered" };
@@ -174,7 +176,7 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith("/") || "note".StartsWith("~") ? "note" : "/" + "note"), Scope, ["old"], attributes: new()
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith('/') || "note".StartsWith('~') ? "note" : "/" + "note"), Scope, ["old"], attributes: new()
         {
             ["person"] = ["old"]
         }));
@@ -200,7 +202,7 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith("/") || "note".StartsWith("~") ? "note" : "/" + "note"), Scope, ["old"], attributes: new()
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith('/') || "note".StartsWith('~') ? "note" : "/" + "note"), Scope, ["old"], attributes: new()
         {
             ["person"] = ["old"]
         }));
@@ -252,7 +254,7 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var recoveringStore = (FileMemoryStore)TestHelpers.Store;
-        await recoveringStore.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith("/") || "note".StartsWith("~") ? "note" : "/" + "note"), Scope, ["old"]));
+        await recoveringStore.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith('/') || "note".StartsWith('~') ? "note" : "/" + "note"), Scope, ["old"]));
         WritePreparedJournal(recoveringStore, Scope, CreateEntry("note"), Encoding.UTF8.GetBytes("recovered"));
 
         using var otherProcess = new FileMemoryStore(scope.WorkspaceDir);
@@ -276,15 +278,15 @@ public class JournaledRestoreRecoveryTests
 
             Task<IReadOnlyList<ArtifactEntry>> blockedRead = Task.Run(() => otherProcess.LoadIndex(Scope));
             Task<ArtifactEntry> blockedWrite = Task.Run(() => otherProcess.StoreAsync(
-                MemoryWrite.Create(MemoryAddress.Parse("later".StartsWith("/") || "later".StartsWith("~") ? "later" : "/" + "later"), Scope, ["must wait"])));
+                MemoryWrite.Create(MemoryAddress.Parse("later".StartsWith('/') || "later".StartsWith('~') ? "later" : "/" + "later"), Scope, ["must wait"])));
 
             Task.Delay(TimeSpan.FromMilliseconds(250)).GetAwaiter().GetResult();
             blockedRead.IsCompleted.Should().BeFalse("a second process cannot read a body-new/sidecar-old pair");
             blockedWrite.IsCompleted.Should().BeFalse("a second process cannot write around recovery");
 
-            await unrelatedProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("other".StartsWith("/") || "other".StartsWith("~") ? "other" : "/" + "other"), "local:other", ["available"]));
+            await unrelatedProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("other".StartsWith('/') || "other".StartsWith('~') ? "other" : "/" + "other"), "local:other", ["available"]));
             unrelatedProcess.LoadIndex("local:other").Should().ContainSingle().Which.Name.Should().Be("other");
-            await unrelatedProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), Scope, ["available"]));
+            await unrelatedProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith('/') || "~scratch".StartsWith('~') ? "~scratch" : "/" + "~scratch"), Scope, ["available"]));
             unrelatedProcess.GetEphemeral("scratch")!.Artifact.Should().NotBeNullOrEmpty();
 
             allowRecovery.Set();
@@ -304,7 +306,7 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith("/") || "note".StartsWith("~") ? "note" : "/" + "note"), Scope, ["old"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith('/') || "note".StartsWith('~') ? "note" : "/" + "note"), Scope, ["old"]));
         var incoming = CreateEntry("note") with { ContentPreview = "new" };
         using var readerEntered = new ManualResetEventSlim();
         using var allowReader = new ManualResetEventSlim();
@@ -356,9 +358,9 @@ public class JournaledRestoreRecoveryTests
             Assert.Throws<RestoreRecoveryException>(() => otherProcess.LoadIndex(Scope)));
         Task blockedWrite = Task.Run(() =>
             Assert.Throws<RestoreRecoveryException>(() => otherProcess.StoreAsync(
-                MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith("/") || "note".StartsWith("~") ? "note" : "/" + "note"), Scope, ["blocked"])).GetAwaiter().GetResult()));
+                MemoryWrite.Create(MemoryAddress.Parse("note".StartsWith('/') || "note".StartsWith('~') ? "note" : "/" + "note"), Scope, ["blocked"])).GetAwaiter().GetResult()));
         Task accessibleScope = Task.Run(async () =>
-            await otherProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("other".StartsWith("/") || "other".StartsWith("~") ? "other" : "/" + "other"), "local:other", ["available"])));
+            await otherProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("other".StartsWith('/') || "other".StartsWith('~') ? "other" : "/" + "other"), "local:other", ["available"])));
 
         Task.WaitAll([blockedRead, blockedWrite, accessibleScope], TimeSpan.FromSeconds(10)).Should().BeTrue(
             "a retained invalid journal must fail its own scope rather than deadlocking the store");
@@ -405,7 +407,7 @@ public class JournaledRestoreRecoveryTests
             File.ReadAllBytes(Path.Combine(storeDirectory, "first.nmp2")).Should().Equal(firstBodies[first.Name]);
 
             FileMemoryStore.RestoreJournalFailureInjector.Value = null;
-            await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("later".StartsWith("/") || "later".StartsWith("~") ? "later" : "/" + "later"), Scope, ["must continue"]));
+            await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("later".StartsWith('/') || "later".StartsWith('~') ? "later" : "/" + "later"), Scope, ["must continue"]));
             File.Exists(Path.Combine(storeDirectory, "later.nmp2")).Should().BeTrue();
         }
         finally
@@ -468,8 +470,8 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("replace".StartsWith("/") || "replace".StartsWith("~") ? "replace" : "/" + "replace"), Scope, ["ORIGINAL REPLACE"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("skip".StartsWith("/") || "skip".StartsWith("~") ? "skip" : "/" + "skip"), Scope, ["ORIGINAL SKIP"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("replace".StartsWith('/') || "replace".StartsWith('~') ? "replace" : "/" + "replace"), Scope, ["ORIGINAL REPLACE"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("skip".StartsWith('/') || "skip".StartsWith('~') ? "skip" : "/" + "skip"), Scope, ["ORIGINAL SKIP"]));
 
         string storeDirectory = store.GetStoreDirForScope(Scope);
         string journalPath = Path.Combine(storeDirectory, ".restore-journal.json");
@@ -528,7 +530,7 @@ public class JournaledRestoreRecoveryTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("skip".StartsWith("/") || "skip".StartsWith("~") ? "skip" : "/" + "skip"), Scope, ["ORIGINAL SKIP"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("skip".StartsWith('/') || "skip".StartsWith('~') ? "skip" : "/" + "skip"), Scope, ["ORIGINAL SKIP"]));
 
         string storeDirectory = store.GetStoreDirForScope(Scope);
         byte[] bodyBefore = File.ReadAllBytes(Path.Combine(storeDirectory, "skip.nmp2"));
@@ -1217,12 +1219,7 @@ public class JournaledRestoreRecoveryTests
     {
         string storeDirectory = store.GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDirectory);
-        byte[] sidecar = JsonSerializer.SerializeToUtf8Bytes(entry, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-        });
+        byte[] sidecar = JsonSerializer.SerializeToUtf8Bytes(entry, SidecarJsonOptions);
         RestoreJournal journal = RestoreJournalCodec.CreatePrepared(scope,
             [new RestoreJournalPayload(entry, body, sidecar)]);
         File.WriteAllBytes(Path.Combine(storeDirectory, ".restore-journal.json"),
@@ -1237,8 +1234,8 @@ public class JournaledRestoreRecoveryTests
         return adapter.FromEnvelope(envelope, journalPath);
     }
 
-    private static void WriteBinarySourceZip(string path, IReadOnlyList<ArtifactEntry> entries,
-        IReadOnlyDictionary<string, byte[]> bodies)
+    private static void WriteBinarySourceZip(string path, ArtifactEntry[] entries,
+        Dictionary<string, byte[]> bodies)
     {
         using var stream = File.Create(path);
         using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
@@ -1246,7 +1243,7 @@ public class JournaledRestoreRecoveryTests
             new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex));
         foreach (ArtifactEntry entry in entries)
             WriteZipBytes(zip, $"topics/notes/{entry.Name}.nmp2", bodies[entry.Name]);
-        BundleFormatService.WriteManifest(zip, ["notes"], entries.Count, fileEntities: null);
+        BundleFormatService.WriteManifest(zip, ["notes"], entries.Length, fileEntities: null);
     }
 
     private static void WriteZipBytes(ZipArchive zip, string path, byte[] bytes)

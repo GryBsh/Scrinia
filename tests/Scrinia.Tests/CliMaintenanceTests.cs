@@ -16,6 +16,9 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class CliMaintenanceTests
 {
+    private static readonly string[] ExpectedScopeLocalRetained4Entries = new[] { "Scope 'local' retained 4 entries." };
+    private static readonly string[] ExpectedScopeLocalLockContended = new[] { "Scope 'local' lock contended." };
+
     private static string NewWorkspace()
     {
         string workspace = Path.Combine(Path.GetTempPath(), "scrinia-maint-" + Guid.NewGuid().ToString("N"));
@@ -43,7 +46,7 @@ public sealed class CliMaintenanceTests
                 new MaintenanceScopeResult("local", 3, 1, 2, 4, false, continuationToken is not null,
                     continuationToken, Array.Empty<MaintenanceCandidateResult>(), ["Scope 'local' retained 4 entries."])
             },
-            new[] { "Scope 'local' retained 4 entries." }, null);
+            ExpectedScopeLocalRetained4Entries, null);
 
     private static MaintenanceResult ContendedResult() =>
         new(0, 0, 0, false, false, false, true, false, false, false, null,
@@ -52,7 +55,7 @@ public sealed class CliMaintenanceTests
                 new MaintenanceScopeResult("local", 0, 0, 0, 0, true, false, null,
                     Array.Empty<MaintenanceCandidateResult>(), ["Scope 'local' lock contended."])
             },
-            new[] { "Scope 'local' lock contended." }, null);
+            ExpectedScopeLocalLockContended, null);
 
     // ── CLI-owned syntax gate: framing ──────────────────────────────────────
 

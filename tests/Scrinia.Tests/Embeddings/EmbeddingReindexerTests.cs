@@ -31,6 +31,7 @@ public class EmbeddingReindexerTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 
@@ -299,6 +300,7 @@ public class EmbeddingReindexerTests : IDisposable
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default) =>
             Task.FromResult<float[][]?>(texts.Select(t => new[] { (float)t.Length, 0f, 0f }).ToArray());
 
-        public void Dispose() { }
+        public void Dispose() {
+        GC.SuppressFinalize(this); }
     }
 }

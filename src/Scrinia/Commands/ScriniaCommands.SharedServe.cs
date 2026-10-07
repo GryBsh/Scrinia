@@ -9,16 +9,10 @@ using CoreWorkspaceConfig = Scrinia.Core.Configuration.WorkspaceConfig;
 
 namespace Scrinia.Commands;
 
-/// <summary>Hosts the isolated shared-memory MCP server.</summary>
+/// <summary>Shared-memory MCP commands.</summary>
 public sealed class SharedServeCommands
 {
-    /// <summary>
-    /// Hosts the isolated shared-memory MCP server over the local stdio transport. Registers exactly
-    /// the eleven <c>shared_*</c> tools and fails before transport when no base is enabled. The shared
-    /// surface is prompt-isolated and process-free: no shared input carries a prompt, correlation, or
-    /// session field (§7.3), and the complete shared call graph launches no process — Git guidance is
-    /// print-only. Audited by <c>SharedNoPromptCorrelationTests</c> and <c>SharedNoGitProcessTests</c>.
-    /// </summary>
+    /// <summary>Serve enabled shared-memory MCP tools over stdio.</summary>
     /// <param name="workspaceRoot">Workspace root for the shared configuration. Defaults to the current directory.</param>
     /// <param name="cancellationToken">Cancellation for the host.</param>
     public async Task<int> Serve(

@@ -67,14 +67,14 @@ public sealed class EmbeddingsPluginScoringTests
 
         scores.Should().NotBeNull();
         scores!.Should().ContainKey("local|note");
-        scores["local|note"].Should().BeApproximately(50.0, 0.01,
+        scores!["local|note"].Should().BeApproximately(50.0, 0.01,
             because: "the memory-level key must carry the MAX across the memory's window vectors " +
                      "(element 1's similarity 1.0 * default weight 50), not just whichever hit was seen last");
         scores.Should().ContainKey("local|note|1");
-        scores["local|note|1"].Should().BeApproximately(50.0, 0.01,
+        scores!["local|note|1"].Should().BeApproximately(50.0, 0.01,
             because: "element 1's own key, keyed by ELEMENT index — not the raw stored chunk index 1000");
         scores.Should().ContainKey("local|note|2");
-        scores["local|note|2"].Should().BeApproximately(30.0, 0.01,
+        scores!["local|note|2"].Should().BeApproximately(30.0, 0.01,
             because: "element 2's own key (similarity 0.6 * weight 50), keyed by element index 2, not raw chunk index 2000");
     }
 }

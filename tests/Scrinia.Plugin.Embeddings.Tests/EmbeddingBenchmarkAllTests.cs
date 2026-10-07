@@ -84,6 +84,11 @@ public sealed class EmbeddingProvidersFixture : IAsyncLifetime, IDisposable
 public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, EmbeddingProvidersFixture fx)
     : IClassFixture<EmbeddingProvidersFixture>, IDisposable
 {
+    private static readonly string[] ExpectedMetric = new[] { "Metric" };
+    private static readonly string[] ExpectedModelDownload = new[] { "Model download" };
+    private static readonly string[] ExpectedDimensions = new[] { "Dimensions" };
+    private static readonly string[] ExpectedNativeDeps = new[] { "Native deps" };
+
     private readonly List<IDisposable> _disposables = [];
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -357,10 +362,10 @@ public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, Embeddi
         if (fx.Vulkan is not null)
             providers.Add(("Vulkan", "384", fx.VulkanWasCached ? "cached" : $"{fx.VulkanDownloadTime.TotalSeconds:N1}s", fx.Vulkan));
 
-        var headers = new[] { "Metric" }.Concat(providers.Select(p => p.Name)).ToArray();
-        var downloadRow = new[] { "Model download" }.Concat(providers.Select(p => p.Download)).ToArray();
-        var dimsRow = new[] { "Dimensions" }.Concat(providers.Select(p => p.Dims)).ToArray();
-        var nativeDepsRow = new[] { "Native deps" }.Concat(providers.Select(p =>
+        var headers = ExpectedMetric.Concat(providers.Select(p => p.Name)).ToArray();
+        var downloadRow = ExpectedModelDownload.Concat(providers.Select(p => p.Download)).ToArray();
+        var dimsRow = ExpectedDimensions.Concat(providers.Select(p => p.Dims)).ToArray();
+        var nativeDepsRow = ExpectedNativeDeps.Concat(providers.Select(p =>
             p.Name == "Vulkan" ? "LLamaSharp" : "none")).ToArray();
 
         var storeRow = new string[providers.Count + 1];

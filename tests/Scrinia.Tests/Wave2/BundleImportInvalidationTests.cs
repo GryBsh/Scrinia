@@ -3,15 +3,18 @@ using Scrinia.Core.Models;
 namespace Scrinia.Tests.Wave2;
 public class BundleImportInvalidationTests
 {
+    private static readonly string[] ExpectedPersonAlice = new[] { "person:alice" };
+    private static readonly string[] ExpectedPersonBob = new[] { "person:bob" };
+
     [Fact]
     public async Task BundleImport_InvalidatesFactStore()
     {
         string root = Path.Combine(Path.GetTempPath(), "scrinia-w2-m5-" + Guid.NewGuid().ToString("N"));
         var store = new FileMemoryStore(root);
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/a"), (IReadOnlyList<string?>)new[] { "person:alice" }, new Dictionary<string, IReadOnlyList<string>>(), []));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/a"), (IReadOnlyList<string?>)ExpectedPersonAlice, new Dictionary<string, IReadOnlyList<string>>(), []));
         var before = store.GetEntityFactStore();
         Assert.NotNull(before);
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/b"), (IReadOnlyList<string?>)new[] { "person:bob" }, new Dictionary<string, IReadOnlyList<string>>(), []));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/b"), (IReadOnlyList<string?>)ExpectedPersonBob, new Dictionary<string, IReadOnlyList<string>>(), []));
         var after = store.GetEntityFactStore();
         Assert.Contains(after.Entities(), e => e.Value == "bob");
     }

@@ -261,7 +261,7 @@ internal sealed class PackageSnapshot
         }
     }
 
-    private static PackageSnapshot ReadArtifact(string nupkg, ICollection<string> temporaryFiles)
+    private static PackageSnapshot ReadArtifact(string nupkg, List<string> temporaryFiles)
     {
         Dictionary<string, PackageEntryFingerprint> fingerprints = new(StringComparer.Ordinal);
         string? mcpDllPath = null;

@@ -21,6 +21,7 @@ public class VectorStoreTornAppendTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
 

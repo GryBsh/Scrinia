@@ -113,7 +113,7 @@ public sealed class PluginChunkConfigTransportTests
         // The whole point of the clamp: this construction must not throw.
         string dir = Path.Combine(Path.GetTempPath(), "scrinia-cap-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
-        Action act = () => new MemoryVectorIndexer(
+        Action act = () => _ = new MemoryVectorIndexer(
             new NullEmbeddingProvider(), new VectorStore(dir),
             Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, options);
 

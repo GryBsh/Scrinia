@@ -6,11 +6,14 @@ namespace Scrinia.Tests;
 
 public sealed class TransactionalParticipantContractTests
 {
+    private static readonly string[] ExpectedZetaAlpha = new[] { " zeta ", "alpha" };
+    private static readonly string[] ExpectedAA = new[] { "a", "a" };
+
     [Fact]
     public void Descriptor_canonicalizes_capabilities_and_rejects_invalid_identity()
     {
         var descriptor = new TransactionalParticipantDescriptor(
-            "participant", 1, new[] { " zeta ", "alpha" }, new TransactionalRetryPolicy(), "participant-key");
+            "participant", 1, ExpectedZetaAlpha, new TransactionalRetryPolicy(), "participant-key");
 
         descriptor.Capabilities.Should().Equal("alpha", "zeta");
         descriptor.Capabilities.Should().NotBeAssignableTo<string[]>();
@@ -37,7 +40,7 @@ public sealed class TransactionalParticipantContractTests
         policy.MaxElapsed.Should().Be(TimeSpan.FromSeconds(30));
         policy.InitialDelay.Should().Be(TimeSpan.FromMilliseconds(100));
         policy.MaximumDelay.Should().Be(TimeSpan.FromSeconds(2));
-        Action invalid = () => new TransactionalRetryPolicy(9);
+        Action invalid = () => _ = new TransactionalRetryPolicy(9);
         invalid.Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalRetryPolicy(0)).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalRetryPolicy(maxElapsed: TimeSpan.Zero)).Should().Throw<ArgumentException>();
@@ -52,7 +55,7 @@ public sealed class TransactionalParticipantContractTests
     {
         var result = new TransactionalParticipantResult(state, null, null);
         result.State.Should().Be(state);
-        Action invalid = () => new TransactionalParticipantResult(state, Failure(), null);
+        Action invalid = () => _ = new TransactionalParticipantResult(state, Failure(), null);
         invalid.Should().Throw<ArgumentException>();
     }
 
@@ -63,7 +66,7 @@ public sealed class TransactionalParticipantContractTests
     {
         var result = new TransactionalParticipantResult(state, Failure(), Evidence());
         result.State.Should().Be(state);
-        Action invalid = () => new TransactionalParticipantResult(state, null, Evidence());
+        Action invalid = () => _ = new TransactionalParticipantResult(state, null, Evidence());
         invalid.Should().Throw<ArgumentException>();
     }
 
@@ -133,7 +136,7 @@ public sealed class TransactionalParticipantContractTests
         FluentActions.Invoking(() => new TransactionalPreparedHandle(tooLong, "v1")).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalParticipantFailure(TransactionalFailureCode.Permanent, tooLong, false)).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalParticipantDescriptor("id", 1, new[] { new string('x', 65) }, new(), "key")).Should().Throw<ArgumentException>();
-        FluentActions.Invoking(() => new TransactionalParticipantDescriptor("id", 1, new[] { "a", "a" }, new(), "key")).Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new TransactionalParticipantDescriptor("id", 1, ExpectedAA, new(), "key")).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalCommitContext("tx", "scope", MemoryAddress.Parse("/memory/item"), "op", "kind", null!)).Should().Throw<ArgumentException>();
         FluentActions.Invoking(() => new TransactionalParticipantFailure((TransactionalFailureCode)999, "detail", false)).Should().Throw<ArgumentException>();
     }

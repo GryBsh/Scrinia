@@ -541,8 +541,7 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
 
         string secondContent = File.ReadAllText(workspaceGitIgnore);
-        System.Text.RegularExpressions.Regex.Matches(secondContent, System.Text.RegularExpressions.Regex.Escape(".scrinia-migration.lock"))
-            .Count.Should().Be(1, "a re-run must not grow the workspace .gitignore without bound");
+        System.Text.RegularExpressions.Regex.Count(secondContent, System.Text.RegularExpressions.Regex.Escape(".scrinia-migration.lock")).Should().Be(1, "a re-run must not grow the workspace .gitignore without bound");
     }
 
     [Fact]

@@ -149,7 +149,7 @@ public sealed class ContractTypingTests
         var sink = new TypedSink();
         var address = MemoryAddress.Parse("~scratch");
 
-        var composite = (IMemoryEventSink)new CompositeEventSink([sink]);
+        var composite = new CompositeEventSink([sink]);
         await composite.OnStoredAsync(address, ["content"], new AddressCapturingStore(), CancellationToken.None);
         await composite.OnAppendedAsync(address, "content", new AddressCapturingStore(), CancellationToken.None);
         await composite.OnForgottenAsync(address, true, new AddressCapturingStore(), CancellationToken.None);

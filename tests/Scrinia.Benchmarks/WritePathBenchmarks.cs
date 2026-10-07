@@ -31,6 +31,7 @@ namespace Scrinia.Benchmarks;
 /// N mid-iteration. See that class for why the toolchain is also pinned to in-process.</para>
 /// </summary>
 [Config(typeof(MonitoringInProcessConfig))]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "BenchmarkDotNet invokes IterationCleanup CleanupFreshScope and CleanupWarmScope, which dispose _seqStore and _marginalStore.")]
 public class WritePathBenchmarks
 {
     [Params(100, 1_000, 5_000)]

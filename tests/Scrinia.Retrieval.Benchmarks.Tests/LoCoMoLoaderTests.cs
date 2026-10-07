@@ -15,6 +15,8 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 /// </summary>
 public class LoCoMoLoaderTests : IAsyncLifetime
 {
+    private static readonly string[] ExpectedSession1Session2 = new[] { "session_1", "session_2" };
+
     private string _dir = null!;
     private string _dataPath = null!;
 
@@ -217,7 +219,7 @@ public class LoCoMoLoaderTests : IAsyncLifetime
         var groups = new List<BenchmarkQuestionGroup>();
         await foreach (var g in loader.LoadAsync()) groups.Add(g);
 
-        groups[0].Questions[0].GroundTruthIds.Should().BeEquivalentTo(new[] { "session_1", "session_2" });
+        groups[0].Questions[0].GroundTruthIds.Should().BeEquivalentTo(ExpectedSession1Session2);
     }
 
     [Fact]

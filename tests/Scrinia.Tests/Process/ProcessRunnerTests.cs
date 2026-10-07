@@ -89,6 +89,7 @@ public class ProcessRunnerResolveExtensionTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         Environment.SetEnvironmentVariable("PATH", _originalPath);
         try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort cleanup */ }
     }
@@ -118,6 +119,7 @@ public class ProcessRunnerResolveExtensionTests : IDisposable
 }
 
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class ProcessRunnerResolveExtensionCollection
 {
     public const string Name = "ProcessRunnerResolveExtension";

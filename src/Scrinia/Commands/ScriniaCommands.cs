@@ -320,11 +320,11 @@ public partial class ScriniaCommands
         return 0;
     }
 
-    /// <summary>Resume agent context — profile, patterns, today's session log, available skills.</summary>
+    /// <summary>Restore saved agent context.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    /// <param name="hook">Emit the agent-CLI hook envelope (JSON with hookSpecificOutput.additionalContext wrapping the YAML payload in &lt;scrinia-restored-memory&gt; tags with an imperative framing line). Used by `scri setup --hooks` SessionStart wiring. Human invocations of `scri restore` should leave this off — the YAML default is more readable.</param>
-    /// <param name="client">Agent CLI the hook payload is being formatted for (codex, claude, opencode, copilot). Only meaningful with --hook; tailors verbosity/envelope per client. Omit for the reference format.</param>
+    /// <param name="hook">Output the agent-CLI SessionStart hook envelope.</param>
+    /// <param name="client">Hook client: codex, claude, opencode, or copilot; used with --hook.</param>
     public async Task<int> Restore(
         string? workspaceRoot = null,
         bool json = false,

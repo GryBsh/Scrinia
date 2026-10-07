@@ -12,6 +12,8 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class CliReviewGapTests
 {
+    private static readonly float[] Vector1F0F0F = new[] { 1f, 0f, 0f };
+
     private static async Task<(int Exit, string Json)> RunJsonAsync(Func<Task<int>> command)
     {
         var output = new StringWriter();
@@ -291,7 +293,7 @@ public sealed class CliReviewGapTests
             Task.FromResult<float[]?>([1f, 0f, 0f]);
 
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default) =>
-            Task.FromResult<float[][]?>(texts.Select(_ => new[] { 1f, 0f, 0f }).ToArray());
+            Task.FromResult<float[][]?>(texts.Select(_ => Vector1F0F0F).ToArray());
 
         public void Dispose() { }
     }

@@ -10,6 +10,9 @@ namespace Scrinia.Tests;
 // plus the single FileMemoryStore.ExecuteMaintenanceScopeAsync seam.
 public sealed class FileMemoryMaintenanceTests
 {
+    private static readonly string[] ExpectedScopeLocalRetainedACandidateDeletionFailed = new[] { "Scope 'local' retained a candidate: deletion failed." };
+    private static readonly string[] ExpectedScopeLocalARetainedACandidateDeletionFailed = new[] { "Scope 'local:a' retained a candidate: deletion failed." };
+
     private sealed class FakeExecutor : IMaintenanceScopeExecutor
     {
         private readonly Func<string, MaintenancePolicy, int, DateTimeOffset, CancellationToken, Task<MaintenanceScopeExecution>> _handler;
@@ -129,7 +132,7 @@ public sealed class FileMemoryMaintenanceTests
             Task.FromResult(ScopeExecution(scopeName,
                 inspected: 2, deletedRecoveryEvidence: 1, retained: 1,
                 journalConsumed: 1,
-                warnings: new[] { "Scope 'local' retained a candidate: deletion failed." })));
+                warnings: ExpectedScopeLocalRetainedACandidateDeletionFailed)));
         var service = new FileMemoryMaintenanceService(store, config, executor);
 
         MaintenanceResult result = await service.ExecuteAsync(
@@ -397,7 +400,7 @@ public sealed class FileMemoryMaintenanceTests
             Task.FromResult(scopeName == "local:a"
                 ? ScopeExecution(scopeName,
                     inspected: 2, deletedRecoveryEvidence: 1, retained: 1, journalConsumed: 1,
-                    warnings: new[] { "Scope 'local:a' retained a candidate: deletion failed." })
+                    warnings: ExpectedScopeLocalARetainedACandidateDeletionFailed)
                 : ScopeExecution(scopeName, inspected: 1)));
         var service = new FileMemoryMaintenanceService(store, config, executor);
 
@@ -424,7 +427,7 @@ public sealed class FileMemoryMaintenanceTests
         var executor = new FakeExecutor((scopeName, _, _, _, _) =>
             Task.FromResult(ScopeExecution(scopeName,
                 inspected: 1, retained: 1,
-                warnings: new[] { "Scope 'local' retained a candidate: deletion failed." })));
+                warnings: ExpectedScopeLocalRetainedACandidateDeletionFailed)));
         var service = new FileMemoryMaintenanceService(store, config, executor);
 
         MaintenanceResult result = await service.ExecuteAsync(

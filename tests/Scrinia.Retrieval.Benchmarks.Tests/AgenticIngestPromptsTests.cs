@@ -7,6 +7,8 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class AgenticIngestPromptsTests
 {
+    private static readonly string[] ExpectedRememberSearch = new[] { "remember", "search" };
+
     [Fact]
     public void SystemPrompt_IncludesGuideAndRefInstruction()
     {
@@ -32,7 +34,7 @@ public sealed class AgenticIngestPromptsTests
     public void Tools_ExposeRememberAndSearch_WithValidJsonSchemas()
     {
         var tools = AgenticIngestPrompts.Tools();
-        tools.Select(t => t.Name).Should().Contain(new[] { "remember", "search" });
+        tools.Select(t => t.Name).Should().Contain(ExpectedRememberSearch);
         foreach (var t in tools)
         {
             var act = () => System.Text.Json.JsonDocument.Parse(t.JsonSchemaParameters);

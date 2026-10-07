@@ -56,7 +56,7 @@ public sealed class CommandLineQuotingTests
             {
                 argc.Should().Be(1, "the workspace root is a single argv element");
                 IntPtr strPtr = Marshal.ReadIntPtr(argv);
-                string parsed = Marshal.PtrToStringUni(strPtr);
+                string? parsed = Marshal.PtrToStringUni(strPtr);
                 parsed.Should().Be(input,
                     $"'{escaped}' must round-trip to the original '{input}' with no interpolation");
             }
@@ -102,7 +102,7 @@ public sealed class CommandLineQuotingTests
         try
         {
             argc.Should().Be(1);
-            string parsed = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv));
+            string? parsed = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv));
             parsed.Should().Be("<workspace-root>");
         }
         finally

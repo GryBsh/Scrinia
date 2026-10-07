@@ -27,9 +27,9 @@ public sealed class BackgroundWorkTests
         int completed = 0;
         for (int i = 0; i < 20; i++)
         {
-            BackgroundWork.Fire(async _ =>
+            BackgroundWork.Fire(async cancellationToken =>
             {
-                await Task.Delay(20);
+                await Task.Delay(20, cancellationToken);
                 Interlocked.Increment(ref completed);
             }, "test-work");
         }
@@ -55,7 +55,7 @@ public sealed class BackgroundWorkTests
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
 
         BackgroundWork.Fire(_ => throw new InvalidOperationException("boom"), "throws-sync");
-        BackgroundWork.Fire(async _ =>
+        BackgroundWork.Fire(async cancellationToken =>
         {
             await Task.Yield();
             throw new InvalidOperationException("boom-async");
@@ -171,10 +171,10 @@ public sealed class BackgroundWorkTests
         var secondFlushed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         IBackgroundWorkRegistration? secondRegistration = null;
 
-        using var firstRegistration = BackgroundWork.Register(new TestParticipant(async _ =>
+        using var firstRegistration = BackgroundWork.Register(new TestParticipant(async cancellationToken =>
         {
             firstStarted.TrySetResult(true);
-            await Task.Delay(20);
+            await Task.Delay(20, cancellationToken);
             secondRegistration = BackgroundWork.Register(new TestParticipant(_ =>
             {
                 secondFlushed.TrySetResult(true);
@@ -195,7 +195,7 @@ public sealed class BackgroundWorkTests
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
         var queued = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        BackgroundWork.Fire(async _ =>
+        BackgroundWork.Fire(async cancellationToken =>
         {
             BackgroundWork.Fire(_ =>
             {
@@ -435,6 +435,7 @@ public sealed class BackgroundWorkTests
 /// Serializes tests that observe <see cref="BackgroundWork"/>'s process-wide in-flight registry.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class BackgroundWorkCollection
 {
     public const string Name = "BackgroundWork";

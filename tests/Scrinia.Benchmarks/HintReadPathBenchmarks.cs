@@ -46,6 +46,7 @@ namespace Scrinia.Benchmarks;
 /// case and the one worth watching.</para>
 /// </summary>
 [MemoryDiagnoser]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "BenchmarkDotNet invokes GlobalCleanup Cleanup, which disposes _store.")]
 public class HintReadPathBenchmarks
 {
     [Params(50, 250, 1_000)]
@@ -79,7 +80,7 @@ public class HintReadPathBenchmarks
         for (int i = 0; i < EntryCount; i++)
         {
             string body = $"{Topics[i % Topics.Length]} (entry {i}, revision {i % 7})";
-            _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse($"entry-{i}".StartsWith("/") || $"entry-{i}".StartsWith("~") ? $"entry-{i}" : "/" + $"entry-{i}"), "local", [body]))
+            _store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse($"entry-{i}".StartsWith('/') || $"entry-{i}".StartsWith('~') ? $"entry-{i}" : "/" + $"entry-{i}"), "local", [body]))
                 .GetAwaiter().GetResult();
         }
 

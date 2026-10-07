@@ -8,6 +8,8 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class AgenticScriniaRetrieverTests : IDisposable
 {
+    private static readonly string[] ExpectedD11D12 = new[] { "D1:1", "D1:2" };
+
     private readonly string _rootDir = Path.Combine(Path.GetTempPath(), $"scrinia_agentic_retr_{Guid.NewGuid():N}");
     private readonly string _cacheFile;
 
@@ -353,7 +355,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
 
         var hits = await retriever.RetrieveAsync("trip planning", topK: 5);
 
-        hits.Select(h => h.Id).Should().BeEquivalentTo(new[] { "D1:1", "D1:2" });
+        hits.Select(h => h.Id).Should().BeEquivalentTo(ExpectedD11D12);
         retriever.Stats.UnresolvableRefs.Should().Be(0);
     }
 

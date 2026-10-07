@@ -24,6 +24,7 @@ public class VectorStoreScopeIsolationTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         _store.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }

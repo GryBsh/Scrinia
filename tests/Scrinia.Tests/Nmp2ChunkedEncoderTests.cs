@@ -125,6 +125,18 @@ public sealed class Nmp2ChunkedEncoderTests
             because: "concatenating individual chunks must equal Nmp2Strategy.Decode()");
     }
 
+    [Fact]
+    public void DecodeAllChunksVerified_MultiChunk_CrlfArtifact_RoundTrips()
+    {
+        string[] chunks = ["Part A: alpha content.", "Part B: bravo content."];
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(chunks).Replace("\n", "\r\n");
+
+        var (decodedChunks, totalBytes) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
+
+        decodedChunks.Should().Equal(chunks);
+        totalBytes.Should().Be(Encoding.UTF8.GetByteCount(string.Concat(chunks)));
+    }
+
     // ── EncodeChunks ─────────────────────────────────────────────────────────
 
     [Fact]

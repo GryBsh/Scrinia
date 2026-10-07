@@ -487,6 +487,7 @@ public sealed class Nmp2DecodeCapTests
 }
 
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class Nmp2DecodeCapCollection
 {
     public const string Name = "Nmp2DecodeCap";

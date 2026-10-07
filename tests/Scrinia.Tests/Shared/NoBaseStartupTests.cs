@@ -7,13 +7,15 @@ using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests.Shared;
 
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class NoBaseStartupTests
 {
     [Fact]
     public void ScriniaHomeScope_RestoresAfterFailure()
     {
+        using ProcessEnvironmentLock environmentLock = ProcessEnvironmentLock.Acquire();
         string? previous = Environment.GetEnvironmentVariable("SCRINIA_HOME");
-        using (ProcessEnvironmentLock.Acquire())
+        // Keep the pre-scope value and restoration assertion under the same lock.
         {
             try
             {

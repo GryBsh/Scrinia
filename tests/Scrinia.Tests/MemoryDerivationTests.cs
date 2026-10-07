@@ -18,6 +18,12 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class MemoryDerivationTests
 {
+    private static readonly string[] ExpectedWhenAuthChanges = new[] { "when auth changes" };
+    private static readonly string[] ExpectedAlphaBeta = new[] { "alpha", "beta" };
+    private static readonly string[] ExpectedFirstPhraseSecondPhrase = new[] { "first phrase", "second phrase" };
+    private static readonly string[] ExpectedShipped = new[] { "shipped" };
+    private static readonly string[] Expected20270101T00000000000000000 = new[] { "2027-01-01T00:00:00.0000000+00:00" };
+
     // ── Store path ───────────────────────────────────────────────────────────
 
     [Fact]
@@ -172,7 +178,7 @@ public sealed class MemoryDerivationTests
             attributes: new Dictionary<string, string[]> { ["review"] = ["when auth changes"] },
             keywords: null);
 
-        derived.Attributes!["review"].Should().BeEquivalentTo(new[] { "when auth changes" });
+        derived.Attributes!["review"].Should().BeEquivalentTo(ExpectedWhenAuthChanges);
     }
 
     [Fact]
@@ -311,8 +317,8 @@ public sealed class MemoryDerivationTests
         // deliberately (tags must stay clearable on a re-store); append unions. The asymmetry is
         // encoded here as an append-path rule rather than by adding these keys to IsMultiValued,
         // which would take the store's clear away.
-        derived.Attributes!["tag"].Should().BeEquivalentTo(new[] { "alpha", "beta" });
-        derived.Attributes["anchor"].Should().BeEquivalentTo(new[] { "first phrase", "second phrase" });
+        derived.Attributes!["tag"].Should().BeEquivalentTo(ExpectedAlphaBeta);
+        derived.Attributes["anchor"].Should().BeEquivalentTo(ExpectedFirstPhraseSecondPhrase);
     }
 
     [Fact]
@@ -330,7 +336,7 @@ public sealed class MemoryDerivationTests
         // written in prose could wipe the curated set. Under one flat map there is no parameter
         // channel left, so the union rule applies to every source of the key — which is stricter
         // than MCP was, and is the reading of D-17 that never loses a tag.
-        derived.Attributes!["tag"].Should().BeEquivalentTo(new[] { "alpha", "beta" });
+        derived.Attributes!["tag"].Should().BeEquivalentTo(ExpectedAlphaBeta);
     }
 
     [Fact]
@@ -448,7 +454,7 @@ public sealed class MemoryDerivationTests
 
         // D-18: AppendRequest carried no attributes at all server-side. Scalar keys are
         // newer-wins, so an explicit caller value replaces the entry's.
-        derived.Attributes!["status"].Should().BeEquivalentTo(new[] { "shipped" });
+        derived.Attributes!["status"].Should().BeEquivalentTo(ExpectedShipped);
 
         // D-18 × D-06, and the one place this pipeline chose against all four originals. MCP's
         // append re-emitted the EXISTING entry's review through its carrier AFTER the caller's
@@ -458,7 +464,7 @@ public sealed class MemoryDerivationTests
         // the bare-date divergence open on append. The canonicalization therefore runs over the
         // MERGED review. Revert it to `existing?.Attributes` and this returns the 2026 date.
         derived.Attributes["review"].Should().BeEquivalentTo(
-            new[] { "2027-01-01T00:00:00.0000000+00:00" },
+            Expected20270101T00000000000000000,
             "the caller's review must win on append (D-18) and be canonicalized (D-06)");
     }
 
@@ -494,7 +500,7 @@ public sealed class MemoryDerivationTests
         // mechanically extracted from the content — here a literal `Status:` line saying the
         // opposite. Swap the two arguments of that merge and the content wins instead, which is
         // how a caller's correction would silently lose to the text it was correcting.
-        derived.Attributes!["status"].Should().BeEquivalentTo(new[] { "shipped" });
+        derived.Attributes!["status"].Should().BeEquivalentTo(ExpectedShipped);
     }
 
     [Fact]

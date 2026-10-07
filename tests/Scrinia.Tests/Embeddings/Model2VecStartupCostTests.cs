@@ -25,6 +25,8 @@ namespace Scrinia.Tests.Embeddings;
 /// </summary>
 public sealed class Model2VecStartupCostTests : IDisposable
 {
+    private static readonly string[] ExpectedPadUnkClsSep = new[] { "pad", "unk", "cls", "sep" };
+
     private readonly string _dir = Path.Combine(Path.GetTempPath(), $"m2v-cost-{Guid.NewGuid():N}");
 
     public void Dispose()
@@ -125,7 +127,7 @@ public sealed class Model2VecStartupCostTests : IDisposable
         string modelSha = Digest(modelBytes);
         File.WriteAllBytes(Path.Combine(_dir, "model.safetensors"), modelBytes);
 
-        string vocab = string.Join("\n", new[] { "pad", "unk", "cls", "sep" }) + "\n";
+        string vocab = string.Join("\n", ExpectedPadUnkClsSep) + "\n";
         byte[] vocabBytes = Encoding.UTF8.GetBytes(vocab);
         string vocabSha = Digest(vocabBytes);
         File.WriteAllText(Path.Combine(_dir, "vocab.txt"), vocab);

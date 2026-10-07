@@ -51,7 +51,7 @@ public class CliEphemeralRefusalTests
     /// <c>Program.cs</c>'s own drain before any test that performed a genuine persistent write
     /// deletes its temp directory.
     /// </summary>
-    private static Task DrainBackgroundWorkAsync() => BackgroundWork.DrainAsync(TimeSpan.FromSeconds(10));
+    private static Task<bool> DrainBackgroundWorkAsync() => BackgroundWork.DrainAsync(TimeSpan.FromSeconds(10));
 
     public static TheoryData<string> EphemeralAddresses => new() { "~scratch", "/temp/scratch" };
 

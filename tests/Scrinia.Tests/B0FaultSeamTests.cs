@@ -57,12 +57,12 @@ public class B0FaultSeamTests
         // RestoreJournalTransition(9) + MultiMemoryTransactionTransition(4) + FileEntityFaultPoint(10)
         // = 60. (DurableWritePhase gained the BeforeDirSync phase in the P1 dir-sync fix; the real
         // source enums have 21 append members and 60 total — verified against the six enums below.)
-        Assert.Equal(60, Enum.GetValues(typeof(B0FaultSeam.FaultPhase)).Length);
-        Assert.Equal(4, Enum.GetNames(typeof(DurableWritePhase)).Length);
-        Assert.Equal(21, Enum.GetNames(typeof(AppendFaultPoint)).Length);
-        Assert.Equal(12, Enum.GetNames(typeof(WholeMemoryFaultPoint)).Length);
-        Assert.Equal(9, Enum.GetNames(typeof(RestoreJournalTransition)).Length);
-        Assert.Equal(4, Enum.GetNames(typeof(MultiMemoryTransactionTransition)).Length);
-        Assert.Equal(10, Enum.GetNames(typeof(FileEntityFaultPoint)).Length);
+        Assert.Equal(60, Enum.GetValues<B0FaultSeam.FaultPhase>().Length);
+        Assert.Equal(4, Enum.GetNames<DurableWritePhase>().Length);
+        Assert.Equal(21, Enum.GetNames<AppendFaultPoint>().Length);
+        Assert.Equal(12, Enum.GetNames<WholeMemoryFaultPoint>().Length);
+        Assert.Equal(9, Enum.GetNames<RestoreJournalTransition>().Length);
+        Assert.Equal(4, Enum.GetNames<MultiMemoryTransactionTransition>().Length);
+        Assert.Equal(10, Enum.GetNames<FileEntityFaultPoint>().Length);
     }
 }

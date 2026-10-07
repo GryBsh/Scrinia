@@ -6,7 +6,7 @@ namespace Scrinia.Tests;
 
 public sealed class PersonalizedPageRankTests
 {
-    private static IReadOnlyDictionary<string, IReadOnlyCollection<string>> Map(
+    private static Dictionary<string, IReadOnlyCollection<string>> Map(
         params (string Key, string[] Vals)[] rows) =>
         rows.ToDictionary(r => r.Key, r => (IReadOnlyCollection<string>)r.Vals);
 

@@ -5,6 +5,9 @@ namespace Scrinia.Tests.Embeddings;
 
 public class VectorStoreTests : IDisposable
 {
+    private static readonly float[] Vector0F1F = new[] { 0f, 1f };
+    private static readonly float[] Vector03F04F = new[] { 0.3f, 0.4f };
+
     private readonly string _tempDir;
     private readonly VectorStore _store;
 
@@ -17,6 +20,7 @@ public class VectorStoreTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         _store.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
@@ -117,7 +121,7 @@ public class VectorStoreTests : IDisposable
         File.WriteAllText(scopeDirectory, "blocking file");
 
         Func<Task> replace = () => _store.ReplaceMemoryVectorsAsync(
-            "local", "memo", [(1, new[] { 0f, 1f })]);
+            "local", "memo", [(1, Vector0F1F)]);
 
         await replace.Should().ThrowAsync<Exception>();
         _store.GetVectors("local").Should().ContainSingle()
@@ -130,7 +134,7 @@ public class VectorStoreTests : IDisposable
         await _store.UpsertAsync("local", "memo", 0, [1f, 0f]);
 
         Func<Task> replace = () => _store.ReplaceMemoryVectorsAsync(
-            "local", "memo", [(1, new[] { 0f, 1f }), (2, null!) ]);
+            "local", "memo", [(1, Vector0F1F), (2, null!) ]);
 
         await replace.Should().ThrowAsync<Exception>();
 
@@ -328,7 +332,7 @@ public class VectorStoreTests : IDisposable
         using var store2 = new VectorStore(_tempDir);
         var vectors = store2.GetVectors("local");
         vectors.Should().HaveCount(1);
-        vectors[0].Vector.Should().BeEquivalentTo(new[] { 0.3f, 0.4f });
+        vectors[0].Vector.Should().BeEquivalentTo(Vector03F04F);
     }
 
     [Fact]

@@ -21,14 +21,12 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Match a prompt against stored memories and print a relevance hint. Drives the
-    /// UserPromptSubmit hook; prints nothing when the prompt is short, nothing clears the score
-    /// floor, or hints are disabled in config.</summary>
-    /// <param name="prompt">Prompt text. If omitted, read from stdin.</param>
+    /// <summary>Show relevant stored-memory hints for a prompt.</summary>
+    /// <param name="prompt">Prompt text; reads stdin when omitted.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="plain">Emit the human-readable single-line hint instead of the hook JSON envelope. Use for direct CLI invocation; hooks use the default JSON shape.</param>
-    /// <param name="json">Emit raw structured HintResult JSON (count + matches array). For programmatic consumers.</param>
-    /// <param name="client">Agent CLI the hook payload is being formatted for (codex, claude, opencode, copilot). Stamped into each CLI's hook command at install time; tailors verbosity/envelope per client. Omit for the reference format.</param>
+    /// <param name="plain">Print a one-line hint instead of the hook payload.</param>
+    /// <param name="json">Output raw JSON with count and matches.</param>
+    /// <param name="client">Hook client: codex, claude, opencode, or copilot.</param>
     public async Task<int> Hint(
         string? prompt = null,
         string? workspaceRoot = null,

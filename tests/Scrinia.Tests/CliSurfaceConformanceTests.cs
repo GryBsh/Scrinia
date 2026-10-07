@@ -83,7 +83,7 @@ public sealed class CliSurfaceConformanceTests
         return registered;
     }
 
-    private static int FindClosingAngle(IReadOnlyList<string> tokens, int openingAngle)
+    private static int FindClosingAngle(List<string> tokens, int openingAngle)
     {
         int depth = 0;
         for (int index = openingAngle; index < tokens.Count; index++)

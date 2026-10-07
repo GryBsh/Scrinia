@@ -15,6 +15,16 @@ namespace Scrinia.Tests.Shared;
 /// </summary>
 public sealed class SharedClassifierEquivalenceTests
 {
+    private static readonly string[] ExpectedMemoriesLocalTopicReviewNmp2SkillsQaMdMetaJsonAgentProfileMdTopicWorkerLockNotesLockfileCacheTmpBak = new[]
+        {
+            "memories/local-topic/review.nmp2",
+            "skills/qa.md.meta.json",
+            "agent/profile.md",
+            "topic/worker.lock",
+            "notes.lockfile",
+            "cache.tmp.bak",
+        };
+
     /// <summary>
     /// For every directory, file, and descendant case the classifier, the fingerprint exclusion, the
     /// managed ignore block, and the static cleanup pathspecs agree on the derived set.
@@ -153,15 +163,7 @@ public sealed class SharedClassifierEquivalenceTests
         SharedClassifier.Classify("a/b/c.tmp").Class.Should().Be(DerivedPathClass.TemporaryTree);
 
         // An authoritative path never hides a reserved suffix.
-        new[]
-        {
-            "memories/local-topic/review.nmp2",
-            "skills/qa.md.meta.json",
-            "agent/profile.md",
-            "topic/worker.lock",
-            "notes.lockfile",
-            "cache.tmp.bak",
-        }
+        ExpectedMemoriesLocalTopicReviewNmp2SkillsQaMdMetaJsonAgentProfileMdTopicWorkerLockNotesLockfileCacheTmpBak
         .Should()
         .AllSatisfy(path =>
             SharedClassifier.Classify(path).Class.Should().Be(DerivedPathClass.Authoritative));
@@ -174,7 +176,7 @@ public sealed class SharedClassifierEquivalenceTests
         ManagedIgnoreBlock.ProjectGit
             .Replace("\r\n", "\n")
             .Split('\n')
-            .Where(line => line.Length > 0 && !line.StartsWith("#", StringComparison.Ordinal))
+            .Where(line => line.Length > 0 && !line.StartsWith('#'))
             .ToArray();
 
     private static IEnumerable<string> CleanupPathsFor(string relativePath)
@@ -199,16 +201,10 @@ public sealed class SharedClassifierEquivalenceTests
         if (dirOnly)
             pattern = pattern[..^1].Trim();
 
-        bool anchored;
         if (pattern.StartsWith('/'))
         {
-            anchored = true;
             pattern = pattern[1..];
         }
-        else if (pattern.Contains('/'))
-            anchored = true;
-        else
-            anchored = false;
 
         bool hasWildcard = pattern.Contains('*') || pattern.Contains('?');
         bool coversDescendants = dirOnly || hasWildcard;

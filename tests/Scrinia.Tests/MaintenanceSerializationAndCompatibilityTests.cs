@@ -24,6 +24,19 @@ namespace Scrinia.Tests;
 // boundary. Test-only; no production changes.
 public sealed class MaintenanceSerializationAndCompatibilityTests
 {
+    private static readonly string[] ExpectedSrcScriniaCoreRecoveryVerificationCsSrcScriniaCoreAppendJournalCsSrcScriniaCoreRestoreJournalCsSrcSc = new[]
+            {
+                "src/Scrinia.Core/RecoveryVerification.cs",
+                "src/Scrinia.Core/AppendJournal.cs",
+                "src/Scrinia.Core/RestoreJournal.cs",
+                "src/Scrinia.Core/RecoveryEnvelope.cs",
+                "src/Scrinia.Core/RecoveryContracts.cs",
+                "src/Scrinia.Core/RecoveryDiscovery.cs",
+                "src/Scrinia.Core/FileMemoryStore.cs",
+                "src/Scrinia.Core/FileEntityTransactionCoordinator.cs",
+                "src/Scrinia.Core/MultiMemoryTransactionRecord.cs",
+            };
+
     private static string RepoRoot() => RepoPaths.Root();
 
     private static string ReadSource(params string[] relativeSegments) =>
@@ -883,7 +896,7 @@ public sealed class MaintenanceSerializationAndCompatibilityTests
         parameterTypeNames.Should().Contain(name => name.Contains("RecoveryScopeBinding", StringComparison.Ordinal));
         parameterTypeNames.Should().Contain(name => name.Contains("RecoveryEvidenceKind", StringComparison.Ordinal));
         parameterTypeNames.Should().Contain(name => name.Contains("RecoveryVerifiedFileMetadata", StringComparison.Ordinal));
-        parsers[0].ReturnType.Should().Be(typeof(RecoveryVerifiedEnvelope));
+        parsers[0].ReturnType.Should().Be<RecoveryVerifiedEnvelope>();
     }
 
     [Fact]
@@ -899,18 +912,7 @@ public sealed class MaintenanceSerializationAndCompatibilityTests
         }
 
         string core = string.Join('\n',
-            new[]
-            {
-                "src/Scrinia.Core/RecoveryVerification.cs",
-                "src/Scrinia.Core/AppendJournal.cs",
-                "src/Scrinia.Core/RestoreJournal.cs",
-                "src/Scrinia.Core/RecoveryEnvelope.cs",
-                "src/Scrinia.Core/RecoveryContracts.cs",
-                "src/Scrinia.Core/RecoveryDiscovery.cs",
-                "src/Scrinia.Core/FileMemoryStore.cs",
-                "src/Scrinia.Core/FileEntityTransactionCoordinator.cs",
-                "src/Scrinia.Core/MultiMemoryTransactionRecord.cs",
-            }.Select(file => File.ReadAllText(Path.Combine(RepoRoot(), file))));
+            ExpectedSrcScriniaCoreRecoveryVerificationCsSrcScriniaCoreAppendJournalCsSrcScriniaCoreRestoreJournalCsSrcSc.Select(file => File.ReadAllText(Path.Combine(RepoRoot(), file))));
 
         core.Should().NotContain("ParseAndValidate(");
         core.Should().NotContain("ParseAndNormalize(");

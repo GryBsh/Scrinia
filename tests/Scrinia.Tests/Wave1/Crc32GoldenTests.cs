@@ -12,6 +12,8 @@ namespace Scrinia.Tests.Wave1;
 /// </summary>
 public sealed class Crc32GoldenTests
 {
+    private static readonly string[] ExpectedHelloWorld = new[] { "hello", "world" };
+
     [Fact]
     public void Crc32Combine_MatchesGroundTruth_ForRandomSplits()
     {
@@ -76,7 +78,7 @@ public sealed class Crc32GoldenTests
     [Fact]
     public void DecodeAllChunksVerified_RejectsCorruptHeaderCrc()
     {
-        string artifact = Nmp2ChunkedEncoder.EncodeChunks(new[] { "hello", "world" });
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(ExpectedHelloWorld);
         // Corrupt header CRC — replace the 8 hex digits after CRC32: without duplicating them.
         // Plan's naive Replace("CRC32:", "CRC32:00000000") would produce "CRC32:00000000<old>"
         // which TryParse may reject (null CRC => no integrity check). Replace the whole token instead.

@@ -38,7 +38,6 @@ public sealed class ModelRelocationTests : IDisposable
     private string _legacyRoot = null!;
     private string _altHome = null!;
 
-    private bool _trapCreated;
     private readonly ProcessEnvironmentLock? _environmentLock;
     private EnvironmentVariableScope? _homeScope;
 
@@ -92,7 +91,6 @@ public sealed class ModelRelocationTests : IDisposable
         if (!File.Exists(_appContextModelDir))
         {
             File.WriteAllText(_appContextModelDir, "model-relocation-trap");
-            _trapCreated = true;
         }
 
         if (injectFailureAfterTrapCreation)
@@ -224,6 +222,7 @@ public sealed class ModelRelocationTests : IDisposable
             File.WriteAllText(Path.Combine(modelDir, "model.safetensors"), $"isolated-model-{repetition}");
             File.WriteAllText(Path.Combine(modelDir, "vocab.txt"), $"isolated-vocab-{repetition}");
 
+            var cleanupFailures = new List<Exception>();
             try
             {
                 using var homeScope = new EnvironmentVariableScope(ScriniaHomeVar, home);
@@ -235,16 +234,14 @@ public sealed class ModelRelocationTests : IDisposable
                 Directory.Exists(Path.Combine(home, "plugins")).Should().BeFalse(
                     "a model-only setup must not create a plugin hierarchy");
             }
+            catch (Exception ex)
+            {
+                cleanupFailures.Add(ex);
+            }
             finally
             {
-                var cleanupFailures = new List<Exception>();
                 AttemptCleanup("repeated isolated home", () => DeletePathAndVerify(home));
                 AttemptCleanup("repeated isolated workspace", () => DeletePathAndVerify(workspace));
-
-                if (cleanupFailures.Count > 0)
-                    throw new AggregateException(
-                        $"Repetition {repetition + 1} cleanup failed; isolation is not trustworthy.",
-                        cleanupFailures);
 
                 void AttemptCleanup(string description, Action cleanup)
                 {
@@ -258,6 +255,10 @@ public sealed class ModelRelocationTests : IDisposable
                     }
                 }
             }
+            if (cleanupFailures.Count > 0)
+                throw new AggregateException(
+                    $"Repetition {repetition + 1} cleanup failed; isolation is not trustworthy.",
+                    cleanupFailures);
         }
     }
 
@@ -271,6 +272,7 @@ public sealed class ModelRelocationTests : IDisposable
     public void ResolveEmbeddingsPluginExe_UsesMandatoryHierarchyUnderScriniaHome()
     {
         const string PluginName = "scri-plugin-embeddings";
+        string pluginFileName = OperatingSystem.IsWindows() ? $"{PluginName}.exe" : PluginName;
 
         // Configure the workspace root so GetConfigValue reads the plugin identity from workspace config.
         WorkspaceSetup.Configure(_workspace);
@@ -280,7 +282,7 @@ public sealed class ModelRelocationTests : IDisposable
         string? previousVersionEnv = Environment.GetEnvironmentVariable("PLUGINS_EMBEDDINGS_VERSION");
         string? previousVersionDblEnv = Environment.GetEnvironmentVariable("PLUGINS__EMBEDDINGS__VERSION");
         bool appTrapCreated = false;
-        string appFlatExe = Path.Combine(AppContext.BaseDirectory, "plugins", PluginName, $"{PluginName}.exe");
+        string appFlatExe = Path.Combine(AppContext.BaseDirectory, "plugins", PluginName, pluginFileName);
         try
         {
             // Eliminate any ambient environment override so the workspace config is authoritative.
@@ -296,7 +298,7 @@ public sealed class ModelRelocationTests : IDisposable
             string rid = RuntimeInformation.RuntimeIdentifier;
             string pluginDir = Path.Combine(_home, "plugins", PluginName, "1.2.3", rid);
             Directory.CreateDirectory(pluginDir);
-            string installedExe = Path.Combine(pluginDir, $"{PluginName}.exe");
+            string installedExe = Path.Combine(pluginDir, pluginFileName);
             File.WriteAllText(installedExe, "plugin-exe");
 
             // Trap the OLD executable-relative flat plugin path with a FILE: the pre-fix code scanned
@@ -308,7 +310,7 @@ public sealed class ModelRelocationTests : IDisposable
 
             string? exe = EmbeddingsHost.ResolveEmbeddingsPluginExe();
 
-            exe.Should().Be(installedExe, "the exe resolves at SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/<plugin>.exe");
+            exe.Should().Be(installedExe, "the executable resolves at SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/<native executable>");
             exe!.StartsWith(_home, StringComparison.Ordinal).Should().BeTrue(
                 "plugin discovery is rooted at SCRINIA_HOME");
             exe.StartsWith(AppContext.BaseDirectory, StringComparison.Ordinal).Should().BeFalse(

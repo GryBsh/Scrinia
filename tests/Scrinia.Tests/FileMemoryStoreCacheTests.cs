@@ -28,6 +28,7 @@ public class FileMemoryStoreCacheTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         _store.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch { }
     }

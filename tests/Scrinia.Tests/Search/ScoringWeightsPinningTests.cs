@@ -52,7 +52,7 @@ public sealed class ScoringWeightsPinningTests
     private static TopicInfo Topic(string name, string[]? tags = null)
         => new("local", name, EntryCount: 0, Description: "", Tags: tags, EntryNames: []);
 
-    private static IReadOnlyList<(ArtifactEntry Entry, double Score)> Search(
+    private static List<(ArtifactEntry Entry, double Score)> Search(
         string query, ScopedArtifact[] entries)
     {
         var scorer = new WeightedAttributeScorer(new RankerOptions(AlphaRecency: 0));
@@ -62,7 +62,7 @@ public sealed class ScoringWeightsPinningTests
             .ToList();
     }
 
-    private static IReadOnlyList<(string TopicName, double Score)> SearchTopics(
+    private static List<(string TopicName, double Score)> SearchTopics(
         string query, TopicInfo[] topics)
     {
         var scorer = new WeightedAttributeScorer(new RankerOptions(AlphaRecency: 0));
@@ -72,7 +72,7 @@ public sealed class ScoringWeightsPinningTests
             .ToList();
     }
 
-    private static IReadOnlyList<(string ParentName, double Score)> SearchChunkScores(
+    private static List<(string ParentName, double Score)> SearchChunkScores(
         string query, ScopedArtifact[] entries)
     {
         var scorer = new WeightedAttributeScorer(new RankerOptions(AlphaRecency: 0));

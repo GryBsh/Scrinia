@@ -199,6 +199,7 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
 /// the other process-wide registry in this assembly.</para>
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class EventSinkDefaultCollection
 {
     public const string Name = "EventSinkDefault";

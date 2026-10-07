@@ -126,9 +126,7 @@ public partial class ScriniaCommands
 
     /// <summary>List stored memories.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral). A scope
-    /// name containing a comma cannot be addressed this way; use the MCP `list` tool instead,
-    /// which takes scopes as a real array.</param>
+    /// <param name="scopes">Comma-separated scopes; use MCP list for a scope containing a comma.</param>
     /// <param name="summary">Show summary (topics, keywords, stats) instead of full table.</param>
     /// <param name="offset">Starting index for paginated output (0-based).</param>
     /// <param name="limit">Maximum entries to show (0 = unlimited).</param>
@@ -329,15 +327,12 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Search memories.</summary>
-    /// <param name="query">Search term to match against memory names and descriptions.</param>
+    /// <param name="query">Terms to match against memory names, content, and attributes.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral). A scope
-    /// name containing a comma cannot be addressed this way; use the MCP `search` tool instead,
-    /// which takes scopes as a real array.</param>
+    /// <param name="scopes">Comma-separated scopes; use MCP search for a scope containing a comma.</param>
     /// <param name="limit">Maximum results to return.</param>
-    /// <param name="context">Context terms appended to the query for scoring only — bridges vocabulary mismatches.</param>
-    /// <param name="excludeTopics">Comma-separated topic names to exclude from results. A topic
-    /// name containing a comma cannot be addressed this way; use the MCP `search` tool instead.</param>
+    /// <param name="context">Extra scoring terms for vocabulary mismatches.</param>
+    /// <param name="excludeTopics">Comma-separated topics to exclude; use MCP search for a topic containing a comma.</param>
     /// <param name="pathPrefix">Path prefix to scope results, e.g. '/findings/'.</param>
     /// <param name="json">Output as JSON instead of a table.</param>
     public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null,
@@ -475,8 +470,8 @@ public partial class ScriniaCommands
         return string.Join("; ", attributes.Select(kv => $"{kv.Key}: {string.Join(", ", kv.Value)}"));
     }
 
-    /// <summary>Store a file as a named memory.</summary>
-    /// <param name="name">Memory name (e.g. 'session-notes', '/api/auth-flow', '~scratch').</param>
+    /// <summary>Store text read from a file or standard input as a named memory.</summary>
+    /// <param name="name">Persistent memory address (e.g. '/api/auth-flow').</param>
     /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="description">-d, Description for the memory.</param>
@@ -585,7 +580,7 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Display memory content.</summary>
-    /// <param name="name">Memory name to display (e.g. 'session-notes', '/api/auth-flow', '~scratch').</param>
+    /// <param name="name">Persistent memory address (e.g. '/api/auth-flow').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="output">-o, Write output to a file instead of stdout.</param>
     /// <param name="json">Output as JSON instead of raw text.</param>
@@ -649,7 +644,7 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Delete a stored memory.</summary>
-    /// <param name="name">Memory name to delete (e.g. 'session-notes', '/api/auth-flow', '~scratch').</param>
+    /// <param name="name">Persistent memory address (e.g. '/api/auth-flow').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
     public async Task<int> Forget(
@@ -700,7 +695,7 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Append a new chunk to an existing memory, or create it when the target is missing.</summary>
-    /// <param name="name">Memory name to append to (e.g. 'session-notes', '/sessions/2026-05-11'). A missing name is created.</param>
+    /// <param name="name">Persistent memory address (e.g. '/api/auth-flow').</param>
     /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
@@ -760,9 +755,9 @@ public partial class ScriniaCommands
         return EmitMcpResult(response, json, "append");
     }
 
-    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version,
-    /// except for an ephemeral memory or one with no prior index entry.</summary>
-    /// <param name="name">Memory name to compact.</param>
+    /// <summary>Compact a multi-chunk persistent memory by merging chunks. Archives the original version
+    /// when it has a prior index entry.</summary>
+    /// <param name="name">Persistent memory address (e.g. '/api/auth-flow').</param>
     /// <param name="keepRecent">-k, Keep only the N most recent chunks. 0 = merge all into one.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>

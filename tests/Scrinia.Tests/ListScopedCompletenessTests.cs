@@ -156,10 +156,10 @@ public sealed class ListScopedCompletenessTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("alpha".StartsWith("/") || "alpha".StartsWith("~") ? "alpha" : "/" + "alpha"), "local", ["first"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("beta".StartsWith("/") || "beta".StartsWith("~") ? "beta" : "/" + "beta"), "local", ["second"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("gamma".StartsWith("/") || "gamma".StartsWith("~") ? "gamma" : "/" + "gamma"), "local:notes", ["third"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("delta".StartsWith("/") || "delta".StartsWith("~") ? "delta" : "/" + "delta"), "local:archive", ["fourth"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("alpha".StartsWith('/') || "alpha".StartsWith('~') ? "alpha" : "/" + "alpha"), "local", ["first"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("beta".StartsWith('/') || "beta".StartsWith('~') ? "beta" : "/" + "beta"), "local", ["second"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("gamma".StartsWith('/') || "gamma".StartsWith('~') ? "gamma" : "/" + "gamma"), "local:notes", ["third"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("delta".StartsWith('/') || "delta".StartsWith('~') ? "delta" : "/" + "delta"), "local:archive", ["fourth"]));
 
         var listed = store.ListScoped(null);
 

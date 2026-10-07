@@ -37,7 +37,7 @@ public sealed class SharedBaseRegistryTests : IDisposable
         string gitDirRoot = NewGitRoot("dir-repo");
         SharedBaseResult directory = new SharedBaseRegistry(_home, _workspace).ValidateRoot(gitDirRoot);
         directory.Succeeded.Should().BeTrue();
-        directory.Base.Tracking.Should().Be(TrackingPolicy.ProjectGit);
+        directory.Base!.Tracking.Should().Be(TrackingPolicy.ProjectGit);
 
         // Exact gitdir: worktree marker, LF line ending, absolute target.
         string worktreeAbsolute = NewWorktreeRoot(lineEnding: "\n", absolute: true);

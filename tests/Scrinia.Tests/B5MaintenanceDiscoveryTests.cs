@@ -591,7 +591,7 @@ public sealed class B5MaintenanceDiscoveryTests
         "local", "/memory/item", MaintenanceCandidateKind.ArchivePair, relativePath,
         null, null, null, null, relativePath);
 
-    private static IReadOnlyCollection<MaintenanceDiscoveryPageService> MaintenancePageServices(FileMemoryStore store)
+    private static MaintenanceDiscoveryPageService[] MaintenancePageServices(FileMemoryStore store)
     {
         FieldInfo owner = typeof(FileMemoryStore).GetField("_maintenancePageServiceCache",
             BindingFlags.Instance | BindingFlags.NonPublic)!;

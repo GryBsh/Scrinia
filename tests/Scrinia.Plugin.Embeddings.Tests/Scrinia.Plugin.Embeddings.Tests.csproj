@@ -38,4 +38,26 @@
     <ProjectReference Include="..\..\src\Scrinia.Plugin.Embeddings.Cli\Scrinia.Plugin.Embeddings.Cli.csproj" />
     <ProjectReference Include="..\Scrinia.Tests\Scrinia.Tests.csproj" />
   </ItemGroup>
+  <!-- Resolve the child process from this build, never from another configuration's bin tree.
+       The normal reference also retains direct EmbeddingsTools wire-surface coverage. -->
+  <Target Name="ResolveEmbeddingsCliTestArtifact"
+          BeforeTargets="GetAssemblyAttributes;GenerateAssemblyInfo"
+          DependsOnTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <_EmbeddingsCliRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_EmbeddingsCliRuntimeIdentifier>
+      <_EmbeddingsCliRuntimeIdentifier Condition="'$(_EmbeddingsCliRuntimeIdentifier)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</_EmbeddingsCliRuntimeIdentifier>
+    </PropertyGroup>
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\..\src\Scrinia.Plugin.Embeddings.Cli\Scrinia.Plugin.Embeddings.Cli.csproj"
+             Targets="GetTargetPath"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=$(_EmbeddingsCliRuntimeIdentifier)">
+      <Output TaskParameter="TargetOutputs" ItemName="_EmbeddingsCliTargetPath" />
+    </MSBuild>
+    <Error Condition="'@(_EmbeddingsCliTargetPath->Count())' != '1'"
+           Text="Exactly one embeddings CLI TargetPath must be supplied by this build." />
+    <Error Condition="!Exists('%(_EmbeddingsCliTargetPath.Identity)')"
+           Text="The embeddings CLI TargetPath does not exist: %(_EmbeddingsCliTargetPath.Identity)" />
+    <ItemGroup>
+      <AssemblyMetadata Include="EmbeddingsCliPath" Value="@(_EmbeddingsCliTargetPath)" />
+    </ItemGroup>
+  </Target>
 </Project>

@@ -20,7 +20,7 @@ public sealed class SharedSelectorProvenanceTests
             var registry = new RecordingRegistry(new SharedBaseEntry { Name = "alpha", Root = root });
             var server = new SharedServer(workspace, registry, new SharedBaseRuntimeFactory());
 
-            SharedBaseSelection selection = server.SelectBase("alpha");
+            SharedBaseSelection selection = server.SelectBase("alpha")!;
 
             selection.Base.Should().Be("alpha");
             selection.Entry.Should().NotBeNull();

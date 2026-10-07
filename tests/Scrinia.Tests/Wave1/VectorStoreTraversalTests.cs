@@ -18,6 +18,7 @@ public class VectorStoreTraversalTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         try { Directory.Delete(_tempRoot, recursive: true); } catch { }
     }
 
@@ -58,7 +59,7 @@ public class VectorStoreTraversalTests : IDisposable
         {
             Assert.Throws<ArgumentException>(() => store.GetVectors(scope));
         }
-        else if (scope.Contains("..", StringComparison.Ordinal) || scope.StartsWith("/", StringComparison.Ordinal) || scope.StartsWith("\\", StringComparison.Ordinal))
+        else if (scope.Contains("..", StringComparison.Ordinal) || scope.StartsWith('/') || scope.StartsWith('\\'))
         {
             Assert.Throws<ArgumentException>(() => store.GetVectors(scope));
         }

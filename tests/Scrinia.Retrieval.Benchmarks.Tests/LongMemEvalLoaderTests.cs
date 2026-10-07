@@ -12,6 +12,9 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 /// </summary>
 public class LongMemEvalLoaderTests : IAsyncLifetime
 {
+    private static readonly string[] ExpectedS1Turn0S1Turn1 = new[] { "s1_turn_0", "s1_turn_1" };
+    private static readonly string[] ExpectedQ2Q3 = new[] { "q2", "q3" };
+
     private string _dir = null!;
 
     public Task InitializeAsync()
@@ -114,7 +117,7 @@ public class LongMemEvalLoaderTests : IAsyncLifetime
             because: "only user turns become docs (assistant turn skipped)");
         qs[0].Haystack[0].Id.Should().Be("s1_turn_0");
         qs[0].Haystack[1].Id.Should().Be("s1_turn_1");
-        qs[0].GroundTruthIds.Should().BeEquivalentTo(new[] { "s1_turn_0", "s1_turn_1" });
+        qs[0].GroundTruthIds.Should().BeEquivalentTo(ExpectedS1Turn0S1Turn1);
     }
 
     [Fact]
@@ -142,7 +145,7 @@ public class LongMemEvalLoaderTests : IAsyncLifetime
         var ids = new List<string>();
         await foreach (var q in loader.LoadAsync()) ids.Add(q.Id);
 
-        ids.Should().BeEquivalentTo(new[] { "q2", "q3" });
+        ids.Should().BeEquivalentTo(ExpectedQ2Q3);
     }
 
     [Fact]

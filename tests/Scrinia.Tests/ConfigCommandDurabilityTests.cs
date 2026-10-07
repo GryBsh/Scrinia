@@ -45,6 +45,6 @@ public sealed class ConfigCommandDurabilityTests : IDisposable
         try { Directory.Delete(_workspace, recursive: true); } catch { }
     }
 
-    private static Exception? FailBeforeMove(DurableWritePhase phase, string _) =>
+    private static IOException? FailBeforeMove(DurableWritePhase phase, string _) =>
         phase == DurableWritePhase.BeforeMove ? new IOException("injected before move") : null;
 }

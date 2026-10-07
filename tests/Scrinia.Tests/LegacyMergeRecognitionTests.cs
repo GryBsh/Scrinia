@@ -114,7 +114,7 @@ public sealed class LegacyMergeRecognitionTests
         LegacyMergeRecognition.IsExactLegacyMergeConfig(Array.Empty<byte>()).Should().BeFalse();
 
         // Missing the single trailing LF.
-        LegacyMergeRecognition.IsExactLegacyMergeConfig(LegacyMergeConfig[..^1]).Should().BeFalse();
+        LegacyMergeRecognition.IsExactLegacyMergeConfig(LegacyMergeConfig.AsSpan()[..^1]).Should().BeFalse();
 
         // The trailing LF present but with one extra byte after it.
         var withExtraByte = LegacyMergeConfig.Concat(new[] { (byte)' ' }).ToArray();

@@ -108,6 +108,7 @@ public sealed class BundleDecompressionBombTests
 }
 
 [CollectionDefinition(BundleDecompressionBombCollection.Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class BundleDecompressionBombCollection
 {
     public const string Name = "BundleDecompressionBomb";

@@ -2,12 +2,7 @@ using ConsoleAppFramework;
 
 namespace Scrinia.Commands;
 
-/// <summary>
-/// Bundle file operations grouped under a single verb. <c>scri bundle export</c>
-/// packages stored memories from topics, <c>scri bundle import</c> loads a bundle,
-/// and <c>scri bundle pack</c> packages raw files into a sharable bundle.
-/// Forwards to <see cref="ScriniaCommands"/> implementations which are kept internal.
-/// </summary>
+/// <summary>Export, import, and pack portable memory bundles.</summary>
 public sealed class BundleCommands
 {
     private readonly ScriniaCommands _impl = new();
@@ -40,7 +35,7 @@ public sealed class BundleCommands
         CancellationToken cancellationToken = default)
         => _impl.Import(path, workspaceRoot, topics, overwrite, json, cancellationToken);
 
-    /// <summary>Pack raw files into a .scrinia-bundle (formerly the top-level "bundle" command).</summary>
+    /// <summary>Pack raw files into a .scrinia-bundle.</summary>
     /// <param name="topic">Topic name for the bundle.</param>
     /// <param name="files">Comma-separated file paths or glob pattern (e.g. docs/*.md).</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>

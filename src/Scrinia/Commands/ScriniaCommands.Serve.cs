@@ -21,9 +21,9 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Start the MCP server (stdio transport).</summary>
+    /// <summary>Start the local MCP server over stdio.</summary>
     /// <param name="workspaceRoot">Workspace root for local memory store. Defaults to current working directory.</param>
-    /// <param name="noAutoSetup">Skip the first-run embedding model download. Without the model the server still runs but falls back to BM25-only search.</param>
+    /// <param name="noAutoSetup">Skip the first-run embedding download; search falls back to BM25-only.</param>
     public async Task<int> Serve(
         string? workspaceRoot = null,
         bool noAutoSetup = false,

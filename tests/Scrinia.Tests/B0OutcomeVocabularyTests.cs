@@ -15,8 +15,8 @@ public class B0OutcomeVocabularyTests
             nameof(B0Outcome.RolledBack), nameof(B0Outcome.Rejected),
             nameof(B0Outcome.SuccessWithWarning), nameof(B0Outcome.RecoveryRequired)
         };
-        Assert.Equal(9, Enum.GetValues(typeof(B0Outcome)).Length);
-        Assert.Equal(expected, Enum.GetNames(typeof(B0Outcome)));
+        Assert.Equal(9, Enum.GetValues<B0Outcome>().Length);
+        Assert.Equal(expected, Enum.GetNames<B0Outcome>());
     }
 
     [Fact]
@@ -31,12 +31,12 @@ public class B0OutcomeVocabularyTests
     [Fact]
     public void B0Outcome_ContainsEveryMemberOfAllFourSourceEnums()
     {
-        var union = Enum.GetNames(typeof(B0Outcome));
-        foreach (var name in Enum.GetNames(typeof(AppendStoreOutcome)))
+        var union = Enum.GetNames<B0Outcome>();
+        foreach (var name in Enum.GetNames<AppendStoreOutcome>())
             Assert.Contains(name, union);
-        foreach (var name in Enum.GetNames(typeof(WholeMemoryOutcome)))
+        foreach (var name in Enum.GetNames<WholeMemoryOutcome>())
             Assert.Contains(name, union);
-        foreach (var name in Enum.GetNames(typeof(MultiMemoryOutcome)))
+        foreach (var name in Enum.GetNames<MultiMemoryOutcome>())
             Assert.Contains(name, union);
     }
 }

@@ -15,6 +15,9 @@ namespace Scrinia.Tests.Wave2;
 /// </summary>
 public class SearchAllSinglePathTests
 {
+    private static readonly string[] ExpectedHelloWorld = new[] { "hello world" };
+    private static readonly string[] ExpectedAlpha = new[] { "alpha" };
+
     [Fact]
     public void IMemoryStore_HasExactlyOneSearchAll_WithSearchQuery()
     {
@@ -35,7 +38,7 @@ public class SearchAllSinglePathTests
             "IMemoryStore must expose exactly one SearchAll(SearchQuery) — the collapsed contract");
 
         var param = queryOverloads[0].GetParameters().Single();
-        param.ParameterType.Should().Be(typeof(SearchQuery));
+        param.ParameterType.Should().Be<SearchQuery>();
 
         // The primary overload must be abstract (no default body); the typed adapter is a separate shape.
         queryOverloads[0].IsAbstract.Should().BeTrue(
@@ -61,7 +64,7 @@ public class SearchAllSinglePathTests
             for (int i = 0; i < 40; i++)
             {
                 var addr = MemoryAddress.Parse($"/private/seed-{i:D3}");
-                var write = MemoryWrite.Create(addr, (IReadOnlyList<string?>)new[] { "hello world" },
+                var write = MemoryWrite.Create(addr, (IReadOnlyList<string?>)ExpectedHelloWorld,
                     new Dictionary<string, IReadOnlyList<string>>(), []);
                 await store.StoreAsync(write);
             }
@@ -69,7 +72,7 @@ public class SearchAllSinglePathTests
             for (int i = 0; i < 20; i++)
             {
                 var addr = MemoryAddress.Parse($"/public/seed-{i:D3}");
-                var write = MemoryWrite.Create(addr, (IReadOnlyList<string?>)new[] { "hello world" },
+                var write = MemoryWrite.Create(addr, (IReadOnlyList<string?>)ExpectedHelloWorld,
                     new Dictionary<string, IReadOnlyList<string>>(), []);
                 await store.StoreAsync(write);
             }
@@ -144,7 +147,7 @@ public class SearchAllSinglePathTests
         {
             store = new FileMemoryStore(root);
             var addr = MemoryAddress.Parse("/topic/item-0");
-            store.StoreAsync(MemoryWrite.Create(addr, (IReadOnlyList<string?>)new[] { "alpha" },
+            store.StoreAsync(MemoryWrite.Create(addr, (IReadOnlyList<string?>)ExpectedAlpha,
                 new Dictionary<string, IReadOnlyList<string>>(), [])).GetAwaiter().GetResult();
 
             var emptyCandidates = new SearchQuery("alpha") { Limit = 10, Candidates = [] };

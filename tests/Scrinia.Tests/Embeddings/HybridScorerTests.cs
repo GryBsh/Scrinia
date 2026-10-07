@@ -25,6 +25,7 @@ public class HybridScorerTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
 
@@ -120,6 +121,7 @@ public class HybridRerankerTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         _vectorStore.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
@@ -147,7 +149,7 @@ public class HybridRerankerTests : IDisposable
         scores.Should().NotBeNull();
         scores!.Should().ContainKey("local|entry-a");
         scores.Should().ContainKey("local|entry-b");
-        scores["local|entry-a"].Should().BeGreaterThan(scores["local|entry-b"]);
+        scores!["local|entry-a"].Should().BeGreaterThan(scores!["local|entry-b"]);
     }
 
     [Fact]
@@ -208,9 +210,9 @@ public class HybridRerankerTests : IDisposable
         scores.Should().ContainKey("local|memo|1");
         scores.Should().ContainKey("local|memo|2");
         // Element 2 is identical to the query → similarity ~1.0 * weight 50 = ~50.
-        scores["local|memo"].Should().BeApproximately(50.0, 0.5);
-        scores["local|memo"].Should().Be(scores["local|memo|2"]);
-        scores["local|memo|2"].Should().BeGreaterThan(scores["local|memo|1"]);
+        scores!["local|memo"].Should().BeApproximately(50.0, 0.5);
+        scores!["local|memo"].Should().Be(scores!["local|memo|2"]);
+        scores!["local|memo|2"].Should().BeGreaterThan(scores!["local|memo|1"]);
     }
 
     [Fact]
@@ -255,6 +257,7 @@ public class HybridRerankerTests : IDisposable
                 ? texts.Select(_ => _fixedVector).ToArray()
                 : null);
 
-        public void Dispose() { }
+        public void Dispose() {
+        GC.SuppressFinalize(this); }
     }
 }

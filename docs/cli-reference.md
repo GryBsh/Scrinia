@@ -1,6 +1,6 @@
 # Scrinia CLI Reference
 
-`scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing one tool per operation — `guide`, the per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`), and `facts` — for AI coding tools.
+`scri` manages persistent memories and serves Scrinia's local stdio MCP tools.
 
 ## Surface overview
 
@@ -13,10 +13,8 @@ The top-level surface is organized by purpose:
 | Memory operations | `list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
 
-`scri migrate` (store-layout migration, see [scri migrate](#scri-migrate)) also runs
-automatically on first store access — the command exists for previewing and deliberate
-timing, not as a required step. `scri migrate_attributes` is a separate, unrelated command
-that forward-fills older entries onto the attributes model.
+`scri migrate` also runs automatically on first store access; run it to preview or control timing.
+`scri migrate_attributes` separately forward-fills older entries onto the attributes model.
 
 ## Commands
 
@@ -40,7 +38,7 @@ blocks later persistent operations until supported verification/cleanup succeeds
 
 ### scri serve
 
-Start the MCP server over stdio transport. This is how MCP clients (Claude Code, Cursor, Copilot) connect to Scrinia.
+Start the local MCP server over stdio.
 
 ```bash
 scri serve [--workspace-root <path>] [--no-auto-setup]
@@ -51,29 +49,37 @@ scri serve [--workspace-root <path>] [--no-auto-setup]
 | `--workspace-root` | Auto-detected | Override workspace directory |
 | `--no-auto-setup` | `false` | Skip the first-run embedding model download |
 
-Reads and writes directly to `.scrinia/` on disk. On first launch, `serve` checks for the built-in embedding model (`m2v-MiniLM-L6-v2`) and downloads it if missing (~50MB, one-time). Download progress goes to stderr to keep the JSON-RPC stdout clean. If the download fails, the server still starts — semantic search degrades to BM25-only until you run `scri setup` manually.
+Reads and writes `.scrinia/`. On first launch, it downloads the built-in `m2v-MiniLM-L6-v2` model (~22MB) unless `--no-auto-setup` is set. Progress uses stderr; download failure leaves the server running with BM25-only search until `scri setup` succeeds.
 
-The repository currently ships one server surface: `scri serve`, a local stdio MCP server. The former `--remote` mode, HTTP server, `--api-key`, and `--store` options are no longer present in the solution or source tree. Sharing memories between people uses ordinary source-control workflows; resolve any file conflicts manually.
+The CLI has two local stdio server surfaces: `scri serve` for workspace memories and `scri shared serve` for enabled shared bases. There is no remote, HTTP, API-key, or `--store` mode. Share memories through source control and resolve conflicts manually.
+
+### scri shared serve
+
+Serve enabled shared-memory MCP tools over stdio. The command fails before opening transport when no shared base is enabled. Shared calls do not carry prompt, correlation, or session fields and never launch Git.
+
+```bash
+scri shared serve [--workspace-root <path>]
+```
 
 ### scri list
 
-List stored memories. Defaults to summary mode (topics, keywords, stats). Use `--summary false` for the full table with chunk counts, sizes, token estimates, and review markers.
+List stored memories. By default, it prints the full table; use `--summary` for topics, keywords, and stats.
 
 ```bash
-scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
-    [--summary] [--offset 0] [--limit 50] [--json]
+scri list [--workspace-root <path>] [--scopes local,api]
+    [--summary] [--offset 0] [--limit 0] [--json]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--summary` | `true` | Show summary view (topics, keywords, stats) instead of full table |
+| `--summary` | `false` | Show summary view (topics, keywords, stats) instead of full table |
 | `--offset` | `0` | Skip this many entries (for pagination) |
-| `--limit` | `50` | Maximum entries to return |
+| `--limit` | `0` | Maximum entries to return (`0` = unlimited) |
 | `--json` | `false` | Output as JSON |
 
 ### scri search
 
-Search memories using BM25 + weighted-field hybrid scoring. With the embeddings plugin active, semantic vector scores are blended in.
+Search memories with weighted lexical scoring and, when available, semantic vectors.
 
 Retrieval is bounded by `Scrinia:Search:CandidateLimit` (default `200`, inclusive range `1`–`1000`).
 Invalid values are configuration errors. Scope, excluded-topic, path/address, and attribute
@@ -85,22 +91,30 @@ facts receive that same bounded snapshot, using the context-augmented query. K i
 scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
 ```
 
+### scri facts
+
+Query entity facts with `entities`, `profile`, or `intersect`.
+
+```bash
+scri facts <entities|profile|intersect> [target] [--key person] [--workspace-root <path>]
+    [--scopes local,api] [--exclude-topics plan] [--limit 50] [--json]
+```
+
+`profile` accepts one entity as `key:value` or a bare value. `intersect` accepts comma-separated entities. CLI scope and topic filters are comma-separated; use MCP `facts` for names containing commas.
+
 ### scri store
 
-Compress and persist text as a named memory. Reads from a file path or stdin (`-`).
+Store text from a file or stdin (`-`) as a named memory.
 
 Persistent memory subjects may be at most 182 characters after filename sanitization. The limit
-applies to the sanitized persistent subject, not the whole scoped display path. `~name` is
-ephemeral and is exempt from this filesystem limit, although the CLI refuses ephemeral addresses
-because each invocation exits immediately.
+applies to the sanitized persistent subject, not the whole scoped display path.
 
 #### Address input
 
-All CLI memory commands accept logical addresses. A bare subject is normalized as a persistent
-address; `/topic/subject` is a persistent topic address. `~name` and `/temp/name` are canonical and
-alias spellings for an ephemeral address, but the CLI refuses both with exit status 1 and a
-`FORBIDDEN_ADDRESS_KIND` error. Use an MCP client with the long-lived `scri serve` process when an
-ephemeral memory is required.
+CLI commands that accept a memory address accept only persistent logical addresses. A bare subject is normalized as a
+persistent address; `/topic/subject` is a persistent topic address. Ephemeral `~name` and
+`/temp/name` addresses are MCP-only and the CLI rejects them with exit status 1 and a
+`FORBIDDEN_ADDRESS_KIND` error.
 
 URI and physical-path inputs are not supported. URI syntax such as `file://` is rejected with
 `UNSUPPORTED_INPUT_FORM`; other malformed physical-path forms are rejected as
@@ -109,17 +123,11 @@ They are never resolved against the local filesystem. In .NET code,
 use `MemoryAddress.Parse(raw)` or `MemoryAddress.TryParse(raw, out address, out error)` to obtain
 the validated typed address used by store-facing APIs.
 
-`scri store --json` emits `name`, `originalBytes`, and `message`. Consumers must stop reading
-`chunkCount`; use the documented input echo and response message instead.
+`scri store --json` emits `name`, `originalBytes`, and `message`; do not rely on `chunkCount`.
 Successful ordinary, `/skill/name`, and `/agent/name` writes report the persisted identity
 without a post-commit response-projection failure. Ordinary stored spelling is preserved;
 reserved names report their canonical reserved path. Warnings and recovery errors keep their
 status, operation/recovery metadata, and stable code.
-
-> **Ephemeral memories are not available from the CLI.** `~name` and its `/temp/...` alias live
-> only in the process that creates them, and the CLI exits immediately — so a CLI ephemeral write
-> would be discarded. All memory commands refuse an ephemeral address with exit 1. Use an MCP
-> client for ephemerals, or a persistent path.
 
 ```bash
 scri store <name> [file] [--workspace-root <path>]
@@ -193,9 +201,7 @@ MCP envelope (`{ action, status, yaml }`) for tooling consumption.
 
 ### scri append
 
-Append a new chunk to an existing memory. The previous version is archived to
-`{scope}/versions/{name}_{timestamp}.nmp2` so the append is undoable. Create-via-append has no
-prior version and therefore creates no archive.
+Append a chunk to a memory, creating it when absent. Existing memories are archived before append; a new memory has no prior version to archive.
 
 ```bash
 scri append <name> [<file>] [--workspace-root <path>] [--json]
@@ -219,11 +225,9 @@ and archives the complete prior body and metadata. Serial concurrent appends ret
 suffixes. Skill lookup is disk override, then embedded built-in; legacy NMP/2 skills are not a
 fallback.
 
-Append responses include an `operationId` for correlating the request with durable journal and
-event records. A committed append with non-fatal cleanup or event-delivery trouble returns the
-structured `success_with_warning` status and warning fields; callers should preserve the committed
-result while treating the command as a warning outcome (exit status 1). Recovery-required results
-retain journal evidence and diagnostics; follow [recovery guidance](troubleshooting.md#bundle-recovery-required)
+Append responses include `operationId`. Committed work with non-fatal cleanup or event-delivery
+trouble returns `success_with_warning` and exits 1. Recovery-required results retain journal
+evidence and diagnostics; follow [recovery guidance](troubleshooting.md#bundle-recovery-required)
 instead of assuming a dedicated repair command exists.
 
 Persistent memory subjects may be at most 182 characters after filename sanitization. The limit
@@ -231,9 +235,8 @@ applies to the sanitized persistent subject, not the whole scoped display path.
 
 ### scri compact
 
-Merge the chunks of a multi-chunk memory back into a single chunk (or keep the N
-newest). The pre-compact version is archived first, except for an ephemeral (`~name`)
-memory or one with no prior index entry — neither has a previous version to archive.
+Merge the chunks of a multi-chunk persistent memory back into a single chunk (or keep the N
+newest). The pre-compact version is archived first when it has a prior index entry.
 
 ```bash
 scri compact <name> [--keep-recent N] [--workspace-root <path>] [--json]
@@ -249,10 +252,7 @@ scri compact session-notes --keep-recent 5  # keep last 5
 
 ### scri consolidate
 
-Mechanical housekeeping over the local store. Compacts multi-chunk session
-entries and reports stale entries. There is no LLM pass — scrinia ships zero
-LLM-at-rest enrichment; anything you want an LLM to do to your memories happens
-in the agent that writes them.
+Compact eligible session entries and report stale memories. It does not run an LLM.
 
 **What it does:**
 
@@ -275,11 +275,7 @@ scri consolidate [--auto] [--dry-run] [--debounce-minutes 30] \
 - After a non-dry run, `.scrinia/.last-consolidation` is updated with the current
   UTC timestamp.
 
-`scri consolidate` is now a **manual command** — `scri setup --hooks` no longer
-installs a SessionEnd hook for it. Run it by hand when you want session
-compaction, or wire it into a scheduled task. The previous SessionEnd-hook
-auto-install was paired with an LLM-enrichment sweep at session close; that
-pipeline is gone, so there's no reason to fire this command per-session anymore.
+`scri consolidate` is manual. Run it directly or from a scheduled task; `scri setup --hooks` does not install a SessionEnd hook.
 
 ### scri link
 
@@ -304,16 +300,26 @@ scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]
 scri link /api/auth-flow /patterns/retry -r "auth retries use the documented pattern"
 ```
 
-### scri restore
+### scri maintenance
 
-Resume agent context after a fresh session — emits the agent profile, recurring
-patterns, today's session log, and the list of available skills. The same call
-the MCP `restore` call makes.
+Clean eligible archive pairs and verified terminal recovery evidence in one bounded batch.
 
 ```bash
-scri restore [--workspace-root <path>] [--json]
+scri maintenance [--workspace-root <path>] [--scopes local,api]
+    [--batch-size 1..50] [--continuation-token <token>] [--json]
 ```
 
+Omit `--batch-size` to use the configured value. Reuse the returned opaque continuation token to continue work. Invalid policy, lock contention, partial failure, and invalid continuation exit 1.
+
+### scri restore
+
+Restore saved agent context: the agent profile, patterns, today's session log, and available skills.
+
+```bash
+scri restore [--workspace-root <path>] [--hook [--client codex|claude|opencode|copilot]] [--json]
+```
+
+Use `--hook` for the SessionStart hook payload. With `--hook`, `--client` tailors that payload for the named supported client.
 This command restores agent context, not transaction evidence or filesystem backups.
 
 Maintenance handles bounded archive and terminal-evidence cleanup; it is not a universal bundle
@@ -325,8 +331,7 @@ entries or unprovable inspection retain evidence; preserve it and use the
 
 Export one or more topics to a portable `.scrinia-bundle` file (ZIP format).
 
-`scri bundle export --json` emits `message`. Consumers must stop reading `path`; use the response
-message and command options instead.
+`scri bundle export --json` emits `message`; do not rely on `path`.
 
 Export captures one admitted persistent snapshot, prepares and validates the complete ZIP, and
 only then replaces its destination. Empty exports and failed publication preserve an existing
@@ -386,7 +391,7 @@ scri bundle pack docs "src/**/*.md" -d "Source documentation" -t docs,reference
 
 ### scri setup
 
-Interactive workspace setup. Two things in order:
+Set up embeddings and optional agent hooks:
 
 1. **Ollama auto-detection for embeddings** (`http://localhost:11434` by default).
    Probes `GET /api/tags`; if reachable, prompts whether to use Ollama for
@@ -422,10 +427,7 @@ setup clears any prior Ollama-derived embedding config keys
 (`Scrinia:Embeddings:Provider=ollama`, the Ollama URL + model). Custom OpenAI /
 Voyage / Azure / Google embedding configurations are preserved.
 
-Most users don't need to run `setup` directly — `scri serve` auto-downloads the
-embedding model on first launch (use `--no-auto-setup` to opt out). Run `setup`
-explicitly when wiring Ollama embeddings, installing agent hooks (`--hooks`), or
-when you want to control when the network call happens.
+`scri serve` downloads the built-in model on first launch unless `--no-auto-setup` is set. Run `setup` for Ollama, hooks, or explicit download timing.
 
 #### Hook installer (`--hooks`)
 
@@ -452,7 +454,7 @@ User-authored hooks in the same config files are preserved — scrinia marks its
 
 ### scri hint
 
-Pre-send relevance hint. Emits a single-line marker telling the agent which stored memories look relevant to a prompt. No retrieval, no LLM call — just a sub-millisecond BM25 lookup.
+Show a pre-send hint for memories relevant to a prompt.
 
 ```bash
 scri hint [prompt] [--workspace-root <path>] [--json]
@@ -470,7 +472,7 @@ Plain output format: `[scrinia] N memories match: name1, name2, name3. Run searc
 
 `--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`, indented, through the same source-generated serializer as every other `--json` surface.
 
-Normally invoked by the UserPromptSubmit hook installed via `scri setup --hooks`; can also be run by hand to debug threshold tuning.
+`scri setup --hooks` invokes this from UserPromptSubmit; run it directly to tune thresholds.
 
 ### scri reindex
 
@@ -600,9 +602,10 @@ scri tracking migrate-legacy --to local|project-git [--json]
 ```
 
 Shared bases always use `project-git`; that policy is fixed and is not stored per base. Canonical
-names match `^[a-z][a-z0-9-]{0,31}$`. Roots must be existing repositories or worktrees proven by
-their own `.git` directory or valid `gitdir:` marker. Validation is filesystem-only: no command
-invokes Git or inspects its index, and results label the index `gitIndexStatus: UNVERIFIED`.
+names match `^[a-z][a-z0-9-]{0,31}$`. Roots must be existing directories with filesystem Git
+evidence: their own `.git` directory or a valid `gitdir:` marker whose target is an existing
+directory. This does not prove a functional repository or worktree. Validation is filesystem-only:
+no command invokes Git or inspects its index, and results label the index `gitIndexStatus: UNVERIFIED`.
 
 Mutations take an interprocess lock and use same-directory atomic replacement. A failed replacement
 preserves the previous complete bytes or leaves a recovery journal that restores them before the
@@ -670,11 +673,11 @@ Scrinia stores all data in a `.scrinia/` directory at the workspace root:
 
 ```
 .scrinia/
-  store/              Local memories (.nmp2 files + index.json)
-  topics/
-    api/              Topic "api" memories
-    arch/             Topic "arch" memories
-  embeddings/         Vector data (per-workspace, created by embeddings plugin)
+  memories/           Persistent memory artifacts and metadata sidecars
+    session-notes.nmp2
+    session-notes.meta.json
+    api/              Topic "api" memory artifacts and sidecars
+  embeddings/         Vector data (created when semantic embeddings are enabled)
   exports/            Exported .scrinia-bundle files
   config.json         Workspace configuration
 ```
@@ -683,7 +686,7 @@ Scrinia stores all data in a `.scrinia/` directory at the workspace root:
 
 When `--workspace-root` is not specified, `scri` walks up from the current working directory looking for the nearest enclosing git repository, identified by a `.git` entry (a directory in a normal checkout, or a file pointing at `gitdir:` in a worktree or submodule). That repository's root becomes the workspace root. If no git repository encloses the working directory, the working directory itself is the workspace root and no upward search happens.
 
-`.scrinia/` is created lazily -- only when something is written. Reading commands (`hint`, `recall`, `search`, `show`, `list`) against a workspace with no store create nothing.
+`.scrinia/` is created lazily -- only when something is written. Reading commands (`hint`, `search`, `show`, `list`) against a workspace with no store create nothing.
 
 If a `.scrinia/` directory exists somewhere resolution deliberately did not use (for example, in an ancestor directory outside the resolved root), writes, `setup`, and `serve` startup print a warning to stderr naming the ignored store, the root in use, and a `scri bundle export` / `scri bundle import` pair to migrate its memories into the resolved workspace.
 

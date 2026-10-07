@@ -25,8 +25,8 @@ public sealed class TransactionalRestoreTests
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("keeper".StartsWith("/") || "keeper".StartsWith("~") ? "keeper" : "/" + "keeper"), Scope, ["kept"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("victim".StartsWith("/") || "victim".StartsWith("~") ? "victim" : "/" + "victim"), Scope, ["swept"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("keeper".StartsWith('/') || "keeper".StartsWith('~') ? "keeper" : "/" + "keeper"), Scope, ["kept"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("victim".StartsWith('/') || "victim".StartsWith('~') ? "victim" : "/" + "victim"), Scope, ["swept"]));
 
         var withoutVictim = store.LoadIndex(Scope)
             .Where(e => !e.Name.Equals("victim", StringComparison.OrdinalIgnoreCase))
@@ -75,14 +75,14 @@ public sealed class TransactionalRestoreTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), Scope, ["seeded"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith('/') || "seed".StartsWith('~') ? "seed" : "/" + "seed"), Scope, ["seeded"]));
         store.LoadIndex(Scope); // warm this store's cache: it now knows only "seed"
 
         // A SECOND store over the same root has its own index cache, so this write is invisible
         // to `store` until it reloads — precisely the state a concurrent process leaves behind,
         // and precisely what made the first store's import snapshot stale.
         using (var otherProcess = new FileMemoryStore(scope.WorkspaceDir))
-            await otherProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("bystander".StartsWith("/") || "bystander".StartsWith("~") ? "bystander" : "/" + "bystander"), Scope, ["written during the restore"]));
+            await otherProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("bystander".StartsWith('/') || "bystander".StartsWith('~') ? "bystander" : "/" + "bystander"), Scope, ["written during the restore"]));
 
         var bundled = new List<ArtifactEntry>
         {
@@ -111,7 +111,7 @@ public sealed class TransactionalRestoreTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), Scope, ["seeded"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith('/') || "seed".StartsWith('~') ? "seed" : "/" + "seed"), Scope, ["seeded"]));
 
         var bundled = new List<ArtifactEntry>();
         var contents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -137,7 +137,7 @@ public sealed class TransactionalRestoreTests
         try
         {
             using var otherProcess = new FileMemoryStore(scope.WorkspaceDir);
-            await otherProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("urgent".StartsWith("/") || "urgent".StartsWith("~") ? "urgent" : "/" + "urgent"), Scope, ["written mid-restore"]));
+            await otherProcess.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("urgent".StartsWith('/') || "urgent".StartsWith('~') ? "urgent" : "/" + "urgent"), Scope, ["written mid-restore"]));
             wrote = true;
         }
         catch (FileLockTimeoutException)
@@ -164,7 +164,7 @@ public sealed class TransactionalRestoreTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("victim".StartsWith("/") || "victim".StartsWith("~") ? "victim" : "/" + "victim"), Scope, ["ORIGINAL BODY"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("victim".StartsWith('/') || "victim".StartsWith('~') ? "victim" : "/" + "victim"), Scope, ["ORIGINAL BODY"]));
 
         string storeDir = Path.Combine(scope.TempDir, "notes");
 
@@ -201,7 +201,7 @@ public sealed class TransactionalRestoreTests
             blocked.Should().Throw<RestoreRecoveryException>().Which.Failure
                 .Should().Be(RestoreRecoveryFailure.ReplayIoFailed);
 
-            await cold.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("other".StartsWith("/") || "other".StartsWith("~") ? "other" : "/" + "other"), "local:other", ["available"]));
+            await cold.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("other".StartsWith('/') || "other".StartsWith('~') ? "other" : "/" + "other"), "local:other", ["available"]));
             cold.LoadIndex("local:other").Should().ContainSingle().Which.Name.Should().Be("other",
                 because: "a replay I/O failure blocks only the journalled scope");
         }
@@ -218,7 +218,7 @@ public sealed class TransactionalRestoreTests
         var store = TestHelpers.Store;
         const string existingName = "keeper";
         const string existingContent = "original body";
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(existingName.StartsWith("/") || existingName.StartsWith("~") ? existingName : "/" + existingName), Scope, [existingContent]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse(existingName.StartsWith('/') || existingName.StartsWith('~') ? existingName : "/" + existingName), Scope, [existingContent]));
         string bodyBefore = await store.ReadArtifactAsync(MemoryAddress.Parse($"/notes/{existingName}"));
         string storeDir = Path.Combine(scope.TempDir, "notes");
         string rejectedName = new('x', MemoryWrite.MaxPersistentSubjectLength + 1);
@@ -242,7 +242,7 @@ public sealed class TransactionalRestoreTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith("/") || "seed".StartsWith("~") ? "seed" : "/" + "seed"), Scope, ["seeded"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("seed".StartsWith('/') || "seed".StartsWith('~') ? "seed" : "/" + "seed"), Scope, ["seeded"]));
         string storeDir = Path.Combine(scope.TempDir, "notes");
 
         string litter = Path.Combine(storeDir, "ghost.import-deadbeef.staging");
@@ -285,8 +285,8 @@ public sealed class TransactionalRestoreTests
         var store = TestHelpers.Store;
         string storeDir = Path.Combine(scope.TempDir, "notes");
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("alpha".StartsWith("/") || "alpha".StartsWith("~") ? "alpha" : "/" + "alpha"), Scope, ["alpha v1"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("beta".StartsWith("/") || "beta".StartsWith("~") ? "beta" : "/" + "beta"), Scope, ["beta v1"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("alpha".StartsWith('/') || "alpha".StartsWith('~') ? "alpha" : "/" + "alpha"), Scope, ["alpha v1"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("beta".StartsWith('/') || "beta".StartsWith('~') ? "beta" : "/" + "beta"), Scope, ["beta v1"]));
 
         // Every entry must end with content and metadata describing the SAME version.
         //
@@ -356,8 +356,8 @@ public sealed class TransactionalRestoreTests
         var store = TestHelpers.Store;
         string storeDir = Path.Combine(scope.TempDir, "notes");
 
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("alpha".StartsWith("/") || "alpha".StartsWith("~") ? "alpha" : "/" + "alpha"), Scope, ["alpha v1"]));
-        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("beta".StartsWith("/") || "beta".StartsWith("~") ? "beta" : "/" + "beta"), Scope, ["beta v1"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("alpha".StartsWith('/') || "alpha".StartsWith('~') ? "alpha" : "/" + "alpha"), Scope, ["alpha v1"]));
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("beta".StartsWith('/') || "beta".StartsWith('~') ? "beta" : "/" + "beta"), Scope, ["beta v1"]));
 
         // Bundle order drives commit order: alpha commits, then beta fails.
         var bundled = new List<ArtifactEntry>

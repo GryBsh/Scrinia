@@ -91,7 +91,7 @@ public sealed class TrackingPrecedenceTests : IDisposable
             LegacyFilesystemObservation observation =
                 new LegacyMigrationService().Inspect(scope.WorkspaceDir, envSingle, envDouble);
 
-            observation.Input.TrackingPolicy.Should().Be(TrackingPolicy.Local);
+            observation.Input!.TrackingPolicy.Should().Be(TrackingPolicy.Local);
         }
         finally
         {
@@ -114,7 +114,7 @@ public sealed class TrackingPrecedenceTests : IDisposable
             LegacyFilesystemObservation observation =
                 new LegacyMigrationService().Inspect(scope.WorkspaceDir, envSingle, envDouble);
 
-            observation.Input.TrackingPolicy.Should().Be(TrackingPolicy.ProjectGit);
+            observation.Input!.TrackingPolicy.Should().Be(TrackingPolicy.ProjectGit);
         }
         finally
         {
@@ -136,6 +136,7 @@ public sealed class TrackingPrecedenceTests : IDisposable
 }
 
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class TrackingPrecedenceCollection
 {
     public const string Name = "TrackingPrecedence";

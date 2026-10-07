@@ -12,6 +12,10 @@ namespace Scrinia.Tests.Embeddings;
 /// </summary>
 public sealed class MemoryVectorIndexerTests
 {
+    private static readonly float[] Vector1F0F = new[] { 1f, 0f };
+    private static readonly float[] Vector1F = new[] { 1f };
+    private static readonly float[] VectorFloatNaN0F = new[] { float.NaN, 0f };
+
     /// <summary>Returns a distinct unit vector per input so callers can tell vectors apart.</summary>
     private sealed class CountingProvider : IEmbeddingProvider
     {
@@ -44,7 +48,7 @@ public sealed class MemoryVectorIndexerTests
         public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
             => Task.FromResult<float[]?>([1f, 0f]);
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
-            => Task.FromResult<float[][]?>([.. texts.Skip(1).Select(_ => new[] { 1f, 0f })]);
+            => Task.FromResult<float[][]?>([.. texts.Skip(1).Select(_ => Vector1F0F)]);
         public void Dispose() { }
     }
 
@@ -58,9 +62,9 @@ public sealed class MemoryVectorIndexerTests
         public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
             => Task.FromResult<float[][]?>(texts.Select((_, i) => i switch
             {
-                0 => new[] { 1f },
-                1 => (float[]?)null,
-                _ => new[] { float.NaN, 0f }
+                0 => Vector1F,
+                1 => (float[])null!,
+                _ => VectorFloatNaN0F
             }).ToArray());
         public void Dispose() { }
     }
@@ -255,7 +259,7 @@ public sealed class MemoryVectorIndexerTests
         string dir = Path.Combine(Path.GetTempPath(), "scrinia-mvi-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
 
-        Action act = () => new MemoryVectorIndexer(
+        Action act = () => _ = new MemoryVectorIndexer(
             new CountingProvider(), new VectorStore(dir), NullLogger.Instance, options);
 
         act.Should().Throw<ArgumentOutOfRangeException>();

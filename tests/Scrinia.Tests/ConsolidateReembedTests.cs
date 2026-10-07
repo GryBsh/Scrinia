@@ -134,6 +134,7 @@ public sealed class ConsolidateReembedTests : IDisposable
 /// clobber each other's configured root. See Task G code-review followups.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix", Justification = "xUnit collection definition; the Collection suffix identifies the shared fixture contract.")]
 public sealed class GlobalWorkspaceConfigCollection
 {
     public const string Name = "GlobalWorkspaceConfig";

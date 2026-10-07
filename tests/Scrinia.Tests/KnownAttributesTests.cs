@@ -9,6 +9,8 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class KnownAttributesTests
 {
+    private static readonly string[] ExpectedPersonPlaceOrgThingTopicFileRefReview = new[] { "person", "place", "org", "thing", "topic", "file", "ref", "review" };
+
     [Theory]
     [InlineData("person"), InlineData("place"), InlineData("org"), InlineData("thing"), InlineData("topic")]
     [InlineData("file"), InlineData("ref")]
@@ -131,7 +133,7 @@ public sealed class KnownAttributesTests
     public void RecommendedKeys_AreTheGuidedSet()
     {
         KnownAttributes.RecommendedKeys.Should().BeEquivalentTo(
-            new[] { "person", "place", "org", "thing", "topic", "file", "ref", "review" });
+            ExpectedPersonPlaceOrgThingTopicFileRefReview);
     }
 
     [Fact]

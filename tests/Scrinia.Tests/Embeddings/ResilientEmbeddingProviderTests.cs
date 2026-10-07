@@ -69,8 +69,8 @@ public class ResilientEmbeddingProviderTests
 
         vectors.Should().NotBeNull();
         vectors!.Should().HaveCount(2);
-        vectors[0].Should().Equal(1f, 0f);
-        vectors[1].Should().Equal(0f, 1f);
+        vectors![0].Should().Equal(1f, 0f);
+        vectors![1].Should().Equal(0f, 1f);
         provider.Requests.Should().ContainSingle().Which.Should().Equal("first", "second");
     }
 
@@ -168,7 +168,7 @@ public class ResilientEmbeddingProviderTests
             Task.FromResult<float[]?>(_vectors.Dequeue());
     }
 
-    private class TrackingBatchProvider : ResilientEmbeddingProvider
+    private sealed class TrackingBatchProvider : ResilientEmbeddingProvider
     {
         public List<IReadOnlyList<string>> Requests { get; } = [];
 

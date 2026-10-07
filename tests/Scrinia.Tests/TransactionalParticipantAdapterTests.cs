@@ -591,8 +591,7 @@ public sealed class TransactionalParticipantAdapterTests
             [new MultiMemoryTransactionalParticipantRequest(
                 MemoryAddress.Parse("/memory/item"), "participant", 1, "participant-key",
                 "op", "kind", new Dictionary<string, string>(), new Dictionary<string, string>())])
-            .RequestedParticipants("tx")
-            .Last();
+            .RequestedParticipants("tx")[^1];
 
     private sealed class TestMonotonicClock : IMonotonicClock
     {

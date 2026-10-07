@@ -51,7 +51,7 @@ public sealed class SharedGitGuidanceTests
     [Fact]
     public void Guidance_never_claims_git_state()
     {
-        string guidance = SharedGitGuidance.Render("/srv/team-memory", [".scrinia/memories/a.nmp2"]);
+        string? guidance = SharedGitGuidance.Render("/srv/team-memory", [".scrinia/memories/a.nmp2"]);
 
         // The guidance prints exact commands only; it never asserts the resulting Git state or that a
         // command already ran (§7.2 / §8). Every mutable verb below is a state claim and must be absent.

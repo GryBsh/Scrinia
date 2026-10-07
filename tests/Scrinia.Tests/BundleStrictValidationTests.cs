@@ -9,6 +9,7 @@ namespace Scrinia.Tests;
 
 public sealed class BundleStrictValidationTests : IDisposable
 {
+
     private readonly string _root = Path.Combine(Path.GetTempPath(), "scrinia-bundle-strict-" + Guid.NewGuid().ToString("N"));
 
     public BundleStrictValidationTests() => Directory.CreateDirectory(_root);
@@ -104,6 +105,8 @@ public sealed class BundleStrictValidationTests : IDisposable
 
 internal static class BundleTestSupport
 {
+    private static readonly string[] ExpectedIncoming = new[] { "incoming" };
+
     public static string SentinelPath(string root) => Path.Combine(root, ".scrinia", "skills", "sentinel.md");
 
     public static (int TopicCount, int EntryCount, List<string> Names) Import(
@@ -147,7 +150,7 @@ internal static class BundleTestSupport
             Write(zip, "manifest.json", JsonSerializer.Serialize(new
             {
                 version = 2,
-                topics = new[] { "incoming" },
+                topics = ExpectedIncoming,
                 totalEntries = duplicateTopicEntry ? 2 : 1,
                 fileEntities,
             }));

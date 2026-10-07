@@ -13,6 +13,8 @@ namespace Scrinia.Tests;
 /// </summary>
 public class VectorStoreCaseTests : IDisposable
 {
+    private static readonly float[] Vector03F04F = new float[] { 0.3f, 0.4f };
+
     private readonly string _tempDir;
     private readonly VectorStore _store;
 
@@ -25,6 +27,7 @@ public class VectorStoreCaseTests : IDisposable
 
     public void Dispose()
     {
+        GC.SuppressFinalize(this);
         _store.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
@@ -37,7 +40,7 @@ public class VectorStoreCaseTests : IDisposable
 
         var vectors = _store.GetVectors("ephemeral");
         vectors.Should().HaveCount(1);
-        vectors[0].Vector.Should().BeEquivalentTo(new float[] { 0.3f, 0.4f });
+        vectors[0].Vector.Should().BeEquivalentTo(Vector03F04F);
     }
 
     [Fact]
@@ -49,13 +52,13 @@ public class VectorStoreCaseTests : IDisposable
         // In-memory view (cached, no reload) must already be deduped...
         var vectors = _store.GetVectors("local");
         vectors.Should().HaveCount(1);
-        vectors[0].Vector.Should().BeEquivalentTo(new float[] { 0.3f, 0.4f });
+        vectors[0].Vector.Should().BeEquivalentTo(Vector03F04F);
 
         // ...and match what a fresh instance sees after replaying the on-disk op-log,
         // which has always deduped case-insensitively (ReadEntryOps).
         using var reloaded = new VectorStore(_tempDir);
         var reloadedVectors = reloaded.GetVectors("local");
         reloadedVectors.Should().HaveCount(1);
-        reloadedVectors[0].Vector.Should().BeEquivalentTo(new float[] { 0.3f, 0.4f });
+        reloadedVectors[0].Vector.Should().BeEquivalentTo(Vector03F04F);
     }
 }

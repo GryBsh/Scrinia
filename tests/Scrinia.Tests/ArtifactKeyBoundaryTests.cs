@@ -15,8 +15,8 @@ public sealed class ArtifactKeyBoundaryTests
         {
             using var store = new FileMemoryStore(root);
 
-            ArtifactEntry persistent = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/topic/note".StartsWith("/") || "/topic/note".StartsWith("~") ? "/topic/note" : "/" + "/topic/note"), "local", ["body"]));
-            ArtifactEntry ephemeral = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith("/") || "~scratch".StartsWith("~") ? "~scratch" : "/" + "~scratch"), "local", ["thought"]));
+            ArtifactEntry persistent = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/topic/note".StartsWith('/') || "/topic/note".StartsWith('~') ? "/topic/note" : "/" + "/topic/note"), "local", ["body"]));
+            ArtifactEntry ephemeral = await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("~scratch".StartsWith('/') || "~scratch".StartsWith('~') ? "~scratch" : "/" + "~scratch"), "local", ["thought"]));
 
             persistent.Address.Should().Be(MemoryAddress.Parse("/topic/note"));
             ephemeral.Address.Should().Be(MemoryAddress.Parse("~scratch"));
@@ -65,7 +65,7 @@ public sealed class ArtifactKeyBoundaryTests
         {
             using var source = new FileMemoryStore(sourceRoot);
             using var target = new FileMemoryStore(targetRoot);
-            ArtifactEntry sourceEntry = await source.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/topic/note".StartsWith("/") || "/topic/note".StartsWith("~") ? "/topic/note" : "/" + "/topic/note"), "local", ["body"]));
+            ArtifactEntry sourceEntry = await source.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/topic/note".StartsWith('/') || "/topic/note".StartsWith('~') ? "/topic/note" : "/" + "/topic/note"), "local", ["body"]));
             string artifact = await source.ReadArtifactAsync(sourceEntry.Address);
 
             target.ImportTopicEntries("local:topic", [sourceEntry],

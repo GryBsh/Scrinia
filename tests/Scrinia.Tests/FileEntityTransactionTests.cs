@@ -510,7 +510,7 @@ public sealed class FileEntityTransactionTests
 
         File.ReadAllText(paths.Body).Should().Be("committed body");
         File.ReadAllText(paths.Meta).Should().Be("committed meta");
-        File.Exists(committed.Recovery.EvidencePath).Should().BeFalse();
+        File.Exists(committed.Recovery!.EvidencePath).Should().BeFalse();
     }
 
     [Fact]

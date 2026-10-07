@@ -33,10 +33,10 @@ public class SearchParameterShapeTests
         var tool = FindTool(toolName);
 
         tool.GetParameters().Single(p => p.Name == "scopes")
-            .ParameterType.Should().Be(typeof(string[]),
+            .ParameterType.Should().Be<string[]>(
                 because: $"{toolName}'s schema must be able to express a scope name containing a comma");
         tool.GetParameters().Single(p => p.Name == "excludeTopics")
-            .ParameterType.Should().Be(typeof(string[]),
+            .ParameterType.Should().Be<string[]>(
                 because: $"{toolName}'s schema must be able to express a topic name containing a comma");
     }
 

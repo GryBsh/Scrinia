@@ -146,8 +146,7 @@ public class AddressSurfaceCoverageTests
                 // CustomAttributeData preserves the real attribute identity without the test
                 // project's generated type shadowing the command assembly's type.
                 .Where(p => p.GetCustomAttributesData().Any(attribute =>
-                    attribute.AttributeType == typeof(ArgumentAttribute) ||
-                    attribute.AttributeType.FullName == typeof(ArgumentAttribute).FullName))
+                    attribute.AttributeType.FullName == "ConsoleAppFramework.ArgumentAttribute"))
                 .Select(p => $"{m.Name}.{p.Name}"))
             .ToList();
 

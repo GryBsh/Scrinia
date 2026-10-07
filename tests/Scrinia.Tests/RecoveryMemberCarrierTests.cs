@@ -22,8 +22,8 @@ public class RecoveryMemberCarrierTests
         Assert.Equal(".scrinia/memories/notes/candidate.nmp2.meta.json", member.SidecarPath);
         Assert.Equal("def456", member.SidecarSha256);
         // Distinct type: a RecoveryMember is never a RawMemberSnapshot.
-        Assert.False(member is RawMemberSnapshot);
-        Assert.False(member is RecoveryMemberSnapshot);
+        Assert.False((object)member is RawMemberSnapshot);
+        Assert.False((object)member is RecoveryMemberSnapshot);
     }
 
     [Fact]

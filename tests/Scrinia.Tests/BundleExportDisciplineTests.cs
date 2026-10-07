@@ -61,7 +61,7 @@ public sealed class BundleExportDisciplineTests
         Assert.Equal(2, entryCount);
         Assert.Equal(["api", "arch"], names);
 
-        ArtifactEntry api = imported.LoadIndex("local:api").First();
+        ArtifactEntry api = imported.LoadIndex("local:api")[0];
         Assert.Equal("How session rotation works.", api.ContentPreview);
     }
 

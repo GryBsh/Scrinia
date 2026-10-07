@@ -16,13 +16,17 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 /// </summary>
 public class SentenceMaxSimRerankerTests
 {
+    private static readonly float[] Vector10F = new float[] { 1.0f };
+    private static readonly float[] Vector10F00F00F = new float[] { 1.0f, 0.0f, 0.0f };
+    private static readonly float[] Vector10F00F = new float[] { 1.0f, 0.0f };
+
     [Fact]
     public async Task ReordersByMaxSim_WhenFirstStageScoresEqual()
     {
         // Three candidates, all with the same first-stage score (so first-stage
         // contributes nothing to ordering — normalized to 0 across the pool). The
         // reranker must reorder them by max sentence-cosine.
-        var queryVec = new float[] { 1.0f, 0.0f, 0.0f };
+        var queryVec = Vector10F00F00F;
         var embedder = new FakeEmbedder("query", queryVec);
 
         var sentenceIndex = new Dictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase)
@@ -62,13 +66,13 @@ public class SentenceMaxSimRerankerTests
         // at α=0.5 the outcome depends on normalized values — both are at the same
         // [0, 1] extreme of their respective sources, so they tie. Doc-c is the
         // tiebreaker showing the blend is genuinely combining, not just picking one.
-        var queryVec = new float[] { 1.0f, 0.0f };
+        var queryVec = Vector10F00F;
         var embedder = new FakeEmbedder("query", queryVec);
 
         var sentenceIndex = new Dictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase)
         {
             ["doc-a"] = new[] { new float[] { 0.0f, 1.0f } }, // cosine = 0.0 (orthogonal)
-            ["doc-b"] = new[] { new float[] { 1.0f, 0.0f } }, // cosine = 1.0 (perfect)
+            ["doc-b"] = new[] { Vector10F00F }, // cosine = 1.0 (perfect)
             ["doc-c"] = new[] { new float[] { 0.7f, 0.71f } }, // cosine ≈ 0.7
         };
 
@@ -106,7 +110,7 @@ public class SentenceMaxSimRerankerTests
     {
         // Config typos (e.g. 1.5 or -0.3) should degrade gracefully — clamp into [0, 1]
         // rather than crash mid-run on a long bench.
-        var embedder = new FakeEmbedder("q", new float[] { 1.0f });
+        var embedder = new FakeEmbedder("q", Vector10F);
 
         var over = new SentenceMaxSimReranker(embedder, _ => null, firstStageWeight: 1.5);
         over.FirstStageWeight.Should().Be(1.0);
@@ -121,7 +125,7 @@ public class SentenceMaxSimRerankerTests
         // Candidates with NO sentence vectors must not be dropped — they should still
         // participate in the ranking using only their normalized first-stage score.
         // Otherwise a missed-at-ingest doc would silently disappear from results.
-        var queryVec = new float[] { 1.0f, 0.0f, 0.0f };
+        var queryVec = Vector10F00F00F;
         var embedder = new FakeEmbedder("query", queryVec);
 
         var sentenceIndex = new Dictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase)
@@ -165,7 +169,7 @@ public class SentenceMaxSimRerankerTests
 
         var reranker = new SentenceMaxSimReranker(
             embedder,
-            _ => new[] { new float[] { 1.0f, 0.0f, 0.0f } });
+            _ => new[] { Vector10F00F00F });
 
         var candidates = new SearchResult[]
         {
@@ -182,7 +186,7 @@ public class SentenceMaxSimRerankerTests
     [Fact]
     public async Task EmptyCandidates_ReturnsEmpty()
     {
-        var embedder = new FakeEmbedder("query", new float[] { 1.0f, 0.0f });
+        var embedder = new FakeEmbedder("query", Vector10F00F);
         var reranker = new SentenceMaxSimReranker(embedder, _ => null);
 
         var result = await reranker.RerankAsync("query", [], CancellationToken.None);
@@ -192,7 +196,7 @@ public class SentenceMaxSimRerankerTests
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private static SearchResult MakeEntry(string name, double originalScore)
+    private static EntryResult MakeEntry(string name, double originalScore)
     {
         var entry = new ArtifactEntry(
             Name: name,

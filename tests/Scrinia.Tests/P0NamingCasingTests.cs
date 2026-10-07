@@ -12,6 +12,9 @@ namespace Scrinia.Tests;
 /// lands.</summary>
 public class P0NamingCasingTests
 {
+    private static readonly string[] ExpectedGoal = new[] { "goal" };
+    private static readonly string[] ExpectedGoal2 = new[] { "Goal" };
+
     /// <summary>Builds an entry with an explicit <c>Name</c> that is independent of the address,
     /// which the primary constructor's <c>Name</c> getter would otherwise derive from the address.
     /// This mirrors the shape TryUpdateEntryTests uses (primary constructor + <c>Attributes</c>),
@@ -105,7 +108,7 @@ public class P0NamingCasingTests
     public void PathParser_EntityMatch_IsCaseInsensitive_DespiteCaseSensitiveCallerSet()
     {
         var parsed = PathParser.Parse(
-            "/goal/G-5", new HashSet<string>(new[] { "goal" }, StringComparer.Ordinal));
+            "/goal/G-5", new HashSet<string>(ExpectedGoal, StringComparer.Ordinal));
         parsed.IsEntityPath.Should().BeTrue();
         parsed.EntityPairs.Should().ContainSingle().Which.Should().Be(
             new EntityIdPair("goal", "G-5"));
@@ -115,7 +118,7 @@ public class P0NamingCasingTests
     public void PathParser_EntityMatch_MixedCasePair()
     {
         var parsed = PathParser.Parse(
-            "/GOAL/g-5", new HashSet<string>(new[] { "goal" }, StringComparer.Ordinal));
+            "/GOAL/g-5", new HashSet<string>(ExpectedGoal, StringComparer.Ordinal));
         parsed.IsEntityPath.Should().BeTrue();
         parsed.Tags.Should().BeEmpty();
     }
@@ -123,7 +126,7 @@ public class P0NamingCasingTests
     [Fact]
     public void PathParser_CallerSet_NotMutated()
     {
-        var caller = new HashSet<string>(new[] { "Goal" }, StringComparer.Ordinal);
+        var caller = new HashSet<string>(ExpectedGoal2, StringComparer.Ordinal);
         PathParser.Parse("/goal/G-5", caller);
         caller.Should().ContainSingle().Which.Should().Be("Goal");
     }

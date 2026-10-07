@@ -3,6 +3,8 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Configuration;
 
+[assembly: System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1716:Identifiers should not match keywords", Scope = "namespace", Target = "~N:Scrinia.Tests.Shared", Justification = "Test-only namespace matches the Shared feature folder and has no cross-language consumers.")]
+
 namespace Scrinia.Tests.Shared;
 
 public sealed class McpCoreReferenceTests : IDisposable

@@ -12,6 +12,10 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 /// </summary>
 public class MemBenchLoaderTests : IAsyncLifetime
 {
+    private static readonly string[] Expected13 = new[] { "1", "3" };
+    private static readonly string[] Expected1718 = new[] { "17", "18" };
+    private static readonly string[] Expected4918 = new[] { "4", "9", "18" };
+
     private string _root = null!;
 
     public Task InitializeAsync()
@@ -80,7 +84,7 @@ public class MemBenchLoaderTests : IAsyncLifetime
         movieQ.Haystack[0].Id.Should().Be("1");
         movieQ.Haystack[0].Text.Should().Contain("2024-01-15");
         movieQ.Haystack[0].Text.Should().Contain("[User]");
-        movieQ.GroundTruthIds.Should().BeEquivalentTo(new[] { "1", "3" });
+        movieQ.GroundTruthIds.Should().BeEquivalentTo(Expected13);
     }
 
     [Fact]
@@ -145,7 +149,7 @@ public class MemBenchLoaderTests : IAsyncLifetime
         question.Haystack[0].Text.Should().Contain("[Assistant] Sure!");
         question.Haystack[1].Id.Should().Be("18");
         question.Haystack[1].Text.Should().Contain("[User] He's 28 years old.");
-        question.GroundTruthIds.Should().BeEquivalentTo(new[] { "17", "18" });
+        question.GroundTruthIds.Should().BeEquivalentTo(Expected1718);
     }
 
     [Fact]
@@ -188,11 +192,11 @@ public class MemBenchLoaderTests : IAsyncLifetime
         var question = qs[0];
         question.Category.Should().Be("RecMultiSession");
         question.Haystack.Should().HaveCount(3);
-        question.Haystack.Select(d => d.Id).Should().BeEquivalentTo(new[] { "4", "9", "18" },
+        question.Haystack.Select(d => d.Id).Should().BeEquivalentTo(Expected4918,
             because: "every turn must have a distinct id; defaulting to 0 collapses the whole haystack");
         question.Haystack[0].Text.Should().Contain("[User] I'm looking for a movie.");
         question.Haystack[0].Text.Should().Contain("[Assistant] Try Alien (1979).");
-        question.GroundTruthIds.Should().BeEquivalentTo(new[] { "4", "9", "18" });
+        question.GroundTruthIds.Should().BeEquivalentTo(Expected4918);
     }
 
     [Fact]

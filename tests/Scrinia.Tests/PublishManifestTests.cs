@@ -849,7 +849,7 @@ public sealed class PublishManifestTests
             .Select(target => target.Command)
             .Should().OnlyContain(command => !Regex.IsMatch(command, "with-embeddings", RegexOptions.IgnoreCase));
         targets.Where(target => target.WithEmbeddings)
-            .Select(target => Regex.Matches(target.Command, "(?:-WithEmbeddings|--with-embeddings)", RegexOptions.IgnoreCase).Count)
+            .Select(target => Regex.Count(target.Command, "(?:-WithEmbeddings|--with-embeddings)", RegexOptions.IgnoreCase))
             .Should().OnlyContain(count => count == 1);
 
         ReadWorkflowSteps().SelectMany(step => step.Commands)

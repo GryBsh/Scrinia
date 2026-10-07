@@ -32,6 +32,7 @@ namespace Scrinia.Plugin.Embeddings.Tests;
 /// logged for the seeded namespaced-scope memory — which only happens if <c>ResolveArtifactAsync</c>
 /// threw <see cref="FileNotFoundException"/> resolving the mis-derived scope.
 /// </summary>
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class EmbeddingsPluginReindexTests : IDisposable
 {
     private readonly ProcessEnvironmentLock _environmentLock;

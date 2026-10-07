@@ -339,13 +339,19 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         int from = 0;
         for (int i = 1; i <= chunkCount; i++)
         {
-            string marker = $"##CHUNK:{i}\n";
-            int start = artifact.IndexOf(marker, from, StringComparison.Ordinal);
+            string marker = $"##CHUNK:{i}";
+            int start = artifact.IndexOf(marker + "\n", from, StringComparison.Ordinal);
+            int markerLength = marker.Length + 1;
+            if (start < 0)
+            {
+                start = artifact.IndexOf(marker + "\r\n", from, StringComparison.Ordinal);
+                markerLength++;
+            }
             if (start < 0)
                 throw new FormatException($"Could not find ##CHUNK:{i} marker in artifact.");
             // find ##PAD: after the marker
             string padPrefix = "##PAD:";
-            int padStart = artifact.IndexOf(padPrefix, start + marker.Length, StringComparison.Ordinal);
+            int padStart = artifact.IndexOf(padPrefix, start + markerLength, StringComparison.Ordinal);
             if (padStart < 0)
                 throw new FormatException($"Could not find ##PAD: after ##CHUNK:{i}.");
             int padEnd = artifact.IndexOf('\n', padStart);

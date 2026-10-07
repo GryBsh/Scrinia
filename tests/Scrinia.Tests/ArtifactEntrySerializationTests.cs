@@ -14,7 +14,7 @@ public sealed partial class ArtifactEntrySerializationTests
         PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(ArtifactEntry))]
-    private partial class TestCtx : JsonSerializerContext;
+    private sealed partial class TestCtx : JsonSerializerContext;
 
     private static ArtifactEntry Sample(Dictionary<string, string[]>? attrs) => new(
         Address: MemoryAddress.Parse("/n"), ArtifactKey: "artifacts/n.nmp2", OriginalBytes: 10, ChunkCount: 1,

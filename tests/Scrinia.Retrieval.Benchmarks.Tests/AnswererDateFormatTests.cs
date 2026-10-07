@@ -1,6 +1,8 @@
 using Scrinia.Retrieval.Benchmarks.Core;
 using Xunit;
 
+namespace Scrinia.Retrieval.Benchmarks.Tests;
+
 public class AnswererDateFormatTests
 {
     [Fact]

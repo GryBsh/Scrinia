@@ -94,7 +94,7 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
     private VectorStore? _vectorStore;
     // Task 2's query path reads this to add the semantic + path-segment score
     // contributions. Null on the no-embedder path.
-    private ISearchScoreContributor? _searchContributor;
+    private CompositeSearchScoreContributor? _searchContributor;
     private bool _ingested;
     private readonly SemaphoreSlim _episodeGate = new(1, 1);
     // entryName -> ordered doc ids the memory resolves to (empty = no usable citation).
@@ -397,7 +397,7 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         }
     }
 
-    private async Task RunSessionEpisodeAsync(IReadOnlyList<HaystackDoc> sessionDocs, CancellationToken ct)
+    private async Task RunSessionEpisodeAsync(List<HaystackDoc> sessionDocs, CancellationToken ct)
     {
         string transcript = AgenticIngestPrompts.SessionUserMessage(sessionDocs);
         string key = EpisodeCache.Key(_modelSlug, AgenticIngestPrompts.PromptVersion, transcript);

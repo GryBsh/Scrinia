@@ -5,6 +5,8 @@ namespace Scrinia.Tests;
 
 public sealed class SharedBaseRegistryTests : IDisposable
 {
+    private static readonly string[] ExpectedFirstSecond = new[] { "first", "second" };
+
     private readonly string _home = Path.Combine(Path.GetTempPath(), "scrinia-registry-tests", Guid.NewGuid().ToString("N"));
     private readonly string _workspace = Path.Combine(Path.GetTempPath(), "scrinia-registry-workspace", Guid.NewGuid().ToString("N"));
 
@@ -176,7 +178,7 @@ public sealed class SharedBaseRegistryTests : IDisposable
         Task secondEnable = Task.Run(() => { start.SignalAndWait(); secondRegistry.Enable("second"); });
         await Task.WhenAll(firstEnable, secondEnable);
 
-        WorkspaceConfig.Load(_workspace).GetEnabledBases().Should().BeEquivalentTo(new[] { "first", "second" });
+        WorkspaceConfig.Load(_workspace).GetEnabledBases().Should().BeEquivalentTo(ExpectedFirstSecond);
     }
 
     [Fact]

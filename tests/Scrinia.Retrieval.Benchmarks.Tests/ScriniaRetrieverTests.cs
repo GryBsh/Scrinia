@@ -9,8 +9,14 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 /// run a query, verify the most relevant doc comes back top-1. If this breaks, the
 /// whole benchmark harness is broken — BM25 plumbing is wired wrong.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "xUnit invokes IAsyncLifetime.DisposeAsync, which awaits _retriever.DisposeAsync.")]
 public class ScriniaRetrieverTests : IAsyncLifetime
 {
+    private static readonly string[] ExpectedZorptree = new[] { "zorptree" };
+    private static readonly string[] ExpectedAlice = new[] { "alice" };
+    private static readonly string[] ExpectedZeta = new[] { "zeta" };
+    private static readonly string[] ExpectedBob = new[] { "bob" };
+
     private string _tempDir = null!;
     private ScriniaRetriever _retriever = null!;
 
@@ -101,7 +107,7 @@ public class ScriniaRetrieverTests : IAsyncLifetime
         // Content never contains "zorptree"; only the agent attribute value carries it.
         await _retriever.IngestAsync(
             new HaystackDoc("d1", "the subsystem orchestrates lifecycle hooks", null),
-            new Dictionary<string, string[]> { ["topic"] = new[] { "zorptree" } },
+            new Dictionary<string, string[]> { ["topic"] = ExpectedZorptree },
             null);
         await _retriever.IngestAsync(new HaystackDoc("d2", "completely unrelated gardening notes", null));
 
@@ -123,9 +129,9 @@ public class ScriniaRetrieverTests : IAsyncLifetime
         await using var eg = new ScriniaRetriever(root, entityGraphEnabled: true);
 
         await eg.IngestAsync(new HaystackDoc("d1", "kickoff sync recap", null),
-            new Dictionary<string, string[]> { ["person"] = new[] { "alice" }, ["topic"] = new[] { "zeta" } }, null);
+            new Dictionary<string, string[]> { ["person"] = ExpectedAlice, ["topic"] = ExpectedZeta }, null);
         await eg.IngestAsync(new HaystackDoc("d2", "kickoff sync recap", null),
-            new Dictionary<string, string[]> { ["topic"] = new[] { "zeta" }, ["person"] = new[] { "bob" } }, null);
+            new Dictionary<string, string[]> { ["topic"] = ExpectedZeta, ["person"] = ExpectedBob }, null);
 
         var hits = await eg.RetrieveAsync("alice", topK: 5);
 
@@ -139,9 +145,9 @@ public class ScriniaRetrieverTests : IAsyncLifetime
         // Same setup on the default (entity-graph-off) retriever: "alice" lexically hits only d1,
         // so BM25 alone never surfaces d2. Pins the sibling test's lift to the entity graph.
         await _retriever.IngestAsync(new HaystackDoc("d1", "kickoff sync recap", null),
-            new Dictionary<string, string[]> { ["person"] = new[] { "alice" }, ["topic"] = new[] { "zeta" } }, null);
+            new Dictionary<string, string[]> { ["person"] = ExpectedAlice, ["topic"] = ExpectedZeta }, null);
         await _retriever.IngestAsync(new HaystackDoc("d2", "kickoff sync recap", null),
-            new Dictionary<string, string[]> { ["topic"] = new[] { "zeta" }, ["person"] = new[] { "bob" } }, null);
+            new Dictionary<string, string[]> { ["topic"] = ExpectedZeta, ["person"] = ExpectedBob }, null);
 
         var hits = await _retriever.RetrieveAsync("alice", topK: 5);
 

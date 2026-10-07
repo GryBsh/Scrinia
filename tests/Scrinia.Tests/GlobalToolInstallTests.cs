@@ -29,11 +29,14 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class GlobalToolInstallTests : IDisposable
 {
+    private static readonly JsonSerializerOptions IndentedJsonOptions = new JsonSerializerOptions { WriteIndented = true };
+
     private const string ScriniaHomeVar = "SCRINIA_HOME";
     private const string ToolPackageId = "scrinia";
     private const string FirstVersion = "0.7.0";
     private const string SecondVersion = "0.8.0";
     private static readonly object FixtureGate = new();
+    private static readonly string ToolFileName = OperatingSystem.IsWindows() ? "scri.exe" : "scri";
 
     private static readonly string InitializeRequest = JsonSerializer.Serialize(new
     {
@@ -54,6 +57,7 @@ public sealed class GlobalToolInstallTests : IDisposable
         method = "notifications/initialized"
     });
 
+    private readonly string _root;
     private readonly string _feed;
     private readonly string _toolPath;
     private readonly string _home;
@@ -66,6 +70,7 @@ public sealed class GlobalToolInstallTests : IDisposable
     public GlobalToolInstallTests()
     {
         FixtureResources fixture = CreateFixture();
+        _root = fixture.Root;
         _feed = fixture.Feed;
         _toolPath = fixture.ToolPath;
         _home = fixture.Home;
@@ -78,11 +83,12 @@ public sealed class GlobalToolInstallTests : IDisposable
 
     private static FixtureResources CreateFixture()
     {
-        string feed = Path.Combine(Path.GetTempPath(), $"scrinia-feed-{Guid.NewGuid():N}");
-        string toolPath = Path.Combine(Path.GetTempPath(), $"scrinia-tool-{Guid.NewGuid():N}");
-        string home = Path.Combine(Path.GetTempPath(), $"scrinia-home-{Guid.NewGuid():N}");
-        string workspace = Path.Combine(Path.GetTempPath(), $"scrinia-ws-{Guid.NewGuid():N}");
-        string sharedBase = Path.Combine(Path.GetTempPath(), $"scrinia-base-{Guid.NewGuid():N}");
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia lifecycle ü {Guid.NewGuid():N}");
+        string feed = Path.Combine(root, "feed");
+        string toolPath = Path.Combine(root, "tool");
+        string home = Path.Combine(root, "home");
+        string workspace = Path.Combine(root, "workspace");
+        string sharedBase = Path.Combine(root, "shared base");
         string[] ownedDirectories = [feed, toolPath, home, workspace, sharedBase];
         List<string> stages = [];
 
@@ -120,17 +126,17 @@ public sealed class GlobalToolInstallTests : IDisposable
                     "the first global tool version must install into the isolated tool path");
             }
 
-            string scriExe = Directory.EnumerateFiles(toolPath, "scri.exe", SearchOption.AllDirectories)
+            string scriExe = Directory.EnumerateFiles(toolPath, ToolFileName, SearchOption.AllDirectories)
                 .SingleOrDefault()
-                ?? throw new InvalidOperationException("the first global tool version did not install scri.exe");
+                ?? throw new InvalidOperationException($"the first global tool version did not install {ToolFileName}");
             return new FixtureResources(
-                feed, toolPath, home, workspace, sharedBase, scriExe,
+                root, feed, toolPath, home, workspace, sharedBase, scriExe,
                 CapturePackageTree(toolPath), stages);
         }
         catch
         {
             List<Exception> cleanupFailures = [];
-            foreach (string directory in ownedDirectories)
+            foreach (string directory in new[] { root })
             {
                 try { DeleteDirectoryWithRetry(directory); }
                 catch (Exception cleanupFailure) { cleanupFailures.Add(cleanupFailure); }
@@ -143,6 +149,7 @@ public sealed class GlobalToolInstallTests : IDisposable
     }
 
     private sealed record FixtureResources(
+        string Root,
         string Feed,
         string ToolPath,
         string Home,
@@ -156,7 +163,7 @@ public sealed class GlobalToolInstallTests : IDisposable
     {
         using ProcessEnvironmentLock environmentLock = ProcessEnvironmentLock.Acquire();
         List<Exception> cleanupFailures = [];
-        foreach (string dir in new[] { _feed, _toolPath, _home, _workspace, _sharedBase })
+        foreach (string dir in new[] { _root })
         {
             try
             {
@@ -267,7 +274,7 @@ public sealed class GlobalToolInstallTests : IDisposable
         uninstall.Should().Be(0, "dotnet tool uninstall must remove the global tool from the isolated tool path");
 
         Directory
-            .EnumerateFiles(_toolPath, "scri.exe", SearchOption.AllDirectories)
+            .EnumerateFiles(_toolPath, ToolFileName, SearchOption.AllDirectories)
             .Should().BeEmpty("uninstall must remove the scri executable from the isolated tool path");
 
         _stages.Should().ContainInOrder(
@@ -281,11 +288,12 @@ public sealed class GlobalToolInstallTests : IDisposable
     {
         ProcessRunner runner = new();
         string dotnet = runner.ResolveExecutable("dotnet")!;
-        string cycleFeed = Path.Combine(Path.GetTempPath(), $"scrinia-feed-cycle2-{Guid.NewGuid():N}");
-        string cycleToolPath = Path.Combine(Path.GetTempPath(), $"scrinia-tool-cycle2-{Guid.NewGuid():N}");
-        string cycleHome = Path.Combine(Path.GetTempPath(), $"scrinia-home-cycle2-{Guid.NewGuid():N}");
-        string cycleWorkspace = Path.Combine(Path.GetTempPath(), $"scrinia-ws-cycle2-{Guid.NewGuid():N}");
-        string cycleSharedBase = Path.Combine(Path.GetTempPath(), $"scrinia-base-cycle2-{Guid.NewGuid():N}");
+        string cycleRoot = Path.Combine(Path.GetTempPath(), $"scrinia lifecycle ü {Guid.NewGuid():N}");
+        string cycleFeed = Path.Combine(cycleRoot, "feed");
+        string cycleToolPath = Path.Combine(cycleRoot, "tool");
+        string cycleHome = Path.Combine(cycleRoot, "home");
+        string cycleWorkspace = Path.Combine(cycleRoot, "workspace");
+        string cycleSharedBase = Path.Combine(cycleRoot, "shared base");
         List<string> stages = [];
         void MarkCycleStage(string stage)
         {
@@ -295,6 +303,7 @@ public sealed class GlobalToolInstallTests : IDisposable
 
         ProcessEnvironmentLock environmentLock = ProcessEnvironmentLock.Acquire();
         EnvironmentVariableScope? homeScope = null;
+        List<Exception> failures = [];
         try
         {
             foreach (string dir in new[] { cycleFeed, cycleToolPath, cycleHome, cycleWorkspace, cycleSharedBase })
@@ -320,7 +329,7 @@ public sealed class GlobalToolInstallTests : IDisposable
             }
             MarkCycleStage("install:0.7.0");
             InstallFromFeed(runner, cycleFeed, cycleToolPath, FirstVersion).Should().Be(0);
-            string cycleExe = Directory.EnumerateFiles(cycleToolPath, "scri.exe", SearchOption.AllDirectories).Single();
+            string cycleExe = Directory.EnumerateFiles(cycleToolPath, ToolFileName, SearchOption.AllDirectories).Single();
             Dictionary<string, string> firstSnapshot = CapturePackageTree(cycleToolPath);
 
             homeScope = new EnvironmentVariableScope(ScriniaHomeVar, cycleHome);
@@ -359,16 +368,19 @@ public sealed class GlobalToolInstallTests : IDisposable
             MarkCycleStage("uninstall");
             runner.RunAsync(dotnet, ["tool", "uninstall", "--tool-path", cycleToolPath, ToolPackageId], null,
                 Timeout(120)).GetAwaiter().GetResult().ExitCode.Should().Be(0);
-            Directory.EnumerateFiles(cycleToolPath, "scri.exe", SearchOption.AllDirectories).Should().BeEmpty();
+            Directory.EnumerateFiles(cycleToolPath, ToolFileName, SearchOption.AllDirectories).Should().BeEmpty();
             stages.Should().ContainInOrder(
                 "pack:0.7.0", "pack:0.8.0", "install:0.7.0", "version:first", "serve:first", "shared-serve:first",
                 "setup", "update", "version:updated", "serve:updated", "shared-serve:updated", "uninstall");
         }
+        catch (Exception ex)
+        {
+            failures.Add(ex);
+        }
         finally
         {
             homeScope?.Dispose();
-            List<Exception> failures = [];
-            foreach (string dir in new[] { cycleFeed, cycleToolPath, cycleHome, cycleWorkspace, cycleSharedBase })
+            foreach (string dir in new[] { cycleRoot })
             {
                 try
                 {
@@ -380,9 +392,9 @@ public sealed class GlobalToolInstallTests : IDisposable
                 }
             }
             environmentLock.Dispose();
-            if (failures.Count > 0)
-                throw new AggregateException("Second global tool lifecycle fixture cleanup failed.", failures);
         }
+        if (failures.Count > 0)
+            throw new AggregateException("Second global tool lifecycle fixture cleanup failed.", failures);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -502,7 +514,7 @@ public sealed class GlobalToolInstallTests : IDisposable
                 }
             }
 
-            await process.WaitForExitAsync().ConfigureAwait(false);
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         }
 
         // The first read may still be waiting for EOF after a handshake timeout. Once the
@@ -667,6 +679,7 @@ public sealed class GlobalToolInstallTests : IDisposable
         System.Diagnostics.Process? process = null;
         Task<string?>? output = null;
         Task<string>? error = null;
+        List<Exception> failures = [];
         try
         {
             process = System.Diagnostics.Process.Start(psi)!;
@@ -683,16 +696,19 @@ public sealed class GlobalToolInstallTests : IDisposable
             (await error).Should().Contain("parent-stderr");
 
             EventWaitHandle? liveEvent = null;
-            bool childStillOwnsLivenessEvent = EventWaitHandle.TryOpenExisting(eventName, out liveEvent);
+            bool childStillOwnsLivenessEvent = OperatingSystem.IsWindows() && EventWaitHandle.TryOpenExisting(eventName, out liveEvent);
             liveEvent?.Dispose();
             childStillOwnsLivenessEvent.Should().BeFalse(
                 "the child-created liveness event must be gone after the process tree is terminated");
             File.ReadAllText(marker).Should().NotContain("child-finished",
                 "the child must be terminated before it can report completion");
         }
+        catch (Exception ex)
+        {
+            failures.Add(ex);
+        }
         finally
         {
-            List<Exception> failures = [];
             if (process is not null)
             {
                 try { await CleanupFailedProbeAsync(process, output, error).ConfigureAwait(false); }
@@ -706,9 +722,9 @@ public sealed class GlobalToolInstallTests : IDisposable
                 catch (Exception ex) { failures.Add(new IOException($"Failed to delete probe artifact '{path}'.", ex)); }
             }
 
-            if (failures.Count > 0)
-                throw new AggregateException("Timed-out process probe cleanup was incomplete.", failures);
         }
+        if (failures.Count > 0)
+            throw new AggregateException("Timed-out process probe cleanup was incomplete.", failures);
     }
 
     private static ProcessResult Run(string executable, IReadOnlyList<string> arguments, string? stdin)
@@ -820,7 +836,7 @@ public sealed class GlobalToolInstallTests : IDisposable
 
     private static void WriteJson(string path, object value)
     {
-        File.WriteAllText(path, JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }),
+        File.WriteAllText(path, JsonSerializer.Serialize(value, IndentedJsonOptions),
             new UTF8Encoding(false));
     }
 

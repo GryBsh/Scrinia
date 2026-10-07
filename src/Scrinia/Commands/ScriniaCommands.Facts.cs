@@ -6,16 +6,12 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Query the entity fact store: entities | profile | intersect.</summary>
-    /// <param name="op">Operation: 'entities', 'profile', or 'intersect'.</param>
-    /// <param name="target">profile: the entity ('key:value' or bare value). intersect: comma-separated entities (e.g. 'person:jolene,place:france'). Ignored for 'entities'.</param>
+    /// <summary>Query entity facts.</summary>
+    /// <param name="op">Operation: entities, profile, or intersect.</param>
+    /// <param name="target">Entity for profile, or comma-separated entities for intersect; unused by entities.</param>
     /// <param name="key">entities: optional key filter, e.g. 'person'.</param>
-    /// <param name="scopes">Comma-separated scopes to narrow to (same semantics as search). A
-    /// scope name containing a comma cannot be addressed this way; use the MCP `facts` tool
-    /// instead, which takes scopes as a real array.</param>
-    /// <param name="excludeTopics">Comma-separated topic names to exclude (same semantics as
-    /// search). A topic name containing a comma cannot be addressed this way; use the MCP `facts`
-    /// tool instead.</param>
+    /// <param name="scopes">Comma-separated scopes; use MCP facts for a scope containing a comma.</param>
+    /// <param name="excludeTopics">Comma-separated topics to exclude; use MCP facts for a topic containing a comma.</param>
     /// <param name="limit">Max rows for the entities list / profile timeline.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of raw YAML.</param>

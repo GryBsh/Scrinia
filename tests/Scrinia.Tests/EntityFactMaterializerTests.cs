@@ -82,7 +82,7 @@ public sealed class EntityFactMaterializerTests
             materializer.Materialize([item], new Dictionary<string, PersistedFactResult>());
             materializer.IsDirty.Should().BeTrue();
 
-            await participant.FlushAsync(CancellationToken.None);
+            await participant!.FlushAsync(CancellationToken.None);
 
             materializer.IsDirty.Should().BeFalse();
             materializer.DirtyQueue.Should().BeEmpty();

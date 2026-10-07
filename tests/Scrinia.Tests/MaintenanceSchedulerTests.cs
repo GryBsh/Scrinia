@@ -14,6 +14,8 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class MaintenanceSchedulerTests
 {
+    private static readonly string[] ExpectedInvokeStartStopCalledInvokeEndStopReturned = new[] { "invoke-start", "stop-called", "invoke-end", "stop-returned" };
+
     private static MaintenanceResult EmptyCompletedResult() =>
         new(0, 0, 0, true, false, false, false, false, false, false,
             null, Array.Empty<MaintenanceScopeResult>(), Array.Empty<string>(), null);
@@ -268,7 +270,7 @@ public sealed class MaintenanceSchedulerTests
 
         string[] ordered;
         lock (sequence) ordered = sequence.ToArray();
-        Assert.Equal(new[] { "invoke-start", "stop-called", "invoke-end", "stop-returned" }, ordered);
+        Assert.Equal(ExpectedInvokeStartStopCalledInvokeEndStopReturned, ordered);
     }
 
     // ── No unrelated drain ──────────────────────────────────────────────

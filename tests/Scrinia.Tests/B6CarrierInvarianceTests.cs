@@ -33,6 +33,9 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed partial class B6CarrierInvarianceTests
 {
+    private static readonly string[] ExpectedStrategyIdOriginalBytesCrc32 = new[] { "StrategyId", "OriginalBytes", "Crc32" };
+    private static readonly string[] ExpectedAppendJournalRestoreJournalRecoveryEnvelopeMultiMemoryTransactionBundleRestoreJournal = new[] { "append-journal", "restore-journal", "recovery-envelope", "multi-memory-transaction", "bundle-restore-journal" };
+
     /// <summary>
     /// Every B1–B5 control-data key that must never appear inside the artifact sidecar carrier.
     /// Matched as a case-insensitive substring so a camelCase or PascalCase serialization of the
@@ -66,7 +69,7 @@ public sealed partial class B6CarrierInvarianceTests
         PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(ArtifactEntry))]
-    private partial class SidecarMirror : JsonSerializerContext;
+    private sealed partial class SidecarMirror : JsonSerializerContext;
 
     /// <summary>A realistic entry with a full attribute set, including B5's maintenance signals
     /// (<c>orphan</c> state marker + <c>file</c>/<c>ref</c> reference keys).</summary>
@@ -177,7 +180,7 @@ public sealed partial class B6CarrierInvarianceTests
         typeof(ArtifactMetadata)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Select(p => p.Name)
-            .Should().BeEquivalentTo(new[] { "StrategyId", "OriginalBytes", "Crc32" });
+            .Should().BeEquivalentTo(ExpectedStrategyIdOriginalBytesCrc32);
     }
 
     [Fact]
@@ -188,7 +191,7 @@ public sealed partial class B6CarrierInvarianceTests
             "the thirteen durable formats are declared exactly once, carrier and control data alike");
 
         DurableFormats.Registry.Keys.Should().Contain(
-            new[] { "append-journal", "restore-journal", "recovery-envelope", "multi-memory-transaction", "bundle-restore-journal" },
+            ExpectedAppendJournalRestoreJournalRecoveryEnvelopeMultiMemoryTransactionBundleRestoreJournal,
             "B1-B5 control data lives in its own distinct, versioned format contracts — not inside the carrier");
 
         // Five DISTINCT contracts: the control-data formats are separate carriers, so the

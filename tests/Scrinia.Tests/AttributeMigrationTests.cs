@@ -9,6 +9,8 @@ namespace Scrinia.Tests;
 
 public sealed class AttributeMigrationTests
 {
+    private static readonly string[] ExpectedPersonMariaTopicAuthLooseKeyword = new[] { "person:maria", "topic:auth", "loose-keyword" };
+
     // Mirrors FileMemoryStoreTests' temp-dir + FileMemoryStore(root) construction/disposal.
     private sealed class TempWorkspace : IDisposable
     {
@@ -133,7 +135,7 @@ public sealed class AttributeMigrationTests
         store.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "note" }, "local:findings");
 
         AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
-        store.LoadIndex("local:findings").First().Attributes!["file"].Should().BeEquivalentTo("src/A.cs");
+        store.LoadIndex("local:findings")[0].Attributes!["file"].Should().BeEquivalentTo("src/A.cs");
     }
 
     [Fact]
@@ -143,7 +145,7 @@ public sealed class AttributeMigrationTests
         var m = AttributeMigration.Forward(e);
         m.Attributes!["person"].Should().BeEquivalentTo("maria");
         m.Attributes!["topic"].Should().BeEquivalentTo("auth");
-        m.Keywords.Should().Contain(new[] { "person:maria", "topic:auth", "loose-keyword" });
+        m.Keywords.Should().Contain(ExpectedPersonMariaTopicAuthLooseKeyword);
     }
 
     [Fact]

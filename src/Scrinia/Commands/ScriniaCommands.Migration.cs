@@ -21,11 +21,7 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>
-    /// Migrates a workspace store to the v3 layout, where every memory lives under
-    /// .scrinia/memories/. Runs automatically on first store access; this command exists
-    /// to preview the plan, migrate deliberately, or re-run after restoring a backup.
-    /// </summary>
+    /// <summary>Migrate the workspace store to the v3 layout.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="dryRun">Print how many files would move without moving any.</param>
     /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>
@@ -138,12 +134,12 @@ public partial class ScriniaCommands
         }
     }
 
-    /// <summary>Run deterministic consolidation passes against the local store. Mechanical only — no LLM calls.</summary>
+    /// <summary>Compact eligible session memories and report stale entries.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="auto">When set, skip if .scrinia/.last-consolidation indicates a recent run (debounce). Intended for hook-driven invocation.</param>
-    /// <param name="dryRun">Report what would change without modifying anything.</param>
-    /// <param name="debounceMinutes">Minimum minutes between auto runs. Prevents wasted work when invoked repeatedly.</param>
-    /// <param name="sessionAgeDays">Compact multi-chunk session entries older than N days (preserves content, drops chunk granularity).</param>
+    /// <param name="auto">Skip recent runs using the debounce marker.</param>
+    /// <param name="dryRun">Preview changes without writing.</param>
+    /// <param name="debounceMinutes">Minimum minutes between automatic runs.</param>
+    /// <param name="sessionAgeDays">Compact multi-chunk sessions older than this many days.</param>
     /// <param name="json">Output as JSON instead of a styled table.</param>
     public async Task<int> Consolidate(
         string? workspaceRoot = null,
@@ -345,10 +341,7 @@ public partial class ScriniaCommands
         }
     }
 
-    /// <summary>Migrate stored memories to the attributes model (forward-fill: tags, codeRefs,
-    /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.
-    /// Named <c>migrate_attributes</c> on the CLI — unrelated to <see cref="Migrate"/>, which
-    /// migrates the on-disk store layout and owns the plain <c>migrate</c> command name.</summary>
+    /// <summary>Forward-fill stored memories into the attributes model; safe to re-run.</summary>
     /// <param name="workspaceRoot">Workspace root. Defaults to the nearest ancestor with a .scrinia/ dir.</param>
     /// <param name="dryRun">Report what would change without writing.</param>
     /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>

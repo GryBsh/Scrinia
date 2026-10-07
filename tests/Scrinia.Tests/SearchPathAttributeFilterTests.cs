@@ -8,6 +8,8 @@ namespace Scrinia.Tests;
 
 public sealed class SearchPathAttributeFilterTests : IDisposable
 {
+    private static readonly string[] ExpectedSpec = new[] { "spec" };
+
     private readonly string _root;
     private readonly FileMemoryStore _store;
 
@@ -79,7 +81,7 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
         var tagged = new ArtifactEntry("t1", "alpha", 5, 1, DateTimeOffset.UtcNow)
         {
             TermFrequencies = new Dictionary<string, int> { ["alpha"] = 3 },
-            Attributes = new Dictionary<string, string[]> { ["kind"] = new[] { "spec" } },
+            Attributes = new Dictionary<string, string[]> { ["kind"] = ExpectedSpec },
         };
         // "local:memory" (bare, no child topic) is never discoverable via DiscoverTopics —
         // "memory" is a reserved namespace directory that only yields scopes of the form
@@ -91,7 +93,7 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
         var results = _store.SearchAll(new SearchQuery("alpha")
         {
             Limit = 10,
-            AttributeFilter = new Dictionary<string, string[]> { ["kind"] = new[] { "spec" } },
+            AttributeFilter = new Dictionary<string, string[]> { ["kind"] = ExpectedSpec },
         });
 
         results.OfType<EntryResult>().Should().OnlyContain(r => r.Item.Entry.Name == "t1");

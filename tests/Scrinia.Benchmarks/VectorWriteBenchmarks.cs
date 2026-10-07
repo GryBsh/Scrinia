@@ -27,6 +27,7 @@ namespace Scrinia.Benchmarks;
 /// also pinned to in-process.</para>
 /// </summary>
 [Config(typeof(MonitoringInProcessConfig))]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "BenchmarkDotNet invokes IterationCleanup Cleanup, which disposes _store.")]
 public class VectorWriteBenchmarks
 {
     [Params(1, 10, 50, 200)]

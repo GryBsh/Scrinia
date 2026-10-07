@@ -25,7 +25,7 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
     public async Task ExportedIndexContainsLogicalAddressAndPortableKeyOnly()
     {
         using var source = new FileMemoryStore(Path.Combine(_root, "source"));
-        await source.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/portable/note".StartsWith("/") || "/portable/note".StartsWith("~") ? "/portable/note" : "/" + "/portable/note"), "local:portable", ["body"], attributes: [], keywords: []));
+        await source.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/portable/note".StartsWith('/') || "/portable/note".StartsWith('~') ? "/portable/note" : "/" + "/portable/note"), "local:portable", ["body"], attributes: [], keywords: []));
 
         byte[] bundle = Export(source);
         using var stream = new MemoryStream(bundle);
@@ -51,7 +51,7 @@ public sealed class BundleArtifactKeyPortabilityTests : IDisposable
         Directory.CreateDirectory(targetRoot);
         using var source = new FileMemoryStore(sourceRoot);
         using var target = new FileMemoryStore(targetRoot);
-        await source.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/portable/note".StartsWith("/") || "/portable/note".StartsWith("~") ? "/portable/note" : "/" + "/portable/note"), "local:portable", ["qualified body"], attributes: [], keywords: []));
+        await source.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/portable/note".StartsWith('/') || "/portable/note".StartsWith('~') ? "/portable/note" : "/" + "/portable/note"), "local:portable", ["qualified body"], attributes: [], keywords: []));
 
         using var zip = OpenZip(Export(source));
         BundleFormatService.ImportTopicsFromZip(zip, target, filterTopics: null, overwrite: true);

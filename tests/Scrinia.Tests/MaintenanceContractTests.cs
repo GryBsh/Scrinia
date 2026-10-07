@@ -8,6 +8,10 @@ namespace Scrinia.Tests;
 
 public sealed class MaintenanceContractTests
 {
+    private static readonly string[] ExpectedLocalLocal = new[] { "local", "local" };
+    private static readonly string[] ExpectedRetained = new[] { "retained" };
+    private static readonly string[] ExpectedRecoveryRetained = new[] { "recovery retained" };
+
     [Fact]
     public void Registry_binds_cursor_semantics_and_invalidates_the_key()
     {
@@ -51,8 +55,8 @@ public sealed class MaintenanceContractTests
             registry.Remove(run).Should().BeTrue();
             MaintenanceCursorCodec.TryDecode(token, registry, out _, out string? error).Should().BeFalse();
             error.Should().Be("Invalid continuation.");
-            lease.SigningKey.Length.Should().Be(32);
-            lease.SigningKey.ToArray().Should().NotBeEquivalentTo(new byte[32]);
+            lease!.SigningKey.Length.Should().Be(32);
+            lease!.SigningKey.ToArray().Should().NotBeEquivalentTo(new byte[32]);
         }
 
         MaintenanceCursorCodec.TryDecode(token, registry, out _, out _).Should().BeFalse();
@@ -128,9 +132,9 @@ public sealed class MaintenanceContractTests
         var first = enumerator.BufferJournal(1, new MaintenanceCandidateKey(Guid.NewGuid()),
             JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal,
             JournalDirectoryEntryKind.File);
-        JournalBoundaryProof.TryCaptureFromBufferedMetadata(first, out JournalBoundaryProof? proof).Should().BeTrue();
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(first!, out JournalBoundaryProof? proof).Should().BeTrue();
         enumerator.Advance();
-        JournalBoundaryProof.TryCaptureFromBufferedMetadata(first, out _).Should().BeFalse();
+        JournalBoundaryProof.TryCaptureFromBufferedMetadata(first!, out _).Should().BeFalse();
 
         var next = enumerator.BufferJournal(2, new MaintenanceCandidateKey(Guid.NewGuid()),
             JournalBoundaryLocation.AppendVersions, JournalBoundaryNameClass.AppendJournal,
@@ -268,7 +272,7 @@ public sealed class MaintenanceContractTests
     [Fact]
     public void Request_rejects_duplicate_scopes_using_ordinal_comparison()
     {
-        var action = () => new MaintenanceRequest(new[] { "local", "local" }, null, null, null);
+        var action = () => new MaintenanceRequest(ExpectedLocalLocal, null, null, null);
 
         action.Should().Throw<ArgumentException>();
     }
@@ -456,9 +460,9 @@ public sealed class MaintenanceContractTests
         var candidateResult = new MaintenanceCandidateResult(candidate, false,
             MaintenanceProtectionReason.Malformed, "retained");
         var scopeResult = new MaintenanceScopeResult(MaintenanceScopes.DefaultLocalScope, 1, 0, 0, 1,
-            false, false, null, new[] { candidateResult }, new[] { "retained" });
+            false, false, null, new[] { candidateResult }, ExpectedRetained);
         var result = new MaintenanceResult(1, 0, 0, true, false, false, false, false, false, true,
-            null, new[] { scopeResult }, new[] { "retained" }, null);
+            null, new[] { scopeResult }, ExpectedRetained, null);
 
         result.Completed.Should().BeTrue();
         result.HasWarnings.Should().BeTrue();
@@ -499,7 +503,7 @@ public sealed class MaintenanceContractTests
     public void Json_context_serializes_the_maintenance_contract_with_stable_names()
     {
         var result = new MaintenanceResult(0, 0, 0, true, false, true, false, false, false, true,
-            "next", Array.Empty<MaintenanceScopeResult>(), new[] { "recovery retained" }, null);
+            "next", Array.Empty<MaintenanceScopeResult>(), ExpectedRecoveryRetained, null);
 
         var json = JsonSerializer.Serialize(result, MaintenanceJsonContext.Default.MaintenanceResult);
 
