@@ -250,6 +250,52 @@ public sealed class IndexProjectionAdmissionTests
         File.Exists(evidence).Should().BeFalse();
     }
 
+
+    [Fact]
+    public void MaterializationConsumesProjectionBudgetBeforeExclusiveAcquisition()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        using var store = new FileMemoryStore(scope.WorkspaceDir);
+        Seed(scope.WorkspaceDir, false);
+        FileLock? external = null;
+        bool delayed = false, enteredExclusive = false;
+        string ignore = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
+        store.IndexProjectionObserverForTest = (_, phase) =>
+        {
+            if (phase == "exclusive-start") enteredExclusive = true;
+            if (phase != "before-exclusive") return;
+            File.Delete(ignore);
+            external = FileLock.AcquireExclusive(Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", ".lock"));
+        };
+        DurableFile.FailureInjector = (phase, path) =>
+        {
+            if (phase == DurableWritePhase.BeforeWrite && path == ignore)
+            {
+                delayed = true;
+                Thread.Sleep(TimeSpan.FromSeconds(6));
+            }
+            return null;
+        };
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            Action read = () => store.LoadIndex();
+            read.Should().Throw<FileLockTimeoutException>();
+            delayed.Should().BeTrue("the existing materialization durable-write seam must consume the budget");
+            File.Exists(ignore).Should().BeTrue("entered durable materialization completes without CancelAfter rollback");
+            enteredExclusive.Should().BeFalse();
+            elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(8),
+                "no fresh exclusive wait may begin after materialization has spent the five-second acquisition budget");
+        }
+        finally
+        {
+            DurableFile.FailureInjector = null;
+            external?.Dispose();
+            store.IndexProjectionObserverForTest = null;
+        }
+        store.LoadIndex().Should().ContainSingle().Which.Attributes!["person"].Should().Contain("maria");
+    }
+
     private static void Seed(string workspace, bool legacyLayout)
     {
         string directory = Path.Combine(workspace, ".scrinia", legacyLayout ? "store" : "memories");

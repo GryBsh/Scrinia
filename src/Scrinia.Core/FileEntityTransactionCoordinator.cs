@@ -107,11 +107,11 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
             ThrowIfFault(FileEntityFaultPoint.VerificationRead);
             if (!sidecarOnly)
-                Verify(mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, cancellationToken);
+                Verify(entityDirectory, mutation.BodyPath, mutation.DeleteBody, mutation.NewBody, cancellationToken);
             if (metadataMutation)
-                Verify(mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!, cancellationToken);
+                Verify(entityDirectory, mutation.MetaPath, mutation.DeleteMeta, mutation.NewMeta!, cancellationToken);
             foreach (string path in mutation.DeletePaths)
-                Verify(path, true, [], cancellationToken);
+                Verify(entityDirectory, path, true, [], cancellationToken);
 
             RawMemberSnapshot committedBody = ExpectedSnapshot(
                 bodySnapshotPath, sidecarOnly || mutation.DeleteBody, mutation.NewBody);
@@ -236,11 +236,11 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         DurableFile.AtomicWriteAllBytes(path, bytes);
     }
 
-    private static void Verify(string path, bool deleted, byte[] expected, CancellationToken cancellationToken)
+    private static void Verify(string entityDirectory, string path, bool deleted, byte[] expected, CancellationToken cancellationToken)
     {
         if (deleted)
         {
-            RecoveryAbsenceVerifier.RequireMissing(path, cancellationToken);
+            RecoveryAbsenceVerifier.RequireMissing(entityDirectory, path, cancellationToken);
             return;
         }
 
@@ -445,9 +445,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
             if (body.CommittedBody is null && body.CommittedMeta is null)
                 throw new InvalidDataException("Committed recovery evidence is missing post-commit snapshots.");
             if (body.CommittedBody is not null)
-                VerifySnapshot(ToRawSnapshot(body.CommittedBody), cancellationToken);
+                VerifySnapshot(expectedEntityDirectory, ToRawSnapshot(body.CommittedBody), cancellationToken);
             if (body.CommittedMeta is not null)
-                VerifySnapshot(ToRawSnapshot(body.CommittedMeta), cancellationToken);
+                VerifySnapshot(expectedEntityDirectory, ToRawSnapshot(body.CommittedMeta), cancellationToken);
         }
         else
         {
@@ -486,8 +486,8 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         return new RawMemberSnapshot(snapshot.Path, snapshot.Existed, bytes, snapshot.Sha256);
     }
 
-    private static void VerifySnapshot(RawMemberSnapshot expected, CancellationToken cancellationToken) =>
-        Verify(expected.Path, !expected.Existed, expected.Bytes, cancellationToken);
+    private static void VerifySnapshot(string entityDirectory, RawMemberSnapshot expected, CancellationToken cancellationToken) =>
+        Verify(entityDirectory, expected.Path, !expected.Existed, expected.Bytes, cancellationToken);
 
     private static RawMemberSnapshot ExpectedSnapshot(string path, bool deleted, byte[] bytes) =>
         RawMemberSnapshot.Capture(path, !deleted, deleted ? [] : bytes);

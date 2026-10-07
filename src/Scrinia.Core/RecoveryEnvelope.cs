@@ -897,7 +897,7 @@ internal sealed class FileEntityRecoveryAdapter : IRecoveryAdapter
                 "Committed file-entity evidence is missing a snapshot.", evidencePath);
         if (!snapshot.Existed)
         {
-            try { RecoveryAbsenceVerifier.RequireMissing(snapshot.Path, cancellationToken); }
+            try { RecoveryAbsenceVerifier.RequireMissing(Path.GetDirectoryName(evidencePath)!, snapshot.Path, cancellationToken); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 throw new RecoveryEnvelopeException(RecoveryEnvelopeFailure.Inconsistent,

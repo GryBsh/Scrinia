@@ -998,11 +998,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private T WithExclusiveLock<T>(WorkspaceLease lease, string scope, Func<T> body, TimeSpan? timeout = null,
         Action<bool>? afterRecovery = null, ScopeAdmissionPurpose purpose = ScopeAdmissionPurpose.Mutation,
-        CancellationToken cancellationToken = default)
+        Func<TimeSpan>? remainingAcquisitionBudget = null, CancellationToken cancellationToken = default)
     {
         lease.AssertValid(_workspaceRoot);
         EnsureMaterialized(scope);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), timeout ?? TimeSpan.FromSeconds(5), cancellationToken);
+        TimeSpan acquisitionTimeout = remainingAcquisitionBudget?.Invoke() ?? timeout ?? TimeSpan.FromSeconds(5);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope), acquisitionTimeout, cancellationToken);
         var lk = _scopeLockManager.GetIndexLock(scope);
         lk.EnterWriteLock();
         try
@@ -1184,7 +1185,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             return LoadIndexUnsafe(scope);
         }, RemainingProjectionBudget(timer, scope, cancellationToken),
             afterRecovery: retained => terminalRetained = retained,
-            purpose: ScopeAdmissionPurpose.VerifiedReadPreparation, cancellationToken: cancellationToken);
+            purpose: ScopeAdmissionPurpose.VerifiedReadPreparation, cancellationToken: cancellationToken,
+            remainingAcquisitionBudget: () => RemainingProjectionBudget(timer, scope, cancellationToken));
         // No snapshot permission escapes this helper. The caller retries ordinary fresh admission.
     }
 

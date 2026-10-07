@@ -37,6 +37,83 @@ public sealed class CommittedAbsentMemberRecoveryTests
     public Task UnexpectedEntriesRetainCommittedDeletionEvidence(string route, string obstruction) =>
         Exercise(route, "body", obstruction);
 
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AuthorizedLinkedWorkspaceAllowsAbsentPublication(bool linkedAncestor)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string physicalParent = Path.Combine(scope.WorkspaceDir, "physical");
+        string physicalWorkspace = linkedAncestor ? Path.Combine(physicalParent, "workspace") : physicalParent;
+        Directory.CreateDirectory(physicalWorkspace);
+        string link = Path.Combine(scope.WorkspaceDir, "authorized-link");
+        try { Directory.CreateSymbolicLink(link, physicalParent); }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or PlatformNotSupportedException or IOException)
+        { Skip.If(true, "Symbolic link creation is unavailable: " + exception.GetType().Name); }
+        string workspace = linkedAncestor ? Path.Combine(link, "workspace") : link;
+        string directory = PathRouter.ToFileEntityDir("skill", workspace);
+        Directory.CreateDirectory(directory);
+        string body = Path.Combine(directory, "linked-absence.md");
+        string meta = Path.ChangeExtension(body, ".meta.json");
+        string versions = Path.Combine(directory, "versions");
+        var coordinator = new FileEntityTransactionCoordinator(workspace);
+        var mutation = new FileEntityMutation("skill", "linked-absence", body, meta, versions,
+            "after"u8.ToArray(), "{}"u8.ToArray(), deleteBody: true, deleteMeta: true);
+
+        FileEntityMutationResult committed = await coordinator.ExecuteAsync(mutation);
+        committed.Outcome.Should().Be(WholeMemoryOutcome.Created);
+        File.Exists(body).Should().BeFalse();
+        File.Exists(meta).Should().BeFalse();
+        Directory.GetFiles(directory, ".file-entity-*.recovery").Should().BeEmpty();
+    }
+
+    [SkippableTheory]
+    [InlineData(false, "missing")]
+    [InlineData(true, "missing")]
+    [InlineData(false, "parent-link")]
+    [InlineData(true, "parent-link")]
+    [InlineData(false, "leaf-link")]
+    [InlineData(true, "leaf-link")]
+    public void LinkedAuthorizedBoundaryPreservesMemberReparseRefusal(bool linkedAncestor, string shape)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string physicalParent = Path.Combine(scope.WorkspaceDir, "physical");
+        string physicalWorkspace = linkedAncestor ? Path.Combine(physicalParent, "workspace") : physicalParent;
+        Directory.CreateDirectory(physicalWorkspace);
+        string link = Path.Combine(scope.WorkspaceDir, "authorized-link");
+        try { Directory.CreateSymbolicLink(link, physicalParent); }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or PlatformNotSupportedException or IOException)
+        { Skip.If(true, "Symbolic link creation is unavailable: " + exception.GetType().Name); }
+        string workspace = linkedAncestor ? Path.Combine(link, "workspace") : link;
+        string boundary = PathRouter.ToFileEntityDir("skill", workspace);
+        Directory.CreateDirectory(boundary);
+        string target = Path.Combine(boundary, "contained-target");
+        Directory.CreateDirectory(target);
+        string targetBody = Path.Combine(target, "target.md");
+        File.WriteAllText(targetBody, "target bytes");
+        string member = Path.Combine(boundary, "absent.md");
+        if (shape == "parent-link")
+        {
+            string redirect = Path.Combine(boundary, "redirect");
+            Directory.CreateSymbolicLink(redirect, target);
+            member = Path.Combine(redirect, "absent.md");
+        }
+        else if (shape == "leaf-link")
+            File.CreateSymbolicLink(member, targetBody);
+        PathContainment.IsWithin(boundary, member).Should().BeTrue();
+        string[] beforeEntries = Directory.GetFileSystemEntries(boundary);
+        byte[] beforeTarget = File.ReadAllBytes(targetBody);
+
+        Action verify = () => RecoveryAbsenceVerifier.RequireMissing(boundary, member, CancellationToken.None);
+        if (shape == "missing") verify.Should().NotThrow();
+        else verify.Should().Throw<IOException>();
+
+        Directory.GetFileSystemEntries(boundary).Should().BeEquivalentTo(beforeEntries);
+        File.ReadAllBytes(targetBody).Should().Equal(beforeTarget);
+        File.Exists(Path.Combine(target, "absent.md")).Should().BeFalse();
+    }
+
     private static async Task Exercise(string route, string shape, string obstruction)
     {
         using var scope = new TestHelpers.StoreScope();
