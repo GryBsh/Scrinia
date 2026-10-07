@@ -62,8 +62,8 @@ public static class BundleFormatService
     public static (List<string> Topics, int EntryCount) ExportTopicsToZip(
         ZipArchive zip, IMemoryStore store, string[] topics)
     {
-        var (staged, exportedTopics, totalEntries) = BuildExportStaging(store, topics);
-        PublishStaging(zip, staged, totalEntries, store);
+        var (staged, exportedTopics, totalEntries, files) = BuildExportStaging(store, topics);
+        PublishStaging(zip, staged, totalEntries, store, files);
         return (exportedTopics, totalEntries);
     }
 
@@ -79,7 +79,7 @@ public static class BundleFormatService
     public static (List<string> Topics, int EntryCount) ExportTopicsToZip(
         string bundlePath, IMemoryStore store, string[] topics)
     {
-        var (staged, exportedTopics, totalEntries) = BuildExportStaging(store, topics);
+        var (staged, exportedTopics, totalEntries, files) = BuildExportStaging(store, topics);
 
         // Nothing to publish: leave no bundle behind. Zero exported topics means nothing was staged,
         // so there is nothing to remove — this mirrors the facade's empty-export delete without
@@ -91,7 +91,7 @@ public static class BundleFormatService
         {
             using var archiveBytes = new MemoryStream();
             using (var zip = new ZipArchive(archiveBytes, ZipArchiveMode.Create, leaveOpen: true))
-                PublishStaging(zip, staged, totalEntries, store);
+                PublishStaging(zip, staged, totalEntries, store, files);
 
             DurableFile.AtomicWriteAllBytes(bundlePath, archiveBytes.ToArray());
         }
@@ -118,8 +118,15 @@ public static class BundleFormatService
     /// throws on a malformed topic (a trailing dot, a bare ".", a NUL), so a bad topic aborts the
     /// whole build and no topic is published. Topics with no entries are skipped, exactly as before.
     /// </summary>
-    private static (List<StagedExportTopic> Staged, List<string> ExportedTopics, int TotalEntries)
-        BuildExportStaging(IMemoryStore store, string[] topics)
+    private sealed record StagedFileEntity(string Category, string Name, byte[] Bytes);
+
+    private static (List<StagedExportTopic> Staged, List<string> ExportedTopics, int TotalEntries, List<StagedFileEntity> Files)
+        BuildExportStaging(IMemoryStore store, string[] topics) => store is FileMemoryStore files
+            ? files.WithWorkspaceSnapshot(lease => BuildExportStagingUnderLease(store, topics, lease))
+            : BuildExportStagingUnderLease(store, topics, null);
+
+    private static (List<StagedExportTopic> Staged, List<string> ExportedTopics, int TotalEntries, List<StagedFileEntity> Files)
+        BuildExportStagingUnderLease(IMemoryStore store, string[] topics, WorkspaceLease? lease)
     {
         var staged = new List<StagedExportTopic>();
         var exportedTopics = new List<string>();
@@ -132,8 +139,11 @@ public static class BundleFormatService
             // de-aliasing — "topic." survived it intact and became a second scope string over the
             // "topic" directory.
             string topicScope = MemoryNaming.BuildScopedTopicScope(topic.Trim());
-            var artifacts = store.ListTopicArtifacts(topicScope);
-            var entries = store.LoadIndex(topicScope);
+            var snapshot = store is FileMemoryStore files && lease is not null
+                ? files.CaptureBundleTopicUnderLease(lease, topicScope)
+                : (store.LoadIndex(topicScope), store.ListTopicArtifacts(topicScope)
+                    .Select(a => (a.Name, File.ReadAllText(a.FilePath))).ToList());
+            var (entries, contents) = snapshot;
 
             if (entries.Count == 0)
                 continue;
@@ -148,14 +158,13 @@ public static class BundleFormatService
             // the scope cannot drift. Zip entry names use '/' as their separator already, so a
             // hierarchical topic round-trips as a nested path rather than being flattened.
             string bundleTopic = MemoryNaming.FormatScopeLabel(topicScope);
-            var contents = artifacts.Select(a => (a.Name, File.ReadAllText(a.FilePath))).ToList();
-
-            staged.Add(new StagedExportTopic(bundleTopic, entries, contents, artifacts.Count));
+            staged.Add(new StagedExportTopic(bundleTopic, entries, contents, contents.Count));
             exportedTopics.Add(bundleTopic);
-            totalEntries += artifacts.Count;
+            totalEntries += contents.Count;
         }
 
-        return (staged, exportedTopics, totalEntries);
+        return (staged, exportedTopics, totalEntries,
+            lease?.CapturedAbsentWorkspace == true ? [] : CaptureFileEntities(store));
     }
 
     /// <summary>
@@ -165,13 +174,21 @@ public static class BundleFormatService
     /// and <see cref="WriteManifest"/>) cannot drift.
     /// </summary>
     private static void PublishStaging(
-        ZipArchive zip, List<StagedExportTopic> staged, int totalEntries, IMemoryStore store)
+        ZipArchive zip, List<StagedExportTopic> staged, int totalEntries, IMemoryStore store, List<StagedFileEntity> files)
     {
         foreach (var topic in staged)
             WriteTopic(zip, store, topic.BundleTopic, topic.Entries, topic.Artifacts);
 
         // Export disk-based file entities (skills, agent)
-        var fileEntities = ExportFileEntities(zip, store);
+        var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var file in files)
+        {
+            using var output = zip.CreateEntry($"files/{file.Category}/{file.Name}").Open();
+            output.Write(file.Bytes);
+            if (!fileEntities.TryGetValue(file.Category, out var names))
+                fileEntities[file.Category] = names = [];
+            names.Add(file.Name);
+        }
         WriteManifest(zip, staged.Select(t => t.BundleTopic).ToList(), totalEntries, fileEntities);
     }
 
@@ -675,10 +692,9 @@ public static class BundleFormatService
     /// into the zip under <c>files/{category}/{filename}</c>.
     /// Skips the <c>versions/</c> subdirectory within each category.
     /// </summary>
-    private static Dictionary<string, List<string>> ExportFileEntities(
-        ZipArchive zip, IMemoryStore store)
+    private static List<StagedFileEntity> CaptureFileEntities(IMemoryStore store)
     {
-        var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var fileEntities = new List<StagedFileEntity>();
 
         foreach (string category in CategoryToKind.Keys)
         {
@@ -699,22 +715,11 @@ public static class BundleFormatService
             if (files.Count == 0)
                 continue;
 
-            var fileList = new List<string>();
             foreach (string filePath in files)
             {
                 string fileName = Path.GetFileName(filePath);
-                string zipEntryName = $"files/{category}/{fileName}";
-
-                var zipEntry = zip.CreateEntry(zipEntryName);
-                using var outStream = zipEntry.Open();
-                using var inStream = File.OpenRead(filePath);
-                inStream.CopyTo(outStream);
-
-                fileList.Add(fileName);
+                fileEntities.Add(new(category, fileName, File.ReadAllBytes(filePath)));
             }
-
-            if (fileList.Count > 0)
-                fileEntities[category] = fileList;
         }
 
         return fileEntities;

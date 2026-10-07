@@ -23,6 +23,9 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         ValidatePaths(mutation);
         cancellationToken.ThrowIfCancellationRequested();
 
+        var admission = new WorkspaceAdmission(_workspaceRoot,
+            (lease, ct) => Bundles.BundleRestoreCoordinator.RecoverUnderLease(lease, Bundles.BundleReadLimits.Default, ct));
+        using WorkspaceLease workspaceLease = admission.EnterMutation(TimeSpan.FromMinutes(5), cancellationToken);
         string operationId = Guid.NewGuid().ToString("N");
         bool sidecarOnly = AreSamePath(mutation.BodyPath, mutation.MetaPath,
             Path.GetDirectoryName(Path.GetFullPath(mutation.BodyPath))!);
@@ -315,7 +318,7 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
         DurableFile.AtomicWriteAllBytes(path, RecoveryEnvelopeCodec.Serialize(envelope));
     }
 
-    private FileEntityMutationResult? RecoverPendingEvidence(string directory, string entityKind, string entityName,
+    internal FileEntityMutationResult? RecoverPendingEvidence(string directory, string entityKind, string entityName,
         CancellationToken cancellationToken)
     {
         string[] evidencePaths = Directory.EnumerateFiles(directory, ".file-entity-*.recovery")

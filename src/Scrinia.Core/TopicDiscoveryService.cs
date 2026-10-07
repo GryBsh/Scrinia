@@ -24,10 +24,6 @@ internal sealed class TopicDiscoveryService
 
     internal string[] DiscoverTopics()
     {
-        // Cache hit — only re-scans when explicitly invalidated by Upsert / SaveIndex.
-        if (_cachedTopics is not null)
-            return _cachedTopics;
-
         // Gate first: on the very first store access this migrates any legacy content into
         // memories/ before the scan below runs, so a first-ever call with real legacy content
         // sees it exactly once, at its post-migration v3 location.
@@ -37,6 +33,9 @@ internal sealed class TopicDiscoveryService
         if (Directory.Exists(memoriesRoot))
             DiscoverMemoriesRecursive(memoriesRoot, "", results);
 
+        // Reuse the projection only when the authoritative tree still has these topics.
+        if (_cachedTopics is not null && _cachedTopics.SequenceEqual(results, StringComparer.Ordinal))
+            return _cachedTopics;
         _cachedTopics = results.ToArray();
         return _cachedTopics;
     }

@@ -21,6 +21,54 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public class BundleExitCodeTests
 {
+    [Fact]
+    public async Task GuideRemainsAvailableWithRetainedBundleEvidence()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json"), "invalid");
+        var response = ResponseParser.Parse(await new ScriniaMcpTools().Guide());
+        response.Content.Should().Be(EmbeddedPrompts.LoadGuide()!.TrimEnd());
+        response.ErrorCode.Should().Be(ErrorCodes.BundleRecoveryRequired);
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("search")]
+    public async Task PersistentCliOperationMapsRetainedBundleEvidence(string operation)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json"), "invalid");
+        var commands = new ScriniaCommands();
+        var (exit, output) = await CaptureJsonAsync(() => operation == "list"
+            ? commands.List(workspaceRoot: scope.WorkspaceDir, json: true)
+            : commands.Search("note", workspaceRoot: scope.WorkspaceDir, json: true));
+        using (output)
+        {
+            exit.Should().Be(1);
+            output.RootElement.GetProperty("code").GetString().Should().Be(ErrorCodes.BundleRecoveryRequired);
+        }
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("facts")]
+    [InlineData("skill")]
+    [InlineData("agent")]
+    public async Task PersistentMcpOperationMapsRetainedBundleEvidence(string operation)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json"), "invalid");
+        var tools = new ScriniaMcpTools();
+        string response = operation switch
+        {
+            "list" => await tools.MemoryList(),
+            "facts" => await tools.Facts("entities"),
+            "skill" => await tools.MemoryRecall("/skill/planner"),
+            _ => await tools.MemoryRecall("/agent/profile")
+        };
+        ResponseParser.Parse(response).ErrorCode.Should().Be(ErrorCodes.BundleRecoveryRequired);
+    }
+
     private static async Task<(int Exit, JsonDocument Output)> CaptureJsonAsync(Func<Task<int>> command)
     {
         var output = new StringWriter();

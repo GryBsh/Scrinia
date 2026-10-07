@@ -78,6 +78,7 @@ public static class ErrorCodes
         ScopeContainmentException => ScopeContainmentForbidden,
         ReservedPathOperationException => ReservedPathOperationForbidden,
         BundleValidationException => InvalidBundle,
+        BundleImportException { Failure: BundleImportFailure.InvalidBundle } => InvalidBundle,
         BundleImportException { Failure: BundleImportFailure.RolledBack } => BundleImportFailed,
         BundleImportException { Failure: BundleImportFailure.RecoveryRequired } => BundleRecoveryRequired,
         EmbeddingsProtocolUnsupportedException => EmbeddingsProtocolUnsupported,

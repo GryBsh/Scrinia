@@ -1,4 +1,5 @@
 using Scrinia.Core.Models;
+using Scrinia.Core.Bundles;
 
 namespace Scrinia.Core;
 
@@ -98,9 +99,10 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
 
         try
         {
-            return await _store.WithExclusiveScopeAdmissionAsync(request.Scope, _lockTimeout, async () =>
+            using WorkspaceLease lease = _store.EnterWorkspaceMutation(_lockTimeout, cancellationToken);
+            return await _store.WithExclusiveScopeAdmissionAsync(lease, request.Scope, _lockTimeout, async () =>
             {
-                string storeDirectory = _store.GetStoreDirForScope(request.Scope);
+                string storeDirectory = StoreDirectory(request.Scope);
                 if (Directory.Exists(storeDirectory))
                 {
                     RecoveryDiscoveryResult discovery = _store.DiscoverRecoveryForScope(request.Scope, storeDirectory);
@@ -170,13 +172,14 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             RecoveryBlock block = exception.DiscoveryBlock;
             return new MultiMemoryAdmissionResult(MapRecoveryFailure(block.Reason),
                 "Existing recovery evidence blocks admission.",
-                ToSafeEvidencePath(_store.GetStoreDirForScope(request.Scope), block.EvidencePath));
+                ToSafeEvidencePath(StoreDirectory(request.Scope), block.EvidencePath));
         }
         catch (IOException)
         {
             return new MultiMemoryAdmissionResult(MultiMemoryFailure.ReplayIoFailed,
                 "The transaction scope could not be inspected safely.");
         }
+        catch (BundleImportException) { throw; }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return new MultiMemoryAdmissionResult(MultiMemoryFailure.Admission,
@@ -194,7 +197,8 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         string transactionId = Guid.NewGuid().ToString("N");
         try
         {
-            return await _store.WithExclusiveScopeAdmissionAsync(request.Scope, _lockTimeout, async () =>
+            using WorkspaceLease lease = _store.EnterWorkspaceMutation(_lockTimeout, cancellationToken);
+            return await _store.WithExclusiveScopeAdmissionAsync(lease, request.Scope, _lockTimeout, async () =>
             {
                 IReadOnlyList<MultiMemoryParticipantRequest> ordered = NormalizeAndOrder(_store, request, transactionId);
                 MultiMemoryAdmissionResult admission = await AdmitUnderLockAsync(request, ordered, admitParticipant, cancellationToken).ConfigureAwait(false);
@@ -221,7 +225,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             RecoveryBlock block = exception.DiscoveryBlock;
             return new MultiMemoryAggregateResult(transactionId, request.Scope, MultiMemoryOutcome.RecoveryRequired, [],
                 MapRecoveryFailure(block.Reason), block.Detail,
-                ToSafeEvidencePath(_store.GetStoreDirForScope(request.Scope), block.EvidencePath));
+                ToSafeEvidencePath(StoreDirectory(request.Scope), block.EvidencePath));
         }
         catch (IOException)
         {
@@ -237,8 +241,9 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         string transactionId = "recovery";
         try
         {
-            return await _store.WithExclusiveScopeAdmissionAsync(scope, _lockTimeout,
-                () => RecoverUnderLockAsync(scope, cancellationToken), cancellationToken, recoverCoordinator: false).ConfigureAwait(false);
+            using WorkspaceLease lease = _store.EnterWorkspaceMutation(_lockTimeout, cancellationToken);
+            return await _store.WithExclusiveScopeAdmissionAsync(lease, scope, _lockTimeout,
+                () => RecoverUnderLockAsync(lease, scope, cancellationToken), cancellationToken, recoverCoordinator: false).ConfigureAwait(false);
         }
         catch (FileLockTimeoutException)
         {
@@ -249,13 +254,16 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             RecoveryBlock block = exception.DiscoveryBlock;
             return new MultiMemoryAggregateResult(transactionId, scope, MultiMemoryOutcome.RecoveryRequired, [],
                 MapRecoveryFailure(block.Reason), FailureDetail(MapRecoveryFailure(block.Reason)),
-                ToSafeEvidencePath(_store.GetStoreDirForScope(scope), block.EvidencePath));
+                ToSafeEvidencePath(StoreDirectory(scope), block.EvidencePath));
         }
     }
 
-    internal async Task<MultiMemoryAggregateResult> RecoverUnderLockAsync(string scope, CancellationToken cancellationToken)
+    private string StoreDirectory(string scope) => PathRouter.ToStoreDir(scope, _store.WorkspaceRoot);
+
+    internal async Task<MultiMemoryAggregateResult> RecoverUnderLockAsync(WorkspaceLease lease, string scope, CancellationToken cancellationToken)
     {
-        string directory = _store.GetStoreDirForScope(scope);
+        lease.AssertValid(_store.WorkspaceRoot);
+        string directory = StoreDirectory(scope);
         if (!File.Exists(MultiMemoryTransactionRecordCodec.GetPath(directory)))
             return Rejected("recovery", scope, MultiMemoryFailure.ReplayIoFailed, "No coordinator decision record exists.");
 
@@ -754,7 +762,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         IReadOnlyList<B4ParticipantRequestMetadata> rejectedTransactionalParticipants,
         CancellationToken cancellationToken)
     {
-        string directory = _store.GetStoreDirForScope(request.Scope);
+        string directory = StoreDirectory(request.Scope);
         var manifests = adapters
             .Where(adapter => request.Participants.Any(participant => participant.OperationId == adapter.OperationId &&
                 participant.Kind == adapter.Kind && _store.ResolveAddress(participant.Address).Subject == adapter.Subject))
@@ -854,7 +862,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
                 DateTimeOffset.UtcNow);
             try
             {
-                Publish(_store.GetStoreDirForScope(record.Scope), proofRecord,
+                Publish(StoreDirectory(record.Scope), proofRecord,
                     MultiMemoryTransactionTransition.CompletionProofPublished);
                 record = proofRecord;
             }
@@ -862,7 +870,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             {
                 return RecoveryRequired(record, adapters, MultiMemoryFailure.DecisionPublication,
                     "Participant completion proof could not be durably recorded.",
-                    _store.GetStoreDirForScope(record.Scope));
+                    StoreDirectory(record.Scope));
             }
             foreach (IMultiMemoryParticipantAdapter adapter in adapters)
                 await adapter.CleanupAsync(cancellationToken).ConfigureAwait(false);
@@ -873,7 +881,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         catch (OperationCanceledException)
         {
             return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, MultiMemoryOutcome.RecoveryRequired,
-                outcomes, MultiMemoryFailure.Ambiguous, "Decision completion was cancelled; evidence is retained.", SafeRecordPath(_store.GetStoreDirForScope(record.Scope)));
+                outcomes, MultiMemoryFailure.Ambiguous, "Decision completion was cancelled; evidence is retained.", SafeRecordPath(StoreDirectory(record.Scope)));
         }
         catch (Exception exception)
         {
@@ -881,7 +889,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
             MultiMemoryOutcome outcome = allParticipantsVerified
                 ? MultiMemoryOutcome.CommittedCleanupPending : MultiMemoryOutcome.RecoveryRequired;
             return new MultiMemoryAggregateResult(record.TransactionId, record.Scope, outcome, outcomes, failure,
-                FailureDetail(failure), SafeRecordPath(_store.GetStoreDirForScope(record.Scope)));
+                FailureDetail(failure), SafeRecordPath(StoreDirectory(record.Scope)));
         }
     }
 
@@ -893,7 +901,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
         B4ParticipantRecoveryState? state = adapter.RecoveryState;
         return state is null
             ? record
-            : await UpdateParticipantLifecycleAsync(_store.GetStoreDirForScope(record.Scope), record, state, cancellationToken)
+            : await UpdateParticipantLifecycleAsync(StoreDirectory(record.Scope), record, state, cancellationToken)
                 .ConfigureAwait(false);
     }
 
@@ -929,7 +937,7 @@ internal sealed class MultiMemoryTransactionCoordinator : IMultiMemoryTransactio
     }
 
     private void Delete(MultiMemoryTransactionRecord record, MultiMemoryTransactionTransition transition) =>
-        DeleteIfPresent(_store.GetStoreDirForScope(record.Scope), transition);
+        DeleteIfPresent(StoreDirectory(record.Scope), transition);
 
     private static void DeleteIfPresent(string directory, MultiMemoryTransactionTransition transition)
     {
@@ -1107,7 +1115,7 @@ internal sealed class FileMemoryParticipantAdapter : IMultiMemoryParticipantAdap
         Subject = ResolveCandidateSubject(store, candidate);
         OperationId = candidate.OperationId;
         Kind = manifest.Kind == "memory" ? "memory" : candidate.Operation.ToString();
-        EvidencePath = Path.GetRelativePath(store.GetStoreDirForScope(candidate.Scope), candidate.EvidencePath).Replace('\\', '/');
+        EvidencePath = Path.GetRelativePath(PathRouter.ToStoreDir(candidate.Scope, store.WorkspaceRoot), candidate.EvidencePath).Replace('\\', '/');
     }
 
     public string Kind { get; }

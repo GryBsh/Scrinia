@@ -20,7 +20,7 @@ public sealed class BundleAtomicRestoreTests : IDisposable
     }
 
     [Fact]
-    public async Task MutationFailureRollsBackAllMembersAndLeavesNoJournal()
+    public async Task InvalidPlanLeavesOriginalMembersAndNoJournal()
     {
         using var store = new FileMemoryStore(_root);
         Seed(store, "original");
@@ -29,26 +29,28 @@ public sealed class BundleAtomicRestoreTests : IDisposable
         Func<Task> act = () => store.RestoreBundleAsync(plan);
 
         await act.Should().ThrowAsync<BundleImportException>()
-            .Where(exception => exception.Failure == BundleImportFailure.RolledBack);
+            .Where(exception => exception.Failure == BundleImportFailure.InvalidBundle);
         ReadArtifact(store, "note").Should().Be("original");
         File.Exists(Path.Combine(_root, ".scrinia", ".bundle-restore-journal.json")).Should().BeFalse();
     }
 
     [Fact]
-    public async Task CleanupFailureRollsBackAndReportsTheFailure()
+    public async Task CleanupFailureRetainsCommittedDecisionAndReturnsRealCounts()
     {
         using var store = new FileMemoryStore(_root);
         Seed(store, "original");
         FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, _) =>
-            transition == RestoreJournalTransition.BeforeCleanupDelete
-                ? new IOException("injected cleanup failure")
-                : null;
-
-        Func<Task> act = () => store.RestoreBundleAsync(Plan("replacement"));
-
-        await act.Should().ThrowAsync<BundleImportException>()
-            .Where(exception => exception.Failure == BundleImportFailure.RolledBack);
-        ReadArtifact(store, "note").Should().Be("original");
+            transition == RestoreJournalTransition.BeforeCleanupDelete ? new IOException("cleanup") : null;
+        BundleRestoreResult result = await store.RestoreBundleAsync(Plan("replacement"));
+        result.Outcome.Should().Be(BundleRestoreOutcome.Committed);
+        result.EntryCount.Should().Be(1);
+        string path = Path.Combine(_root, ".scrinia", ".bundle-restore-journal.json");
+        File.ReadAllText(path).Should().Contain("\"state\":\"committed\"");
+        Func<Task> blocked = () => store.ReadArtifactAsync(MemoryAddress.Parse("/incoming/note"));
+        await blocked.Should().ThrowAsync<BundleImportException>();
+        FileMemoryStore.RestoreJournalFailureInjector.Value = null;
+        ReadArtifact(store, "note").Should().Be("replacement");
+        File.Exists(path).Should().BeFalse();
     }
 
     [Fact]
@@ -56,7 +58,7 @@ public sealed class BundleAtomicRestoreTests : IDisposable
     {
         using var store = new FileMemoryStore(_root);
         Seed(store, "original");
-        string sentinel = Path.Combine(_root, ".scrinia", "skills", "sentinel.md");
+        string sentinel = Path.Combine(_root, ".scrinia", "memories", "incoming", "note.nmp2");
         Directory.CreateDirectory(Path.GetDirectoryName(sentinel)!);
         File.WriteAllText(sentinel, "sentinel");
         FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, _) =>
@@ -83,7 +85,7 @@ public sealed class BundleAtomicRestoreTests : IDisposable
         using var store = new FileMemoryStore(_root);
         Seed(store, "original");
         var prepared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+          var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, _) =>
         {
             if (transition != RestoreJournalTransition.AfterPreparedWrite)
@@ -96,10 +98,15 @@ public sealed class BundleAtomicRestoreTests : IDisposable
 
         Task<BundleRestoreResult> restore = Task.Run(() => store.RestoreBundleAsync(Plan("replacement")));
         await prepared.Task;
-        Task write = Task.Run(() => store.WriteArtifactAsync("concurrent",
-            MemoryNaming.BuildScopedTopicScope("incoming"), Nmp2ChunkedEncoder.Encode("must survive")));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task write = Task.Run(() =>
+        {
+            entered.SetResult();
+            return store.WriteArtifactAsync("concurrent",
+                MemoryNaming.BuildScopedTopicScope("incoming"), Nmp2ChunkedEncoder.Encode("must survive"));
+        });
 
-        await Task.Delay(50);
+        await entered.Task;
         write.IsCompleted.Should().BeFalse();
         release.SetResult();
 
@@ -111,13 +118,15 @@ public sealed class BundleAtomicRestoreTests : IDisposable
     }
 
     [Fact]
-    public void ColdStartRecoversPreparedJournalBeforeAcceptingImport()
+    public async Task ColdStartRefusesLegacyPreparedJournal()
     {
         SeedJournalWithOriginalSentinel();
         using var store = new FileMemoryStore(_root);
-
-        File.ReadAllText(Path.Combine(_root, ".scrinia", "skills", "sentinel.md")).Should().Be("original");
-        File.Exists(Path.Combine(_root, ".scrinia", ".bundle-restore-journal.json")).Should().BeFalse();
+        File.ReadAllText(Path.Combine(_root, ".scrinia", "skills", "sentinel.md")).Should().Be("changed");
+        Func<Task> read = () => store.ReadArtifactAsync(MemoryAddress.Parse("/note"));
+        await read.Should().ThrowAsync<BundleImportException>()
+            .Where(e => e.Failure == BundleImportFailure.RecoveryRequired);
+        File.Exists(Path.Combine(_root, ".scrinia", ".bundle-restore-journal.json")).Should().BeTrue();
     }
 
     [Fact]

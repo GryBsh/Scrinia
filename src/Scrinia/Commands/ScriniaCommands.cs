@@ -298,6 +298,10 @@ public partial class ScriniaCommands
         {
             yaml = await tools.Guide(cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "guide");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "guide");
@@ -337,6 +341,10 @@ public partial class ScriniaCommands
         try
         {
             response = await tools.Restore(cancellationToken);
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "restore");
         }
         catch (RestoreRecoveryException exception)
         {

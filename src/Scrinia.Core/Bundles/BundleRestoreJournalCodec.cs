@@ -154,7 +154,7 @@ internal static class BundleRestoreJournalCodec
         }
     }
 
-    private static string Authorize(BundleJournalMember member, string workspaceRoot)
+    internal static string Authorize(BundleJournalMember member, string workspaceRoot)
     {
         string relative = member.RelativePath;
         Require(!string.IsNullOrEmpty(relative) && TextEncoding.UTF8.GetByteCount(relative) <= 4096
@@ -185,8 +185,8 @@ internal static class BundleRestoreJournalCodec
             string suffix = member.Kind.EndsWith("-body", StringComparison.Ordinal) ? ".md" : ".meta.json";
             Require(parts.Length == 3 && fileName.EndsWith(suffix, StringComparison.Ordinal) && fileName.Length > suffix.Length,
                 "Invalid file entity member.");
-            Require(PathRouter.TryToFileEntityPath(kind, fileName[..^suffix.Length], workspaceRoot, out string body),
-                "Invalid file entity name.");
+            if (!PathRouter.TryToFileEntityPath(kind, fileName[..^suffix.Length], workspaceRoot, out string body))
+                throw Recovery(new InvalidDataException("Invalid or uncontained file entity target."));
             expected = suffix == ".md" ? body : Path.ChangeExtension(body, ".meta.json");
         }
         string full = Path.GetFullPath(Path.Combine(workspaceRoot, relative));
@@ -200,9 +200,10 @@ internal static class BundleRestoreJournalCodec
             try
             {
                 FileAttributes attributes = File.GetAttributes(current);
-                Require((attributes & FileAttributes.ReparsePoint) == 0
-                    && (target ? (attributes & FileAttributes.Directory) == 0 : (attributes & FileAttributes.Directory) != 0),
-                    "Journal target is not a regular contained file.");
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw Recovery(new InvalidDataException("Journal target traverses a symbolic link."));
+                if (target ? (attributes & FileAttributes.Directory) != 0 : (attributes & FileAttributes.Directory) == 0)
+                    throw new IOException("Journal target is not a regular contained file.");
                 if (target) RequireRegularFile(current);
             }
             catch (FileNotFoundException) { }

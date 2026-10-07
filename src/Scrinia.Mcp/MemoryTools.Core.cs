@@ -287,6 +287,7 @@ public sealed partial class ScriniaMcpTools
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.");
+            using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
             FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 

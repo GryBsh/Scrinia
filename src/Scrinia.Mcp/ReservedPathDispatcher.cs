@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
@@ -53,13 +54,20 @@ internal sealed class ReservedPathDispatcher
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        return Classify(address) switch
+        try
         {
-            ReservedPathKind.Ordinary => null,
-            ReservedPathKind.Skill => await DispatchSkillAsync(operation, Subject(address), request, cancellationToken),
-            ReservedPathKind.Agent => await DispatchAgentAsync(operation, Subject(address), request, cancellationToken),
-            _ => throw new ReservedPathOperationException($"Unsupported reserved path kind for '{address}'."),
-        };
+            return Classify(address) switch
+            {
+                ReservedPathKind.Ordinary => null,
+                ReservedPathKind.Skill => await DispatchSkillAsync(operation, Subject(address), request, cancellationToken),
+                ReservedPathKind.Agent => await DispatchAgentAsync(operation, Subject(address), request, cancellationToken),
+                _ => throw new ReservedPathOperationException($"Unsupported reserved path kind for '{address}'."),
+            };
+        }
+        catch (BundleImportException exception)
+        {
+            return ResponseBuilder.Error(exception, "Resolve retained bundle recovery evidence before retrying.");
+        }
     }
 
     internal static ReservedPathKind Classify(MemoryAddress address)

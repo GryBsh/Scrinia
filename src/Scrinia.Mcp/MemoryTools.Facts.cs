@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Mcp;
@@ -28,6 +29,10 @@ public sealed partial class ScriniaMcpTools
         try
         {
             return (await FactsResponse(op, entity, entities, key, scopes, excludeTopics, limit, cancellationToken)).ToYaml();
+        }
+        catch (BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve retained bundle recovery evidence before retrying.").ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {

@@ -51,6 +51,10 @@ public partial class ScriniaCommands
                 MemoryNaming.SplitCommaSeparated(scopes), MemoryNaming.SplitCommaSeparated(excludeTopics),
                 limit, cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "facts");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "facts");

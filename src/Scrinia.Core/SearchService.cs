@@ -47,9 +47,18 @@ internal sealed class SearchService
                 ? _listing.FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
                 : _listing.ListScoped(query.Scopes, query.ExcludeTopics);
 
+        return ScoreSnapshot(query, allCandidates, _formatQualifiedLabel, _rankerOptions());
+    }
+
+    internal static IReadOnlyList<SearchResult> ScoreSnapshot(SearchQuery query, IReadOnlyList<ScopedArtifact> allCandidates,
+        Func<string, string, string> formatQualifiedLabel, RankerOptions rankerOptions)
+    {
+        string? pathPrefix = query.Address?.ToString() ?? query.PathPrefix;
+        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
+        bool hasAttr = query.AttributeFilter is { Count: > 0 };
         IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
             ? allCandidates
-                .Where(c => SearchResultFilter.CandidateMatches(c, pathPrefix, query.AttributeFilter, _formatQualifiedLabel))
+                .Where(c => SearchResultFilter.CandidateMatches(c, pathPrefix, query.AttributeFilter, formatQualifiedLabel))
                 .ToList()
             : allCandidates;
 
@@ -66,7 +75,7 @@ internal sealed class SearchService
         else
             topics = ListingService.BuildTopicInfosFromCandidates(allCandidates);
 
-        var searcher = new WeightedAttributeScorer(_rankerOptions());
+        var searcher = new WeightedAttributeScorer(rankerOptions);
         return searcher.SearchAll(query.Query, entryCandidates, topics, query.Limit,
             query.SupplementalScores, query.EntityGraphScores);
     }

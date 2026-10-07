@@ -147,6 +147,10 @@ public partial class ScriniaCommands
         {
             entries = WorkspaceSetup.Store.ListScoped(MemoryNaming.SplitCommaSeparated(scopes));
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return Task.FromResult(EmitBundleFailure(exception, json, "list"));
+        }
         catch (RestoreRecoveryException exception)
         {
             return Task.FromResult(EmitRecoveryBlocked(exception, json, "list"));
@@ -380,6 +384,10 @@ public partial class ScriniaCommands
                 surfaceEntityFacts: false,
                 cancellationToken)).Matches;
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "search");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "search");
@@ -532,6 +540,10 @@ public partial class ScriniaCommands
                 ?? await tools.Remember([content], address, description ?? "", tagArray,
                 keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "store");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "store");
@@ -596,6 +608,10 @@ public partial class ScriniaCommands
                 new ReservedPathRequest(null, null, false, false), cancellationToken)
                 ?? await tools.Recall(address, cancellationToken: cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "show");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "show");
@@ -655,6 +671,10 @@ public partial class ScriniaCommands
                 ReservedPathOperation.Delete, address,
                 new ReservedPathRequest(null, null, false, false), cancellationToken)
                 ?? await tools.Forget(address, cancellationToken);
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "forget");
         }
         catch (RestoreRecoveryException exception)
         {
@@ -728,6 +748,10 @@ public partial class ScriniaCommands
                 new ReservedPathRequest([content], null, false, false), cancellationToken)
                 ?? await tools.Append(content, address, cancellationToken: cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "append");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "append");
@@ -763,6 +787,10 @@ public partial class ScriniaCommands
                 new ReservedPathRequest(null, null, false, false), cancellationToken)
                 ?? await tools.Compact(address, keepRecent, cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "compact");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "compact");
@@ -795,6 +823,10 @@ public partial class ScriniaCommands
         try
         {
             response = await tools.Link(fromAddress, toAddress, reason, cancellationToken);
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "link");
         }
         catch (RestoreRecoveryException exception)
         {

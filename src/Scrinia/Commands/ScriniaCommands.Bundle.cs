@@ -49,6 +49,10 @@ public partial class ScriniaCommands
         {
             response = await tools.Export(topicArray, filename, cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException exception)
+        {
+            return EmitBundleFailure(exception, json, "export");
+        }
         catch (RestoreRecoveryException exception)
         {
             return EmitRecoveryBlocked(exception, json, "export");

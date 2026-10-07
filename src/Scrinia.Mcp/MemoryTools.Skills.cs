@@ -421,6 +421,7 @@ public sealed partial class ScriniaMcpTools
                 $"Invalid skill name '{name}'.",
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/my-helper', content: [...] })");
+        using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
         Directory.CreateDirectory(skillsDir);
 
@@ -502,6 +503,7 @@ public sealed partial class ScriniaMcpTools
                 "forget({ path: '/skill/my-helper' })"));
 
         bool isBuiltIn = BuiltInSkills.ContainsKey(name);
+        using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
 
         if (!File.Exists(filePath))
         {
@@ -559,10 +561,11 @@ public sealed partial class ScriniaMcpTools
 
         if (string.IsNullOrWhiteSpace(name))
         {
+            using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: false, cancellationToken);
             string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
             var diskNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var diskMetas = new Dictionary<string, SkillFileMeta?>(StringComparer.OrdinalIgnoreCase);
-            if (Directory.Exists(skillsDir))
+            if (!lease.CapturedAbsentWorkspace && Directory.Exists(skillsDir))
             {
                 foreach (string mdFile in Directory.GetFiles(skillsDir, "*.md"))
                 {
@@ -628,12 +631,13 @@ public sealed partial class ScriniaMcpTools
     private static async Task<McpResponse> LoadSkillAsync(
         IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
+        using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: false, ct);
         if (!PathRouter.TryToFileEntityPath("skill", skillName, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error(
                 $"Invalid skill name '{skillName}'.", ErrorCodes.NotFound,
                 "recall({ path: '/skill/' }) to list available skills");
         string? diskContent = null;
-        if (File.Exists(filePath))
+        if (!lease.CapturedAbsentWorkspace && File.Exists(filePath))
         {
             diskContent = await File.ReadAllTextAsync(filePath, ct);
         }

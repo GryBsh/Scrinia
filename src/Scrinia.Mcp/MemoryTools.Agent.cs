@@ -26,6 +26,7 @@ public sealed partial class ScriniaMcpTools
         if (!PathRouter.TryToFileEntityPath("agent", subject, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error("Invalid agent config name.", ErrorCodes.InvalidParameter);
 
+        using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
         Directory.CreateDirectory(agentDir);
         var existingMeta = ReadSidecarMetaOrRefuse(filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
@@ -66,6 +67,7 @@ public sealed partial class ScriniaMcpTools
         if (content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
 
+        using WorkspaceLease lease = EnterFileEntityAdmission(CurrentStore, mutation: true, cancellationToken);
         McpResponse current = await ReadAgentAsync(subject, cancellationToken);
         if (current.IsError)
             return current;
@@ -78,10 +80,15 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error("Invalid agent config name.", ErrorCodes.InvalidParameter);
 
         var store = CurrentStore;
+        using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: false, cancellationToken);
         if (!PathRouter.TryToFileEntityPath("agent", subject, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error("Invalid agent config name.", ErrorCodes.InvalidParameter);
+        if (lease.CapturedAbsentWorkspace)
+            return ResponseBuilder.Error($"Agent '{subject}' not found.", ErrorCodes.NotFound);
         if (!File.Exists(filePath))
         {
+            lease.Dispose();
+            using WorkspaceLease mutation = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
             MemoryAddress address = MemoryAddress.Parse($"/agent/{subject}");
             if (await PromoteLocalAgentAsync(store, address, subject, cancellationToken) && File.Exists(filePath))
             {
@@ -102,8 +109,9 @@ public sealed partial class ScriniaMcpTools
 
     internal McpResponse ListAgents()
     {
+        using WorkspaceLease lease = EnterFileEntityAdmission(CurrentStore, mutation: false, CancellationToken.None);
         string agentDir = PathRouter.ToFileEntityDir("agent", CurrentStore.WorkspaceRoot);
-        string[] names = Directory.Exists(agentDir)
+        string[] names = !lease.CapturedAbsentWorkspace && Directory.Exists(agentDir)
             ? Directory.GetFiles(agentDir, "*.md")
                 .Select(Path.GetFileNameWithoutExtension)
                 .Where(name => name is not null)
@@ -123,6 +131,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error("Invalid agent config name.", ErrorCodes.InvalidParameter);
 
         var store = CurrentStore;
+        using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
         if (!PathRouter.TryToFileEntityPath("agent", subject, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error("Invalid agent config name.", ErrorCodes.InvalidParameter);
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");

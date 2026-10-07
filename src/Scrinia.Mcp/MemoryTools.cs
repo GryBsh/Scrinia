@@ -138,6 +138,15 @@ public sealed partial class ScriniaMcpTools
                 ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide"),
                 ctx).ToYaml();
         }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return (ResponseBuilder.SuccessUntruncated(guideContent).WithAction("guide") with
+            {
+                Status = "warning", ErrorCode = ErrorCodes.BundleRecoveryRequired,
+                Error = ex.Message,
+                Instruction = "Resolve the retained bundle recovery evidence before retrying persistent operations."
+            }).ToYaml();
+        }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
@@ -287,6 +296,10 @@ public sealed partial class ScriniaMcpTools
             response = await Remember(content, parsedPath,
                 keywords: keywords, attributes: attributes,
                 actionLabel: "remembered", cancellationToken: cancellationToken);
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {
@@ -522,6 +535,10 @@ public sealed partial class ScriniaMcpTools
         {
             return (await Recall(parsedPath, chunk: chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
         }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
+        }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
@@ -569,6 +586,10 @@ public sealed partial class ScriniaMcpTools
             }
             return (await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken)).ToYaml();
         }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
+        }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
@@ -593,6 +614,10 @@ public sealed partial class ScriniaMcpTools
         try
         {
             return (await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken)).ToYaml();
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {
@@ -675,6 +700,10 @@ public sealed partial class ScriniaMcpTools
         {
             response = await Append(content, parsedPath, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
         }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
+        }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
@@ -734,6 +763,10 @@ public sealed partial class ScriniaMcpTools
         {
             return (await Forget(parsedPath, cancellationToken)).ToYaml();
         }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
+        }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
@@ -774,6 +807,10 @@ public sealed partial class ScriniaMcpTools
         try
         {
             return (await Compact(parsedPath, keepRecent, cancellationToken)).ToYaml();
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {
@@ -823,6 +860,10 @@ public sealed partial class ScriniaMcpTools
         {
             return (await Link(parsedPath, parsedDestination, reason, cancellationToken)).ToYaml();
         }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
+        }
         catch (RestoreRecoveryException ex)
         {
             return RecoveryBlockedResponse(ex).ToYaml();
@@ -838,6 +879,10 @@ public sealed partial class ScriniaMcpTools
         try
         {
             return (await Restore(cancellationToken)).ToYaml();
+        }
+        catch (Scrinia.Core.Bundles.BundleImportException ex)
+        {
+            return ResponseBuilder.Error(ex, "Resolve the retained bundle recovery evidence before retrying.").ToYaml();
         }
         catch (RestoreRecoveryException ex)
         {

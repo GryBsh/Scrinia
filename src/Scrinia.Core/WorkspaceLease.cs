@@ -5,6 +5,7 @@ internal sealed class WorkspaceLease : IDisposable
 {
     private FileLock? _held;
     private int _disposed;
+    private readonly Dictionary<string, string> _verifiedScopeSnapshots = new(StringComparer.Ordinal);
 
     internal WorkspaceLease(string workspaceRoot, FileLock? held, bool isExclusive,
         bool capturedAbsentWorkspace = false, bool recoveryPerformed = false)
@@ -25,6 +26,11 @@ internal sealed class WorkspaceLease : IDisposable
     /// </summary>
     internal bool CapturedAbsentWorkspace { get; }
     internal bool RecoveryPerformed { get; }
+
+    internal void SetVerifiedScopeSnapshot(string scope, string fingerprint) => _verifiedScopeSnapshots[scope] = fingerprint;
+
+    internal bool MatchesVerifiedScopeSnapshot(string scope, Func<string> fingerprint) =>
+        _verifiedScopeSnapshots.TryGetValue(scope, out string? verified) && verified == fingerprint();
 
     internal void AssertValid(string workspaceRoot, bool requireExclusive = false)
     {

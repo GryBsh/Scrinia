@@ -386,8 +386,9 @@ public sealed partial class ScriniaMcpTools
         {
             try
             {
+                using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: false, cancellationToken);
                 string resumeScriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
-                if (Directory.Exists(resumeScriniaDir))
+                if (!lease.CapturedAbsentWorkspace && Directory.Exists(resumeScriniaDir))
                 {
                     bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
                         .Any(f =>
@@ -412,8 +413,9 @@ public sealed partial class ScriniaMcpTools
         {
             try
             {
+                using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: false, cancellationToken);
                 string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
-                var diskSkills = Directory.Exists(skillsDir)
+                var diskSkills = !lease.CapturedAbsentWorkspace && Directory.Exists(skillsDir)
                     ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
                     : [];
                 var builtInNames = BuiltInSkills.Keys.ToList();
@@ -435,10 +437,10 @@ public sealed partial class ScriniaMcpTools
             {
                 string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
                 bool usedMdFiles = false;
-
-                if (Directory.Exists(agentDir))
+                using (WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: false, cancellationToken))
                 {
-                    var mdFiles = Directory.GetFiles(agentDir, "*.md");
+                    var mdFiles = !lease.CapturedAbsentWorkspace && Directory.Exists(agentDir)
+                        ? Directory.GetFiles(agentDir, "*.md") : [];
                     if (mdFiles.Length > 0)
                     {
                         usedMdFiles = true;
