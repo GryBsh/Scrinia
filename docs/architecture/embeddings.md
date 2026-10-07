@@ -47,6 +47,16 @@ files. Signatures detect provider or embedding-option changes; stale files are q
 write a complete temporary file and atomically publish it only after the new bytes are complete.
 An interrupted or failed rewrite therefore leaves the previous durable snapshot readable.
 
+Each persistent scope mutation takes the instance scope gate and an exclusive file lease, then
+rereads the authoritative scope file before applying its change. Upserts, removals, replacements,
+and migration publication share that ownership boundary. A mutation atomically replaces the
+complete file before publishing its local cache, so an already-warm writer cannot overwrite a
+peer's additions or resurrect its deletions from an old snapshot.
+
+Another already-warm instance may continue reading its earlier snapshot until its next mutation
+or reload. This write coherence repair does not add a read-cache invalidation protocol. Derived
+vectors remain outside the authoritative memory bundle transaction and its rollback manifest.
+
 Ephemeral memories are never reindexed from disk. Their vectors live only for the store instance.
 
 ## Search flow

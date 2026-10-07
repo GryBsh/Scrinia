@@ -29,10 +29,22 @@ public sealed class VectorBatchReplaceTests : IDisposable
     [InlineData("replace")]
     [InlineData("upsert")]
     [InlineData("remove")]
+    [InlineData("delete-rewrite")]
     public async Task IndependentInstancesMutateFreshScopeState(string operation)
     {
         using var a = new VectorStore(_dir, "test");
         using var b = new VectorStore(_dir, "test");
+        if (operation == "delete-rewrite")
+        {
+            await a.ReplaceMemoryVectorsAsync("local", "alpha", Plan(1));
+            await b.RemoveAsync("local", "alpha");
+            await b.ReplaceMemoryVectorsAsync("local", "beta", Plan(1));
+            await a.ReplaceMemoryVectorsAsync("local", "gamma", Plan(1));
+            using var afterDeletion = new VectorStore(_dir, "test");
+            afterDeletion.GetVectors("local").Select(v => v.Name).Should().BeEquivalentTo(["beta", "gamma"]);
+            return;
+        }
+
         await a.ReplaceMemoryVectorsAsync("local", "alpha", Plan(2));
         await b.ReplaceMemoryVectorsAsync("local", "beta", Plan(1));
 

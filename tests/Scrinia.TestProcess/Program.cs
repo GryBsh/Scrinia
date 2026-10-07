@@ -17,6 +17,7 @@ internal static class Program
         : args[0] switch
         {
             "admission" => AdmissionCommands.RunAsync(args[1..]),
+            "vector" => VectorCommands.RunAsync(args[1..]),
             _ => Task.FromResult(1)
         };
 }

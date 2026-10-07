@@ -11,8 +11,8 @@ namespace Scrinia.Core;
 /// <para>On Windows the exclusion is OS-enforced: the underlying FileStream opens with
 /// <see cref="FileShare.None"/> for an exclusive lock or <see cref="FileShare.Read"/> for a shared
 /// lock, and the system rejects a conflicting open, so a second process cannot proceed. On
-/// non-Windows platforms <c>FileShare</c> is advisory and does not cross process boundaries, so
-/// exclusion is enforced with <c>flock(2)</c>: an exclusive lock takes <c>LOCK_EX</c>, a shared lock
+/// Unix platforms .NET uses advisory <c>flock(2)</c> during the FileStream open; this class also
+/// explicitly enforces the requested mode: an exclusive lock takes <c>LOCK_EX</c>, a shared lock
 /// takes <c>LOCK_SH</c>, and a non-blocking attempt that fails with <c>EAGAIN</c>/<c>EWOULDBLOCK</c>
 /// means another process holds the lock and is retried with exponential backoff. The lock is
 /// released explicitly on dispose via <c>LOCK_UN</c>.</para>
@@ -130,8 +130,8 @@ public sealed class FileLock : IDisposable
             }
 
             // Windows enforces cross-process exclusion at the open above (FileShare is OS-enforced
-            // there). Non-Windows FileShare is advisory, so a successful open is not enough: enforce
-            // with flock(2) on the underlying descriptor.
+            // there). Unix FileStream may already take an advisory flock during open; explicitly
+            // enforce the requested mode on the underlying descriptor after a successful open.
             if (stream is not null && OperatingSystem.IsWindows())
                 return new FileLock(stream);
 
@@ -139,24 +139,24 @@ public sealed class FileLock : IDisposable
             if (stream is not null)
             {
                 // Non-Windows: take a non-blocking lock on the fd. flock(2) is advisory, but the POSIX
-                // kernel enforces it across processes for a given open file description — exactly the
-                // guarantee FileShare cannot provide off Windows.
+                // kernel enforces it across cooperating processes for a given open file description,
+                // including when .NET already took the constructor lock.
                 int fd = (int)stream.SafeFileHandle.DangerousGetHandle();
                 int how = mode == FileLockMode.Exclusive ? LOCK_EX : LOCK_SH;
                 if (flock(fd, how | LOCK_NB) == 0)
                     return new FileLock(stream);
                 int errno = Marshal.GetLastPInvokeError();   // capture BEFORE close()/Dispose, while errno is fresh
                 stream.Dispose();
-                if (errno is EAGAIN or EWOULDBLOCK)
+                if (IsUnixContentionError(errno))
                     contendedAttempt = true;
                 else
                     contendedAttempt = false;
             }
             else
             {
-                // Windows (or a non-Windows open failure): only a known transient sharing violation is
-                // contention; every other IOException is a hard failure.
-                contendedAttempt = IsTransientIoException(openError!);
+                // A conflicting Unix FileStream open can throw before our explicit flock attempt.
+                // Retry only the platform's known contention code; all other I/O failures refuse admission.
+                contendedAttempt = IsContentionOpenError(openError!);
             }
 
             if (!contendedAttempt)
@@ -184,17 +184,22 @@ public sealed class FileLock : IDisposable
         }
     }
 
-    private static bool IsTransientIoException(IOException ex)
+    internal static bool IsContentionOpenError(IOException error)
     {
-        // Windows-only semantics: retry only the Win32 sharing/lock violations that FileStream
-        // surfaces on a conflicting cross-process open. Every other IOException propagates to the
-        // timeout branch. Non-Windows enforces contention via flock(2) and never reaches here for a
-        // sharing violation.
-        int hr = System.Runtime.InteropServices.Marshal.GetHRForException(ex);
-        int win32 = hr & 0xFFFF;
-        return win32 == 32  // ERROR_SHARING_VIOLATION
-            || win32 == 33; // ERROR_LOCK_VIOLATION
+        if (OperatingSystem.IsWindows())
+        {
+            int win32 = error.HResult & 0xFFFF;
+            return win32 is 32 or 33; // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION
+        }
+
+        // .NET maps Unix EWOULDBLOCK from FileStream's constructor to an IOException whose
+        // HResult is the exact raw errno, not HRESULT_FROM_WIN32 or a masked low word.
+        return IsUnixContentionError(error.HResult);
     }
+
+    internal static bool IsUnixContentionError(int error) =>
+        OperatingSystem.IsLinux() ? error == EAGAIN :
+        OperatingSystem.IsMacOS() && error == EWOULDBLOCK;
 
     // Compile-time-bound structured log messages — zero allocation when the level is disabled.
     private static readonly Action<ILogger, string, long, Exception?> LockContended =
@@ -246,8 +251,8 @@ public sealed class FileLock : IDisposable
     private const int LOCK_UN = 8;   // release the lock
 
     // flock(2) errno when the lock is held by another process: EAGAIN, which equals EWOULDBLOCK on a
-    // given platform. Linux reports 11; macOS reports 35 — accept both so the contention check is
-    // correct on either.
+    // given platform. Linux reports 11; macOS reports 35. Match only the running platform's
+    // value, since these numbers can denote unrelated errors on the other platform.
     private const int EAGAIN = 11;
     private const int EWOULDBLOCK = 35;
 

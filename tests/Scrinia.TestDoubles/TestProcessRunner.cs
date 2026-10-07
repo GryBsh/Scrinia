@@ -29,6 +29,11 @@ public sealed class TestProcessRunner : IAsyncDisposable
             ?? throw new InvalidOperationException("Cannot locate the test output configuration.");
         string harness = RepoPaths.Combine("tests", "Scrinia.TestProcess", "bin", configuration,
             output.Name, "Scrinia.TestProcess.dll");
+        // SDK artifacts output is bin/<Project>/<pivot>/; preserve the exact test pivot.
+        // Prefer that sibling so isolated runs cannot launch stale conventional output.
+        if (output.Parent is { Name: "Scrinia.Tests", Parent.Name: "bin" } projectOutput)
+            harness = Path.Combine(projectOutput.Parent.FullName, "Scrinia.TestProcess", output.Name,
+                "Scrinia.TestProcess.dll");
         if (!File.Exists(harness))
             throw new FileNotFoundException("The test harness was not built by the test project reference.", harness);
 
