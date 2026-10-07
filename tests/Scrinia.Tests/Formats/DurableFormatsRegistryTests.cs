@@ -7,10 +7,10 @@ namespace Scrinia.Tests.Formats;
 public class DurableFormatsRegistryTests
 {
     [Fact]
-    public void Registry_ContainsExactlyTheThirteenKnownFormats()
+    public void Registry_ContainsExactlyTheFourteenKnownFormats()
     {
         var names = DurableFormats.Registry.Keys.OrderBy(n => n).ToArray();
-        Assert.Equal(13, names.Length);
+        Assert.Equal(14, names.Length);
         Assert.Contains("artifact-sidecar", names);
         Assert.Contains("entity-facts", names);
         Assert.Contains("nmp2-body", names);
@@ -24,6 +24,7 @@ public class DurableFormatsRegistryTests
         Assert.Contains("recovery-envelope", names);
         Assert.Contains("multi-memory-transaction", names);
         Assert.Contains("bundle-restore-journal", names);
+        Assert.Contains("tracking-journal", names);
     }
 
     [Fact]

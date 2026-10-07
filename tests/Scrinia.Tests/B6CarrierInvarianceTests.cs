@@ -187,8 +187,8 @@ public sealed partial class B6CarrierInvarianceTests
     public void Control_data_formats_are_registered_separately_from_the_carrier()
     {
         // B1-B5 control data has its own versioned homes, declared once in DurableFormats.All.
-        DurableFormats.All.Should().HaveCount(13,
-            "the thirteen durable formats are declared exactly once, carrier and control data alike");
+        DurableFormats.All.Should().HaveCount(14,
+            "the fourteen durable formats are declared exactly once, carrier and control data alike");
 
         DurableFormats.Registry.Keys.Should().Contain(
             ExpectedAppendJournalRestoreJournalRecoveryEnvelopeMultiMemoryTransactionBundleRestoreJournal,
