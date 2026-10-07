@@ -51,14 +51,20 @@ public sealed partial class ScriniaMcpTools
         List<string> exportedTopics;
         int totalEntries;
 
-        // Build-before-write + atomic publish + cleanup-on-failure live in ExportTopicsToZip: a
-        // malformed topic never reaches here, and a failed publish removes the target. The bundle is
-        // only on disk when the export fully succeeds.
-        (exportedTopics, totalEntries) = Scrinia.Core.Bundles.BundleFormatService.ExportTopicsToZip(bundlePath, store, topics);
+        // Build-before-write and destination preservation live in ExportTopicsToZip: a
+        // malformed topic never reaches here, and failed publication preserves prior bytes. The bundle is
+        // published only when its complete archive is ready.
+        try
+        {
+            (exportedTopics, totalEntries) = BundleFormatService.ExportTopicsToZip(bundlePath, store, topics);
+        }
+        catch (DurableWriteException exception)
+        {
+            return Task.FromResult(DurableWriteFailureResponse(exception));
+        }
 
         if (exportedTopics.Count == 0)
         {
-            try { File.Delete(bundlePath); } catch { }
             return Task.FromResult(ResponseBuilder.Error(
                 "No entries found in the specified topics.",
                 ErrorCodes.NotFound,
@@ -107,16 +113,16 @@ public sealed partial class ScriniaMcpTools
             using var stream = bundle.Stream;
             using var zip = bundle.Archive;
 
-            var (topicCount, entryCount, names) =
-                Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZipAsync(
-                    zip, store, topics, overwrite, cancellationToken).GetAwaiter().GetResult();
+            BundleImportSummary summary = BundleFormatService.ImportTopicsWithResultAsync(
+                zip, store, topics, overwrite, cancellationToken).GetAwaiter().GetResult();
+            var restored = summary.Restore;
+            if (restored.EntryCount == 0 && restored.FileEntityCount == 0)
+                return Task.FromResult(ResponseBuilder.Warning("No changes imported (empty bundle, filtered out, or all entries skipped)."));
 
-            if (topicCount == 0)
-                return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out)."));
-
-            string message = topicCount > 0
-                ? $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}"
-                : "No topics imported.";
+            string fileLabel = restored.FileEntityCount == 1 ? "file entity" : "file entities";
+            string message = $"Imported {restored.TopicCount} topic(s) ({restored.EntryCount} entries, {restored.FileEntityCount} {fileLabel})";
+            if (summary.TopicNames.Count > 0)
+                message += $": {string.Join(", ", summary.TopicNames)}";
             return Task.FromResult(ResponseBuilder.Success(message).WithAction("imported"));
         }
         catch (RestoreRecoveryException ex)

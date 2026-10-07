@@ -12,6 +12,8 @@ namespace Scrinia.Core.Bundles;
 /// <summary>Bundle index containing artifact entries for a single topic.</summary>
 public sealed record BundleIndex(List<ArtifactEntry> Entries);
 
+internal sealed record BundleImportSummary(BundleRestoreResult Restore, IReadOnlyList<string> TopicNames);
+
 /// <summary>Bundle manifest describing the archive contents.</summary>
 public sealed record BundleManifest(
     int Version,
@@ -67,42 +69,32 @@ public static class BundleFormatService
         return (exportedTopics, totalEntries);
     }
 
-    /// <summary>
-    /// Write topics to a bundle at <paramref name="bundlePath"/>. Builds every topic into an
-    /// in-memory staging structure BEFORE the bundle file exists, so a malformed topic, oversized
-    /// body or unsafe subject fails the build and no bundle is written. The assembled archive is
-    /// then published atomically with <see cref="DurableFile.AtomicWriteAllBytes"/> — the single
-    /// durable boundary of the export — and any failure (a build refuse or a failed publish) removes
-    /// the target so a failed export leaves no half-created bundle.
-    /// </summary>
+    /// <summary>Builds and validates a closed bundle before atomically replacing the destination.
+    /// Empty exports and failures before replacement preserve an existing destination; later failures
+    /// compensate only while the destination matches this attempt's output.</summary>
     /// <returns>Tuple of (exported topic names, total entry count).</returns>
     public static (List<string> Topics, int EntryCount) ExportTopicsToZip(
         string bundlePath, IMemoryStore store, string[] topics)
     {
         var (staged, exportedTopics, totalEntries, files) = BuildExportStaging(store, topics);
-
-        // Nothing to publish: leave no bundle behind. Zero exported topics means nothing was staged,
-        // so there is nothing to remove — this mirrors the facade's empty-export delete without
-        // ever creating the file.
         if (staged.Count == 0)
             return (exportedTopics, 0);
 
+        string preparedPath = BundleExportPublisher.TemporaryPath(bundlePath);
+        bool preparedCreated = false;
         try
         {
-            using var archiveBytes = new MemoryStream();
-            using (var zip = new ZipArchive(archiveBytes, ZipArchiveMode.Create, leaveOpen: true))
-                PublishStaging(zip, staged, totalEntries, store, files);
-
-            DurableFile.AtomicWriteAllBytes(bundlePath, archiveBytes.ToArray());
+            using var stream = new FileStream(preparedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            preparedCreated = true;
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+            PublishStaging(zip, staged, totalEntries, store, files);
         }
-        catch
+        catch (Exception exception)
         {
-            // cleanup-on-failure: refuse-before-write never created the file, and a failed atomic
-            // publish removed its own temp — either way nothing half-created may remain.
-            try { File.Delete(bundlePath); } catch { }
-            throw;
+            if (preparedCreated) BundleExportPublisher.TryDelete(preparedPath);
+            throw new DurableWriteException("prepare bundle", bundlePath, exception);
         }
-
+        BundleExportPublisher.Publish(preparedPath, bundlePath);
         return (exportedTopics, totalEntries);
     }
 
@@ -264,6 +256,19 @@ public static class BundleFormatService
         => ImportTopicsFromZipAsync(zip, store, filterTopics, overwrite, BundleReadLimits.Default, ct);
 
     internal static async Task<(int TopicCount, int EntryCount, List<string> Names)> ImportTopicsFromZipAsync(
+        ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite,
+        BundleReadLimits limits, CancellationToken ct)
+    {
+        BundleImportSummary summary = await ImportTopicsWithResultAsync(zip, store, filterTopics, overwrite, limits, ct)
+            .ConfigureAwait(false);
+        return (summary.Restore.TopicCount, summary.Restore.EntryCount, summary.TopicNames.ToList());
+    }
+
+    internal static Task<BundleImportSummary> ImportTopicsWithResultAsync(
+        ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite, CancellationToken ct = default)
+        => ImportTopicsWithResultAsync(zip, store, filterTopics, overwrite, BundleReadLimits.Default, ct);
+
+    internal static async Task<BundleImportSummary> ImportTopicsWithResultAsync(
         ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite,
         BundleReadLimits limits, CancellationToken ct)
     {
@@ -602,7 +607,7 @@ public static class BundleFormatService
             item.TopicScope, item.Topic, item.Entries, item.ArtifactBytes)).ToList();
         var plan = new BundleRestorePlan(planTopics, fileEntities, overwrite);
         BundleRestoreResult result = await store.RestoreBundleAsync(plan, ct).ConfigureAwait(false);
-        return (result.TopicCount, result.EntryCount, planTopics.Select(t => t.Topic).ToList());
+        return new BundleImportSummary(result, availableTopics.Where(selectedTopicNames.Contains).ToList());
     }
 
     private static int ReadDeclaredEntryCount(ZipArchive zip, string topic, BundleReadBudget budget, long jsonLimit)

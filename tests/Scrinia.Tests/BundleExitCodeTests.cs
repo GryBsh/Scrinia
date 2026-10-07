@@ -340,6 +340,199 @@ public class BundleExitCodeTests
             because: "a warning is not an error — the two predicates must not overlap");
     }
 
+    [Fact]
+    public async Task EmptyMcpExportPreservesExistingBackup()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "exports");
+        Directory.CreateDirectory(directory);
+        string destination = Path.Combine(directory, "backup.scrinia-bundle");
+        byte[] prior = "prior backup"u8.ToArray();
+        File.WriteAllBytes(destination, prior);
+        (await new ScriniaMcpTools().Export(["missing"], "backup")).IsError.Should().BeTrue();
+        File.ReadAllBytes(destination).Should().Equal(prior);
+    }
+
+    [Fact]
+    public async Task FileOnlyImportReportsCommittedFilesInCliJson()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "new-skill", includeFile: true);
+        var (exit, output) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, json: true));
+        using (output)
+        {
+            exit.Should().Be(0);
+            var response = ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!);
+            response.Status.Should().Be("success");
+            response.Content.Should().Contain("1 file entity");
+        }
+        File.ReadAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "new-skill.md"))
+            .Should().Be("file entity content");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PackFailurePreservesExistingDestination(bool afterMove)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string input = Path.Combine(scope.WorkspaceDir, "input.txt");
+        File.WriteAllText(input, "pack content");
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "exports");
+        Directory.CreateDirectory(directory);
+        string destination = Path.Combine(directory, "backup.scrinia-bundle");
+        byte[] prior = "prior pack backup"u8.ToArray();
+        File.WriteAllBytes(destination, prior);
+        bool moved = false;
+        bool fired = false;
+        DurableFile.FailureInjector = (phase, path) =>
+        {
+            if (phase == DurableWritePhase.BeforeMove && path == destination)
+            {
+                moved = true;
+                if (!afterMove) return new UnauthorizedAccessException("pack before move");
+            }
+            if (afterMove && moved && !fired && phase == DurableWritePhase.BeforeDirSync && path == directory)
+            {
+                fired = true;
+                return new IOException("pack after move");
+            }
+            return null;
+        };
+        try
+        {
+            var (exit, output) = await CaptureJsonAsync(() => new ScriniaCommands().Bundle(
+                "notes", input, workspaceRoot: scope.WorkspaceDir, output: "backup", json: true));
+            using (output)
+            {
+                exit.Should().Be(1);
+                output.RootElement.GetProperty("code").GetString().Should().Be(ErrorCodes.DurableWriteFailed);
+            }
+        }
+        finally { DurableFile.FailureInjector = null; }
+        moved.Should().BeTrue();
+        if (afterMove) fired.Should().BeTrue();
+        File.ReadAllBytes(destination).Should().Equal(prior);
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task McpExportFailurePreservesExistingBackup(bool afterMove)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        BundleExportFixture.SeedValidTopic(TestHelpers.Store, "api", "note", "content");
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "exports");
+        Directory.CreateDirectory(directory);
+        string destination = Path.Combine(directory, "backup.scrinia-bundle");
+        byte[] previous = "prior backup"u8.ToArray();
+        File.WriteAllBytes(destination, previous);
+        bool moved = false;
+        bool fired = false;
+        DurableFile.FailureInjector = (phase, path) =>
+        {
+            if (phase == DurableWritePhase.BeforeMove && path == destination)
+            {
+                moved = true;
+                if (!afterMove) return new UnauthorizedAccessException("before replacement");
+            }
+            if (afterMove && moved && !fired && phase == DurableWritePhase.BeforeDirSync && path == directory)
+            {
+                fired = true;
+                return new IOException("after replacement");
+            }
+            return null;
+        };
+        try
+        {
+            var response = await new ScriniaMcpTools().Export(["api"], "backup");
+            response.IsError.Should().BeTrue();
+            response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
+        }
+        finally { DurableFile.FailureInjector = null; }
+        moved.Should().BeTrue();
+        if (afterMove) fired.Should().BeTrue();
+        File.ReadAllBytes(destination).Should().Equal(previous);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FileOnlyCollisionReportsNoChangesAndPreservesLogicalPair(bool metadataOnly)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "existing-skill", includeFile: true);
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills");
+        Directory.CreateDirectory(directory);
+        string body = Path.Combine(directory, "existing-skill.md");
+        string metadata = Path.Combine(directory, "existing-skill.meta.json");
+        byte[] priorMeta = "{}"u8.ToArray();
+        File.WriteAllBytes(metadata, priorMeta);
+        if (!metadataOnly) File.WriteAllText(body, "prior body");
+        var (exit, output) = await CaptureJsonAsync(() =>
+            new ScriniaCommands().Import(bundlePath, workspaceRoot: scope.WorkspaceDir, json: true));
+        using (output)
+        {
+            exit.Should().Be(1);
+            var response = ResponseParser.Parse(output.RootElement.GetProperty("message").GetString()!);
+            response.Status.Should().Be("warning");
+            response.Content.Should().Contain("No changes imported");
+        }
+        File.ReadAllBytes(metadata).Should().Equal(priorMeta);
+        if (metadataOnly) File.Exists(body).Should().BeFalse();
+        else File.ReadAllText(body).Should().Be("prior body");
+        using var archive = ZipFile.OpenRead(bundlePath);
+        var summary = await BundleFormatService.ImportTopicsWithResultAsync(archive, TestHelpers.Store, null, false);
+        summary.Restore.EntryCount.Should().Be(0);
+        summary.Restore.FileEntityCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task FileOnlySummaryCountsActualChangesAndOverwriteRemovesOldMetadata()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundlePath = CreateFileEntityBundle(scope.WorkspaceDir, "existing-skill", includeFile: true);
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills");
+        Directory.CreateDirectory(directory);
+        string body = Path.Combine(directory, "existing-skill.md");
+        string metadata = Path.Combine(directory, "existing-skill.meta.json");
+        File.WriteAllText(body, "prior body");
+        File.WriteAllText(metadata, "{}");
+        using var archive = ZipFile.OpenRead(bundlePath);
+        var summary = await BundleFormatService.ImportTopicsWithResultAsync(archive, TestHelpers.Store, null, true);
+        summary.Restore.TopicCount.Should().Be(0);
+        summary.Restore.EntryCount.Should().Be(0);
+        summary.Restore.FileEntityCount.Should().Be(1);
+        summary.TopicNames.Should().BeEmpty();
+        File.ReadAllText(body).Should().Be("file entity content");
+        File.Exists(metadata).Should().BeFalse();
+    }
+    [Fact]
+    public async Task PackSuccessfullyReplacesPriorWithImportableBundle()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string input = Path.Combine(scope.WorkspaceDir, "input.txt");
+        File.WriteAllText(input, "pack content");
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "exports");
+        Directory.CreateDirectory(directory);
+        string destination = Path.Combine(directory, "backup.scrinia-bundle");
+        File.WriteAllText(destination, "prior pack backup");
+        var (exit, output) = await CaptureJsonAsync(() => new ScriniaCommands().Bundle(
+            "notes", input, workspaceRoot: scope.WorkspaceDir, output: "backup", json: true));
+        using (output)
+        {
+            exit.Should().Be(0);
+            output.RootElement.GetProperty("path").GetString().Should().Be(destination);
+        }
+        using var archive = ZipFile.OpenRead(destination);
+        var (topics, entries, names) = BundleFormatService.ImportTopicsFromZip(archive, TestHelpers.Store, null, true);
+        topics.Should().Be(1);
+        entries.Should().Be(1);
+        names.Should().Equal("notes");
+        string artifact = await TestHelpers.Store.ReadArtifactAsync(MemoryAddress.Parse("/notes/input"));
+        Scrinia.Core.Encoding.Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact).Chunks.Should().Equal("pack content");
+        Directory.GetFiles(directory, ".backup.scrinia-bundle.*").Should().BeEmpty();
+    }
     private static string CreateFileEntityBundle(string workspaceRoot, string name, bool includeFile)
     {
         string bundlePath = Path.Combine(workspaceRoot, $"{name}.scrinia-bundle");

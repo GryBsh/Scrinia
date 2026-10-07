@@ -238,17 +238,33 @@ public partial class ScriniaCommands
                 AnsiConsole.MarkupLine($"[yellow]Warning:[/] {Markup.Escape(message)}[/]");
         }
 
-        // Create the bundle zip. The archive layout has ONE definition, in BundleFormatService —
-        // this command used to duplicate it inline, along with a hard-coded manifest version.
-        using (var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write))
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
+        string preparedPath = Scrinia.Core.Bundles.BundleExportPublisher.TemporaryPath(bundlePath);
+        bool preparedCreated = false;
+        try
         {
-            Scrinia.Core.Bundles.BundleFormatService.WriteTopic(
-                zip, WorkspaceSetup.Store, sanitizedTopic, entries,
-                artifactContents.Select(kv => (kv.Key, kv.Value)));
-
-            Scrinia.Core.Bundles.BundleFormatService.WriteManifest(
-                zip, [sanitizedTopic], entries.Count, fileEntities: null);
+            try
+            {
+                using var stream = new FileStream(preparedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                preparedCreated = true;
+                using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+                Scrinia.Core.Bundles.BundleFormatService.WriteTopic(
+                    zip, WorkspaceSetup.Store, sanitizedTopic, entries,
+                    artifactContents.Select(kv => (kv.Key, kv.Value)));
+                Scrinia.Core.Bundles.BundleFormatService.WriteManifest(
+                    zip, [sanitizedTopic], entries.Count, fileEntities: null);
+            }
+            catch
+            {
+                if (preparedCreated) Scrinia.Core.Bundles.BundleExportPublisher.TryDelete(preparedPath);
+                throw;
+            }
+            Scrinia.Core.Bundles.BundleExportPublisher.Publish(preparedPath, bundlePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            if (json) WriteJsonError(exception.Message, code: ErrorCodes.DurableWriteFailed);
+            else AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(exception.Message)}");
+            return Task.FromResult(1);
         }
 
         long fileSize = new FileInfo(bundlePath).Length;
