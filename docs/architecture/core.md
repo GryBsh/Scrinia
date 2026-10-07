@@ -344,6 +344,10 @@ body means a store that cannot pre-filter now fails to compile instead of silent
 the contract moved from "correct if you remembered to override it" to "correct or it doesn't
 build."
 
+Search applies scope, excluded-topic, path, and attribute eligibility before retaining the lexical
+candidate window. Topic-support candidates preserve topic-summary semantics. Contributors and entity
+facts consume that same bounded snapshot; the final result limit is separate.
+
 **Ephemeral:** `RememberEphemeral`, `ForgetEphemeral`, `GetEphemeral`
 
 **File I/O:** `WriteArtifactAsync`, `ReadArtifactAsync(MemoryAddress)`, `DeleteArtifact`

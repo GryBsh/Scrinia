@@ -35,6 +35,25 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
         _store.Upsert(entry, scope);
     }
 
+    [Theory]
+    [InlineData("alpha")]
+    [InlineData("/alpha/")]
+    [InlineData("/alpha/m")]
+    public async Task PipelinePreservesDirectSearchTopicAndEntryKinds(string prefix)
+    {
+        for (int i = 0; i < 4; i++) Seed("local:alpha", $"m{i}", "alpha note");
+        var query = new SearchQuery("alpha") { PathPrefix = prefix, Limit = 10 };
+        var direct = _store.SearchAll(query);
+
+        var pipeline = await SearchPipeline.ExecuteAsync(_store, query, null, null);
+
+        pipeline.Matches.Select(result => result.GetType()).Should().Equal(direct.Select(result => result.GetType()));
+        pipeline.Matches.OfType<TopicResult>().Select(result => (result.Scope, result.EntryCount))
+            .Should().Equal(direct.OfType<TopicResult>().Select(result => (result.Scope, result.EntryCount)));
+        pipeline.Matches.OfType<EntryResult>().Select(result => result.Item.Entry.Address)
+            .Should().Equal(direct.OfType<EntryResult>().Select(result => result.Item.Entry.Address));
+    }
+
     [Fact]
     public void SearchAll_WithPathPrefix_FillsUpToLimit_NotThePostLimitRemnant()
     {

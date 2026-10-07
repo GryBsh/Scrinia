@@ -20,11 +20,11 @@ public readonly record struct SearchOutcome(
 /// <para><b>The pipeline owns <see cref="SearchQuery.SupplementalScores"/>,
 /// <see cref="SearchQuery.EntityGraphScores"/>, and <see cref="SearchQuery.Candidates"/>.</b>
 /// <see cref="ExecuteAsync"/> is the sole materialization path: it produces the
-/// candidate list exactly once via <c>ListScoped</c> (or reuses
-/// <see cref="SearchQuery.Candidates"/> when the caller already supplied it) and
-/// passes it to <c>IMemoryStore.SearchAll</c>, which suppresses its own
-/// <c>ListScoped</c> when <c>Candidates</c> is set. Supplemental and entity-graph
-/// scores are computed over that same list.</para>
+/// bounded, query-eligible candidate snapshot exactly once via
+/// <see cref="IMemoryStore.SelectLexicalCandidates(SearchQuery, int)"/> and passes it to
+/// <c>IMemoryStore.SearchAll</c>, which suppresses its own <c>ListScoped</c> when
+/// <c>Candidates</c> is set. Supplemental and entity-graph scores and surfaced entity
+/// facts are computed over that same snapshot.</para>
 /// </summary>
 public static class SearchPipeline
 {
@@ -59,16 +59,12 @@ public static class SearchPipeline
             ? query.Query
             : $"{query.Query} {context}";
 
-        // Sole materialization: exactly one ListScoped when the caller did not already
-        // supply candidates. When Candidates is set, suppress the store read entirely —
-        // the store will FilterToQueryScopes rather than re-list (M2/M4).
-        // This keeps scoring and entity-fact derivation on the same snapshot.
+        // Sole materialization: apply query eligibility before the lexical top-K cut.
+        // Supplied candidates are scope-filtered without re-listing. Scoring and entity
+        // facts then consume this same bounded snapshot.
         var options = candidateOptions ?? SearchCandidateOptions.Current;
-        ScopedArtifact[] candidates = query.Candidates is { } supplied
-            ? SearchCandidateOptions.RankLexically(supplied, effectiveQuery)
-                .Take(options.CandidateLimit).ToArray()
-            : store.SelectLexicalCandidates(query.Scopes, query.ExcludeTopics, effectiveQuery,
-                options.CandidateLimit).ToArray();
+        var selectionQuery = query with { Query = effectiveQuery };
+        ScopedArtifact[] candidates = store.SelectLexicalCandidates(selectionQuery, options.CandidateLimit).ToArray();
 
         IReadOnlyDictionary<string, double>? supplemental = null;
         IReadOnlyDictionary<string, double>? entityScores = null;
@@ -99,8 +95,8 @@ public static class SearchPipeline
         return new SearchOutcome(filtered, entityFacts);
     }
 
-    /// <summary>Builds up to 3 entity fact summaries from the same scope+excludeTopics-filtered
-    /// candidate set the scorer used — never a separate store read, never a hidden scope.</summary>
+    /// <summary>Builds up to 3 entity fact summaries from the same bounded, query-eligible
+    /// candidate snapshot the scorer used — never a separate store read, never a hidden scope.</summary>
     private static IReadOnlyList<EntityFactSummary> BuildEntityFacts(
         IMemoryStore store, string effectiveQuery, IReadOnlyList<ScopedArtifact> candidates)
     {
