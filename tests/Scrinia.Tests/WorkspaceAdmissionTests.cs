@@ -180,6 +180,32 @@ public sealed class WorkspaceAdmissionTests
         using var released = admission.EnterRestore(Timeout, default);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WorkspaceAliasUsesCanonicalLeaseIdentity(bool absent)
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: !absent);
+        Directory.CreateDirectory(scope.WorkspaceDir);
+        string alias = scope.WorkspaceDir + "-alias";
+        Directory.CreateSymbolicLink(alias, scope.WorkspaceDir);
+        try
+        {
+            using var lease = new WorkspaceAdmission(alias, null).EnterRead(Timeout, default);
+            lease.AssertValid(scope.WorkspaceDir);
+            lease.AssertValid(alias);
+            lease.CapturedAbsentWorkspace.Should().Be(absent);
+            Action foreign = () => lease.AssertValid(scope.WorkspaceDir + "-other");
+            foreign.Should().Throw<InvalidOperationException>();
+            if (absent)
+            {
+                Directory.CreateDirectory(Path.Combine(scope.WorkspaceDir, ".scrinia"));
+                lease.CapturedAbsentWorkspace.Should().BeTrue();
+            }
+        }
+        finally { Directory.Delete(alias); }
+    }
+
     private static string JournalPath(string root) => Path.Combine(root, ".scrinia", ".bundle-restore-journal.json");
 
     [Fact]

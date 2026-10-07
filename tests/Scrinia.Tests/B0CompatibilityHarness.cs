@@ -27,7 +27,10 @@ public class B0CompatibilityHarness
     [Fact]
     public void SidecarFixture_RoundTripsThroughReadSidecarMetaWriteSidecarMeta()
     {
-        string tempFile = Path.Combine(Path.GetTempPath(), $"scrinia_b0_{Guid.NewGuid():N}.md");
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills");
+        Directory.CreateDirectory(directory);
+        string tempFile = Path.Combine(directory, $"scrinia_b0_{Guid.NewGuid():N}.md");
         try
         {
             int current = DurableFormats.SkillMeta.Current;
@@ -83,8 +86,12 @@ public class B0CompatibilityHarness
         LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir, null, null);
         LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
 
-        Assert.NotEqual(ConfigurationErrorCode.None, inspection.ErrorCode);
-        Assert.Equal(ConfigurationExitClass.InvalidConfiguration, migration.ExitClass);
+        // Unproven legacy completion is retained recovery evidence, not a malformed config.
+        Assert.Equal(ConfigurationErrorCode.ConfigRecoveryRequired, inspection.ErrorCode);
+        Assert.Equal(ConfigurationExitClass.WriteFailure, inspection.ExitClass);
+        Assert.Equal(ConfigurationErrorCode.ConfigRecoveryRequired, migration.ErrorCode);
+        Assert.Equal(ConfigurationExitClass.WriteFailure, migration.ExitClass);
+        Assert.Equal("complete"u8.ToArray(), File.ReadAllBytes(journal));
     }
 
     [Fact]

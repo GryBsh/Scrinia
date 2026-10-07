@@ -1,4 +1,5 @@
 using Scrinia.Core.Configuration;
+using Scrinia.Core.Bundles;
 using System.Text.Json;
 using System.Text;
 
@@ -164,9 +165,16 @@ public sealed class LegacyMigrationService
     {
         try
         {
+            workspaceRoot = TrackingRecoveryJournal.ResolveWorkspaceRoot(workspaceRoot);
+            using WorkspaceLease lease = AcquireWorkspaceLease(workspaceRoot);
             using FileLock fileLock = AcquireConfigurationLock(workspaceRoot);
-            Recover(workspaceRoot);
+            TrackingTransaction.RecoverLocked(workspaceRoot, lease);
             return InspectLocked(workspaceRoot, envSingle, envDouble);
+        }
+        catch (TrackingRecoveryRequiredException)
+        {
+            return new(LegacyMigrationState.LegacyUnsafe, ConfigurationErrorCode.ConfigRecoveryRequired,
+                ConfigurationExitClass.WriteFailure, null, ManagedIgnoreValidation.Drift);
         }
         catch (ScriniaConfigurationException exception) when (exception.InnerException is JsonException)
         {
@@ -225,149 +233,71 @@ public sealed class LegacyMigrationService
             false, false, ReadText(Path.Combine(directory, ".gitignore")));
     }
 
-    public LegacyMigrationResult Migrate(string workspaceRoot, TrackingPolicy targetPolicy, string? envSingle = null, string? envDouble = null)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
-        string directory = Path.Combine(workspaceRoot, ".scrinia");
-        string configPath = Path.Combine(directory, "config.json");
-        string ignorePath = Path.Combine(directory, ".gitignore");
-        string attributesPath = Path.Combine(directory, ".gitattributes");
-        string mergePath = Path.Combine(directory, "merge.config");
-        Directory.CreateDirectory(directory);
-        FileLock fileLock;
-        try { fileLock = AcquireConfigurationLock(workspaceRoot); }
-        catch (FileLockTimeoutException) { return new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure); }
-        using (fileLock)
-        {
-        try { Recover(workspaceRoot); }
-        catch (Exception exception) { return MapInspectionFailure(exception); }
-        LegacyFilesystemObservation observation;
-        try { observation = InspectLocked(workspaceRoot, envSingle, envDouble); }
-        catch (Exception exception) { return MapInspectionFailure(exception); }
-        if (observation.ErrorCode is not ConfigurationErrorCode.None and not ConfigurationErrorCode.TrackingPolicyRequired)
-            return new(observation.ErrorCode, observation.ExitClass, false);
-        LegacyMigrationInput input = observation.Input!;
-        LegacyMigrationPlan plan;
-        try { plan = LegacyMigrationStateMachine.PlanMigration(input, targetPolicy); }
-        catch (ScriniaConfigurationException) { return new(ConfigurationErrorCode.TrackingPolicyInvalid, ConfigurationExitClass.PolicyFailure); }
-        LegacyMigrationResult gate = LegacyMigrationStateMachine.ApplyCommand(plan.State, targetPolicy, isMigration: true);
-        if (!gate.Succeeded) return gate;
-        if (plan.State == (targetPolicy == TrackingPolicy.Local ? LegacyMigrationState.Local : LegacyMigrationState.ProjectGit))
-            return gate with { Changed = false, Warnings = plan.Warnings, DriverUnsetArgv = plan.DriverUnsetArgv };
-        var originals = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase)
-        {
-            [configPath] = ReadBytes(configPath), [ignorePath] = ReadBytes(ignorePath),
-            [attributesPath] = ReadBytes(attributesPath), [mergePath] = ReadBytes(mergePath),
-        };
-        try
-        {
-            Dictionary<string, string> values = WorkspaceConfig.LoadValuesUncached(workspaceRoot);
-            values[WorkspaceConfig.TrackingKey] = targetPolicy switch
-            {
-                TrackingPolicy.Local => "local", TrackingPolicy.ProjectGit => "project-git",
-                _ => throw new ScriniaConfigurationException("Unsupported migration target."),
-            };
-            WriteJournal(configPath, originals);
-            DurableFile.AtomicWriteAllText(configPath, System.Text.Json.JsonSerializer.Serialize(values, ConfigJsonContext.Default.DictionaryStringString));
-            DurableFile.AtomicWriteAllText(ignorePath, ManagedIgnoreBlock.Apply(ReadText(ignorePath), targetPolicy));
-            WriteOrDelete(attributesPath, plan.GitAttributesContent, plan.DeleteGitAttributes);
-            WriteOrDelete(mergePath, input.MergeConfig, plan.DeleteMergeConfig);
-            DurableFile.AtomicWriteAllText(Path.Combine(directory, RecoveryJournalName), "complete\n");
-            File.Delete(Path.Combine(directory, RecoveryJournalName));
-            WorkspaceConfig.RefreshCache(workspaceRoot, values);
-            return gate with { Warnings = plan.Warnings, DriverUnsetArgv = plan.DriverUnsetArgv };
-        }
-        catch (DurableWriteException exception)
-        {
-            Exception? rollbackFailure = TryRestore(originals);
-            return gate with { ErrorCode = rollbackFailure is null ? ConfigurationErrorCode.ConfigWriteFailed : ConfigurationErrorCode.ConfigRecoveryRequired,
-                ExitClass = ConfigurationExitClass.WriteFailure, Changed = false, Warnings = [], DriverUnsetArgv = [],
-                Exception = rollbackFailure is null ? exception : new AggregateException("Migration write and rollback both failed.", exception, rollbackFailure) };
-        }
-        catch (UnauthorizedAccessException exception)
-        {
-            Exception? rollbackFailure = TryRestore(originals);
-            return gate with { ErrorCode = rollbackFailure is null ? ConfigurationErrorCode.IoFailure : ConfigurationErrorCode.ConfigRecoveryRequired,
-                ExitClass = ConfigurationExitClass.WriteFailure, Changed = false, Warnings = [], DriverUnsetArgv = [],
-                Exception = rollbackFailure is null ? exception : new AggregateException("Migration write and rollback both failed.", exception, rollbackFailure) };
-        }
-        catch (IOException exception)
-        {
-            Exception? rollbackFailure = TryRestore(originals);
-            return gate with { ErrorCode = rollbackFailure is null ? ConfigurationErrorCode.IoFailure : ConfigurationErrorCode.ConfigRecoveryRequired,
-                ExitClass = ConfigurationExitClass.WriteFailure, Changed = false, Warnings = [], DriverUnsetArgv = [],
-                Exception = rollbackFailure is null ? exception : new AggregateException("Migration write and rollback both failed.", exception, rollbackFailure) };
-        }
-        }
-    }
+    public LegacyMigrationResult Migrate(string workspaceRoot, TrackingPolicy targetPolicy, string? envSingle = null, string? envDouble = null) =>
+        Execute(workspaceRoot, targetPolicy, envSingle, envDouble, isMigration: true);
 
-    public LegacyMigrationResult Set(string workspaceRoot, TrackingPolicy targetPolicy, string? envSingle = null, string? envDouble = null)
+    public LegacyMigrationResult Set(string workspaceRoot, TrackingPolicy targetPolicy, string? envSingle = null, string? envDouble = null) =>
+        Execute(workspaceRoot, targetPolicy, envSingle, envDouble, isMigration: false);
+
+    private LegacyMigrationResult Execute(string workspaceRoot, TrackingPolicy targetPolicy,
+        string? envSingle, string? envDouble, bool isMigration)
     {
         ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
         if (targetPolicy is not (TrackingPolicy.Local or TrackingPolicy.ProjectGit))
             return new(ConfigurationErrorCode.TrackingPolicyInvalid, ConfigurationExitClass.PolicyFailure);
-
-        string directory = Path.Combine(workspaceRoot, ".scrinia");
-        string configPath = Path.Combine(directory, "config.json");
-        string ignorePath = Path.Combine(directory, ".gitignore");
-        Directory.CreateDirectory(directory);
         try
         {
+            workspaceRoot = TrackingRecoveryJournal.ResolveWorkspaceRoot(workspaceRoot);
+            using WorkspaceLease lease = AcquireWorkspaceLease(workspaceRoot);
             using FileLock fileLock = AcquireConfigurationLock(workspaceRoot);
-            Recover(workspaceRoot);
+            TrackingTransaction.RecoverLocked(workspaceRoot, lease);
             LegacyFilesystemObservation observation = InspectLocked(workspaceRoot, envSingle, envDouble);
             if (observation.ErrorCode is not ConfigurationErrorCode.None and not ConfigurationErrorCode.TrackingPolicyRequired)
-                return new(observation.ErrorCode, observation.ExitClass, false);
+                return new(observation.ErrorCode, observation.ExitClass);
+            LegacyMigrationInput input = observation.Input!;
+            LegacyMigrationPlan? plan = isMigration ? LegacyMigrationStateMachine.PlanMigration(input, targetPolicy) : null;
+            LegacyMigrationResult gate = LegacyMigrationStateMachine.ApplyCommand(plan?.State ?? observation.State, targetPolicy, isMigration);
+            if (!gate.Succeeded) return gate;
+            if (observation.State == (targetPolicy == TrackingPolicy.Local ? LegacyMigrationState.Local : LegacyMigrationState.ProjectGit))
+                return gate with { Changed = false, Warnings = plan?.Warnings, DriverUnsetArgv = plan?.DriverUnsetArgv };
 
-            LegacyMigrationResult gate = LegacyMigrationStateMachine.ApplyCommand(observation.State, targetPolicy, isMigration: false);
-            if (!gate.Succeeded)
-                return gate;
-            if (observation.Input?.TrackingPolicy == targetPolicy)
-                return gate with { Changed = false };
-            gate = gate with { Changed = true };
+            var after = TrackingRecoveryJournal.MemberNames.ToDictionary(name => name,
+                name => TrackingTransaction.CaptureState(Path.Combine(workspaceRoot, ".scrinia", name)).Bytes,
+                StringComparer.Ordinal);
+            Dictionary<string, string> values = WorkspaceConfig.LoadValuesUncached(workspaceRoot);
+            values[WorkspaceConfig.TrackingKey] = targetPolicy == TrackingPolicy.Local ? "local" : "project-git";
+            after["config.json"] = JsonSerializer.SerializeToUtf8Bytes(values, ConfigJsonContext.Default.DictionaryStringString);
+            after[".gitignore"] = System.Text.Encoding.UTF8.GetBytes(ManagedIgnoreBlock.Apply(input.GitIgnore, targetPolicy));
+            if (plan is not null)
+            {
+                if (plan.DeleteGitAttributes) after[".gitattributes"] = null;
+                else if (plan.GitAttributesContent is not null && plan.GitAttributesContent != input.GitAttributes)
+                    after[".gitattributes"] = System.Text.Encoding.UTF8.GetBytes(plan.GitAttributesContent);
+                if (plan.DeleteMergeConfig) after["merge.config"] = null;
+            }
+            LegacyMigrationResult result = TrackingTransaction.CommitLocked(workspaceRoot, lease,
+                isMigration ? "migrate" : "set", after);
+            return result.Succeeded ? result with
+            {
+                Warnings = (result.Warnings ?? []).Concat(plan?.Warnings ?? []).ToArray(),
+                DriverUnsetArgv = plan?.DriverUnsetArgv,
+            } : result;
+        }
+        catch (Exception exception) { return MapInspectionFailure(exception); }
+    }
 
-            var originals = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase)
-            {
-                [configPath] = ReadBytes(configPath), [ignorePath] = ReadBytes(ignorePath),
-                [Path.Combine(directory, ".gitattributes")] = ReadBytes(Path.Combine(directory, ".gitattributes")),
-                [Path.Combine(directory, "merge.config")] = ReadBytes(Path.Combine(directory, "merge.config")),
-            };
-            try
-            {
-                Dictionary<string, string> values = WorkspaceConfig.LoadValuesUncached(workspaceRoot);
-                values[WorkspaceConfig.TrackingKey] = targetPolicy == TrackingPolicy.Local ? "local" : "project-git";
-                WriteJournal(configPath, originals);
-                DurableFile.AtomicWriteAllText(configPath, System.Text.Json.JsonSerializer.Serialize(values, ConfigJsonContext.Default.DictionaryStringString));
-                DurableFile.AtomicWriteAllText(ignorePath, ManagedIgnoreBlock.Apply(ReadText(ignorePath), targetPolicy));
-                DurableFile.AtomicWriteAllText(Path.Combine(directory, RecoveryJournalName), "complete\n");
-                File.Delete(Path.Combine(directory, RecoveryJournalName));
-                WorkspaceConfig.RefreshCache(workspaceRoot, values);
-                return gate;
-            }
-            catch (Exception exception) when (exception is DurableWriteException or UnauthorizedAccessException or IOException)
-            {
-                Exception? rollbackFailure = TryRestore(originals);
-                return gate with
-                {
-                    ErrorCode = rollbackFailure is not null ? ConfigurationErrorCode.ConfigRecoveryRequired :
-                        exception is DurableWriteException ? ConfigurationErrorCode.ConfigWriteFailed : ConfigurationErrorCode.IoFailure,
-                    ExitClass = ConfigurationExitClass.WriteFailure, Changed = false,
-                    Exception = rollbackFailure is null ? exception : new AggregateException("Tracking-set write and rollback both failed.", exception, rollbackFailure),
-                };
-            }
-        }
-        catch (FileLockTimeoutException)
+    // Temporary explicit admission route; the final shared tracking adapter is supplied by Task 6.
+    private static WorkspaceLease AcquireWorkspaceLease(string workspaceRoot)
+    {
+        TrackingRecoveryJournal.InspectPath(Path.Combine(workspaceRoot, ".scrinia"), file: false);
+        WorkspaceLease lease = new WorkspaceAdmission(workspaceRoot, recover: null)
+            .EnterRestore(TimeSpan.FromSeconds(5), default);
+        try
         {
-            return new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure);
+            BundleRestoreCoordinator.RecoverUnderLease(lease, BundleReadLimits.Default, default);
+            return lease;
         }
-        catch (ScriniaConfigurationException)
-        {
-            return new(ConfigurationErrorCode.WorkspaceConfigMalformed, ConfigurationExitClass.InvalidConfiguration);
-        }
-        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
-        {
-            return new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure);
-        }
+        catch { lease.Dispose(); throw; }
     }
 
     private static LegacyMigrationState ClassifyFilesystem(LegacyMigrationInput input, ManagedIgnoreValidation validation)
@@ -395,72 +325,12 @@ public sealed class LegacyMigrationService
         if (Directory.Exists(Path.Combine(directory, "memories")) || File.Exists(Path.Combine(directory, "facts.json"))) return true;
         if (!Directory.Exists(directory)) return false;
         return Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-            .Any(path => Path.GetFileName(path) is not ("config.json" or ".gitignore" or ".gitattributes" or "merge.config" or RecoveryJournalName));
+            .Any(path => Path.GetFileName(path) is not ("config.json" or ".gitignore" or ".gitattributes" or "merge.config" or RecoveryJournalName or ".bundle-restore.lock"));
     }
-
-    private static void WriteJournal(string configPath, Dictionary<string, byte[]?> originals)
-    {
-        string directory = Path.GetDirectoryName(configPath)!;
-        var lines = new List<string> { "prepared" };
-        foreach ((string path, byte[]? bytes) in originals)
-            lines.Add(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(path)) + "|" + (bytes is null ? "-" : Convert.ToBase64String(bytes)));
-        DurableFile.AtomicWriteAllText(Path.Combine(directory, RecoveryJournalName), string.Join('\n', lines) + '\n');
-    }
-
-    private static void Recover(string workspaceRoot)
-    {
-        string path = Path.Combine(workspaceRoot, ".scrinia", RecoveryJournalName);
-        if (!File.Exists(path)) return;
-        string content;
-        try { content = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path)); }
-        catch (DecoderFallbackException exception)
-        {
-            throw new ScriniaConfigurationException("The tracking recovery journal is malformed.", exception);
-        }
-        if (content is "complete\n") { File.Delete(path); return; }
-        string[] lines = content.Split('\n');
-        if (lines.Length > 0 && lines[^1].Length == 0)
-            lines = lines[..^1];
-        if (lines.Length == 0) throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
-        if (lines[0] == "complete") throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
-        if (lines[0] != "prepared") throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
-        string directory = Path.GetFullPath(Path.Combine(workspaceRoot, ".scrinia"));
-        var allowedNames = new HashSet<string>(StringComparer.Ordinal)
-            { "config.json", ".gitignore", ".gitattributes", "merge.config" };
-        var destinations = new HashSet<string>(StringComparer.Ordinal);
-        var records = new List<(string Destination, byte[]? Bytes)>();
-        foreach (string line in lines.Skip(1))
-        {
-            string[] parts = line.Split('|', 2);
-            if (parts.Length != 2) throw new ScriniaConfigurationException("The tracking recovery journal is malformed.");
-            string destination = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[0]));
-            string fullDestination = Path.GetFullPath(destination);
-            if (!PathContainment.IsWithin(directory, fullDestination) ||
-                !string.Equals(Path.GetDirectoryName(fullDestination), directory, StringComparison.Ordinal) ||
-                !allowedNames.Contains(Path.GetFileName(fullDestination)) || !destinations.Add(fullDestination))
-                throw new ScriniaConfigurationException("The tracking recovery journal contains an unsafe path.");
-            byte[]? bytes = parts[1] == "-" ? null : Convert.FromBase64String(parts[1]);
-            records.Add((fullDestination, bytes));
-        }
-        if (!destinations.SetEquals(allowedNames.Select(name => Path.Combine(directory, name))))
-            throw new ScriniaConfigurationException("The tracking recovery journal does not contain the complete target set.");
-        foreach ((string destination, byte[]? bytes) in records)
-            if (bytes is null) { if (File.Exists(destination)) File.Delete(destination); }
-            else DurableFile.AtomicWriteAllBytes(destination, bytes);
-        File.Delete(path);
-    }
-
-    private static LegacyMigrationResult MapFailure(Exception exception) => exception switch
-    {
-        FileLockTimeoutException => new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure),
-        DurableWriteException => new(ConfigurationErrorCode.ConfigWriteFailed, ConfigurationExitClass.WriteFailure),
-        ScriniaConfigurationException { InnerException: DurableWriteException } => new(ConfigurationErrorCode.ConfigWriteFailed, ConfigurationExitClass.WriteFailure),
-        UnauthorizedAccessException or IOException => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
-        _ => new(ConfigurationErrorCode.IoFailure, ConfigurationExitClass.WriteFailure),
-    };
 
     private static LegacyMigrationResult MapInspectionFailure(Exception exception) => exception switch
     {
+        TrackingRecoveryRequiredException => new(ConfigurationErrorCode.ConfigRecoveryRequired, ConfigurationExitClass.WriteFailure, Exception: exception),
         FileLockTimeoutException => new(ConfigurationErrorCode.ConfigLockTimeout, ConfigurationExitClass.WriteFailure),
         DurableWriteException => new(ConfigurationErrorCode.ConfigWriteFailed, ConfigurationExitClass.WriteFailure),
         ScriniaConfigurationException =>
@@ -491,32 +361,9 @@ public sealed class LegacyMigrationService
             input, validation);
     }
 
-    private static string? ReadText(string path) => File.Exists(path) ? new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path)) : null;
-    private static byte[]? ReadBytes(string path) => File.Exists(path) ? File.ReadAllBytes(path) : null;
-    private static void WriteOrDelete(string path, string? content, bool delete)
+    private static string? ReadText(string path)
     {
-        if (delete) { if (File.Exists(path)) File.Delete(path); return; }
-        if (content is not null) DurableFile.AtomicWriteAllText(path, content);
-    }
-    private static void Restore(Dictionary<string, byte[]?> originals)
-    {
-        foreach ((string path, byte[]? bytes) in originals)
-        {
-            if (bytes is null) { if (File.Exists(path)) File.Delete(path); }
-            else DurableFile.AtomicWriteAllBytes(path, bytes);
-        }
-    }
-
-    private static Exception? TryRestore(Dictionary<string, byte[]?> originals)
-    {
-        try
-        {
-            Restore(originals);
-            return null;
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
+        byte[]? bytes = TrackingTransaction.CaptureState(path).Bytes;
+        return bytes is null ? null : new UTF8Encoding(false, true).GetString(bytes);
     }
 }

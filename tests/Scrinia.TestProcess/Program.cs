@@ -18,6 +18,7 @@ internal static class Program
         {
             "admission" => AdmissionCommands.RunAsync(args[1..]),
             "vector" => VectorCommands.RunAsync(args[1..]),
+            "tracking" => TrackingCommands.RunAsync(args[1..]),
             _ => Task.FromResult(1)
         };
 }

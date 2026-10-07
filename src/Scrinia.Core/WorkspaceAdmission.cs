@@ -112,6 +112,6 @@ internal sealed class WorkspaceAdmission
     internal static string CanonicalRoot(string workspaceRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
-        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRoot));
+        return Path.TrimEndingDirectorySeparator(PathContainment.ResolveCanonical(workspaceRoot));
     }
 }

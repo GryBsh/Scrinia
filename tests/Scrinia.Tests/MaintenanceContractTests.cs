@@ -21,10 +21,11 @@ public sealed class MaintenanceContractTests
         var scope = new MaintenanceScopeBinding(Guid.NewGuid());
         var policy = new MaintenanceHash256(new byte[32]);
         using var registry = new MaintenanceRunRegistry();
-        registry.Create(workspace, run, snapshot, scope, policy, DateTimeOffset.UtcNow.AddMinutes(5));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        registry.Create(workspace, run, snapshot, scope, policy, expiresAt);
         var cursor = new MaintenanceCursor(2, workspace, run, snapshot, scope, 0,
             MaintenanceCursorPhase.Discover, new MaintenanceCandidateKey(Guid.Empty), 0, policy,
-            (ulong)DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+            (ulong)expiresAt.ToUnixTimeSeconds());
 
         string token = MaintenanceCursorCodec.Encode(cursor, registry);
         MaintenanceCursorCodec.TryDecode(token, registry, out _, out _).Should().BeTrue();
@@ -43,10 +44,11 @@ public sealed class MaintenanceContractTests
         MaintenanceSnapshotId snapshot = new(Guid.NewGuid());
         MaintenanceScopeBinding scope = new(Guid.NewGuid());
         MaintenanceHash256 policy = new(new byte[32]);
-        registry.Create(workspace, run, snapshot, scope, policy, DateTimeOffset.UtcNow.AddMinutes(5));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        registry.Create(workspace, run, snapshot, scope, policy, expiresAt);
         var cursor = new MaintenanceCursor(2, workspace, run, snapshot, scope, 0,
             MaintenanceCursorPhase.Discover, new MaintenanceCandidateKey(Guid.Empty), 0, policy,
-            (ulong)DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+            (ulong)expiresAt.ToUnixTimeSeconds());
         string token = MaintenanceCursorCodec.Encode(cursor, registry);
 
         registry.TryAcquire(run, out MaintenanceRunLease? lease).Should().BeTrue();

@@ -9,6 +9,25 @@ namespace Scrinia.Tests;
 public sealed class LegacyMigrationServiceTests
 {
     [Fact]
+    public void MigratePreservesConfiguredLegacyPolicyDriftRefusal()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Assert.True(new LegacyMigrationService().Set(scope.WorkspaceDir, TrackingPolicy.Local).Succeeded);
+        string attributes = Path.Combine(directory, ".gitattributes");
+        File.WriteAllText(attributes, LegacyMergeRecognition.ScriniaMetaAttributeLine + "\n");
+        var paths = new[] { "config.json", ".gitignore", ".gitattributes", "merge.config" };
+        var before = paths.ToDictionary(name => name, name => File.Exists(Path.Combine(directory, name))
+            ? File.ReadAllBytes(Path.Combine(directory, name)) : null);
+        var result = new LegacyMigrationService().Migrate(scope.WorkspaceDir, TrackingPolicy.ProjectGit);
+        Assert.Equal(ConfigurationErrorCode.TrackingPolicyInvalid, result.ErrorCode);
+        Assert.False(result.Changed);
+        foreach (var (name, bytes) in before)
+            Assert.Equal(bytes, File.Exists(Path.Combine(directory, name)) ? File.ReadAllBytes(Path.Combine(directory, name)) : null);
+        Assert.False(File.Exists(Path.Combine(directory, ".tracking-recovery.json")));
+    }
+
+    [Fact]
     public void InspectUsesFilesystemEvidenceAndIgnoresUnrelatedCustomMergeConfig()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -175,16 +194,16 @@ public sealed class LegacyMigrationServiceTests
         LegacyFilesystemObservation inspection = service.Inspect(scope.WorkspaceDir, null, null);
         LegacyMigrationResult migration = service.Migrate(scope.WorkspaceDir, TrackingPolicy.Local);
 
-        inspection.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
-        inspection.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
-        migration.ErrorCode.Should().Be(ConfigurationErrorCode.WorkspaceConfigMalformed);
-        migration.ExitClass.Should().Be(ConfigurationExitClass.InvalidConfiguration);
+        inspection.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigRecoveryRequired);
+        inspection.ExitClass.Should().Be(ConfigurationExitClass.WriteFailure);
+        migration.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigRecoveryRequired);
+        migration.ExitClass.Should().Be(ConfigurationExitClass.WriteFailure);
         File.ReadAllText(managed).Should().Be("managed\n");
         File.ReadAllText(journal).Should().Be(journalContent);
     }
 
     [Fact]
-    public void RecoveryJournalCompleteMarkerIsCleanCompletion()
+    public void LegacyCompleteEvidenceIsRetained()
     {
         using var scope = new TestHelpers.StoreScope();
         string directory = Path.Combine(scope.WorkspaceDir, ".scrinia");
@@ -198,8 +217,9 @@ public sealed class LegacyMigrationServiceTests
 
         LegacyFilesystemObservation result = new LegacyMigrationService().Inspect(scope.WorkspaceDir, null, null);
 
-        result.ErrorCode.Should().Be(ConfigurationErrorCode.None);
-        File.Exists(journal).Should().BeFalse();
+        result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigRecoveryRequired);
+        result.ExitClass.Should().Be(ConfigurationExitClass.WriteFailure);
+        File.ReadAllText(journal).Should().Be("complete\n");
         File.ReadAllText(managed).Should().Be(ManagedIgnoreBlock.Local);
         File.ReadAllText(config).Should().Be("{\"Scrinia:Workspace:Tracking\":\"local\"}");
     }

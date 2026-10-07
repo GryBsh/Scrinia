@@ -31,7 +31,7 @@ internal static class TrackingRecoveryJournal
     internal const long MaxTotalBytes = 128L * 1024 * 1024;
     internal const long MaxJournalBytes = 192L * 1024 * 1024;
     internal const string FileName = ".tracking-recovery.json";
-    private static readonly string[] MemberNames = ["config.json", ".gitignore", ".gitattributes", "merge.config"];
+    internal static IReadOnlyList<string> MemberNames { get; } = Array.AsReadOnly(new[] { "config.json", ".gitignore", ".gitattributes", "merge.config" });
     private static readonly string[] JournalProperties = ["version", "operationId", "operation", "decision", "members"];
     private static readonly string[] MemberProperties = ["path", "before", "after"];
     private static readonly string[] StateProperties = ["exists", "length", "sha256", "bytes"];
@@ -116,7 +116,7 @@ internal static class TrackingRecoveryJournal
             throw Invalid("Invalid tracking operation ID.");
         if (journal.Operation is not ("set" or "migrate") || journal.Decision is not ("prepared" or "committed"))
             throw Invalid("Unknown tracking operation or decision.");
-        if (journal.Members is null || journal.Members.Length != MemberNames.Length)
+        if (journal.Members is null || journal.Members.Length != MemberNames.Count)
             throw Invalid("Tracking journal must contain exactly four members.");
 
         var names = new HashSet<string>(StringComparer.Ordinal);
@@ -151,7 +151,7 @@ internal static class TrackingRecoveryJournal
     private static bool IsHash(string? hash) =>
         hash is { Length: 64 } && hash.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
 
-    private static MemoryStream ReadBounded(Stream stream)
+    internal static MemoryStream ReadBounded(Stream stream)
     {
         if (stream.CanSeek && stream.Length > MaxJournalBytes)
             throw Invalid("Tracking journal exceeds its serialized limit.");
@@ -178,7 +178,7 @@ internal static class TrackingRecoveryJournal
 
     // Inspect every existing ancestor; File.Exists/Directory.Exists suppress access and I/O failures.
     // A missing descendant is safe only after its complete parent chain has been inspected.
-    private static bool InspectPath(string path, bool file)
+    internal static bool InspectPath(string path, bool file)
     {
         string? parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(parent) && !InspectPath(parent, file: false))

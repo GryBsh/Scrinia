@@ -17,7 +17,8 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
 {
     public const string TrackingKey = "Scrinia:Workspace:Tracking";
     public const string EnabledKey = "Scrinia:Shared:Enabled";
-    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> Cache = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private readonly string? _workspaceRoot;
     private readonly Dictionary<string, string> _values;
 
@@ -53,7 +54,10 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
     }
 
     internal static void RefreshCache(string workspaceRoot, Dictionary<string, string> values) =>
-        Cache[workspaceRoot] = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
+        Cache[WorkspaceAdmission.CanonicalRoot(workspaceRoot)] = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
+
+    internal static void InvalidateCache(string workspaceRoot) =>
+        Cache.TryRemove(WorkspaceAdmission.CanonicalRoot(workspaceRoot), out _);
 
     public string? GetValue(string key) => _values.TryGetValue(key, out string? value) ? value : null;
 
@@ -126,7 +130,7 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
                 throw new ScriniaConfigurationException("The workspace config could not be written atomically.", exception);
             }
         }
-        Cache[_workspaceRoot] = new Dictionary<string, string>(_values, StringComparer.OrdinalIgnoreCase);
+        RefreshCache(_workspaceRoot, _values);
     }
 
     private static void Mutate(string workspaceRoot, Action<Dictionary<string, string>> applyMutation)
@@ -150,7 +154,7 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
             {
                 throw new ScriniaConfigurationException("The workspace config could not be written atomically.", exception);
             }
-            Cache[workspaceRoot] = new Dictionary<string, string>(current, StringComparer.OrdinalIgnoreCase);
+            RefreshCache(workspaceRoot, current);
         }
     }
 
@@ -181,7 +185,8 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
         _ => throw Invalid("Tracking must be exactly 'local' or 'project-git.'"),
     };
 
-    private static Dictionary<string, string> Cached(string root) => Cache.GetOrAdd(root, static value => ReadValues(value));
+    private static Dictionary<string, string> Cached(string root) =>
+        Cache.GetOrAdd(WorkspaceAdmission.CanonicalRoot(root), static value => ReadValues(value));
 
     private static Dictionary<string, string> ReadValues(string root)
     {
