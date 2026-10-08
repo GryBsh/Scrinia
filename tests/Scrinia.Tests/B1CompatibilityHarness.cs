@@ -38,6 +38,18 @@ public class B1CompatibilityHarness
     {
         string golden = File.ReadAllText(Path.Combine("Golden", "bundle-success.yaml"));
         McpResponse rendered = BundleEnvelopeFixture.RenderSuccess();
-        Assert.Equal(golden, rendered.ToYaml());
+        string intendedPath = Path.Combine(Path.GetTempPath(), "<WORKSPACE>", ".scrinia", "exports",
+            "bundle-success.scrinia-bundle");
+        Assert.Equal($"Exported 1 topic(s) (1 entries, <SIZE>) to {intendedPath}", rendered.Content);
+
+        // Pin the complete envelope while removing only host-specific fixture path spelling.
+        Assert.Equal(NormalizeHost(golden), NormalizeHost(rendered.ToYaml()));
+
+        static string NormalizeHost(string yaml)
+        {
+            string normalized = GoldenNormalizer.Normalize(yaml).Replace('\\', '/');
+            return System.Text.RegularExpressions.Regex.Replace(normalized,
+                @"(?<= to )[^\n]*(?=<WORKSPACE>/\.scrinia/exports/bundle-success\.scrinia-bundle$)", "<TEMP>/");
+        }
     }
 }

@@ -1,3 +1,5 @@
+using Scrinia.Core.Bundles;
+
 namespace Scrinia.Core.Configuration;
 
 /// <summary>Coordinates shared-base filesystem initialization with registry mutations.</summary>
@@ -30,6 +32,27 @@ public sealed class SharedBaseOperations
             return validationResult;
         string canonicalRoot = validationResult.Base!.Root;
 
+        // Admission precedes all member and registry locks and stays held through compensation.
+        WorkspaceLease lease;
+        try
+        {
+            lease = new WorkspaceAdmission(canonicalRoot, recover: null)
+                .EnterMutation(TimeSpan.FromSeconds(5), CancellationToken.None);
+        }
+        catch (RestoreRecoveryException exception)
+        {
+            return AdmissionFailure(exception, exception.JournalPath);
+        }
+        catch (BundleImportException exception) when (exception.Failure == BundleImportFailure.RecoveryRequired)
+        {
+            return AdmissionFailure(exception, exception.JournalPath);
+        }
+        using (lease) return AddUnderLease(lease, name, lease.WorkspaceRoot, existing);
+    }
+
+    private SharedBaseResult AddUnderLease(WorkspaceLease lease, string name, string canonicalRoot, SharedBaseEntry? existing)
+    {
+        lease.AssertValid(canonicalRoot);
         using FileLock _ = FileLock.AcquireExclusive(ConfigurationLock.GetPath(
             Path.Combine(canonicalRoot, ".scrinia", ".gitignore")));
 
@@ -99,6 +122,12 @@ public sealed class SharedBaseOperations
                 : RecoveryRequired(exception, rollbackFailure);
         }
     }
+
+    private static SharedBaseResult AdmissionFailure(Exception exception, string? evidencePath) =>
+        Failure(ConfigurationErrorCode.ConfigRecoveryRequired,
+            $"Shared base changes are blocked by retained recovery evidence at '{evidencePath}'.",
+            ConfigurationExitClass.WriteFailure,
+            new IOException($"Shared base changes are blocked by retained recovery evidence at '{evidencePath}'.", exception));
 
     public SharedBaseResult Remove(string name) => _registry.Remove(name);
     public IReadOnlyList<SharedBaseEntry> List(bool includeDisabled) => _registry.List(includeDisabled);

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Scrinia.Core.Bundles;
+using Scrinia.Core.Migration;
 
 namespace Scrinia.Core;
 
@@ -25,7 +26,10 @@ internal sealed class WorkspaceAdmission
     internal WorkspaceLease EnterMutation(TimeSpan timeout, CancellationToken ct) => Enter(timeout, mutation: true, exclusive: false, ct);
     internal WorkspaceLease EnterRestore(TimeSpan timeout, CancellationToken ct) => Enter(timeout, mutation: true, exclusive: true, ct);
 
-    private WorkspaceLease Enter(TimeSpan timeout, bool mutation, bool exclusive, CancellationToken ct)
+    internal WorkspaceLease EnterTracking(TimeSpan timeout, CancellationToken ct) =>
+        Enter(timeout, mutation: true, exclusive: true, ct, tracking: true);
+
+    private WorkspaceLease Enter(TimeSpan timeout, bool mutation, bool exclusive, CancellationToken ct, bool tracking = false)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
         ct.ThrowIfCancellationRequested();
@@ -40,17 +44,42 @@ internal sealed class WorkspaceAdmission
                 return new WorkspaceLease(_workspaceRoot, null, isExclusive: false, capturedAbsentWorkspace: true);
 
             if (exclusive)
-                return new WorkspaceLease(_workspaceRoot,
+            {
+                var lease = new WorkspaceLease(_workspaceRoot,
                     FileLock.AcquireExclusive(_lockPath, Remaining(), deadline.Token), isExclusive: true);
+                try
+                {
+                    if (tracking)
+                    {
+                        lease.AssertValid(_workspaceRoot, requireExclusive: true);
+                        try
+                        {
+                            if (JournalPresent())
+                                throw new TrackingRecoveryRequiredException(
+                                    "Bundle recovery evidence blocks tracking changes.", _journalPath);
+                        }
+                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                        {
+                            throw new TrackingRecoveryRequiredException(
+                                "Bundle recovery evidence must be resolved before tracking changes.", _journalPath, exception);
+                        }
+                    }
+                    else ThrowIfTrackingBlocked(lease);
+                    return lease;
+                }
+                catch { lease.Dispose(); throw; }
+            }
 
             bool recovered = false;
             while (true)
             {
-                FileLock shared = FileLock.AcquireShared(_lockPath, Remaining(), deadline.Token);
+                var shared = new WorkspaceLease(_workspaceRoot,
+                    FileLock.AcquireShared(_lockPath, Remaining(), deadline.Token),
+                    isExclusive: false, recoveryPerformed: recovered);
                 try
                 {
-                    if (!JournalPresent())
-                        return new WorkspaceLease(_workspaceRoot, shared, isExclusive: false, recoveryPerformed: recovered);
+                    ThrowIfTrackingBlocked(shared);
+                    if (!JournalPresent()) return shared;
                 }
                 catch
                 {
@@ -64,6 +93,7 @@ internal sealed class WorkspaceAdmission
                 using (var recoveryLease = new WorkspaceLease(_workspaceRoot,
                     FileLock.AcquireExclusive(_lockPath, Remaining(), deadline.Token), isExclusive: true))
                 {
+                    ThrowIfTrackingBlocked(recoveryLease);
                     if (JournalPresent())
                     {
                         if (_recover is null)
@@ -87,6 +117,17 @@ internal sealed class WorkspaceAdmission
             if (remaining <= TimeSpan.Zero)
                 throw new FileLockTimeoutException(_lockPath, timeout);
             return remaining;
+        }
+    }
+
+    private void ThrowIfTrackingBlocked(WorkspaceLease lease)
+    {
+        lease.AssertValid(_workspaceRoot);
+        try { TrackingRecoveryJournal.ThrowIfPresent(_workspaceRoot); }
+        catch (TrackingRecoveryRequiredException exception)
+        {
+            throw new RestoreRecoveryException("local", exception.JournalPath!,
+                RestoreRecoveryFailure.ReplayIoFailed, exception.Message, exception);
         }
     }
 

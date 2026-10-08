@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Configuration;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
@@ -712,7 +713,8 @@ public partial class ScriniaCommands
             {
                 wasSet = WorkspaceConfig.UnsetValue(root, key);
             }
-            catch (ScriniaConfigurationException exception) when (exception.InnerException is DurableWriteException)
+            catch (Exception exception) when (exception is TrackingRecoveryRequiredException or
+                ScriniaConfigurationException { InnerException: DurableWriteException })
             {
                 return EmitConfigWriteFailure(exception, json);
             }
@@ -746,7 +748,8 @@ public partial class ScriniaCommands
         {
             WorkspaceConfig.SetValue(root, key, value);
         }
-        catch (ScriniaConfigurationException exception) when (exception.InnerException is DurableWriteException)
+        catch (Exception exception) when (exception is TrackingRecoveryRequiredException or
+                ScriniaConfigurationException { InnerException: DurableWriteException })
         {
             return EmitConfigWriteFailure(exception, json);
         }
@@ -770,7 +773,7 @@ public partial class ScriniaCommands
         return 0;
     }
 
-    private static int EmitConfigWriteFailure(ScriniaConfigurationException exception, bool json)
+    private static int EmitConfigWriteFailure(Exception exception, bool json)
     {
         ConfigurationResult result = ConfigResults.FromException(exception);
         if (json)
@@ -778,13 +781,13 @@ public partial class ScriniaCommands
             WriteJson(new CliErrorOutput(
                 exception.Message,
                 "Configuration",
-                "CONFIG_WRITE_FAILED",
+                ConfigResults.Code(result.ErrorCode),
                 ExitClass: (int)result.ExitClass),
                 CliJsonContext.Default.CliErrorOutput);
         }
         else
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(exception.Message)} (CONFIG_WRITE_FAILED, exit {((int)result.ExitClass)})");
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(exception.Message)} ({ConfigResults.Code(result.ErrorCode)}, exit {((int)result.ExitClass)})");
         }
 
         return (int)result.ExitClass;

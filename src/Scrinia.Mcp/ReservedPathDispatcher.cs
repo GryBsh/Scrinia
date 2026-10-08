@@ -64,6 +64,10 @@ internal sealed class ReservedPathDispatcher
                 _ => throw new ReservedPathOperationException($"Unsupported reserved path kind for '{address}'."),
             };
         }
+        catch (RestoreRecoveryException exception)
+        {
+            return ScriniaMcpTools.RecoveryBlockedResponse(exception);
+        }
         catch (BundleImportException exception)
         {
             return ResponseBuilder.Error(exception, "Resolve retained bundle recovery evidence before retrying.");

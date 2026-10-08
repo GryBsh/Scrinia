@@ -43,7 +43,7 @@ public sealed class SharedBaseTransactionTests : IDisposable
     }
 
     [Fact]
-    public void Add_RemovesNewEmptyScriniaDirectoryWhenRegistryCommitFails()
+    public void Add_RetainsOnlyWorkspaceLockWhenNewRegistrationCommitFails()
     {
         string root = CreateGitRoot("empty-repo");
         string directory = Path.Combine(root, ".scrinia");
@@ -52,7 +52,11 @@ public sealed class SharedBaseTransactionTests : IDisposable
         SharedBaseResult result = new SharedBaseOperations(registry, _home, _workspace).Add("team", root);
 
         result.ErrorCode.Should().Be(ConfigurationErrorCode.ConfigWriteFailed);
-        Directory.Exists(directory).Should().BeFalse();
+        Directory.GetFileSystemEntries(directory).Select(Path.GetFileName)
+            .Should().Equal(".bundle-restore.lock");
+        File.Exists(Path.Combine(directory, ".gitignore")).Should().BeFalse();
+        registry.List(includeDisabled: true).Should().BeEmpty();
+        using var released = new WorkspaceAdmission(root, null).EnterTracking(TimeSpan.FromSeconds(1), default);
     }
 
     [Fact]

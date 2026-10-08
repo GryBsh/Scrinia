@@ -10,6 +10,8 @@ internal static class AdmissionCommands
     {
         if (args.Length != 2) return 1;
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        if (args[0] is "config" or "config-save" or "tracking" or "add")
+            return await RunConfigurationAsync(args[0], args[1], deadline.Token).ConfigureAwait(false);
         if (args[0] != "hold")
         {
             using var store = new FileMemoryStore(args[1]);
@@ -45,4 +47,60 @@ internal static class AdmissionCommands
         await TestProcessProtocol.WriteEventAsync("completed").ConfigureAwait(false);
         return 0;
     }
+    private static async Task<int> RunConfigurationAsync(string operation, string root, CancellationToken ct)
+    {
+        FileLock.DefaultLogger = new ContentionLogger();
+        await TestProcessProtocol.WriteEventAsync("ready").ConfigureAwait(false);
+        await TestProcessProtocol.WaitForContinueAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (operation == "config")
+                Scrinia.Core.Configuration.WorkspaceConfig.SetValue(root, "config-child", "kept");
+            else if (operation == "config-save")
+                Scrinia.Core.Configuration.WorkspaceConfig.Save(root, new() { ["config-child"] = "kept" });
+            else if (operation == "add")
+            {
+                string home = Path.Combine(root, "test-home");
+                string consumer = Path.Combine(root, "consumer");
+                var registry = new Scrinia.Core.Configuration.SharedBaseRegistry(home, consumer);
+                var result = new Scrinia.Core.Configuration.SharedBaseOperations(registry, home, consumer).Add("team", root);
+                if (result.ErrorCode == Scrinia.Core.Configuration.ConfigurationErrorCode.ConfigRecoveryRequired)
+                {
+                    await TestProcessProtocol.WriteEventAsync("recovery-required").ConfigureAwait(false);
+                    return 4;
+                }
+                if (!result.Succeeded) throw new InvalidOperationException(result.ErrorCode.ToString(), result.Exception);
+            }
+            else
+            {
+                var result = new Scrinia.Core.Migration.LegacyMigrationService().Set(
+                    root, Scrinia.Core.Configuration.TrackingPolicy.Local);
+                if (!result.Succeeded) throw new InvalidOperationException(result.ErrorCode.ToString(), result.Exception);
+            }
+        }
+        catch (Scrinia.Core.Migration.TrackingRecoveryRequiredException)
+        {
+            await TestProcessProtocol.WriteEventAsync("recovery-required").ConfigureAwait(false);
+            return 4;
+        }
+        await TestProcessProtocol.WriteEventAsync("completed").ConfigureAwait(false);
+        return 0;
+    }
+
+    private sealed class ContentionLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id != 1) return;
+            string message = formatter(state, exception);
+            string name = message.Contains(".bundle-restore.lock", StringComparison.Ordinal)
+                ? "waiting-workspace" : "waiting-config";
+            TestProcessProtocol.WriteEventAsync(name).GetAwaiter().GetResult();
+        }
+    }
+
 }

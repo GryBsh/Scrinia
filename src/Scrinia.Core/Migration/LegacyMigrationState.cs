@@ -286,18 +286,11 @@ public sealed class LegacyMigrationService
         catch (Exception exception) { return MapInspectionFailure(exception); }
     }
 
-    // Temporary explicit admission route; the final shared tracking adapter is supplied by Task 6.
     private static WorkspaceLease AcquireWorkspaceLease(string workspaceRoot)
     {
         TrackingRecoveryJournal.InspectPath(Path.Combine(workspaceRoot, ".scrinia"), file: false);
-        WorkspaceLease lease = new WorkspaceAdmission(workspaceRoot, recover: null)
-            .EnterRestore(TimeSpan.FromSeconds(5), default);
-        try
-        {
-            BundleRestoreCoordinator.RecoverUnderLease(lease, BundleReadLimits.Default, default);
-            return lease;
-        }
-        catch { lease.Dispose(); throw; }
+        return new WorkspaceAdmission(workspaceRoot, recover: null)
+            .EnterTracking(TimeSpan.FromSeconds(5), CancellationToken.None);
     }
 
     private static LegacyMigrationState ClassifyFilesystem(LegacyMigrationInput input, ManagedIgnoreValidation validation)

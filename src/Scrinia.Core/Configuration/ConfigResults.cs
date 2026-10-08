@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Scrinia.Core.Migration;
 
 namespace Scrinia.Core.Configuration;
 
@@ -90,6 +91,8 @@ public static class ConfigResults
     public static ConfigurationResult FromException(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
+        if (exception is TrackingRecoveryRequiredException)
+            return new(ConfigurationErrorCode.ConfigRecoveryRequired, ConfigurationExitClass.WriteFailure, exception);
         return exception is ScriniaConfigurationException { InnerException: DurableWriteException }
             ? ConfigWriteFailed(exception)
             : throw new ArgumentException("The exception is not a classified configuration failure.", nameof(exception));

@@ -1,14 +1,25 @@
 using System.Text.Json;
 using ConsoleAppFramework;
 using Scrinia.Core.Configuration;
+using Scrinia.Core.Migration;
 
 namespace Scrinia.Commands;
 
 /// <summary>CLI adapter for enabling and disabling registered shared bases.</summary>
 public sealed class SharedEnableCommands
 {
-    public int Enable([Argument] string name, bool json = false) => Render("shared enable", Operations().Enable(name), json);
-    public int Disable([Argument] string name, bool json = false) => Render("shared disable", Operations().Disable(name), json);
+    public int Enable([Argument] string name, bool json = false) => Run("shared enable", () => Operations().Enable(name), json);
+    public int Disable([Argument] string name, bool json = false) => Run("shared disable", () => Operations().Disable(name), json);
+
+    private static int Run(string command, Func<SharedBaseResult> operation, bool json)
+    {
+        try { return Render(command, operation(), json); }
+        catch (TrackingRecoveryRequiredException exception)
+        {
+            ConfigurationResult result = ConfigResults.FromException(exception);
+            return Render(command, new SharedBaseResult(result.ErrorCode, result.ExitClass, Exception: exception), json);
+        }
+    }
 
     private static SharedBaseOperations Operations()
     {

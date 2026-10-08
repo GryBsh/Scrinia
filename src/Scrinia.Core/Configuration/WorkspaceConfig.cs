@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Scrinia.Core.Migration;
 
 namespace Scrinia.Core.Configuration;
 
@@ -115,11 +116,13 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
     {
         if (string.IsNullOrEmpty(_workspaceRoot))
             throw new InvalidOperationException("A workspace root is required to save configuration.");
-        string directory = Path.Combine(_workspaceRoot, ".scrinia");
+        string workspaceRoot = WorkspaceAdmission.CanonicalRoot(_workspaceRoot);
+        string directory = Path.Combine(workspaceRoot, ".scrinia");
         string path = Path.Combine(directory, "config.json");
         Directory.CreateDirectory(directory);
         using (FileLock.AcquireExclusive(ConfigurationLock.GetPath(path)))
         {
+            TrackingRecoveryJournal.ThrowIfPresent(workspaceRoot);
             string json = JsonSerializer.Serialize(_values, ConfigJsonContext.Default.DictionaryStringString);
             try
             {
@@ -129,20 +132,22 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
             {
                 throw new ScriniaConfigurationException("The workspace config could not be written atomically.", exception);
             }
+            RefreshCache(workspaceRoot, _values);
         }
-        RefreshCache(_workspaceRoot, _values);
     }
 
     private static void Mutate(string workspaceRoot, Action<Dictionary<string, string>> applyMutation)
     {
         ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
         ArgumentNullException.ThrowIfNull(applyMutation);
+        workspaceRoot = WorkspaceAdmission.CanonicalRoot(workspaceRoot);
 
         string directory = Path.Combine(workspaceRoot, ".scrinia");
         string path = Path.Combine(directory, "config.json");
         Directory.CreateDirectory(directory);
         using (FileLock.AcquireExclusive(ConfigurationLock.GetPath(path)))
         {
+            TrackingRecoveryJournal.ThrowIfPresent(workspaceRoot);
             Dictionary<string, string> current = ReadValues(workspaceRoot);
             applyMutation(current);
             string json = JsonSerializer.Serialize(current, ConfigJsonContext.Default.DictionaryStringString);
