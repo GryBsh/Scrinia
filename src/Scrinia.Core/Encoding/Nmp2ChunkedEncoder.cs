@@ -89,8 +89,8 @@ public static class Nmp2ChunkedEncoder
         var existingChunkSections = Nmp2Strategy.ExtractRawChunkSections(existingArtifact, oldCount);
 
         // Parse existing header for CRC and byte count — no need to decode existing chunks
-        var metadata = Nmp2Strategy.Instance.ParseHeader(existingArtifact);
-        uint existingCrc = metadata.Crc32 ?? 0;
+        Nmp2Header metadata = Nmp2Header.Parse(existingArtifact);
+        uint existingCrc = metadata.Crc32;
         int existingBytes = metadata.OriginalBytes;
 
         byte[] newChunkUtf8 = System.Text.Encoding.UTF8.GetBytes(newChunkText);

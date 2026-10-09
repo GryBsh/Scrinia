@@ -12,14 +12,14 @@ namespace Scrinia.Core.Encoding;
 /// as URL-safe Base64. Achieves ~60–90 bits/token on compressible content.
 ///
 /// Format:
-///   NMP/2 {N}B CRC32:{hex}
+///   NMP/2 {N}B CRC32:{hex} BR+B64
 ///   {up to 76 url-safe base64 chars per line}
 ///   ...
 ///   ##PAD:{n}
 ///   NMP/END
 ///
 /// No row-index prefix — Brotli destroys byte positions so indices carry no meaning.
-/// Brotli is unconditional and implied by the NMP/2 sentinel — no compression tag in header.
+/// Brotli is unconditional and declared by the BR+B64 codec token in the header.
 /// CRC32 is computed over original (pre-compression) bytes.
 /// PAD is 0–2 zero bytes appended to Brotli output for 3-byte Base64 alignment.
 /// </summary>
@@ -163,9 +163,8 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 
         // Single-chunk: collect Base64 chars from data lines (between header and footer)
         var sb64 = new StringBuilder();
-        foreach (var line in EnumerateLines(artifact))
+        foreach (var line in EnumerateLines(artifact).Skip(1))
         {
-            if (line.StartsWith("NMP/2 ", StringComparison.Ordinal)) continue;
             if (line.StartsWith("##", StringComparison.Ordinal)) break;
             if (line.Equals("NMP/END", StringComparison.Ordinal)) break;
 
@@ -179,25 +178,20 @@ public sealed class Nmp2Strategy : IEncodingStrategy
     }
 
     /// <summary>Verifies decoded output against the header's declared length and CRC32.
-    /// Length is checked when the header declares one (&gt; 0); CRC when present.
+    /// Both length (including zero) and CRC32 are mandatory and always checked.
     /// Internal (not private) so <see cref="Nmp2ChunkedEncoder.DecodeAllChunksVerified"/> can run
     /// the same check against a per-chunk-assembled buffer without a second whole-artifact
     /// decompression pass.</summary>
     internal static void VerifyIntegrity(string artifact, byte[] decoded)
     {
-        var meta = Instance.ParseHeader(artifact);
-        if (meta.OriginalBytes > 0 && decoded.Length != meta.OriginalBytes)
-            throw new InvalidDataException(
-                $"NMP/2 length mismatch: header declares {meta.OriginalBytes}B, decoded {decoded.Length}B.");
-        if (meta.Crc32 is uint expected)
-        {
-            uint actual = Crc32.HashToUInt32(decoded);
-            if (actual != expected)
-                throw new InvalidDataException(
-                    $"NMP/2 CRC32 mismatch: header {expected:X8}, decoded {actual:X8}.");
-        }
+        Nmp2Header header = Nmp2Header.Parse(artifact);
+        if (decoded.Length != header.OriginalBytes)
+            throw new InvalidDataException("NMP/2 decoded length does not match its header.");
+        if (Crc32.HashToUInt32(decoded) != header.Crc32)
+            throw new InvalidDataException("NMP/2 CRC32 does not match its header.");
     }
 
+    /// <summary>Checks family and end sentinels for routing; does not verify header grammar or integrity.</summary>
     public bool CanDecode(string artifact) =>
         artifact.StartsWith("NMP/2 ", StringComparison.Ordinal) &&
         artifact.Contains("NMP/END", StringComparison.Ordinal);
@@ -206,9 +200,9 @@ public sealed class Nmp2Strategy : IEncodingStrategy
     /// Preliminary family gate for classification/routing: true when the input begins with the
     /// NMP/2 prefix. This is the single authority for "does this look like an NMP/2 artifact"
     /// across the CLI, MCP, plugin, and shared-base surfaces. It recognises the family only — full
-    /// validity (header grammar, NMP/END, CRC) is <see cref="CanDecode"/>'s job and runs after a
+    /// validity (header grammar, body structure, CRC) is <see cref="Decode"/>'s job and runs after a
     /// positive result here. Keeping the bare prefix (no trailing space) on purpose: a bare or
-    /// incomplete "NMP/2…" input is still recognised as the family and then rejected by CanDecode,
+    /// incomplete "NMP/2…" input is still recognised as the family and then rejected by decoding,
     /// so it is never misrouted to name/URI handling.
     /// </summary>
     public bool RecognizesNmp2Prefix(string candidate) =>
@@ -216,34 +210,11 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 
     public ArtifactMetadata ParseHeader(string artifact)
     {
-        // Header: "NMP/2 {N}B CRC32:{hex}"
-        int newlineIdx = artifact.IndexOf('\n');
-        string headerLine = newlineIdx >= 0 ? artifact[..newlineIdx] : artifact;
-
-        var parts = headerLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        // parts[0] = "NMP/2"
-        // parts[1] = "{N}B"
-        // parts[2] = "CRC32:{hex}"
-
-        int originalBytes = 0;
-        if (parts.Length >= 2)
-        {
-            var bytesPart = parts[1];
-            if (bytesPart.EndsWith('B'))
-                _ = int.TryParse(bytesPart[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out originalBytes);
-        }
-
-        uint? crc = null;
-        if (parts.Length >= 3 && parts[2].StartsWith("CRC32:", StringComparison.Ordinal))
-        {
-            if (uint.TryParse(parts[2][6..], System.Globalization.NumberStyles.HexNumber, null, out uint parsedCrc))
-                crc = parsedCrc;
-        }
-
+        Nmp2Header header = Nmp2Header.Parse(artifact);
         return new ArtifactMetadata(
             StrategyId: StrategyId,
-            OriginalBytes: originalBytes,
-            Crc32: crc);
+            OriginalBytes: header.OriginalBytes,
+            Crc32: header.Crc32);
     }
 
     private static int ParsePad(string artifact)
@@ -259,29 +230,11 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         return 0;
     }
 
-    /// <summary>Returns true if the first line of the artifact contains a " C:" token.</summary>
-    internal static bool IsMultiChunk(string artifact)
-    {
-        int newlineIdx = artifact.IndexOf('\n');
-        string firstLine = newlineIdx >= 0 ? artifact[..newlineIdx] : artifact;
-        return firstLine.Contains(" C:", StringComparison.Ordinal);
-    }
+    /// <summary>Returns whether the validated header has an explicit chunk marker.</summary>
+    internal static bool IsMultiChunk(string artifact) => Nmp2Header.Parse(artifact).HasChunkMarker;
 
     /// <summary>Parses the C:{k} value from the header; returns 1 for single-chunk artifacts.</summary>
-    internal static int ParseChunkCount(string artifact)
-    {
-        if (!IsMultiChunk(artifact)) return 1;
-
-        int newlineIdx = artifact.IndexOf('\n');
-        string firstLine = newlineIdx >= 0 ? artifact[..newlineIdx] : artifact;
-        int ci = firstLine.IndexOf(" C:", StringComparison.Ordinal);
-        if (ci < 0) return 1;
-
-        string rest = firstLine[(ci + 3)..];
-        int spaceIdx = rest.IndexOf(' ');
-        string countStr = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
-        return int.TryParse(countStr, out int count) ? count : 1;
-    }
+    internal static int ParseChunkCount(string artifact) => Nmp2Header.Parse(artifact).ChunkCount;
 
     /// <summary>
     /// Decodes a single ##CHUNK:{chunkIndex} section from a multi-chunk artifact.

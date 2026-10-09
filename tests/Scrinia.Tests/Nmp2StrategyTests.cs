@@ -290,6 +290,16 @@ public sealed class Nmp2StrategyTests
     }
 
     [Fact]
+    public void CanDecode_IsRoutingCheckAndDoesNotProveIntegrity()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("abc").Replace("CRC32:352441C2", "CRC32:NOTHEX!!", StringComparison.Ordinal);
+
+        Strategy.CanDecode(artifact).Should().BeTrue();
+        Strategy.RecognizesNmp2Prefix(artifact).Should().BeTrue();
+        FluentActions.Invoking(() => Strategy.Decode(artifact)).Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
     public void ParseHeader_ExtractsOriginalByteCount()
     {
         var input = TestHelpers.Utf8(TestHelpers.Facts.Fact31);
@@ -478,6 +488,26 @@ public sealed class Nmp2DecodeCapTests
             FluentActions.Invoking(() => Strategy.Decode(result.Artifact))
                 .Should().Throw<InvalidDataException>()
                 .WithMessage("*MaxDecodedBytes*");
+        }
+        finally
+        {
+            Nmp2Strategy.MaxDecodedBytes = originalCap;
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2147483647)]
+    public void Decode_DeclaredLengthDoesNotReplaceDecompressionCap(int declaredLength)
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode(new string('A', 4096));
+        artifact = artifact.Replace("4096B", $"{declaredLength}B", StringComparison.Ordinal);
+        int originalCap = Nmp2Strategy.MaxDecodedBytes;
+        try
+        {
+            Nmp2Strategy.MaxDecodedBytes = 1024;
+            FluentActions.Invoking(() => Strategy.Decode(artifact))
+                .Should().Throw<InvalidDataException>().WithMessage("*MaxDecodedBytes*");
         }
         finally
         {

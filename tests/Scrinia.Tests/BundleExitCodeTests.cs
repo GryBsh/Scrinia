@@ -584,8 +584,9 @@ public class BundleExitCodeTests
         string bundlePath = Path.Combine(workspaceRoot, "topic.scrinia-bundle");
         using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
         using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
-        var entry = new ArtifactEntry("note", "file://bundle", 0, 1, DateTimeOffset.UtcNow);
-        BundleFormatService.WriteTopic(zip, TestHelpers.Store, topic, [entry], [(entry.Name, "NMP/2 bundle")]);
+        string artifact = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("bundle");
+        var entry = new ArtifactEntry("note", "file://bundle", 6, 1, DateTimeOffset.UtcNow);
+        BundleFormatService.WriteTopic(zip, TestHelpers.Store, topic, [entry], [(entry.Name, artifact)]);
         BundleFormatService.WriteManifest(zip, [topic], totalEntries: 1, fileEntities: null);
         return bundlePath;
     }
