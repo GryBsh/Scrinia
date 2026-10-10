@@ -38,6 +38,8 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(MemorySearchRequest))]
 [JsonSerializable(typeof(MemoryListRequest))]
 [JsonSerializable(typeof(ArtifactEntry))]
+[JsonSerializable(typeof(EmbeddingsBundleManifest))]
+[JsonSerializable(typeof(EmbeddingsBundleFile))]
 internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record CliMemoryEntry(

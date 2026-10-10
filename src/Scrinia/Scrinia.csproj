@@ -51,4 +51,8 @@
     <InternalsVisibleTo Include="Scrinia.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\release\embeddings-payloads.json" LogicalName="Scrinia.EmbeddingsPayloadPolicy.json" />
+  </ItemGroup>
+
 </Project>
