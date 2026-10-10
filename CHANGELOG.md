@@ -10,6 +10,23 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — release installation and recovery contracts
+
+- Embeddings release bundles install only through explicit `setup`, either beside the extracted
+  host or through `--embeddings-source`. Verified payloads are copied into
+  `SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`; extracted source files remain unchanged.
+  Installation survives later configuration/model preparation failures. macOS uses CPU/Metal.
+- NMP metadata requires nonnegative decimal length, exactly eight hexadecimal CRC32 characters,
+  `BR+B64`, and an optional positive chunk count no greater than 100,000. Valid empty content and
+  CRLF artifacts remain compatible within the unchanged 64 MiB decoded limit.
+- Recovery retains ambiguous legacy `complete` or unreadable evidence for investigation. Stop older
+  writers before upgrading; Windows configuration-lock identity and workspace admission changed.
+  A proven committed bundle remains success if cleanup fails, with evidence retained.
+- Release checks compare the exact seven skill names across disk, embedded resources/guide, and
+  maintained skill tables, enforce canonical version metadata, and guard workflow targets.
+  XML documentation checking is accurately named `xml-doc-build`; comprehensive public API
+  documentation emission/coverage is not configured.
+
 ### Changed (breaking) — strict-safety release integration
 
 - Address and scope refusals now use stable `MALFORMED_ADDRESS` and

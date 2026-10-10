@@ -14,6 +14,25 @@ namespace Scrinia.Tests;
 public sealed class ScriniaMcpPromptsResourcesTests
 {
     [Fact]
+    public void BuiltInSkills_EmbeddedResourcesAndGuideHaveExactApprovedNames()
+    {
+        string[] expected =
+        ["auditor", "chaos-engineer", "debugger", "evolutionary", "onboarder", "qa", "self-reflector"];
+        const string prefix = "Scrinia.Mcp.skills.";
+        string[] embedded = typeof(ScriniaMcpTools).Assembly.GetManifestResourceNames()
+            .Where(name => name.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(name => name[prefix.Length..^3]).ToArray();
+        embedded.Should().BeEquivalentTo(expected);
+
+        string guide = ScriniaMcpPrompts.Guide();
+        string builtInsLine = guide.Split('\n').Single(line => line.StartsWith("Built-ins: ", StringComparison.Ordinal));
+        string builtIns = builtInsLine[..builtInsLine.IndexOf(". ", StringComparison.Ordinal)];
+        string[] guideNames = System.Text.RegularExpressions.Regex.Matches(builtIns, "`([^`]+)`")
+            .Select(match => match.Groups[1].Value).ToArray();
+        guideNames.Should().BeEquivalentTo(expected);
+    }
+
+    [Fact]
     public void GuidePrompt_ReturnsTheAgentGuide()
     {
         string prompt = ScriniaMcpPrompts.Guide();

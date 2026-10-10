@@ -1,37 +1,26 @@
 name: checks
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
-  skill-doc-parity:
+  release-contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          count=$(ls src/Scrinia.Mcp/skills/*.md 2>/dev/null | wc -l)
-           rows=$(awk '
-             /^### Built-in Skills$/ { in_skills=1; next }
-             in_skills && /^Built-in skills are/ { print count; exit }
-             in_skills && /^\| `[^|]+` \|/ { count++ }
-           ' docs/getting-started.md)
-           readme_rows=$(awk '
-             /^### Built-in skills$/ { in_skills=1; next }
-             in_skills && /^Projects can override/ { print count; exit }
-             in_skills && /^\| `[^|]+` \|/ { count++ }
-           ' README.md)
-           echo "skills on disk: $count, getting-started rows: $rows, README rows: $readme_rows"
-           test "$count" -eq "$rows"
-           test "$count" -eq "$readme_rows"
-           test "$count" -eq 7
-  version-single-source:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Scrinia.sln -c Release
+      - name: Exact skills, version metadata, and workflow targets
+        shell: pwsh
+        run: ./scripts/release/Check-ReleaseContracts.ps1 -Root . -Configuration Release
+      - run: dotnet test Scrinia.sln -c Release --no-build
+  xml-doc-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          if grep -R --include="*.cs" --include="*.csproj" "<Version>" src/ | grep -v "Directory.Build.props"; then
-            echo "ERROR: literal <Version> outside Directory.Build.props"
-            exit 1
-          fi
-  xml-doc-coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      # This promotes emitted CS1591 diagnostics; XML emission/API coverage is not configured.
       - run: dotnet build Scrinia.sln -c Release -warnaserror:CS1591

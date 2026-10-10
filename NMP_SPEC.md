@@ -17,7 +17,8 @@ NMP/END
 
 ### Multi-chunk artifact
 
-Documents exceeding 20,000 characters are split into independently decodable chunks, each targeting ~8,000 characters. A `C:{k}` token in the header indicates chunk count.
+Multiple content elements are encoded as independently decodable chunks. A `C:{k}` token in the
+header indicates chunk count. A single element is not automatically split by size.
 
 ```
 NMP/2 50000B CRC32:A1B2C3D4 BR+B64 C:3
@@ -42,12 +43,19 @@ CRC32 is computed over the full original UTF-8 bytes (pre-split). Each chunk is 
 | Field | Purpose |
 |---|---|
 | `NMP/2` | Format identifier + version |
-| `<N>B` | Exact original byte count (pre-compression) |
-| `CRC32:<hex>` | CRC32 over original bytes (8 uppercase hex chars) |
+| `<N>B` | Mandatory nonnegative decimal original byte count (pre-compression) |
+| `CRC32:<hex>` | CRC32 over original bytes (exactly 8 hex characters; encoder uses uppercase) |
 | `BR+B64` | Codec tag: Brotli-compressed, URL-safe Base64 encoded |
-| `C:<k>` | Chunk count (multi-chunk only; absent for single-chunk) |
+| `C:<k>` | Optional positive decimal chunk count, at most 100,000; absent for single-chunk |
 
 No `WxH` grid — Base64 rows are not pixels.
+
+Missing or malformed length/CRC32 metadata, an unsupported codec, and out-of-range chunk counts
+are rejected. Header parsing enforces metadata grammar and the chunk-count range. Full decoding
+enforces the aggregate 64 MiB decoded limit and verifies declared length/CRC32 against the complete
+original bytes. A selected-chunk read validates body structure and that chunk's decode bound;
+it does not establish whole-memory integrity. Valid empty content (`0B`, CRC32 `00000000`)
+remains valid; LF and CRLF artifact line endings remain compatible.
 
 ## Data lines
 
@@ -69,7 +77,9 @@ For multi-chunk artifacts, each chunk has its own `##PAD:<N>` line. The final `N
 StartsWith("NMP/2 ") && Contains("NMP/END")
 ```
 
-Multi-chunk detection: first line contains ` C:`.
+This is a format probe, not complete validation. Header parsing, full decoding, and selected-chunk
+reads have the distinct validation boundaries described above. Multi-chunk detection: first line
+contains ` C:`.
 
 ## Decode
 
@@ -86,12 +96,8 @@ Multi-chunk detection: first line contains ` C:`.
 
 Actual size depends on content compressibility.
 
-## Chunking thresholds
+## Chunk boundaries
 
-| Parameter | Value |
-|---|---|
-| Chunk threshold | 20,000 characters (single-chunk below this) |
-| Target chunk size | 8,000 characters |
-| Split strategy | Prefer newline boundaries within target window |
-
-Chunks are split on the original text before encoding. Concatenating decoded chunks reproduces the original text exactly.
+The caller supplies content elements; each element forms a chunk. Concatenating decoded chunks
+reproduces the original UTF-8 bytes exactly. Chunk limits bound decoding, not an automatic
+text-splitting policy.

@@ -7,8 +7,10 @@ serve`) plus the configuration, tracking, and shared-base commands.
 ## Immutable package
 
 This package is immutable once installed: after `dotnet tool install` the tool directory is never
-written at runtime. All mutable data — configuration, models, plugins, plugin state, and workspace
-memory — lives below [`SCRINIA_HOME`](#where-data-lives), never inside the package. The package ships
+written at runtime. The per-user registry, models, installed plugin payloads, and plugin state live
+below [`SCRINIA_HOME`](#where-data-lives). Workspace configuration, memories, and derived
+vectors/facts stay in `<workspace-root>/.scrinia/`.
+The package ships
 only the managed `scri` command, its managed dependencies, the offline-required embedded prompts,
 skills, schemas, and setup templates, and this readme. It deliberately contains no Merge driver, no
 Vulkan/LLamaSharp assembly, no native RID asset, no downloaded model, no repository data, no
@@ -24,6 +26,10 @@ This installs the `scri` command onto your global tool path. Verify with `scri -
 
 ## Update
 
+Stop older server and CLI writers before upgrading, and back up the complete workspace including
+recovery journals. The repaired configuration locks and workspace admission require cooperating
+writers from compatible builds.
+
 ```console
 $ dotnet tool update --global scrinia
 ```
@@ -36,8 +42,9 @@ $ dotnet tool uninstall --global scrinia
 
 ## Where data lives
 
-All writable state goes below `SCRINIA_HOME` (the per-user home resolved deterministically; unset
-defaults to `<LocalApplicationData>\Scrinia`). The package directory itself stays immutable.
+The per-user registry, models, installed plugin payloads, and plugin state live below `SCRINIA_HOME`
+(unset defaults to `<LocalApplicationData>\Scrinia`). Workspace configuration, memories, and
+derived vectors/facts live in `<workspace-root>/.scrinia/`. The package directory stays immutable.
 
 ```
 SCRINIA_HOME/
@@ -63,15 +70,28 @@ $ scri serve        # serves <workspace-root>/.scrinia/ over local stdio
 $ scri shared serve # serves the enabled shared bases over local stdio
 ```
 
-## Vulkan plugin (separate install)
+## Embeddings plugin installation
 
-The optional Vulkan GPU plugin is **not** part of this package; it is a separately installed,
-RID-specific asset. Install it into the mandatory plugin hierarchy under `SCRINIA_HOME`:
+Extract the embeddings archive for your operating system. From the extracted directory, run
+`./scri setup` on Linux/macOS or `.\scri.exe setup` in PowerShell on Windows.
+With this NuGet tool, run:
 
 ```console
-$ dotnet tool install --global --add-source <local-feed> scri-plugin-embeddings
+$ scri setup --embeddings-source <extracted-release-directory>
 ```
 
-After installation its executable, managed assemblies, and native libraries live only at
-`SCRINIA_HOME/plugins/scri-plugin-embeddings/<version>/<rid>/`, and any plugin-downloaded model lives
-at `SCRINIA_HOME/models`.
+The source contains `embeddings-bundle.json` and its versioned plugin tree. Setup copies the verified
+plugin into `SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/` and selects it in workspace
+configuration. The extracted files remain unchanged. A checksum detects changed bundle contents;
+it does not establish who published them. Supported payloads are `win-x64`, `linux-x64`, and
+`osx-arm64`; macOS uses the CPU/Metal backend and Windows/Linux use Vulkan.
+
+`serve` does not install a release bundle. Setup success confirms installation, configuration, and
+path selection; plugin initialization and inference occur later. If configuration or model
+preparation fails after installation, the payload remains installed; correct the reported problem
+and rerun the printed setup retry command. Conflicting plugin selections or provider environment
+overrides must be corrected first. Legacy asset migration is separate from bundle installation.
+
+First-run Model2Vec and GGUF downloads require network access and go under `SCRINIA_HOME/models`.
+Model2Vec uses `models/m2v-MiniLM-L6-v2/`; the plugin uses `models/all-MiniLM-L6-v2-Q8_0.gguf`.
+Optional HTTP providers send content to their configured endpoint.

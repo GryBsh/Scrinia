@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes twelve MCP tools — `guide()`, one per memory operation, and the `facts` entity-query tool — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
+scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes eleven workspace MCP tools — `guide()`, one per memory operation, and the `facts` entity-query tool — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
 
 ## Project Layout
 
@@ -49,7 +49,6 @@ scrinia/
     Scrinia.Benchmarks/            <- retrieval benchmarks
     Scrinia.Retrieval.Benchmarks.Tests/ <- benchmark test harness
     Scrinia.Plugin.Embeddings.Tests/ <- Vulkan plugin tests
-    Scrinia.Merge.Tests/          <- merge handler tests
   docs/
     getting-started.md, cli-reference.md, multi-user-setup.md, troubleshooting.md,
     security.md, architecture/{overview,cli,core,embeddings}.md
@@ -59,12 +58,12 @@ scrinia/
 
 ## MCP Tools and server mode
 
-`scri serve` is the only server surface: it runs the MCP tools over local stdio and reads and
-writes the local `.scrinia/` workspace. The repository has no HTTP/REST server, server project,
+`scri serve` exposes eleven workspace tools over local stdio and reads and writes the local
+`.scrinia/` workspace. `scri shared serve` exposes eleven disjoint `shared_*` tools for enabled bases. The repository has no HTTP/REST server, server project,
 server test project, web UI, Aspire AppHost, or remote CLI mode. The removed `--remote`,
 `--api-key`, and `--store` options must not be added to new CLI guidance.
 
-Twelve tools are exposed — `guide()`, one per memory operation, and `facts`:
+Eleven workspace tools are exposed — `guide()`, one per memory operation, and `facts`:
 
 | Tool | Description |
 |------|-------------|
@@ -109,8 +108,12 @@ shows enabled entries only. Public error results include `CONFIG_RECOVERY_REQUIR
 compensation/recovery attempt.
 Migration states are `fresh`, `policy-required`, `legacy-clean`, `legacy-mixed`, `legacy-manual`,
 `legacy-unsafe`, `local`, `project-git`, and `policy-drift`; declared errors and precedence live in
-the Core result contracts. The Task 6 parked bare-`complete` recovery-journal finding remains open
-for final branch remediation.
+the Core result contracts. Retained tracking recovery evidence blocks ordinary access. An ambiguous
+legacy `complete` marker or unreadable journal remains evidence for investigation; it is never
+resolved by blindly deleting the journal. Tracking recovery uses exclusive workspace admission
+before the configuration lock. Configuration-only mutations recheck evidence under their lock.
+Windows configuration lock identity normalizes absolute path case, changing lock filenames;
+stop all older writers before upgrading.
 
 ### `IEncodingStrategy`
 
@@ -183,10 +186,24 @@ Use `TestHelpers.StoreScope` for test isolation — it redirects workspace, stor
 - New CLI commands go in `ScriniaCommands.cs` and follow the existing `--workspace-root` pattern; there is no remote CLI surface.
 - Plugin authors implement `IScriniaPlugin` (lifecycle), and any combination of `ISearchScoreContributor`, `IMemoryEventSink`, `IMemoryOperationHook`.
 
-## Docs maintenance — known gaps
+## Maintained release checks and coverage limits
 
-These are intentional follow-ups, not bugs in any one commit. Track them when touching the relevant area.
+`scripts/release/Check-ReleaseContracts.ps1 -Root . -Configuration Release` compares the exact
+seven built-in names (`auditor`, `chaos-engineer`, `debugger`, `evolutionary`, `onboarder`, `qa`,
+`self-reflector`) across disk, built MCP resources/guide, and the named README/getting-started
+table sections. It evaluates MSBuild `Version` from canonical `Directory.Build.props`, rejects
+project overrides and production release literals, checks the CLI and MCP server versions, and
+guards the current checks workflow's solution/default-suite targets.
 
-- **No CI check enforces skill/doc parity.** The skill table in `docs/getting-started.md` is manually edited; if a skill is added to or removed from `src/Scrinia.Mcp/skills/` without updating the doc, the drift is invisible until the next manual review. A small CI step that diffs `Directory.GetFiles("src/Scrinia.Mcp/skills", "*.md")` against the rows in the skills table would close this gap (and would also catch the dual breakage where a skill body still references a removed MCP surface).
-- **No CI check enforces XML-doc coverage on the public API.** Public `IMemoryStore` / `MemoryTools` members are well-documented today; the next regression isn't caught until somebody notices. DocFX-with-coverage-threshold or a custom roslyn analyzer is the standard fix.
-- **No tooling enforces version-string single-sourcing.** `Directory.Build.props` is the canonical `<Version>`; a grep over `src/**/*.cs` and `src/**/*.csproj` for the literal version is a one-line CI guard against drift returning.
+The `xml-doc-build` CI job runs `dotnet build Scrinia.sln -c Release -warnaserror:CS1591`.
+Projects do not currently enable XML documentation emission or a public API coverage policy, so
+this promotes emitted CS1591 diagnostics to errors without establishing comprehensive XML
+documentation coverage. A real emission/coverage policy remains a follow-up.
+
+Release setup copies a verified embeddings bundle into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`, preserves source files, and selects the
+plugin in workspace configuration. `serve` never installs a bundle. Installation survives later
+configuration/model failure; success proves path selection, not initialization or inference.
+Supported payloads are `win-x64`, `linux-x64`, `osx-arm64`; exactly `ubuntu.24.04-x64` maps to
+`linux-x64` only with actual Linux/X64 process and positive GNU-libc evidence. macOS uses CPU/Metal.
+First-run Model2Vec/GGUF preparation requires network access; models live below `SCRINIA_HOME/models`.

@@ -38,6 +38,10 @@ trusting the header:
   refused before any allocation.
 - **Integrity** — a CRC-32 or length mismatch fails the decode rather than yielding partial content.
 
+Length is a mandatory nonnegative decimal value; CRC32 is exactly eight hexadecimal characters,
+and the codec must be `BR+B64`. An optional `C` must be positive and no greater than 100,000.
+Valid empty content and CRLF artifacts remain supported within the unchanged 64 MiB decoded limit.
+
 `BundleFormatService` applies all three on import, which is the one path where bytes you did not
 write reach the decoder.
 
@@ -108,6 +112,13 @@ Stop all old `scri serve` and CLI writers before reopening a workspace with the 
 Old writers cannot participate in the workspace admission protocol. Direct filesystem writers
 remain outside it.
 
+Windows configuration-lock identity also normalizes absolute path case, changing the lock
+filenames used by older builds. Stop older configuration writers; mixed-version coordination is
+not assumed. Tracking journals are version 1 and own exactly `config.json`, `.gitignore`,
+`.gitattributes`, and `merge.config`: 16 MiB per member state, 128 MiB total decoded state,
+192 MiB serialized journal, and 64 UTF-8 bytes per operation ID. Ambiguous legacy `complete`
+or unreadable evidence is retained for investigation, never fixed by blindly deleting a journal.
+
 A workspace bundle transaction owns its ordinary-memory and file-entity manifest, not every file
 under `.scrinia`. Configuration and derived facts/vectors are outside rollback. Persistent vector
 mutations independently reread fresh scope state under an exclusive file lock and publish a
@@ -166,7 +177,7 @@ write anything derived from a live environment.
 ### Encryption at rest
 
 `.scrinia/` is **plaintext on disk**. NMP/2 is Brotli-compressed and Base64Url-encoded, which is not
-encryption and is trivially reversible — `scri recall` does it. Anyone with read access to the
+encryption and is trivially reversible — `scri show` does it. Anyone with read access to the
 directory reads your memories. Encrypt the volume (LUKS, BitLocker, FileVault, cloud disk
 encryption) if your threat model includes offline attackers or backup media.
 
@@ -181,8 +192,10 @@ The `scri` global tool is an **immutable** NuGet package: once `dotnet tool inst
 scrinia` completes, the tool directory is never written at runtime. The package ships only the
 managed `scri` command, its managed dependencies, the offline-required embedded prompts/skills,
 and the package readme — no Merge driver, no Vulkan/LLamaSharp assembly, no native RID asset, no
-downloaded model, no repository data, and no `.scrinia`. All mutable state lives below
-`SCRINIA_HOME`, so the installed package can never be tampered with by runtime writes.
+downloaded model, no repository data, and no `.scrinia`. The per-user registry, models, installed
+plugin payloads, and plugin state live below `SCRINIA_HOME`; workspace configuration, memories,
+and derived vectors/facts live in `<workspace-root>/.scrinia/`. Scrinia does not mutate installed
+package bytes at runtime. Filesystem access still governs who can modify those bytes externally.
 
 ### Plugin trust
 
@@ -196,12 +209,20 @@ runs with your permissions, not a sandbox's. Treat the plugin directory as an ex
 - Only install plugins you have read.
 - Pin plugin versions in source control.
 
+Explicit setup validates the embeddings manifest and copies its exact payload without changing
+the extracted source. Manifest version 1 is bounded to 64 KiB and 32 file records, with 512 MiB
+per file and 1 GiB total. The fixed plugin name, exact host version, and current supported RID are
+required. A checksum detects changed bundle contents; it does not authenticate the publisher.
+macOS uses CPU/Metal; Windows/Linux use Vulkan. See [installation](installation.md#embeddings-plugin-installation).
+
 ### Remote embedding providers
 
 Configuring `Scrinia:Embeddings:Provider` as `ollama`, `openai`, `voyageai`, `azure`, or `google`
-sends **memory content** to that provider for embedding, along with your API key for it. That is the
-only outbound network call Scrinia makes, and it is off by default: the built-in `model2vec`
-provider runs in-process and sends nothing.
+sends **memory content** to that provider for embedding, along with your API key for it.
+First-run Model2Vec and plugin GGUF downloads
+also use the network, storing files below `SCRINIA_HOME/models`. After download, built-in
+`model2vec` inference runs in-process without sending memory content. Optional HTTP providers use
+their configured endpoint, including a local Ollama endpoint when configured.
 
 Provider API keys live in `.scrinia/config.json` or environment variables. If you commit
 `.scrinia/`, put the key in the environment, not the config file.

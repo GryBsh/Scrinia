@@ -111,6 +111,24 @@ process, but a long-running `scri serve` keeps the values it started with — re
 
 ## Plugin Issues
 
+### Setup installed the plugin but returned an error
+
+`InstalledConfigurationFailed` and `InstalledModelPreparationFailed` confirm that setup retained
+the verified payload under `SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`.
+For configuration failure, correct the reported workspace/provider settings or I/O problem.
+For a model preparation failure, restore network access or resolve the reported download error.
+Then rerun the printed
+`scri setup --embeddings-source <embeddings-source> --workspace-root <workspace-root>` command.
+Replace each placeholder with the corresponding directory path and quote each path
+separately. The extracted source is unchanged.
+Other installation failures may name an uncertain destination; that path is not proof of installation.
+
+Resolve conflicting `plugins:embeddings`, plugin-version environment overrides, or
+`SCRINIA_EMBEDDINGS_PROVIDER`/`SCRINIA__EMBEDDINGS__PROVIDER` selections before retrying. Setup
+success establishes installation, configuration, and path selection; it does not establish plugin
+initialization or inference. `serve` does not install a bundle. Migration of legacy assets stored
+beside the executable is separate. See [installation guidance](installation.md#embeddings-plugin-installation).
+
 ### Vulkan plugin not loading
 
 Symptoms: semantic search uses the in-process provider instead of the Vulkan plugin, or search
@@ -122,8 +140,8 @@ falls back to BM25 and path scoring after the configured plugin fails.
    `scri-plugin-embeddings`, resolved as
    `SCRINIA_HOME/plugins/scri-plugin-embeddings/<version>/<rid>/scri-plugin-embeddings.exe`. There
    is no flat `plugins/<plugin>` fallback.
-2. Vulkan drivers are installed and up to date
-3. GPU supports Vulkan (check with `vulkaninfo`)
+2. On Windows/Linux, Vulkan drivers are installed and up to date
+3. On Windows/Linux, the GPU supports Vulkan (check with `vulkaninfo`); macOS uses CPU/Metal
 4. The GGUF model exists at `SCRINIA_HOME/models/` (the default is
    `all-MiniLM-L6-v2-Q8_0.gguf`)
 
@@ -219,7 +237,9 @@ never rereads the source ZIP.
 A proven durable commit is success even when cleanup fails: imported counts still describe
 committed changes. Retained bundle evidence blocks later persistent operations until verified
 cleanup succeeds. An uncertain decision, unknown/legacy journal, terminal mismatch, or third
-state refuses recovery without speculative compensation. Explicit ephemeral-only operations and
+state refuses recovery without speculative compensation. For a prepared operation, recovery
+restores the previous file contents only when each affected file matches a state recorded in the
+journal. Explicit ephemeral-only operations and
 the embedded guide remain available.
 
 1. Stop every writer, including older builds.
@@ -242,6 +262,21 @@ recovery cleanup remain available. A legacy read requiring a sidecar rewrite als
 
 See [exact limits](security.md#bundle-and-journal-limits) and
 [protocol details](architecture/core.md#journaled-bundle-restore-recovery).
+
+### Tracking recovery evidence
+
+`CONFIG_RECOVERY_REQUIRED` or a recovery-blocked response may identify the separate tracking
+journal that protects `config.json`, `.gitignore`, `.gitattributes`, and `merge.config`. Stop all
+writers, back up the entire workspace and journal, and record the reported evidence path/reason.
+Prepared recovery proceeds only when each affected file matches a state recorded in the journal.
+A legacy bare `complete` marker cannot prove
+which terminal bytes belong to the operation; unreadable evidence also requires investigation.
+Never blindly delete the journal to make access succeed. A compatible retry can recover supported,
+proven evidence; there is no dedicated recovery CLI.
+
+Stop older configuration writers before upgrading: Windows configuration-lock identity now
+normalizes absolute path case, changing lock filenames. Mixed old/new writers cannot be assumed
+to coordinate, even if they refer to the same workspace.
 
 ### Version retention
 

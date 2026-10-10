@@ -203,7 +203,7 @@ recall({ path: '/skill/' })                            — list skills
 remember({ path: '/skill/my-helper', content: [...] }) — create or override
 ```
 
-Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `merge-safety`, `evolutionary`, `self-reflector`. They live at `.scrinia/skills/{name}.md`; a project override takes precedence. Merge one against an updated built-in with `recall({ path: '/skill/{name}', withBuiltin: true })`.
+Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `evolutionary`, `self-reflector`. Built-ins are embedded in Scrinia. Project overrides live at `.scrinia/skills/{name}.md` and take precedence. To compare an override with the current built-in before merging, use `recall({ path: '/skill/{name}', withBuiltin: true })`.
 
 ### Sessions
 

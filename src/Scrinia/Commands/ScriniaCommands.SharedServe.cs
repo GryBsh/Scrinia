@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -37,7 +38,13 @@ public sealed class SharedServeCommands
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
         builder.Services
-            .AddMcpServer()
+            .AddMcpServer(options => options.ServerInfo = new()
+            {
+                Name = "scri",
+                Version = typeof(SharedServeCommands).Assembly
+                    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                    ?.InformationalVersion.Split('+')[0] ?? "unknown",
+            })
             .WithStdioServerTransport()
             .WithTools<SharedTools>();
 

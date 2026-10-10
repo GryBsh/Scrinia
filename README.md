@@ -122,15 +122,25 @@ dotnet build
 # Download embedding model for semantic search (~22MB)
 scri setup
 
-# Optional: with Vulkan GPU-accelerated embeddings plugin
+# Optional: include the embeddings plugin in the release archive
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
+For the optional embeddings plugin, extract the embeddings archive for your operating system,
+then, from the extracted directory, run `./scri setup` on Linux/macOS or `.\scri.exe setup` in
+PowerShell on Windows. Setup copies the verified plugin into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`. With the NuGet tool, run
+`scri setup --embeddings-source <extracted-release-directory>` instead. The extracted files remain
+unchanged. A checksum detects changed bundle contents; it does not establish who published them.
+Windows and Linux use Vulkan; macOS uses the CPU/Metal backend. See
+[installation and retry guidance](docs/installation.md#embeddings-plugin-installation).
+
 ## Where data lives
 
-All writable state goes below `SCRINIA_HOME` (the per-user home resolved deterministically; unset
-defaults to `<LocalApplicationData>\Scrinia`). The installed global-tool package is immutable and is
-never written at runtime.
+The per-user registry, models, installed plugin payloads, and plugin state live below `SCRINIA_HOME`
+(unset defaults to `<LocalApplicationData>\Scrinia`). Workspace configuration, memories, and
+derived vectors/facts live in `<workspace-root>/.scrinia/`. The installed global-tool package is
+immutable and is never written at runtime.
 
 ```
 SCRINIA_HOME/
@@ -145,7 +155,7 @@ SCRINIA_HOME/
 
 Models resolve to `SCRINIA_HOME/models`; separately installed plugins live only at the mandatory
 `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/` hierarchy — there is no flat plugin fallback. The
-optional Vulkan plugin is installed separately (see [Installation](docs/installation.md)).
+optional embeddings plugin is installed through explicit setup (see [Installation](docs/installation.md)).
 
 ## MCP setup
 
@@ -174,12 +184,12 @@ memories should be shared between repositories, register a shared base with `scr
 
 ## CLI quick reference
 
-> **Note**: All mcp tools are availabl via cli, so they can be used in hooks, etc.
+The CLI provides memory and lifecycle commands for scripts and hooks.
 
 ```bash
 # Infrastructure
 scri serve                                  # start MCP server (stdio); auto-downloads embedding model on first run
-scri setup                                  # pre-download embedding model (rarely needed — serve auto-runs it)
+scri setup                                  # prepare models; install an adjacent embeddings bundle when present
 scri config                                 # list/get/set workspace settings
 
 # Cold-start / lifecycle
@@ -189,8 +199,8 @@ scri consolidate                            # mechanical session compaction + st
 scri reindex                                # force rebuild of every vector file (rarely needed; auto-runs on model switch)
 
 # Memory operations
-scri list                                   # summary view (topics, keywords, stats)
-scri list --summary=false                   # full listing
+scri list                                   # full listing
+scri list --summary                          # summary view (topics, keywords, stats)
 scri search "auth"                          # hybrid BM25 + semantic search
 scri store notes ./notes.md                 # store a file as memory
 scri store /api/auth ./auth.md              # store under a topic
@@ -218,7 +228,8 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-12 tools available via `scri serve`.
+Eleven workspace tools are available via `scri serve`. The separate `scri shared serve` surface
+exposes eleven `shared_*` tools for enabled shared bases; see [CLI Reference](docs/cli-reference.md).
 
 | Tool | Description |
 |---|---|
@@ -251,6 +262,11 @@ Seven skills ship with scrinia and load via `recall({ path: '/skill/{name}' })`:
 Projects can override any built-in by writing to `/skill/{name}` — the on-disk version takes precedence and is reusable across sessions.
 
 Plans, retrospectives, agent norms, and findings are all just memories — searchable via `search`, organized via reserved paths (`/findings/`, `/learn/`, `/agent/`, `/patterns/`, `/sessions/`). No separate database, no separate tools.
+
+First-run Model2Vec and plugin GGUF preparation use the network to download models under
+`SCRINIA_HOME/models`. Local inference uses those downloaded files; optional HTTP providers send
+content to their configured endpoint. `serve` may prepare a missing built-in model, but never
+installs an embeddings release bundle.
 
 ## Documentation
 

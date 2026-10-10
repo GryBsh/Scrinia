@@ -32,10 +32,11 @@ Install the immutable `scri` global tool from NuGet:
 dotnet tool install --global scrinia
 ```
 
-This installs the `scri` command onto your global tool path. Verify with `scri --version`. All
-mutable data — configuration, models, plugins, and plugin state — lives below
-[`SCRINIA_HOME`](installation.md#where-data-lives); the installed package directory is immutable and
-is never written at runtime.
+This installs the `scri` command onto your global tool path. Verify with `scri --version`.
+The per-user registry, models, installed plugin payloads, and plugin state live below
+[`SCRINIA_HOME`](installation.md#where-data-lives). Workspace configuration, memories, and derived
+vectors/facts live in `<workspace-root>/.scrinia/`; the installed package directory is immutable
+and is never written at runtime.
 
 For local development, build from source instead:
 
@@ -73,6 +74,19 @@ For optional Vulkan GPU acceleration:
 ```powershell
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
+
+To install an embeddings release archive, extract it. From the extracted directory, run
+`./scri setup` on Linux/macOS or `.\scri.exe setup` in PowerShell on Windows. With the NuGet tool,
+use `scri setup --embeddings-source <extracted-release-directory>`.
+Setup copies the verified payload to `SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`
+and selects it in workspace configuration, preserving the extracted files. Checksums detect changed
+contents, not publisher identity. macOS uses CPU/Metal. See
+[installation and retries](installation.md#embeddings-plugin-installation).
+
+Setup success confirms installation, configuration, and path selection; plugin loading and inference
+occur when the server starts. Model2Vec/GGUF downloads require network access. `serve` never installs
+a release bundle. Stop older server and CLI writers before upgrading and preserve a complete
+workspace backup, including recovery journals.
 
 ## Model2Vec
 
@@ -180,7 +194,9 @@ the canonical `~subject` spelling. The CLI does not support either spelling.
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes one tool per operation, each with its own schema. Grouped by purpose:
+`scri serve` exposes eleven workspace tools, each with its own schema. The separate
+`scri shared serve` exposes eleven disjoint `shared_*` tools for enabled shared bases.
+Workspace tools are grouped by purpose:
 
 | Group | Tools | Purpose |
 |------|---------|---------|

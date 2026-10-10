@@ -129,6 +129,19 @@ name sets never intersect, and the local store path and registration are byte-fo
 
 ## Embeddings Integration
 
+Explicit `setup` accepts an adjacent embeddings manifest or `--embeddings-source`, verifies its
+exact version/RID/payload, copies into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`, and selects name/version in workspace
+configuration through one locked fresh-read mutation. Source files remain unchanged. Later
+configuration/model failures retain the verified installation and provide a source/workspace retry.
+Success confirms installation, configuration, and path selection, not initialization or inference.
+`serve` never installs a release bundle; legacy executable-relative migration is separate.
+
+Setup and discovery share runtime identity: `win-x64`, `linux-x64`, and `osx-arm64`; exactly
+`ubuntu.24.04-x64` additionally resolves to `linux-x64` only with actual Linux/X64 process and
+positive GNU-libc evidence. Windows/Linux use Vulkan, macOS CPU/Metal. Model2Vec/GGUF first-run
+downloads write below `SCRINIA_HOME/models` and require network access.
+
 ### Provider Selection
 
 `EmbeddingsHost.LoadPluginsAsync()` selects the embeddings path in this order:
