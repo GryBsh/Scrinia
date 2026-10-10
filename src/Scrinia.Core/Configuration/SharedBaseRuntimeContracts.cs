@@ -322,7 +322,16 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
 
                 string relativePath = Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/');
                 if (IsAuthoritative(relativePath))
+                {
+                    // Unix FIFOs and sockets have neither Directory nor ReparsePoint attributes.
+                    // Classify without opening before any snapshot or fingerprint reads bytes.
+                    try { RecoveryFileType.RequireRegularFile(path); }
+                    catch (InvalidDataException exception)
+                    {
+                        throw new ArgumentException("An authoritative shared-base descendant must be a regular file.", nameof(registeredRoot), exception);
+                    }
                     yield return (relativePath, path);
+                }
             }
         }
     }

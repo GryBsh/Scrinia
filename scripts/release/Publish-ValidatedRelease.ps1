@@ -16,7 +16,7 @@ $locks = @()
 $temporary = $null
 
 function Invoke-Transport([string]$Executable, [string[]]$Arguments, [string]$OutputPath = '', [long]$MaximumBytes = 2147483648) {
-    if ($TestProcessRunner) { return & $TestProcessRunner $Executable $Arguments $OutputPath }
+    if ($TestProcessRunner) { return & $TestProcessRunner $Executable $Arguments $OutputPath $MaximumBytes }
     $start = [Diagnostics.ProcessStartInfo]::new($Executable)
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
@@ -43,6 +43,7 @@ function Invoke-Transport([string]$Executable, [string[]]$Arguments, [string]$Ou
         $errorTask.GetAwaiter().GetResult() | Out-Null
         if ($process.ExitCode -ne 0) { throw "Transport $Executable failed (exit $($process.ExitCode)); outcome requires reconciliation." }
         if (!$OutputPath) { return $outputTask.Result }
+        return $errorTask.Result
     } finally {
         if ($started -and !$process.HasExited) { $process.Kill($true); $process.WaitForExit(10000) | Out-Null }
         if ($file) { $file.Dispose() }; $deadline.Dispose(); $process.Dispose()
@@ -128,8 +129,11 @@ function Check-Assets($Release) {
 }
 function Check-Nuget {
     $remotePath = Join-Path $temporary 'remote.nupkg'
-    $status = (Invoke-Transport 'curl' @('--silent','--show-error','--location','--output',$remotePath,'--write-out','%{http_code}',
-        'https://api.nuget.org/v3-flatcontainer/scrinia/0.6.0/scrinia.0.6.0.nupkg')).Trim()
+    # Bound the downloaded envelope independently of ZIP-entry limits and Content-Length.
+    # curl streams only the body to stdout; the completed HTTP status goes to stderr.
+    # A transport error (including overflow) never establishes package absence.
+    $status = (Invoke-Transport 'curl' @('--silent','--show-error','--location','--write-out','%{stderr}%{http_code}',
+        'https://api.nuget.org/v3-flatcontainer/scrinia/0.6.0/scrinia.0.6.0.nupkg') $remotePath 134217728).Trim()
     if ($status -ceq '404') { return $null }
     if ($status -cne '200') { throw 'UNKNOWN: NuGet service did not supply package identity proof.' }
     $proofPath = Join-Path $temporary 'package-proof.json'
@@ -204,7 +208,8 @@ try {
     $target = $ref.object
     for ($depth=0; $target.type -ceq 'tag' -and $depth -lt 8; $depth++) { $target = (Read-Api "git/tags/$($target.sha)").object }
     if ($target.type -cne 'commit' -or $target.sha -cne $Revision) { throw 'Release tag does not resolve to the validated SHA.' }
-    $metadata = "Scrinia $Version validated release`ncommit: $Revision`nvalidationRunId: $ValidationRunId`nmanifestSha256: $manifestHash"
+    $metadata = @("Scrinia $Version validated release", '', '```text', "commit: $Revision",
+        "validationRunId: $ValidationRunId", "manifestSha256: $manifestHash", '```') -join "`n"
     $temporary = Join-Path ([IO.Path]::GetTempPath()) ('scrinia-publication-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($temporary) | Out-Null
     Verify-SelectedRunArtifact

@@ -9,6 +9,45 @@ namespace Scrinia.Tests.Shared;
 public sealed class SharedOperationBoundaryTests
 {
     [Theory]
+    [InlineData(2, 3, false)]
+    [InlineData(3, 3, false)]
+    [InlineData(4, 3, true)]
+    [InlineData(99, 100, false)]
+    [InlineData(100, 100, false)]
+    [InlineData(101, 100, true)]
+    public async Task Search_preserves_single_base_overflow_for_explicit_and_aggregate_selection(int matches, int limit, bool truncated)
+    {
+        using var first = new SharedOperationFixture();
+        using var second = new SharedOperationFixture();
+        // Seed equal-score durable entries from a real shared write, then exercise the real
+        // snapshot/scorer through public tools. Batch fixture setup avoids quadratic write scans.
+        (await first.Tools.Remember("team", "/note000", ["zebra matching content"])).Should().Contain("mutation: applied");
+        string memories = Path.Combine(first.BaseRoot, ".scrinia", "memories");
+        for (int i = 1; i < matches; i++)
+        {
+            File.Copy(Path.Combine(memories, "note000.nmp2"), Path.Combine(memories, $"note{i:D3}.nmp2"));
+            // Metadata embeds both the logical address and artifact key; keep them aligned.
+            File.WriteAllText(Path.Combine(memories, $"note{i:D3}.meta.json"),
+                File.ReadAllText(Path.Combine(memories, "note000.meta.json")).Replace("note000", $"note{i:D3}", StringComparison.Ordinal));
+        }
+        (await first.Tools.Refresh("team")).Should().Contain("status: success");
+        await second.Tools.Remember("team", "/other", ["unrelated content"]);
+        var multiple = SharedOperationFixture.Select(("alpha", first.BaseRoot), ("beta", second.BaseRoot));
+        string[] responses = [await first.Tools.Search("zebra", limit: limit),
+            await first.Tools.Search("zebra", "team", limit: limit),
+            await multiple.Search("zebra", limit: limit), await multiple.Search("zebra", "alpha", limit: limit)];
+        foreach (string response in responses)
+        {
+            response.Should().Contain($"truncated: {truncated.ToString().ToLowerInvariant()}");
+            response.Split('\n').Count(line => line.TrimStart().StartsWith("path:", StringComparison.Ordinal))
+                .Should().Be(Math.Min(matches, limit));
+            response.Should().NotContain("base: beta");
+            response.Split('\n').Where(line => line.TrimStart().StartsWith("path:", StringComparison.Ordinal))
+                .Select(line => line.Trim()).Should().Equal(Enumerable.Range(0, Math.Min(matches, limit)).Select(i => $"path: /note{i:D3}"));
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Logical_slash_addresses_work_while_physical_escape_never_invokes_publication(bool destinationEscapes)

@@ -56,7 +56,7 @@ dotnet build
 .\publish.ps1 -OutputDir ./dist -Platform win-x64
 ```
 
-Produces a single-file `scri.exe` on Windows and `scri` on Linux/macOS (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
+Produces a self-contained `scri.exe` on Windows and `scri` on Linux/macOS (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`. For Linux and macOS, keep the archive's build-matched `libSystem.Native.so` or `libSystem.Native.dylib` beside `scri` when deploying it. Both plain and embeddings archives require this host companion for filesystem classification. The managed NuGet tool uses the installed .NET runtime and does not include this archive companion.
 
 When `scri serve` starts, it automatically downloads the built-in Model2Vec embedding model (`m2v-MiniLM-L6-v2`, approximately 50 MB total including supporting files) on first startup unless you pass `--no-auto-setup`. The model is
 stored in `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`; if it is unavailable, semantic search falls back

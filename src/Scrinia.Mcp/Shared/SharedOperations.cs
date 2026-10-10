@@ -32,7 +32,9 @@ public sealed partial class SharedServer
         {
             string? prefix = pathPrefix is null ? null : ParsePersistentAddress(pathPrefix).Value;
             var request = new SearchQuery(context is null ? query : query + " " + context)
-            { Limit = limit, PathPrefix = prefix, AttributeFilter = attributeFilter, ExcludeTopics = excludeTopics };
+            // Keep one overflow candidate per base so final top-K projection can report
+            // incompleteness even when only one selected base has matching entries.
+            { Limit = limit + 1, PathPrefix = prefix, AttributeFilter = attributeFilter, ExcludeTopics = excludeTopics };
             return SharedMemoryOperations.Search(snapshot, request).Select(result => result switch
             {
                 EntryResult entry => new SearchHit(snapshot.Identity.BaseName, entry.Item.Entry.Address.Value,

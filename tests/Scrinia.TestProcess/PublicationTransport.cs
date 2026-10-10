@@ -26,10 +26,10 @@ internal static class PublicationTransport
         if (executable == "curl")
         {
             Call("read-nuget");
-            if (scenario == "nuget-unknown") { Console.Write("503"); return Task.FromResult(0); }
-            if (command.Length != 8 || command[^1] != "https://api.nuget.org/v3-flatcontainer/scrinia/0.6.0/scrinia.0.6.0.nupkg") throw new ArgumentException("Unexpected NuGet read.");
-            if (!File.Exists(remotePackage)) { Console.Write("404"); return Task.FromResult(0); }
-            string destination = Option("--output");
+            if (scenario == "nuget-unknown") { Console.Error.Write("503"); return Task.FromResult(0); }
+            if (command.Length != 6 || Option("--write-out") != "%{stderr}%{http_code}" || command[^1] != "https://api.nuget.org/v3-flatcontainer/scrinia/0.6.0/scrinia.0.6.0.nupkg") throw new ArgumentException("Unexpected NuGet read.");
+            if (!File.Exists(remotePackage)) { Console.Error.Write("404"); return Task.FromResult(0); }
+            string destination = Path.Combine(root, "response.nupkg");
             File.Copy(remotePackage, destination, true);
             if (scenario is "different-package" or "different-opc")
             {
@@ -38,7 +38,8 @@ internal static class PublicationTransport
                 zip.GetEntry(name)!.Delete();
                 using var writer = new StreamWriter(zip.CreateEntry(name).Open()); writer.Write("different immutable content");
             }
-            Console.Write("200"); return Task.FromResult(0);
+            using (var response = File.OpenRead(destination)) response.CopyTo(Console.OpenStandardOutput());
+            Console.Error.Write("200"); return Task.FromResult(0);
         }
         if (executable == "dotnet")
         {

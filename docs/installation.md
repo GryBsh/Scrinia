@@ -97,6 +97,19 @@ host discovers the plugin executable only through this hierarchy — there is no
 
 ## Embeddings plugin installation
 
+Both plain and embeddings self-contained Unix archives require the build-matched host companion beside `scri`. Keep these files together when moving the extracted CLI:
+
+```text
+<extracted-release-directory>/
+  scri
+  libSystem.Native.so       # Linux; macOS uses libSystem.Native.dylib
+  embeddings-bundle.json   # embeddings archive only
+  plugins/                 # embeddings archive only
+    scri-plugin-embeddings/0.6.0/<rid>/
+```
+
+The host companion supports filesystem classification. It is separate from the plugin's native libraries. The managed NuGet tool uses the installed .NET runtime; its package does not contain this self-contained archive companion.
+
 Extract the embeddings archive for your operating system. From the extracted directory, run
 `./scri setup` on Linux/macOS or `.\scri.exe setup` in PowerShell on Windows. Setup copies the
 verified plugin into

@@ -11,6 +11,38 @@ public sealed class ReleasePublicationTests
     private const string Sha = "0123456789abcdef0123456789abcdef01234567";
 
     [Theory]
+    [InlineData("length")]
+    [InlineData("unknown")]
+    [InlineData("chunked")]
+    [InlineData("invalid-length")]
+    public void Nuget_response_envelope_is_bounded_during_receipt_before_any_publication(string framing)
+    {
+        using var fixture = new Fixture("nuget-envelope-" + framing);
+        var result = fixture.Run();
+        Assert.NotEqual(0, result.Exit);
+        // PowerShell's Unix error renderer may wrap "bounded capacity" across decorated lines.
+        string expected = framing == "invalid-length" ? "Transport curl failed" : "Binary transport output exceeded";
+        Assert.True(result.Output.Contains(expected, StringComparison.Ordinal), result.Output);
+        Assert.InRange(long.Parse(File.ReadAllText(Path.Combine(fixture.Root, "download-length.txt")), System.Globalization.CultureInfo.InvariantCulture), 0, 128 * 1024 * 1024);
+        Assert.Empty(fixture.Writes());
+        Assert.False(File.Exists(fixture.Progress));
+    }
+
+    [Fact]
+    public void Existing_release_requires_the_complete_fenced_identity_body()
+    {
+        using var fixture = new Fixture("direct");
+        File.WriteAllText(Path.Combine(fixture.Root, "release.json"), JsonSerializer.Serialize(new
+        {
+            id = 7, tag_name = "v0.6.0", target_commitish = Sha, prerelease = false, draft = true,
+            body = fixture.ExpectedBody()
+        }));
+        var result = fixture.Run(validateOnly: true);
+        Assert.True(result.Exit == 0, result.Output);
+        Assert.Empty(fixture.Writes());
+    }
+
+    [Theory]
     [InlineData("artifact-missing")]
     [InlineData("artifact-expired")]
     [InlineData("artifact-duplicate")]
@@ -111,6 +143,8 @@ public sealed class ReleasePublicationTests
         Assert.Equal(packageWasPushed, fixture.WritesBeforeRetry.Contains("push"));
         Assert.DoesNotContain("pack", fixture.Calls());
         Assert.DoesNotContain("publish-compilation", fixture.Calls());
+        using var release = JsonDocument.Parse(File.ReadAllText(Path.Combine(fixture.Root, "release.json")));
+        Assert.Equal(fixture.ExpectedBody(), release.RootElement.GetProperty("body").GetString());
     }
 
     [Theory]
@@ -279,6 +313,7 @@ public sealed class ReleasePublicationTests
             }
         }
         private static string Hash(string path) => Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)));
+        internal string ExpectedBody() => $"Scrinia 0.6.0 validated release\n\n```text\ncommit: {Sha}\nvalidationRunId: 42\nmanifestSha256: {Hash(Path.Combine(Artifacts, "release-artifacts.json"))}\n```";
         private static void Entry(ZipArchive zip, string path, string contents)
         { using var writer = new StreamWriter(zip.CreateEntry(path).Open()); writer.Write(contents); }
         internal void PreseedPackage(bool signed)
@@ -294,11 +329,22 @@ public sealed class ReleasePublicationTests
         internal void ClearCalls() => File.Delete(Path.Combine(Root, "calls.txt"));
         internal (int Exit, string Output) Run(bool validateOnly = false)
         {
+            using var response = Scenario.StartsWith("nuget-envelope-", StringComparison.Ordinal)
+                ? new OversizedNugetResponse(Scenario["nuget-envelope-".Length..]) : null;
             string tool = ResolveOutput("Scrinia.ReleaseTools", "tools");
             string harness = ResolveOutput("Scrinia.TestProcess", "tests");
             string wrapper = Path.Combine(Root, "run.ps1");
             File.WriteAllText(wrapper, "param($Script,$Harness,$Tool,$Root,$Only)\n$ErrorActionPreference='Stop'\n" +
-                "$runner = { param($Executable,$Arguments,$OutputPath)\n" +
+                "$runner = { param($Executable,$Arguments,$OutputPath,$MaximumBytes)\n" +
+                "  if ($Executable -eq 'curl') {\n" +
+                "    if ($env:SCRINIA_FIXTURE_NUGET_URL) { $Arguments[-1]=$env:SCRINIA_FIXTURE_NUGET_URL }\n" +
+                "    else { $Arguments=@($Harness,'publication-transport',$Root,$Executable,'') + $Arguments; $Executable='dotnet' }\n" +
+                "    $savedRunner=$TestProcessRunner; $TestProcessRunner=$null\n" +
+                "    try { return Invoke-Transport $Executable $Arguments $OutputPath $MaximumBytes } finally {\n" +
+                "      $TestProcessRunner=$savedRunner\n" +
+                "      if ($env:SCRINIA_FIXTURE_NUGET_URL -and (Test-Path -LiteralPath $OutputPath)) { [IO.File]::WriteAllText(\"$Root/download-length.txt\", (Get-Item -LiteralPath $OutputPath).Length.ToString()) }\n" +
+                "    }\n" +
+                "  }\n" +
                 "  & dotnet $Harness publication-transport $Root $Executable $OutputPath @Arguments\n" +
                 "  if ($LASTEXITCODE -ne 0) { throw 'Fake transport failed fixture-secret' }\n" +
                 "}\n" +
@@ -306,6 +352,7 @@ public sealed class ReleasePublicationTests
             using var process = new System.Diagnostics.Process { StartInfo = new("pwsh") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
             foreach (string arg in new[] { "-NoProfile", "-File", wrapper, RepoPaths.Combine("scripts", "release", "Publish-ValidatedRelease.ps1"), harness, tool, Root, validateOnly ? "true" : "false" }) process.StartInfo.ArgumentList.Add(arg);
             process.StartInfo.Environment["GH_TOKEN"] = "";
+            process.StartInfo.Environment["SCRINIA_FIXTURE_NUGET_URL"] = response?.Url ?? "";
             process.StartInfo.Environment["GITHUB_TOKEN"] = "";
             process.StartInfo.Environment["NUGET_API_KEY"] = Scenario == "missing-secret" ? "" : "fixture-secret";
             process.StartInfo.Environment["GITHUB_REPOSITORY"] = "owner/scrinia";
@@ -325,5 +372,55 @@ public sealed class ReleasePublicationTests
                 : RepoPaths.Combine(folder, name, "bin", output.Parent!.Name, output.Name, name + ".dll");
         }
         public void Dispose() => Directory.Delete(Root, true);
+    }
+
+    // A real loopback HTTP response exercises curl and the production streaming transport.
+    // No external service, credentials, or declared Content-Length is trusted to enforce the cap.
+    private sealed class OversizedNugetResponse : IDisposable
+    {
+        private readonly System.Net.Sockets.TcpListener _listener = new(System.Net.IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stop = new(TimeSpan.FromSeconds(110));
+        private readonly Task _serve;
+        internal string Url { get; }
+        internal OversizedNugetResponse(string framing)
+        {
+            _listener.Start();
+            Url = $"http://127.0.0.1:{((System.Net.IPEndPoint)_listener.LocalEndpoint).Port}/package.nupkg";
+            _serve = ServeAsync(framing);
+        }
+        private async Task ServeAsync(string framing)
+        {
+            try
+            {
+                using var client = await _listener.AcceptTcpClientAsync(_stop.Token);
+                using var stream = client.GetStream();
+                using var reader = new StreamReader(stream, leaveOpen: true);
+                while (await reader.ReadLineAsync(_stop.Token) is { Length: > 0 }) { }
+                const int capacity = 128 * 1024 * 1024;
+                string headers = framing switch
+                {
+                    "length" => $"Content-Length: {capacity + 65536}\r\n",
+                    "chunked" => "Transfer-Encoding: chunked\r\n",
+                    "invalid-length" => "Content-Length: invalid\r\n",
+                    _ => ""
+                };
+                await stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\n" + headers + "Connection: close\r\n\r\n"), _stop.Token);
+                byte[] block = new byte[65536];
+                for (int total = 0; total <= capacity; total += block.Length)
+                {
+                    if (framing == "chunked") await stream.WriteAsync("10000\r\n"u8.ToArray(), _stop.Token);
+                    await stream.WriteAsync(block, _stop.Token);
+                    if (framing == "chunked") await stream.WriteAsync("\r\n"u8.ToArray(), _stop.Token);
+                }
+                if (framing == "chunked") await stream.WriteAsync("0\r\n\r\n"u8.ToArray(), _stop.Token);
+            }
+            catch (Exception error) when (error is IOException or System.Net.Sockets.SocketException or OperationCanceledException) { }
+        }
+        public void Dispose()
+        {
+            _stop.Cancel(); _listener.Stop();
+            _serve.Wait(TimeSpan.FromSeconds(5));
+            _stop.Dispose();
+        }
     }
 }

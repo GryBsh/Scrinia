@@ -1,6 +1,6 @@
 # CLI Architecture
 
-The Scrinia CLI (`scri`) is a .NET 10 executable that serves as both a command-line tool and an MCP server. It's published as a trimmed single-file binary.
+The Scrinia CLI (`scri`) is a .NET 10 executable that serves as both a command-line tool and an MCP server. Self-contained release archives use a trimmed host. On Linux and macOS, the archive's build-matched `libSystem.Native.so` or `libSystem.Native.dylib` must remain beside `scri`; filesystem classification depends on this companion in both plain and embeddings archives. The managed NuGet tool uses the installed .NET runtime and has no archive companion asset.
 
 ## Project Layout
 
