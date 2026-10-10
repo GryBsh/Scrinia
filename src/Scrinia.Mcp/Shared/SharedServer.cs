@@ -14,17 +14,20 @@ public sealed class SharedAddressException(string code, string message) : Argume
 }
 
 /// <summary>Resolves the enabled shared namespace before any base-scoped work begins.</summary>
-public sealed class SharedServer
+public sealed partial class SharedServer
 {
     private readonly IWorkspaceConfig _workspaceConfig;
     private readonly ISharedBaseRegistry _registry;
     private readonly ISharedBaseRuntimeFactory _runtimeFactory;
+    private readonly IReadOnlyDictionary<string, SharedBaseEntry?> _selections;
 
     public SharedServer(IWorkspaceConfig workspaceConfig, ISharedBaseRegistry registry, ISharedBaseRuntimeFactory runtimeFactory)
     {
         _workspaceConfig = workspaceConfig ?? throw new ArgumentNullException(nameof(workspaceConfig));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _runtimeFactory = runtimeFactory ?? throw new ArgumentNullException(nameof(runtimeFactory));
+        _selections = _workspaceConfig.GetEnabledBases().Order(StringComparer.Ordinal)
+            .ToDictionary(name => name, name => _registry.Lookup(name), StringComparer.Ordinal);
     }
 
     public SharedBaseSelection? SelectBase(string? baseName)
@@ -33,19 +36,19 @@ public sealed class SharedServer
             return null;
         if (!SharedBaseRegistry.IsCanonicalName(baseName))
             throw new SharedAddressException("INVALID_PARAMETER", "The shared base name is not canonical.");
-        if (!_workspaceConfig.GetEnabledBases().Contains(baseName, StringComparer.Ordinal))
+        if (!_selections.ContainsKey(baseName))
             return null;
 
-        SharedBaseEntry? entry = _registry.Lookup(baseName);
+        SharedBaseEntry? entry = _selections[baseName];
         return entry is null ? null : new SharedBaseSelection(baseName, entry);
     }
 
     public IReadOnlyList<SharedBaseSelection> SelectEnabledBases()
     {
         var selected = new List<SharedBaseSelection>();
-        foreach (string baseName in _workspaceConfig.GetEnabledBases())
+        foreach (string baseName in _selections.Keys)
         {
-            SharedBaseEntry? entry = _registry.Lookup(baseName);
+            SharedBaseEntry? entry = _selections[baseName];
             selected.Add(new SharedBaseSelection(baseName, entry));
         }
         return selected;
@@ -62,7 +65,7 @@ public sealed class SharedServer
             ?? throw new SharedAddressException("UNKNOWN_SHARED_BASE", "The selected shared base is unavailable.");
         if (selection.Entry is null)
             throw new SharedAddressException("UNKNOWN_SHARED_BASE", "The selected shared base is unavailable.");
-        return _runtimeFactory.Open(selection.Entry);
+        return OpenValidatedBase(baseName, null);
     }
 
     public static MemoryAddress ParsePersistentAddress(string rawAddress)
@@ -103,7 +106,16 @@ public sealed class SharedServer
         if (entry is null)
             return new SharedBaseSummary(baseName, null, SharedBaseAvailability.Unavailable, null);
 
-        return new SharedBaseSummary(baseName, entry.Root, SharedBaseAvailability.Unavailable, null);
+        try
+        {
+            SharedBaseRuntime runtime = OpenValidatedBase(baseName, null);
+            using var lease = runtime.AcquireReadLease();
+            return new SharedBaseSummary(baseName, entry.Root, runtime.Snapshot.Availability, runtime.Snapshot.Generation);
+        }
+        catch (Exception exception) when (IsExpected(exception))
+        {
+            return new SharedBaseSummary(baseName, entry.Root, SharedBaseAvailability.Unavailable, null);
+        }
     }
 }
 
@@ -169,7 +181,7 @@ internal static class SharedEnvelopeYaml
         if (envelope.Result is not null) WritePayload(output, "result", envelope.Result, 0);
         if (envelope.Results is not null)
         {
-            WriteLine(output, 0, "results", null);
+            WriteLine(output, 0, "results", envelope.Results.Count == 0 ? "[]" : null);
             foreach (object result in envelope.Results) WritePayload(output, "-", result, 1);
         }
         if (envelope.Warnings.Length == 0) output.AppendLine("warnings: []");

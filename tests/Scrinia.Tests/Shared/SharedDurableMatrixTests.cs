@@ -86,7 +86,9 @@ public sealed class SharedDurableMatrixTests
         entries["/good"].Availability.Should().Be(SharedDurableAvailability.ReadWrite);
         entries["/unsupported"].ErrorCode.Should().Be("SHARED_FORMAT_UNSUPPORTED");
         entries["/corrupt"].ErrorCode.Should().Be("SHARED_ENTRY_CORRUPT");
-        entries.Should().NotContainKey("/missing-sidecar");
+        entries["/missing-sidecar"].Availability.Should().Be(SharedDurableAvailability.Unavailable);
+        entries["/missing-sidecar"].ErrorCode.Should().Be("SHARED_ENTRY_CORRUPT");
+        runtime.Snapshot.Memories.Should().NotContain(item => item.Path == "/missing-sidecar");
         entries["/newer"].Availability.Should().Be(SharedDurableAvailability.ReadOnly);
         entries["/skill/skill"].Availability.Should().Be(SharedDurableAvailability.ReadOnly);
         entries["/agent/agent"].Availability.Should().Be(SharedDurableAvailability.ReadWrite);

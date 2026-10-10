@@ -13,10 +13,12 @@ public sealed class ManagedIgnoreBlockTests
     }
 
     [Fact]
-    public void ProjectGitBlockIsExactAndAnchored()
+    public void EarlierProjectGitBlockIsDriftAndCannotBeAutomaticallyReplaced()
     {
-        ManagedIgnoreBlock.For(TrackingPolicy.ProjectGit)
-            .Should().Be("# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n");
+        const string previous = "# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n";
+        ManagedIgnoreBlock.Validate(previous, TrackingPolicy.ProjectGit).Should().Be(ManagedIgnoreValidation.Drift);
+        Action apply = () => ManagedIgnoreBlock.Apply("user\n" + previous + "keep\n", TrackingPolicy.ProjectGit);
+        apply.Should().Throw<ScriniaConfigurationException>();
     }
 
     [Fact]
@@ -25,7 +27,7 @@ public sealed class ManagedIgnoreBlockTests
         string existing = "# user\r\nkeep\r\n";
 
         ManagedIgnoreBlock.Apply(existing, TrackingPolicy.ProjectGit)
-            .Should().Be("# user\nkeep\n# >>> Scrinia managed: project-git derived files >>>\n/embeddings/\n/indexes/\n/exports/\n/versions/\n/facts.json\n/.restore-journal.json\n**/*.tmp\n/*.lock\n# <<< Scrinia managed: project-git derived files <<<\n");
+            .Should().Be("# user\nkeep\n" + ManagedIgnoreBlock.ProjectGit);
     }
 
     [Fact]

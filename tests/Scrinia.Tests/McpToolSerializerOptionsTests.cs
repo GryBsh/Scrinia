@@ -1,5 +1,9 @@
 using FluentAssertions;
 using Scrinia.Mcp;
+using Scrinia.Mcp.SharedContracts;
+using ModelContextProtocol.Server;
+using System.Text.Json;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Tests;
@@ -25,5 +29,26 @@ public sealed class McpToolSerializerOptionsTests
         // chain. A GetTypeInfo check would false-green in JIT via McpJsonUtilities' reflection fallback.
         ScriniaMcpTools.CreateToolSerializerOptions().TypeInfoResolverChain
             .Should().Contain(ScriniaMcpJsonContext.Default, "serve/Server pass these options to WithTools");
+    }
+
+    [Fact]
+    public void SharedHost_UsesSourceGeneratedOptionsForEveryDictionaryToolSchema()
+    {
+        // This explicit resolver has no reflection fallback, matching the extracted trimmed host.
+        var options = new JsonSerializerOptions { TypeInfoResolver = ScriniaMcpJsonContext.Default };
+        string[] expected = ["Append", "Remember", "Search"];
+        var methods = typeof(SharedTools).GetMethods().Where(method => method.GetParameters()
+            .Any(parameter => parameter.ParameterType == typeof(Dictionary<string, string[]>))).ToArray();
+        Assert.Equal(expected, methods.Select(method => method.Name).Order(StringComparer.Ordinal));
+        foreach (var method in methods)
+        {
+            var tool = McpServerTool.Create(method, new SharedTools(), new() { SerializerOptions = options });
+            Assert.Equal(JsonValueKind.Object, tool.ProtocolTool.InputSchema.ValueKind);
+            foreach (var parameter in method.GetParameters().Where(parameter => parameter.ParameterType == typeof(Dictionary<string, string[]>)))
+                Assert.True(tool.ProtocolTool.InputSchema.GetProperty("properties").TryGetProperty(parameter.Name!, out _));
+        }
+        // Wiring matters: schema metadata alone previously passed while the shared composition omitted it.
+        string composition = File.ReadAllText(RepoPaths.Combine("src", "Scrinia", "Commands", "ScriniaCommands.SharedServe.cs"));
+        Assert.Contains(".WithTools<SharedTools>(ScriniaMcpTools.CreateToolSerializerOptions())", composition);
     }
 }

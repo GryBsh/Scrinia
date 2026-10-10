@@ -30,7 +30,8 @@ public sealed class SharedPrivacyTests
         openDisabled.Should().Throw<SharedAddressException>()
             .Which.Message.Should().NotContain("disabled");
         registry.ListCalls.Should().Be(0, "the complete registry is an explicit private CLI surface");
-        registry.Lookups.Should().Equal("enabled", "missing", "enabled", "missing");
+        // Each enabled name is resolved exactly once at startup, including the absent entry.
+        registry.Lookups.Should().Equal("enabled", "missing");
     }
 
     private sealed class RecordingRegistry(params SharedBaseEntry[] entries) : ISharedBaseRegistry

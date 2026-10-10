@@ -7,8 +7,98 @@ namespace Scrinia.Tests;
 
 public sealed class EmbeddingsBundleStagingTests
 {
-    private static readonly Lazy<(int ExitCode, string Output)> Build = new(() => Run(
-        "build", RepoPaths.Combine("tools", "Scrinia.ReleaseTools"), "-c", "Release"));
+    private static readonly Lazy<string> Tool = new(() => ResolveTool(new DirectoryInfo(AppContext.BaseDirectory)));
+
+    private static string ResolveTool(DirectoryInfo output)
+    {
+        string path = output.Parent is { Name: "Scrinia.Tests", Parent.Name: "bin" } project
+            ? Path.Combine(project.Parent.FullName, "Scrinia.ReleaseTools", output.Name, "Scrinia.ReleaseTools.dll")
+            : RepoPaths.Combine("tools", "Scrinia.ReleaseTools", "bin", output.Parent!.Name, output.Name, "Scrinia.ReleaseTools.dll");
+        if (!File.Exists(path)) throw new FileNotFoundException("The current test configuration's release tool was not built.", path);
+        return path;
+    }
+
+    [Fact]
+    public void Stage_MissingCurrentConfigurationNeverUsesAnotherBuild()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scri-stage-pivot-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string release = Directory.CreateDirectory(Path.Combine(root, "bin", "Scrinia.ReleaseTools", "release")).FullName;
+            File.WriteAllText(Path.Combine(release, "Scrinia.ReleaseTools.dll"), "stale other configuration");
+            var output = new DirectoryInfo(Path.Combine(root, "bin", "Scrinia.Tests", "debug"));
+            var error = Assert.Throws<FileNotFoundException>(() => ResolveTool(output));
+            Assert.Equal(Path.Combine(root, "bin", "Scrinia.ReleaseTools", "debug", "Scrinia.ReleaseTools.dll"), error.FileName);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Runner_RejectsIncompleteOutputAfterSuccessfulParentExit()
+    {
+        string root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "scri-held-pipe-" + Guid.NewGuid().ToString("N"))).FullName;
+        string marker = Path.Combine(root, "child.identity");
+        System.Diagnostics.Process? child = null;
+        Task<(int ExitCode, string Output)>? run = null;
+        try
+        {
+            var output = new DirectoryInfo(AppContext.BaseDirectory);
+            string harness = output.Parent is { Name: "Scrinia.Tests", Parent.Name: "bin" } project
+                ? Path.Combine(project.Parent.FullName, "Scrinia.TestProcess", output.Name, "Scrinia.TestProcess.dll")
+                : RepoPaths.Combine("tests", "Scrinia.TestProcess", "bin", output.Parent!.Name, output.Name, "Scrinia.TestProcess.dll");
+            Assert.True(File.Exists(harness), "The configuration-matched test-process project reference must be built.");
+            var start = new ProcessStartInfo("dotnet")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            foreach (string arg in new[] { harness, "pipe-holder-parent", marker }) start.ArgumentList.Add(arg);
+            run = Task.Run(() => Run(start, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1)));
+            var timer = Stopwatch.StartNew();
+            while (!File.Exists(marker) && timer.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(20);
+            Assert.True(File.Exists(marker), "The owned descendant must publish its identity. " +
+                (run.IsCompletedSuccessfully ? run.Result.Output : "Runner capture remains pending."));
+            string[] identity = File.ReadAllText(marker).Split(':');
+            Assert.Equal(2, identity.Length);
+            var candidate = System.Diagnostics.Process.GetProcessById(int.Parse(identity[0], System.Globalization.CultureInfo.InvariantCulture));
+            try { Assert.Equal(identity[1], ProcessBirthIdentity(candidate)); }
+            catch { candidate.Dispose(); throw; }
+            child = candidate;
+            Assert.False(child.HasExited, "The verified descendant must still hold the inherited output pipes.");
+            Task completed = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(5)));
+            Assert.Same(run, completed);
+            var error = await Assert.ThrowsAsync<TimeoutException>(async () => await run);
+            Assert.Contains("output drain", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("exit 0", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (child is not null)
+            {
+                if (!child.HasExited) child.Kill(entireProcessTree: false);
+                await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                child.Dispose();
+            }
+            if (run is not null) { try { await run.WaitAsync(TimeSpan.FromSeconds(5)); } catch (TimeoutException) { } }
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static string ProcessBirthIdentity(System.Diagnostics.Process process)
+    {
+        if (!OperatingSystem.IsLinux())
+            return process.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string stat = File.ReadAllText($"/proc/{process.Id}/stat");
+        int closing = stat.LastIndexOf(')');
+        if (closing < 0) throw new InvalidDataException("The owned process stat has no command boundary.");
+        string[] fields = stat[(closing + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (fields.Length <= 19 || !ulong.TryParse(fields[19], System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out _))
+            throw new InvalidDataException("The owned process stat has no valid start-time identity.");
+        return fields[19];
+    }
 
     [Theory]
     [InlineData("win-x64", "scri-plugin-embeddings.exe", "ggml-base.dll,ggml-cpu.dll,ggml-vulkan.dll,ggml.dll,llama.dll,mtmd.dll")]
@@ -188,11 +278,48 @@ public sealed class EmbeddingsBundleStagingTests
     {
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
-        using var process = System.Diagnostics.Process.Start(start)!;
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-        Task<string> stderr = process.StandardError.ReadToEndAsync();
-        process.WaitForExit();
-        return (process.ExitCode, stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult());
+        return Run(start, TimeSpan.FromSeconds(120), TimeSpan.FromSeconds(30));
+    }
+
+    private static (int ExitCode, string Output) Run(ProcessStartInfo start, TimeSpan exitTimeout, TimeSpan drainTimeout)
+    {
+        return CaptureAsync(start, exitTimeout, drainTimeout).GetAwaiter().GetResult();
+    }
+
+    private static async Task<(int ExitCode, string Output)> CaptureAsync(ProcessStartInfo start, TimeSpan exitTimeout, TimeSpan drainTimeout)
+    {
+        using var process = System.Diagnostics.Process.Start(start)
+            ?? throw new InvalidOperationException("The owned staging process did not start.");
+        using var capture = new CancellationTokenSource();
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync(capture.Token);
+        Task<string> stderr = process.StandardError.ReadToEndAsync(capture.Token);
+        try
+        {
+            try { await process.WaitForExitAsync().WaitAsync(exitTimeout).ConfigureAwait(false); }
+            catch (TimeoutException)
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                throw new TimeoutException($"Owned staging process {process.Id} exceeded its {exitTimeout.TotalSeconds}s exit deadline: {start.FileName}.");
+            }
+            // WaitForExitAsync also waits for event-based readers; these explicit reader tasks
+            // need their own deadline when an exited process leaves inherited pipes open.
+            try { await Task.WhenAll(stdout, stderr).WaitAsync(drainTimeout).ConfigureAwait(false); }
+            catch (TimeoutException)
+            {
+                string output = stdout.IsCompletedSuccessfully ? stdout.Result : "stdout capture incomplete";
+                string error = stderr.IsCompletedSuccessfully ? stderr.Result : "stderr capture incomplete";
+                throw new TimeoutException($"Owned staging process {process.Id} exit {process.ExitCode}: output drain exceeded {drainTimeout.TotalSeconds}s. {output}\n{error}");
+            }
+            return (process.ExitCode, stdout.Result + stderr.Result);
+        }
+        finally
+        {
+            capture.Cancel();
+            try { await Task.WhenAll(stdout, stderr).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (TimeoutException) { }
+        }
     }
 
     private sealed class Fixture : IDisposable
@@ -235,9 +362,7 @@ public sealed class EmbeddingsBundleStagingTests
 
         public (int ExitCode, string Output) Stage(string? version = null, string? policyPath = null)
         {
-            var build = Build.Value;
-            if (build.ExitCode != 0) return build;
-            return Run("run", "--project", RepoPaths.Combine("tools", "Scrinia.ReleaseTools"), "-c", "Release", "--no-build", "--",
+            return Run(Tool.Value,
                 "stage-embeddings", "--raw", _raw, "--root", Root, "--rid", _rid, "--version", version ?? Version, "--nuget-root", _packages, "--policy", policyPath ?? _policy);
         }
 

@@ -1,4 +1,5 @@
 using System.Reflection;
+using Scrinia.Mcp;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -31,12 +32,13 @@ public sealed class SharedServeCommands
         // This is deliberately before Host.CreateApplicationBuilder: an absent key is a valid
         // zero-base configuration, but it must not create a protocol transport that can never
         // serve a shared namespace.
-        adapter.OpenEnabledBases();
-        _ = new SharedServer(workspaceConfig, registry, runtimeFactory).GetEnabledBaseSummaries();
+        var server = new SharedServer(workspaceConfig, registry, runtimeFactory);
+        adapter.ValidateStartup(server);
 
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        builder.Services.AddSingleton(server);
         builder.Services
             .AddMcpServer(options => options.ServerInfo = new()
             {
@@ -46,7 +48,9 @@ public sealed class SharedServeCommands
                     ?.InformationalVersion.Split('+')[0] ?? "unknown",
             })
             .WithStdioServerTransport()
-            .WithTools<SharedTools>();
+            .WithRequestFilters(filters => filters.AddCallToolFilter(next =>
+                (request, ct) => SharedValidation.Call(request, next, ct)))
+            .WithTools<SharedTools>(ScriniaMcpTools.CreateToolSerializerOptions());
 
         using IHost host = builder.Build();
         await host.RunAsync(cancellationToken);

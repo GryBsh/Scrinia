@@ -251,6 +251,18 @@ for rid in "${RIDS[@]}"; do
             if [ "$rid" = "win-x64" ]; then ext=".exe"; fi
             mkdir -p "$rid_dir"
             cp -p "$out_dir/${IDS[$i]}$ext" "$rid_dir/"
+            case "$rid" in
+                linux-x64) runtime_shim=libSystem.Native.so ;;
+                osx-arm64) runtime_shim=libSystem.Native.dylib ;;
+                *) runtime_shim= ;;
+            esac
+            if [ -n "$runtime_shim" ]; then
+                if [ ! -f "$out_dir/$runtime_shim" ] || [ -L "$out_dir/$runtime_shim" ]; then
+                    echo "Error: required build-resolved Unix runtime shim is missing, is not a file, or is a link: $out_dir/$runtime_shim (RID: $rid)" >&2
+                    exit 1
+                fi
+                cp -p "$out_dir/$runtime_shim" "$rid_dir/"
+            fi
         fi
         echo "  -> $rid_dir"
     done

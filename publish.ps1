@@ -222,6 +222,19 @@ foreach ($rid in $Rids) {
         } else {
             $ext = if ($rid -ceq 'win-x64') { '.exe' } else { '' }
             Copy-Item -LiteralPath (Join-Path $outDir ($p.id + $ext)) -Destination $ridDir -Force
+            $RuntimeShim = switch -CaseSensitive ($rid) {
+                'linux-x64' { 'libSystem.Native.so' }
+                'osx-arm64' { 'libSystem.Native.dylib' }
+                default { $null }
+            }
+            if ($RuntimeShim) {
+                $ShimPath = Join-Path $outDir $RuntimeShim
+                if (-not (Test-Path -LiteralPath $ShimPath -PathType Leaf) -or
+                    ((Get-Item -LiteralPath $ShimPath).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    throw "Required build-resolved Unix runtime shim is missing, is not a file, or is a link: $ShimPath (RID: $rid)"
+                }
+                Copy-Item -LiteralPath $ShimPath -Destination $ridDir -Force
+            }
         }
         Write-Host "  -> $ridDir"
     }

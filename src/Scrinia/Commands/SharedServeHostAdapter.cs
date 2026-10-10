@@ -1,5 +1,6 @@
 using Scrinia.Core;
 using Scrinia.Core.Configuration;
+using Scrinia.Mcp.SharedContracts;
 using CoreWorkspaceConfig = Scrinia.Core.Configuration.WorkspaceConfig;
 
 namespace Scrinia.Commands;
@@ -39,6 +40,19 @@ internal sealed class SharedServeHostAdapter
         return OpenOpenableBases();
     }
 
+    internal void ValidateStartup(SharedServer server)
+    {
+        EnsureEnabledConfiguration(WorkspaceConfig);
+        SharedEnvelope? firstFailure = null;
+        foreach (string name in WorkspaceConfig.GetEnabledBases().Order(StringComparer.Ordinal))
+        {
+            SharedEnvelope result = server.Refresh(name, CancellationToken.None);
+            if (!result.IsError) return;
+            firstFailure ??= result;
+        }
+        throw new SharedServeStartupException(firstFailure!.ErrorCode!, firstFailure.Error!);
+    }
+
     private static void EnsureEnabledConfiguration(IWorkspaceConfig workspaceConfig)
     {
         if (workspaceConfig.GetValue(CoreWorkspaceConfig.EnabledKey) is null)
@@ -51,6 +65,7 @@ internal sealed class SharedServeHostAdapter
     private SharedBaseRuntime[] OpenOpenableBases()
     {
         var runtimes = new List<SharedBaseRuntime>();
+        var server = new SharedServer(WorkspaceConfig, _registry, _runtimeFactory);
         foreach (string name in WorkspaceConfig.GetEnabledBases())
         {
             SharedBaseEntry? entry = _registry.Lookup(name);
@@ -58,7 +73,7 @@ internal sealed class SharedServeHostAdapter
                 continue;
             try
             {
-                runtimes.Add(_runtimeFactory.Open(entry));
+                runtimes.Add(server.OpenSelectedBase(name));
             }
             catch
             {

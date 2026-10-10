@@ -31,39 +31,101 @@ function Invoke-Dotnet([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($Arguments -join ' ') failed: $output" }
     return ($output -join "`n").Trim()
 }
+function New-FixtureStartInfo([string]$Assembly, [string[]]$Arguments, [string]$Scratch, [string]$Tracking) {
+    $start = [Diagnostics.ProcessStartInfo]::new('dotnet')
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.WorkingDirectory = Join-Path $Scratch 'workspace'
+    $start.ArgumentList.Add($Assembly)
+    foreach ($argument in $Arguments) {
+        $start.ArgumentList.Add($argument.Replace('{scratch}', $Scratch).Replace('{workspace}', $start.WorkingDirectory))
+    }
+    foreach ($key in @($start.Environment.Keys)) {
+        if ($key -match '^(SCRINIA_|PLUGINS_)') { $start.Environment.Remove($key) | Out-Null }
+    }
+    $start.Environment['SCRINIA_HOME'] = Join-Path $Scratch 'home'
+    $start.Environment['SCRINIA_WORKSPACE_TRACKING'] = $Tracking
+    return $start
+}
+function Stop-FixtureProcess([Diagnostics.Process]$Process) {
+    if (-not $Process.HasExited) { $Process.Kill($true) }
+    if (-not $Process.WaitForExit(10000)) { throw 'Fixture process did not exit within the cleanup deadline' }
+}
+function Read-FixtureOutput($Task, [string]$Source) {
+    if (-not $Task.Wait(10000)) { throw "Timed out draining $Source" }
+    return $Task.GetAwaiter().GetResult()
+}
+function Initialize-SharedFixture([string]$Assembly, [string]$Scratch) {
+    $base = Join-Path $Scratch 'base'
+    [IO.Directory]::CreateDirectory((Join-Path $base '.git')) | Out-Null
+    foreach ($arguments in @(
+        ,@('shared', 'base', 'add', 'contracts', $base)
+        ,@('shared', 'enable', 'contracts')
+    )) {
+        $process = [Diagnostics.Process]::new()
+        $started = $false
+        $stdout = $null
+        $stderr = $null
+        $primaryError = $null
+        try {
+            $process.StartInfo = New-FixtureStartInfo $Assembly $arguments $Scratch 'project-git'
+            $started = $process.Start()
+            $process.StandardInput.Close()
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(120000)) { throw "Timed out setting up fixture: $($arguments -join ' ')" }
+            $output = Read-FixtureOutput $stdout 'shared setup stdout'
+            $errorOutput = Read-FixtureOutput $stderr 'shared setup stderr'
+            if ($process.ExitCode -ne 0) {
+                throw "Shared fixture setup exited $($process.ExitCode): $($arguments -join ' ')`nSTDOUT: $output`nSTDERR: $errorOutput"
+            }
+        }
+        catch { $primaryError = $_; throw }
+        finally {
+            $cleanupError = $null
+            try {
+                if ($started) {
+                    Stop-FixtureProcess $process
+                    if ($null -ne $stdout) {
+                        $output = Read-FixtureOutput $stdout 'shared setup stdout'
+                        if ($null -ne $primaryError) { Write-Warning "Shared setup STDOUT: $output" -WarningAction Continue }
+                    }
+                    if ($null -ne $stderr) {
+                        $errorOutput = Read-FixtureOutput $stderr 'shared setup stderr'
+                        if ($null -ne $primaryError) { Write-Warning "Shared setup STDERR: $errorOutput" -WarningAction Continue }
+                    }
+                }
+            }
+            catch { $cleanupError = $_ }
+            try { $process.Dispose() }
+            catch {
+                if ($null -eq $cleanupError) { $cleanupError = $_ }
+                else { Write-Warning "Additional shared setup disposal failure: $_" -WarningAction Continue }
+            }
+            if ($null -ne $cleanupError) {
+                Write-Warning "Shared setup cleanup failed; retained path ${Scratch}: $cleanupError" -WarningAction Continue
+                # A cleanup-only failure fails the gate; otherwise the pending rethrow stays authoritative.
+                if ($null -eq $primaryError) { throw $cleanupError }
+            }
+        }
+    }
+}
 function Assert-ServerVersion([string]$Assembly, [string[]]$Arguments, [string]$Name, [string]$Version, [switch]$Shared) {
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('scrinia-contract-' + [Guid]::NewGuid().ToString('N'))
-    [IO.Directory]::CreateDirectory($scratch) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $scratch 'workspace')) | Out-Null
     $process = [Diagnostics.Process]::new()
     $started = $false
+    $stderr = $null
+    $lineTask = $null
+    $setupComplete = -not $Shared
+    $primaryError = $null
+    $diagnostics = [Text.StringBuilder]::new()
     try {
-        $start = [Diagnostics.ProcessStartInfo]::new('dotnet')
-        $start.UseShellExecute = $false
-        $start.RedirectStandardInput = $true
-        $start.RedirectStandardOutput = $true
-        $start.RedirectStandardError = $true
-        $start.WorkingDirectory = $scratch
-        $start.ArgumentList.Add($Assembly)
-        foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument.Replace('{scratch}', $scratch)) }
-        foreach ($key in @($start.Environment.Keys)) {
-            if ($key -match '^(SCRINIA_|PLUGINS_)') { $start.Environment.Remove($key) | Out-Null }
-        }
-        $start.Environment['SCRINIA_HOME'] = Join-Path $scratch 'home'
-        $start.Environment['SCRINIA_WORKSPACE_TRACKING'] = 'local'
-        if ($Shared) {
-            $base = Join-Path $scratch 'base'
-            foreach ($directory in @('home', '.scrinia', 'base/.git', 'base/.scrinia')) {
-                [IO.Directory]::CreateDirectory((Join-Path $scratch $directory)) | Out-Null
-            }
-            [IO.File]::WriteAllText((Join-Path $scratch 'home/config.json'),
-                (@{ schemaVersion = 1; sharedBases = @{ contracts = @{ root = $base } } } | ConvertTo-Json -Depth 4))
-            [IO.File]::WriteAllText((Join-Path $scratch '.scrinia/config.json'),
-                (@{ 'Scrinia:Workspace:Tracking' = 'project-git'; 'Scrinia:Shared:Enabled' = 'contracts' } | ConvertTo-Json))
-            [IO.File]::WriteAllText((Join-Path $base '.scrinia/config.json'),
-                (@{ 'Scrinia:Workspace:Tracking' = 'project-git' } | ConvertTo-Json))
-            $start.Environment['SCRINIA_WORKSPACE_TRACKING'] = 'project-git'
-        }
-        $process.StartInfo = $start
+        if ($Shared) { Initialize-SharedFixture $Assembly $scratch; $setupComplete = $true }
+        $tracking = if ($Shared) { 'project-git' } else { 'local' }
+        $process.StartInfo = New-FixtureStartInfo $Assembly $Arguments $scratch $tracking
         $started = $process.Start()
         # Concurrent stderr drain prevents diagnostics from blocking the stdio response.
         $stderr = $process.StandardError.ReadToEndAsync()
@@ -76,7 +138,9 @@ function Assert-ServerVersion([string]$Assembly, [string[]]$Arguments, [string]$
             $remaining = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
             if (-not $lineTask.Wait($remaining)) { throw "Timed out initializing $Name" }
             $line = $lineTask.Result
+            $lineTask = $null
             if ($null -eq $line) { throw "$Name exited before initialization" }
+            [void]$diagnostics.AppendLine($line)
             if (-not $line.StartsWith('{', [StringComparison]::Ordinal)) { continue }
             $message = ConvertFrom-Json -InputObject $line
             if ($message.PSObject.Properties.Name -contains 'id' -and $message.id -eq 1) {
@@ -102,7 +166,9 @@ function Assert-ServerVersion([string]$Assembly, [string[]]$Arguments, [string]$
                 $remaining = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
                 if (-not $lineTask.Wait($remaining)) { throw 'Timed out listing host tools' }
                 $line = $lineTask.Result
+                $lineTask = $null
                 if ($null -eq $line) { throw 'Host exited before tools/list' }
+                [void]$diagnostics.AppendLine($line)
                 if (-not $line.StartsWith('{', [StringComparison]::Ordinal)) { continue }
                 $message = ConvertFrom-Json -InputObject $line
                 if ($message.PSObject.Properties.Name -contains 'id' -and $message.id -eq 2) { $toolResponse = $message; break }
@@ -120,11 +186,51 @@ function Assert-ServerVersion([string]$Assembly, [string[]]$Arguments, [string]$
             Write-Output "Host tools verified: $($actualTools -join ', ')"
         }
     }
+    catch {
+        $primaryError = $_
+        Write-Warning "$Name contract failure: $_`nSTDOUT: $diagnostics" -WarningAction Continue
+        throw
+    }
     finally {
-        if ($started -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
-        $process.Dispose()
-        # This exact, newly created absolute directory is the only deletion target.
-        if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+        $cleanupError = $null
+        try {
+            if ($started) {
+                Stop-FixtureProcess $process
+                # Finish an outstanding line read before starting the final stdout drain.
+                if ($null -ne $lineTask) {
+                    $lastLine = Read-FixtureOutput $lineTask "$Name stdout line"
+                    if ($lastLine) { Write-Warning "$Name STDOUT: $lastLine" -WarningAction Continue }
+                }
+                $remainingOutput = Read-FixtureOutput ($process.StandardOutput.ReadToEndAsync()) "$Name stdout"
+                if ($remainingOutput) { Write-Warning "$Name STDOUT: $remainingOutput" -WarningAction Continue }
+                $errorOutput = Read-FixtureOutput $stderr "$Name stderr"
+                if ($errorOutput) { Write-Warning "$Name STDERR: $errorOutput" -WarningAction Continue }
+            }
+        }
+        catch { $cleanupError = $_ }
+        try { $process.Dispose() }
+        catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+            else { Write-Warning "Additional fixture disposal failure: $_" -WarningAction Continue }
+        }
+        if (-not $setupComplete) {
+            Write-Warning "Shared setup did not complete; preserving fixture at $scratch" -WarningAction Continue
+        }
+        elseif ($null -eq $cleanupError) {
+            try {
+                # Delete only this newly created absolute temp child after bounded process/output cleanup.
+                $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+                if ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($scratch)) -cne $temp) {
+                    throw "Refusing fixture cleanup outside temp directory: $scratch"
+                }
+                if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+            }
+            catch { $cleanupError = $_ }
+        }
+        if ($null -ne $cleanupError) {
+            Write-Warning "Fixture cleanup failed; retained path ${scratch}: $cleanupError" -WarningAction Continue
+            if ($null -eq $primaryError) { throw $cleanupError }
+        }
     }
 }
 
@@ -189,8 +295,8 @@ try {
     if ($cliVersion -cne $version) {
         throw 'CLI version differs from evaluated MSBuild metadata'
     }
-    Assert-ServerVersion $cli @('serve', '--workspace-root', '{scratch}', '--no-auto-setup') 'scri' $version
-    Assert-ServerVersion $cli @('shared', 'serve', '--workspace-root', '{scratch}') 'scri' $version -Shared
+    Assert-ServerVersion $cli @('serve', '--workspace-root', '{workspace}', '--no-auto-setup') 'scri' $version
+    Assert-ServerVersion $cli @('shared', 'serve', '--workspace-root', '{workspace}') 'scri' $version -Shared
     Assert-ServerVersion $plugin @('--data-dir', '{scratch}/data', '--models-dir', '{scratch}/models') 'scrinia-plugin-embeddings' $version
     Write-Output "Release contracts passed: exact seven skills, canonical Version $version, CLI/MCP metadata, current workflow targets."
     Write-Output 'XML check is build-only: no configured documentation emission or comprehensive API coverage policy.'

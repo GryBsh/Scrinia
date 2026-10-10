@@ -81,11 +81,28 @@ public sealed class PackagingAndDocsMergeRetirementTests
     }
 
     [Fact]
-    public void Phase4MultiUserDocumentation_RemainsByteIdentical()
+    public void Phase4MultiUserDocumentation_OriginalGuidanceRemainsByteIdentical()
     {
         string path = RepoPaths.Combine("docs", "multi-user-setup.md");
         byte[] bytes = File.ReadAllBytes(path);
-        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()
+        int UniqueAnchor(string text)
+        {
+            byte[] marker = Encoding.UTF8.GetBytes(text);
+            int start = FindBytes(bytes, marker);
+            start.Should().BeGreaterThanOrEqualTo(0, $"the approved insertion boundary '{text}' must exist");
+            FindBytes(bytes[(start + marker.Length)..], marker).Should().Be(-1,
+                $"the approved insertion boundary '{text}' must be unambiguous");
+            return start;
+        }
+        int heading = UniqueAnchor("## Working with teammates");
+        int insertion = UniqueAnchor("Shared MCP tools run through `scri shared serve`.");
+        int originalGuidance = UniqueAnchor("- **Commit `.scrinia/`.**");
+        insertion.Should().BeGreaterThan(heading);
+        originalGuidance.Should().BeGreaterThan(insertion);
+        // Only the approved shared-runtime guidance is excluded; the original independent
+        // digest still protects every byte before and after that bounded insertion.
+        byte[] original = [.. bytes[..insertion], .. bytes[originalGuidance..]];
+        Convert.ToHexString(SHA256.HashData(original)).ToLowerInvariant()
             .Should().Be(HistoricalMultiUserSetupSha256);
     }
 

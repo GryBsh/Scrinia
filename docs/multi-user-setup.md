@@ -46,6 +46,26 @@ registry, including disabled entries. The default list shows enabled entries onl
 
 ## Working with teammates
 
+Shared MCP tools run through `scri shared serve`. Reads use the generation opened by that process;
+after changing shared files outside it, call `shared_refresh` for the base. A mutation refused with
+`SHARED_BASE_STALE` needs a refresh before retrying.
+
+`shared_link` resolves both endpoints in the selected base. Ordinary memory links appear in
+`ref` attributes. For skills and agent profiles, links are stored in the Markdown file's metadata
+sidecar as a `ref` array of logical paths. Their Markdown body stays unchanged. These sidecar links
+survive restart. For skills and agent profiles, `shared_recall` and `shared_list` return empty
+attributes and keywords. `shared_search` and `shared_facts` do not index these links.
+`shared_search` searches ordinary memories; it also excludes skill and agent Markdown bodies.
+Use `shared_list` to discover those file entities and `shared_recall` to read them.
+The optional link reason is returned to the caller and
+is not saved.
+
+If a shared mutation reports `mutation: unknown`, call `shared_refresh` for the base, then inspect
+the affected entries before deciding whether to retry. A link may have updated only one endpoint.
+
+Older installations may need the explicit [managed-block update](troubleshooting.md#shared-tracking-policy-drift)
+before a shared base can open.
+
 - **Commit `.scrinia/`.** Memories travel with the code, so a teammate's next pull sees your
   memories automatically.
 - **Register shared bases.** When the same memories should be shared across repositories, each

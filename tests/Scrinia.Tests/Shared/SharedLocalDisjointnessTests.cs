@@ -27,7 +27,7 @@ public sealed class SharedLocalDisjointnessTests
 
         string sharedServe = File.ReadAllText(Path.Combine(RepositoryRoot, "src/Scrinia/Commands/ScriniaCommands.SharedServe.cs"));
         sharedServe.Should().Contain("WithTools<SharedTools>");
-        sharedServe.Should().NotContain("ScriniaMcpTools");
+        sharedServe.Should().NotContain("WithTools<ScriniaMcpTools>");
 
         // The two surfaces register disjoint tool sets: every shared tool is prefixed, and none of
         // them collides with a local tool name.

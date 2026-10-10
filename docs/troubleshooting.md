@@ -323,6 +323,50 @@ The equivalent for `agent/versions/` is the same with the directory swapped. Pru
 history is safe — only the currently-active file is read at load time; archived copies exist solely
 for human recovery.
 
+## Shared tracking policy drift
+
+`SHARED_TRACKING_POLICY_DRIFT` means the shared base's `.scrinia/.gitignore` lacks the exact current
+`project-git` managed block. The block now includes scope archives, locks and recovery journals.
+Scrinia refuses an older block and does not update it automatically.
+
+Stop writers and back up the base. In the registered base's `.scrinia/.gitignore`, replace the existing
+managed block, including both marker lines, with the block below. Preserve user rules outside it.
+If neither marker is present, append the block. If markers are duplicated or malformed, repair them
+so exactly one complete block remains. Save the entire file as UTF-8 without a BOM, with LF line
+endings and a newline after the closing marker. Then restart the shared server,
+or call `shared_refresh` if another available base allowed the server to stay running.
+
+```gitignore
+# >>> Scrinia managed: project-git derived files >>>
+/embeddings/
+/indexes/
+/exports/
+/versions/
+/facts.json
+/.restore-journal.json
+/[mM][eE][mM][oO][rR][iI][eE][sS]/**/[vV][eE][rR][sS][iI][oO][nN][sS]/
+/[mM][eE][mM][oO][rR][iI][eE][sS]/**/.[lL][oO][cC][kK]
+/[mM][eE][mM][oO][rR][iI][eE][sS]/**/.[rR][eE][sS][tT][oO][rR][eE]-[jJ][oO][uU][rR][nN][aA][lL].[jJ][sS][oO][nN]
+/[mM][eE][mM][oO][rR][iI][eE][sS]/**/.[mM][uU][lL][tT][iI]-[mM][eE][mM][oO][rR][yY]-[tT][rR][aA][nN][sS][aA][cC][tT][iI][oO][nN].[jJ][sS][oO][nN]
+/[sS][kK][iI][lL][lL][sS]/[vV][eE][rR][sS][iI][oO][nN][sS]/
+/[aA][gG][eE][nN][tT]/[vV][eE][rR][sS][iI][oO][nN][sS]/
+/[sS][kK][iI][lL][lL][sS]/.[lL][oO][cC][kK]
+/[aA][gG][eE][nN][tT]/.[lL][oO][cC][kK]
+/[sS][kK][iI][lL][lL][sS]/.[fF][iI][lL][eE]-[eE][nN][tT][iI][tT][yY]-*.[rR][eE][cC][oO][vV][eE][rR][yY]
+/[aA][gG][eE][nN][tT]/.[fF][iI][lL][eE]-[eE][nN][tT][iI][tT][yY]-*.[rR][eE][cC][oO][vV][eE][rR][yY]
+/.[bB][uU][nN][dD][lL][eE]-[rR][eE][sS][tT][oO][rR][eE]-[jJ][oO][uU][rR][nN][aA][lL].[jJ][sS][oO][nN]
+**/*.tmp
+/*.lock
+# <<< Scrinia managed: project-git derived files <<<
+```
+
+The bracket pairs cover Windows case aliases such as `Versions` without relying on Git's case
+configuration. These rules reserve archives and operational files only in the listed namespaces;
+an unrelated `topic/Versions` directory outside them remains authoritative. They affect fingerprinting,
+inventory and printed cleanup guidance. Retained recovery journals still require recovery admission;
+ignoring a journal in Git does not make it safe to delete. Existing tracked files remain tracked until
+you run the appropriate printed cleanup commands yourself. Scrinia never runs Git.
+
 ## Manual retired merge-driver cleanup and conflict resolution
 
 Scrinia no longer installs merge drivers, and it never launches Git. Conflicts on `.scrinia` files

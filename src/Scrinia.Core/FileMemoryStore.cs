@@ -2562,9 +2562,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private async Task<ArtifactEntry> StorePersistentAsync(
         MemoryWrite write, CancellationToken cancellationToken,
-        Action<WholeMemoryResult>? transactionResult = null)
+        Action<WholeMemoryResult>? transactionResult = null, WorkspaceLease? admittedLease = null)
     {
-        using WorkspaceLease lease = EnterWorkspaceMutation(ct: cancellationToken);
+        using WorkspaceLease? ownedLease = admittedLease is null ? EnterWorkspaceMutation(ct: cancellationToken) : null;
+        WorkspaceLease lease = admittedLease ?? ownedLease!;
+        lease.AssertValid(_workspaceRoot);
         PrecomputedStore pre = PrecomputeForStore(write, isEphemeral: false);
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
@@ -2730,7 +2732,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     /// <inheritdoc/>
-    public async Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+    public Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default) =>
+        AppendAdmittedAsync(write, null, ct);
+
+    private async Task<AppendStoreResult> AppendAdmittedAsync(MemoryWrite write, WorkspaceLease? admittedLease, CancellationToken ct)
     {
         string operationId = Guid.NewGuid().ToString("N");
         try
@@ -2768,7 +2773,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 return await AppendAsyncCore(null, write, operationId, startedAt, ct);
             }
 
-            using WorkspaceLease lease = EnterWorkspaceMutation(ct: ct);
+            using WorkspaceLease? ownedLease = admittedLease is null ? EnterWorkspaceMutation(ct: ct) : null;
+            WorkspaceLease lease = admittedLease ?? ownedLease!;
+            lease.AssertValid(_workspaceRoot);
             var resolved = ResolveAddress(write.Address);
             string scope = resolved.Scope;
             EnsureMaterialized(scope);

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using FluentAssertions;
 using FluentAssertions.Execution;
 using Scrinia.TestDoubles;
@@ -22,6 +23,174 @@ namespace Scrinia.Tests;
 public sealed class PublishManifestTests
 {
     private static readonly string ManifestPath = RepoPaths.Combine("publish.projects.tsv");
+
+    [SkippableTheory]
+    [InlineData("publish.sh", "linux-x64", "valid")]
+    [InlineData("publish.sh", "osx-arm64", "valid")]
+    [InlineData("publish.sh", "linux-x64", "missing")]
+    [InlineData("publish.sh", "osx-arm64", "missing")]
+    [InlineData("publish.sh", "linux-x64", "directory")]
+    [InlineData("publish.sh", "osx-arm64", "directory")]
+    [InlineData("publish.sh", "linux-x64", "link")]
+    [InlineData("publish.sh", "osx-arm64", "link")]
+    [InlineData("publish.sh", "win-x64", "valid")]
+    [InlineData("publish.ps1", "linux-x64", "valid")]
+    [InlineData("publish.ps1", "osx-arm64", "valid")]
+    [InlineData("publish.ps1", "linux-x64", "missing")]
+    [InlineData("publish.ps1", "osx-arm64", "missing")]
+    [InlineData("publish.ps1", "linux-x64", "directory")]
+    [InlineData("publish.ps1", "osx-arm64", "directory")]
+    [InlineData("publish.ps1", "linux-x64", "link")]
+    [InlineData("publish.ps1", "osx-arm64", "link")]
+    [InlineData("publish.ps1", "win-x64", "valid")]
+    public void Publishers_CarryOnlyRegularResolvedUnixShim(string publisher, string rid, string fixture)
+    {
+        Skip.If(OperatingSystem.IsWindows() && (publisher.EndsWith(".sh", StringComparison.Ordinal) || fixture == "link"),
+            "Native Bash paths and unprivileged symbolic links are exercised on Unix.");
+        string root = Path.Combine(Path.GetTempPath(), "scri-publisher-shim-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string output = Path.Combine(root, "output"), sourceRecord = Path.Combine(root, "raw-output.txt");
+            File.Copy(RepoPaths.Combine(publisher), Path.Combine(root, publisher));
+            File.WriteAllText(Path.Combine(root, "publish.projects.tsv"), ExpectedHeader +
+                "\nscri\tsrc/Scrinia/Scrinia.csproj\talways\ttrimmed\trid\tall\n");
+            // Only dotnet's raw producer is replaced. The entire production manifest reader,
+            // RID selector, refusal checks and copy branches execute unchanged.
+            string producer = Path.Combine(root, "produce.ps1");
+            File.WriteAllText(producer, """
+                param([string]$OutputPath,[string]$Rid,[string]$Fixture)
+                $ErrorActionPreference = 'Stop'
+                [IO.Directory]::CreateDirectory($OutputPath) | Out-Null
+                [IO.File]::WriteAllText($env:SHIM_SOURCE_RECORD,$OutputPath)
+                $hostName = if ($Rid -eq 'win-x64') { 'scri.exe' } else { 'scri' }
+                [IO.File]::WriteAllBytes((Join-Path $OutputPath $hostName),[byte[]](1,2,3,255))
+                $expected = if ($Rid -eq 'osx-arm64') { 'libSystem.Native.dylib' } else { 'libSystem.Native.so' }
+                $wrong = if ($expected -eq 'libSystem.Native.so') { 'libSystem.Native.dylib' } else { 'libSystem.Native.so' }
+                [IO.File]::WriteAllText((Join-Path $OutputPath $wrong),'wrong carrier')
+                $path = Join-Path $OutputPath $expected
+                switch ($Fixture) {
+                    'valid' { [IO.File]::WriteAllBytes($path,[byte[]](0,9,128,254,255)) }
+                    'directory' { [IO.Directory]::CreateDirectory($path) | Out-Null }
+                    'link' { [IO.File]::CreateSymbolicLink($path,(Join-Path $OutputPath $wrong)) | Out-Null }
+                }
+                if (-not $IsWindows -and $Fixture -eq 'valid') {
+                    [IO.File]::SetUnixFileMode($path,[IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute -bor [IO.UnixFileMode]::GroupRead -bor [IO.UnixFileMode]::OtherExecute)
+                }
+                """);
+            bool bash = publisher.EndsWith(".sh", StringComparison.Ordinal);
+            string wrapper = Path.Combine(root, "run.ps1");
+            File.WriteAllText(wrapper, """
+                $ErrorActionPreference = 'Stop'
+                function global:dotnet {
+                    if ($args[0] -eq 'msbuild') { $global:LASTEXITCODE = 0; return '0.6.0' }
+                    $values = @($args)
+                    $outIndex = [Array]::IndexOf($values,'--output')
+                    $ridIndex = [Array]::IndexOf($values,'--runtime')
+                    & (Join-Path $PSScriptRoot 'produce.ps1') -OutputPath $values[$outIndex+1] -Rid $values[$ridIndex+1] -Fixture $env:SHIM_FIXTURE
+                    $global:LASTEXITCODE = 0
+                }
+                & (Join-Path $PSScriptRoot 'publish.ps1') -OutputDir (Join-Path $PSScriptRoot 'output') -Platform $env:SHIM_RID
+                """);
+            if (bash)
+            {
+                string stub = Path.Combine(root, "dotnet");
+                File.WriteAllText(stub, """
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    if [ "$1" = msbuild ]; then printf '0.6.0\n'; exit 0; fi
+                    out=''; rid=''
+                    while [ "$#" -gt 0 ]; do
+                        case "$1" in --output) shift; out="$1" ;; --runtime) shift; rid="$1" ;; esac
+                        shift
+                    done
+                    pwsh -NoProfile -File "$SHIM_PRODUCER" -OutputPath "$out" -Rid "$rid" -Fixture "$SHIM_FIXTURE"
+                    """);
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(stub,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            var info = new ProcessStartInfo(bash ? "bash" : "pwsh")
+                { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root };
+            info.Environment["PATH"] = root + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+            info.Environment["SHIM_PRODUCER"] = producer; info.Environment["SHIM_FIXTURE"] = fixture;
+            info.Environment["SHIM_RID"] = rid; info.Environment["SHIM_SOURCE_RECORD"] = sourceRecord;
+            if (bash) { info.ArgumentList.Add(Path.Combine(root, publisher)); info.ArgumentList.Add(output); info.ArgumentList.Add("--platform=" + rid); }
+            else { info.ArgumentList.Add("-NoProfile"); info.ArgumentList.Add("-File"); info.ArgumentList.Add(wrapper); }
+            using var process = System.Diagnostics.Process.Start(info)!;
+            var stdout = process.StandardOutput.ReadToEndAsync(); var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(30000)) { process.Kill(entireProcessTree: true); throw new TimeoutException("Publisher fixture did not finish."); }
+            Task.WaitAll(new Task[] { stdout, stderr }, TimeSpan.FromSeconds(5)).Should().BeTrue("publisher output must finish draining");
+            string diagnostic = stdout.Result + stderr.Result;
+            bool success = fixture == "valid";
+            (process.ExitCode == 0).Should().Be(success, diagnostic);
+            string name = rid == "osx-arm64" ? "libSystem.Native.dylib" : "libSystem.Native.so";
+            string shim = Path.Combine(output, name);
+            if (success)
+            {
+                string host = rid == "win-x64" ? "scri.exe" : "scri";
+                Directory.GetFiles(output).Select(Path.GetFileName).Should().BeEquivalentTo(
+                    rid == "win-x64" ? new[] { host } : new[] { host, name });
+                File.ReadAllBytes(Path.Combine(output, host)).Should().Equal(1, 2, 3, 255);
+                if (rid != "win-x64")
+                {
+                    File.ReadAllBytes(shim).Should().Equal(0, 9, 128, 254, 255);
+                    if (!OperatingSystem.IsWindows()) File.GetUnixFileMode(shim).Should().Be(
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.OtherExecute);
+                }
+            }
+            else
+            {
+                File.Exists(shim).Should().BeFalse();
+                diagnostic.Should().Contain(Path.Combine(File.ReadAllText(sourceRecord), name));
+                diagnostic.Should().Contain("RID: " + rid);
+                diagnostic.Should().Contain("is not a file");
+            }
+            Console.WriteLine($"{publisher}/{rid}/{fixture}: exact inventory, bytes, Unix mode or refusal assertions passed.");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("linux-x64", "libSystem.Native.so", "valid", true)]
+    [InlineData("osx-arm64", "libSystem.Native.dylib", "valid", true)]
+    [InlineData("linux-x64", "libSystem.Native.so", "missing", false)]
+    [InlineData("linux-x64", "libSystem.Native.so", "wrong-rid", false)]
+    [InlineData("linux-x64", "libSystem.Native.so", "ambiguous", false)]
+    [InlineData("linux-x64", "libSystem.Native.so", "directory", false)]
+    [InlineData("win-x64", "libSystem.Native.so", "missing", true)]
+    public void UnixRuntimeShim_PreservesOnlyTheBuildResolvedCarrier(string rid, string name, string fixture, bool success)
+    {
+        XElement? target = XDocument.Load(RepoPaths.Combine("src", "Scrinia", "Scrinia.csproj"))
+            .Root!.Elements("Target").SingleOrDefault(element => (string?)element.Attribute("Name") == "PreserveUnixRuntimeShim");
+        target.Should().NotBeNull("published Unix hosts must retain their exact resolved regular-file classifier shim");
+        string root = Path.Combine(Path.GetTempPath(), "scri-shim-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string source = Path.Combine(root, name), publish = Path.Combine(root, "publish") + Path.DirectorySeparatorChar;
+        Directory.CreateDirectory(publish);
+        if (fixture == "directory") Directory.CreateDirectory(source);
+        else if (fixture != "missing") File.WriteAllText(source, "exact runtime-pack bytes");
+        XElement Asset(string path) => new("RuntimePackAsset", new XAttribute("Include", path),
+            new XElement("DestinationSubPath", name), new XElement("AssetType", "native"),
+            new XElement("RuntimeIdentifier", fixture == "wrong-rid" ? "osx-arm64" : rid),
+            new XElement("NuGetPackageId", "Microsoft.NETCore.App.Runtime." + rid), new XElement("NuGetPackageVersion", "10.0.7"));
+        var items = new XElement("ItemGroup", Asset(source));
+        if (fixture == "ambiguous") items.Add(Asset(Path.Combine(root, "duplicate", name)));
+        string project = Path.Combine(root, "shim.proj");
+        new XDocument(new XElement("Project", new XElement("PropertyGroup",
+            new XElement("RuntimeIdentifier", rid), new XElement("SelfContained", "true"),
+            new XElement("PublishSingleFile", "true"), new XElement("PublishDir", publish)), items, new XElement(target!))).Save(project);
+        using var process = new System.Diagnostics.Process { StartInfo = new("dotnet")
+            { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
+        foreach (string argument in new[] { "msbuild", project, "-target:PreserveUnixRuntimeShim", "-nologo" }) process.StartInfo.ArgumentList.Add(argument);
+        process.Start();
+        var stdout = process.StandardOutput.ReadToEndAsync(); var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30000)) { process.Kill(entireProcessTree: true); throw new TimeoutException("Runtime shim target did not finish."); }
+        Task.WaitAll(new Task[] { stdout, stderr }, TimeSpan.FromSeconds(5)).Should().BeTrue("target output must finish draining");
+        (process.ExitCode == 0).Should().Be(success, stdout.Result + stderr.Result);
+        string destination = Path.Combine(publish, name);
+        if (success && rid != "win-x64") File.ReadAllText(destination).Should().Be("exact runtime-pack bytes");
+        else File.Exists(destination).Should().BeFalse();
+    }
 
     /// <summary>
     /// Executable-producing projects anywhere in the repo that deliberately do NOT ship through

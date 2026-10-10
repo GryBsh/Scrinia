@@ -33,6 +33,7 @@
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\Scrinia.TestDoubles\Scrinia.TestDoubles.csproj" />
     <ProjectReference Include="..\Scrinia.TestProcess\Scrinia.TestProcess.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\tools\Scrinia.ReleaseTools\Scrinia.ReleaseTools.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

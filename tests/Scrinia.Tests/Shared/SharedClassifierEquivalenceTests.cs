@@ -42,6 +42,28 @@ public sealed class SharedClassifierEquivalenceTests
     // Canonical root derived singleton files (rule 2).
     [InlineData("facts.json", "EntityFacts", true)]
     [InlineData(".restore-journal.json", "RestoreJournal", true)]
+    [InlineData("memories/versions/old.nmp2", "ArchivedCopies", true)]
+    [InlineData("memories/topic/versions/old.nmp2", "ArchivedCopies", true)]
+    [InlineData("memories/topic/Versions/old.nmp2", "ArchivedCopies", true)]
+    [InlineData("MEMORIES/topic/VERSIONS/old.nmp2", "ArchivedCopies", true)]
+    [InlineData("SKILLS/Versions/old.md", "ArchivedCopies", true)]
+    [InlineData("agent/.LOCK", "RootLockTree", true)]
+    [InlineData("skills/.FILE-ENTITY-QA.RECOVERY/child", "RestoreJournal", true)]
+    [InlineData("topic/Versions/ordinary.nmp2", "Authoritative", false)]
+    [InlineData("memories/topic/.lock", "RootLockTree", true)]
+    [InlineData("memories/topic/.restore-journal.json", "RestoreJournal", true)]
+    [InlineData("memories/topic/.multi-memory-transaction.json", "RestoreJournal", true)]
+    [InlineData("skills/versions/old.md", "ArchivedCopies", true)]
+    [InlineData("agent/versions/old.md", "ArchivedCopies", true)]
+    [InlineData("skills/.lock", "RootLockTree", true)]
+    [InlineData("agent/.lock", "RootLockTree", true)]
+    [InlineData("skills/.file-entity-qa.recovery", "RestoreJournal", true)]
+    [InlineData("agent/.file-entity-profile.recovery", "RestoreJournal", true)]
+    [InlineData(".bundle-restore-journal.json", "RestoreJournal", true)]
+    [InlineData("topic/versions/old.nmp2", "Authoritative", false)]
+    [InlineData("topic/.multi-memory-transaction.json", "Authoritative", false)]
+    [InlineData(".multi-memory-transaction.json", "Authoritative", false)]
+    [InlineData("skills/nested/.file-entity-qa.recovery", "Authoritative", false)]
     // Any-depth .tmp files and descendants of a .tmp directory (rule 3).
     [InlineData("cache.tmp", "TemporaryTree", true)]
     [InlineData("topic/cache.tmp", "TemporaryTree", true)]
@@ -123,6 +145,17 @@ public sealed class SharedClassifierEquivalenceTests
             "/versions/\n" +
             "/facts.json\n" +
             "/.restore-journal.json\n" +
+            "/[mM][eE][mM][oO][rR][iI][eE][sS]/**/[vV][eE][rR][sS][iI][oO][nN][sS]/\n" +
+            "/[mM][eE][mM][oO][rR][iI][eE][sS]/**/.[lL][oO][cC][kK]\n" +
+            "/[mM][eE][mM][oO][rR][iI][eE][sS]/**/.[rR][eE][sS][tT][oO][rR][eE]-[jJ][oO][uU][rR][nN][aA][lL].[jJ][sS][oO][nN]\n" +
+            "/[mM][eE][mM][oO][rR][iI][eE][sS]/**/.[mM][uU][lL][tT][iI]-[mM][eE][mM][oO][rR][yY]-[tT][rR][aA][nN][sS][aA][cC][tT][iI][oO][nN].[jJ][sS][oO][nN]\n" +
+            "/[sS][kK][iI][lL][lL][sS]/[vV][eE][rR][sS][iI][oO][nN][sS]/\n" +
+            "/[aA][gG][eE][nN][tT]/[vV][eE][rR][sS][iI][oO][nN][sS]/\n" +
+            "/[sS][kK][iI][lL][lL][sS]/.[lL][oO][cC][kK]\n" +
+            "/[aA][gG][eE][nN][tT]/.[lL][oO][cC][kK]\n" +
+            "/[sS][kK][iI][lL][lL][sS]/.[fF][iI][lL][eE]-[eE][nN][tT][iI][tT][yY]-*.[rR][eE][cC][oO][vV][eE][rR][yY]\n" +
+            "/[aA][gG][eE][nN][tT]/.[fF][iI][lL][eE]-[eE][nN][tT][iI][tT][yY]-*.[rR][eE][cC][oO][vV][eE][rR][yY]\n" +
+            "/.[bB][uU][nN][dD][lL][eE]-[rR][eE][sS][tT][oO][rR][eE]-[jJ][oO][uU][rR][nN][aA][lL].[jJ][sS][oO][nN]\n" +
             "**/*.tmp\n" +
             "/*.lock\n" +
             "# <<< Scrinia managed: project-git derived files <<<\n");
@@ -182,11 +215,7 @@ public sealed class SharedClassifierEquivalenceTests
     private static IEnumerable<string> CleanupPathsFor(string relativePath)
     {
         string repoPath = ".scrinia/" + relativePath.Replace('\\', '/');
-        DerivedPathRule? rule = SharedClassifier.Classify(relativePath).Rule;
-        if (rule is null)
-            return [];
-
-        return rule.CleanupPathspecs
+        return SharedClassifier.Rules.SelectMany(rule => rule.CleanupPathspecs)
             .Where(spec => GitGlobMatches(spec.StartsWith(":(glob)") ? spec[7..] : spec, repoPath));
     }
 
@@ -259,6 +288,12 @@ public sealed class SharedClassifierEquivalenceTests
                     break;
                 case '?':
                     builder.Append("[^/]");
+                    break;
+                case '[':
+                    int end = glob.IndexOf(']', i + 1);
+                    if (end < 0) throw new InvalidOperationException("Unclosed test glob bracket.");
+                    builder.Append(glob.AsSpan(i, end - i + 1));
+                    i = end;
                     break;
                 default:
                     builder.Append(Regex.Escape(c.ToString()));

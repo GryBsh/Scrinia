@@ -9,35 +9,36 @@ namespace Scrinia.Mcp.SharedContracts;
 /// prompt, a correlation identifier, or a session identifier (§7.3). No handler branches on, or
 /// forwards, the initiating prompt text, and the shared surface never launches a process — its sole
 /// Git contact is the print-only, operation-based staging guidance in <c>SharedGitGuidance</c>.
-/// The stubbed handlers below are placeholders; the shared server supplies the real implementations in Phase 3, and Phase 4 consumes this locked contract without altering the shared response wording. That implementation
-/// must preserve these two guarantees (see <c>SharedNoPromptCorrelationTests</c> and
+/// SharedServer dispatches these contracts through Core's admitted durable operations while
+/// preserving these two guarantees (see <c>SharedNoPromptCorrelationTests</c> and
 /// <c>SharedNoGitProcessTests</c>).
 /// </summary>
 [McpServerToolType]
 public sealed class SharedTools
 {
+    private readonly SharedServer? _server;
+    public SharedTools(SharedServer? server = null) => _server = server;
+    private SharedServer Server => _server ?? throw new InvalidOperationException("The shared server is not configured.");
     [McpServerTool(Name = "shared_bases"), Description("List enabled shared bases.")]
-    public Task<string> Bases(CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Bases(CancellationToken cancellationToken = default) => Task.FromResult(Server.Bases(cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_search"), Description("Search enabled shared bases.")]
-    public Task<string> Search(string query, string? @base = null, int limit = 20, string? pathPrefix = null, Dictionary<string, string[]>? attributeFilter = null, string? context = null, string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Search(string query, string? @base = null, int limit = 20, string? pathPrefix = null, Dictionary<string, string[]>? attributeFilter = null, string? context = null, string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Search(query, @base, limit, pathPrefix, attributeFilter, context, excludeTopics, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_list"), Description("List persistent entries in enabled shared bases.")]
-    public Task<string> List(string? @base = null, int offset = 0, int limit = 50, string mode = "summary", string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> List(string? @base = null, int offset = 0, int limit = 50, string mode = "summary", string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.List(@base, offset, limit, mode, excludeTopics, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_recall"), Description("Recall one persistent entry from a shared base.")]
-    public Task<string> Recall(string @base, string path, int? chunk = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Recall(string @base, string path, int? chunk = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Recall(@base, path, chunk, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_facts"), Description("Query facts from one shared base.")]
-    public Task<string> Facts(string @base, string op, string? entity = null, string[]? entities = null, string? key = null, int limit = 50, string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Facts(string @base, string op, string? entity = null, string[]? entities = null, string? key = null, int limit = 50, string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Facts(@base, op, entity, entities, key, limit, excludeTopics, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_remember"), Description("Store persistent content in one shared base.")]
-    public Task<string> Remember(string @base, string path, string[] content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Remember(string @base, string path, string[] content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "remember", content, attributes, keywords, null, null, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_append"), Description("Append persistent content in one shared base.")]
-    public Task<string> Append(string @base, string path, string content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Append(string @base, string path, string content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "append", [content], attributes, keywords, null, null, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_forget"), Description("Forget one persistent entry from a shared base.")]
-    public Task<string> Forget(string @base, string path, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Forget(string @base, string path, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "forget", null, null, null, null, null, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_compact"), Description("Compact one persistent entry in a shared base.")]
-    public Task<string> Compact(string @base, string path, int keepRecent = 0, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Compact(string @base, string path, int keepRecent = 0, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "compact", null, null, null, null, null, keepRecent, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_link"), Description("Link two persistent entries in one shared base.")]
-    public Task<string> Link(string @base, string path, string destination, string? reason = null, CancellationToken cancellationToken = default) => Unsupported();
+    public Task<string> Link(string @base, string path, string destination, string? reason = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "link", null, null, null, destination, reason, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_refresh"), Description("Refresh one enabled shared base.")]
-    public Task<string> Refresh(string @base, CancellationToken cancellationToken = default) => Unsupported();
-
-    private static Task<string> Unsupported() => Task.FromException<string>(new NotSupportedException("Shared tool handlers are supplied by the shared server."));
+    public Task<string> Refresh(string @base, CancellationToken cancellationToken = default) => Task.FromResult(Server.Refresh(@base, cancellationToken).ToYaml());
 }

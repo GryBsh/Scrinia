@@ -175,7 +175,7 @@ public sealed class SharedBaseRegistry : ISharedBaseRegistry
         return true;
     }
 
-    private static bool HasGitEvidence(string root)
+    internal static bool HasGitEvidence(string root)
     {
         string gitPath = Path.Combine(root, ".git");
         if (Directory.Exists(gitPath)) return true;
