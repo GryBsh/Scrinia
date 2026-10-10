@@ -2,6 +2,7 @@ using Scrinia.ReleaseTools;
 
 try
 {
+    if (args.Length > 0 && args[0] is "verify-progress" or "compare-package" or "verify-validation-archive") return PublicationCommands.Run(args);
     if (args.Length == 0 || args.Length % 2 != 1)
         throw new ArgumentException("Supply a command followed by option/value pairs. Commands: stage-embeddings, verify-artifacts, lifecycle, native-probe.");
     var options = new Dictionary<string, string>(StringComparer.Ordinal);

@@ -13,6 +13,8 @@ internal sealed record ReleaseArtifactManifest(int Version, string Commit, strin
     WriteIndented = true, UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow)]
 [JsonSerializable(typeof(ReleaseArtifactManifest))]
 [JsonSerializable(typeof(ReleaseArtifact[]))]
+[JsonSerializable(typeof(PublicationProgress))]
+[JsonSerializable(typeof(VerifiedNugetPackage))]
 internal sealed partial class ReleaseToolsJsonContext : JsonSerializerContext;
 
 internal static partial class ReleaseArtifactVerifier

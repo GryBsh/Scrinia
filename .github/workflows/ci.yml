@@ -10,6 +10,7 @@ permissions:
   contents: read
 jobs:
   release-validation:
+    name: release-validation
     uses: ./.github/workflows/release-validation.yml
     with:
       revision: ${{ github.sha }}

@@ -19,6 +19,7 @@ env:
   RELEASE_REVISION: ${{ inputs.revision }}
 jobs:
   build-check:
+    name: build-check
     runs-on: ubuntu-latest
     timeout-minutes: 90
     outputs:
@@ -81,6 +82,7 @@ jobs:
           path: ${{ runner.temp }}/managed-candidate/scrinia.0.6.0.nupkg
           if-no-files-found: error
   native:
+    name: native (${{ matrix.rid }})
     needs: build-check
     strategy:
       fail-fast: false
@@ -145,6 +147,7 @@ jobs:
             ${{ runner.temp }}/loader-prerequisites.log
           if-no-files-found: error
   aggregate:
+    name: aggregate
     needs: [build-check, native]
     runs-on: ubuntu-latest
     steps:
