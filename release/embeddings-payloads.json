@@ -1,0 +1,137 @@
+{
+  "win-x64": {
+    "executable": "scri-plugin-embeddings.exe",
+    "nativeFiles": [
+      {
+        "name": "ggml-base.dll",
+        "package": "llamasharp.backend.vulkan.windows",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/win-x64/native/vulkan/ggml-base.dll"
+      },
+      {
+        "name": "ggml-cpu.dll",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/win-x64/native/noavx/ggml-cpu.dll"
+      },
+      {
+        "name": "ggml-vulkan.dll",
+        "package": "llamasharp.backend.vulkan.windows",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/win-x64/native/vulkan/ggml-vulkan.dll"
+      },
+      {
+        "name": "ggml.dll",
+        "package": "llamasharp.backend.vulkan.windows",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/win-x64/native/vulkan/ggml.dll"
+      },
+      {
+        "name": "llama.dll",
+        "package": "llamasharp.backend.vulkan.windows",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/win-x64/native/vulkan/llama.dll"
+      },
+      {
+        "name": "mtmd.dll",
+        "package": "llamasharp.backend.vulkan.windows",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/win-x64/native/vulkan/mtmd.dll"
+      }
+    ]
+  },
+  "linux-x64": {
+    "executable": "scri-plugin-embeddings",
+    "nativeFiles": [
+      {
+        "name": "libggml-base.so",
+        "package": "llamasharp.backend.vulkan.linux",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/linux-x64/native/vulkan/libggml-base.so"
+      },
+      {
+        "name": "libggml-cpu.so",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/linux-x64/native/noavx/libggml-cpu.so"
+      },
+      {
+        "name": "libggml-vulkan.so",
+        "package": "llamasharp.backend.vulkan.linux",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/linux-x64/native/vulkan/libggml-vulkan.so"
+      },
+      {
+        "name": "libggml.so",
+        "package": "llamasharp.backend.vulkan.linux",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/linux-x64/native/vulkan/libggml.so"
+      },
+      {
+        "name": "libllama.so",
+        "package": "llamasharp.backend.vulkan.linux",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/linux-x64/native/vulkan/libllama.so"
+      },
+      {
+        "name": "libmtmd.so",
+        "package": "llamasharp.backend.vulkan.linux",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/linux-x64/native/vulkan/libmtmd.so"
+      }
+    ]
+  },
+  "osx-arm64": {
+    "executable": "scri-plugin-embeddings",
+    "nativeFiles": [
+      {
+        "name": "ggml-metal.metal",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/ggml-metal.metal"
+      },
+      {
+        "name": "libggml-base.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libggml-base.dylib"
+      },
+      {
+        "name": "libggml-blas.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libggml-blas.dylib"
+      },
+      {
+        "name": "libggml-cpu.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libggml-cpu.dylib"
+      },
+      {
+        "name": "libggml-metal.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libggml-metal.dylib"
+      },
+      {
+        "name": "libggml.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libggml.dylib"
+      },
+      {
+        "name": "libllama.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libllama.dylib"
+      },
+      {
+        "name": "libmtmd.dylib",
+        "package": "llamasharp.backend.cpu",
+        "packageVersion": "0.25.0",
+        "packageRelativePath": "runtimes/osx-arm64/native/libmtmd.dylib"
+      }
+    ]
+  }
+}

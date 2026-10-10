@@ -15,11 +15,6 @@ $Rids = if ($Platform) { @($Platform) } else { $AllRids }
 # When a single platform is specified, output directly into OutputDir (no RID subdirectory).
 $SinglePlatform = [bool]$Platform
 
-# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in the
-# Scrinia.Plugin.Embeddings project file by a test — a drift here makes the overwrite path
-# below not exist, which used to be a silent skip.
-$VulkanBackendVersion = '0.25.0'
-
 # RuntimeInformation rather than $IsWindows/$IsLinux/$IsMacOS: those automatic variables do not
 # exist in Windows PowerShell 5.1. OS and architecture are resolved separately and joined so a
 # linux-arm64 or win-arm64 host is not mistaken for its x64 sibling.
@@ -102,52 +97,20 @@ if ($singleFileCommands[0].id -cne 'scri') {
     throw "The single-file release-tree command must be `scri` (the one NuGet global tool); found '$($singleFileCommands[0].id)'."
 }
 
-# Overwrites the published native DLLs with the Vulkan-compiled variants. Single-file publish
-# flattens all native DLLs to the root, and the CPU backend's (ggml-base, ggml, llama, mtmd)
-# overwrite the Vulkan ones since they share filenames — so LLamaSharp would load CPU.
-function Set-VulkanNatives {
-    param([string]$Rid, [string]$Dest)
-
-    $pkg = if ($Rid -like 'win-*') { 'llamasharp.backend.vulkan.windows' }
-           elseif ($Rid -like 'linux-*') { 'llamasharp.backend.vulkan.linux' }
-           else { $null }
-
-    if (-not $pkg) {
-        # macOS has no Vulkan package in the supported release contract. Keep the explicit,
-        # intentional CPU fallback for that platform; Windows and Linux fail below instead.
-        [Console]::Error.WriteLine("  [info] no Vulkan backend package exists for $Rid; using the configured macOS CPU fallback.")
-        return
-    }
-
-    $expectedFiles = if ($Rid -like 'win-*') {
-        @('mtmd.dll', 'llama.dll', 'ggml.dll', 'ggml-vulkan.dll', 'ggml-base.dll')
-    } else {
-        @('libmtmd.so', 'libllama.so', 'libggml.so', 'libggml-vulkan.so', 'libggml-base.so')
-    }
-    # $HOME, not $env:USERPROFILE: the latter is Windows-only and unset on Linux/macOS, which
-    # made this branch never find the Vulkan natives there and silently ship the CPU backend
-    # every time. $HOME is a PowerShell automatic variable on every platform.
-    $src = "$HOME/.nuget/packages/$pkg/$VulkanBackendVersion/runtimes/$Rid/native/vulkan"
-    if (-not (Test-Path $src -PathType Container)) {
-        throw "Vulkan natives not found at $src; refusing to ship a CPU fallback for $Rid."
-    }
-    foreach ($expectedFile in $expectedFiles) {
-        $sourceFile = Join-Path $src $expectedFile
-        $destinationFile = Join-Path $Dest $expectedFile
-        if (-not (Test-Path $sourceFile -PathType Leaf)) {
-            throw "Expected Vulkan native is missing: $sourceFile"
-        }
-        Copy-Item $sourceFile $destinationFile -Force
-        if (-not (Test-Path $destinationFile -PathType Leaf) -or
-            (Get-FileHash $sourceFile -Algorithm SHA256).Hash -cne (Get-FileHash $destinationFile -Algorithm SHA256).Hash) {
-            throw "Copied Vulkan native does not match its package source: $destinationFile"
-        }
-    }
-    Write-Host '    Overwrote and verified root native DLLs with Vulkan variants'
+$VersionOutput = @(dotnet msbuild (Join-Path $PSScriptRoot $singleFileCommands[0].project) -getProperty:Version)
+if ($LASTEXITCODE -ne 0) { throw 'Could not evaluate the host version.' }
+$Version = ($VersionOutput -join "`n").Trim()
+if ($Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?\z') {
+    throw 'MSBuild must return one semantic version value.'
 }
+$Version = $Version.Split('+')[0]
+$TempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$RawRoot = Join-Path $TempParent ('scrinia-publish-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $RawRoot | Out-Null
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
+try {
 foreach ($rid in $Rids) {
     $ridDir = if ($SinglePlatform) { $OutputDir } else { "$OutputDir/$rid" }
 
@@ -179,8 +142,8 @@ foreach ($rid in $Rids) {
         # -CaseSensitive: a bare `switch` matches case-insensitively in PowerShell, so
         # 'output=Rid' would silently take the 'rid' branch instead of falling to default.
         $outDir = switch -CaseSensitive ($p.output) {
-            'rid'    { $ridDir }
-            'plugin' { "$ridDir/plugins/$($p.id)" }
+            'rid'    { Join-Path $RawRoot "$rid/host" }
+            'plugin' { Join-Path $RawRoot "$rid/plugin" }
             default  { throw "Unknown output kind '$($p.output)' for $($p.id)" }
         }
 
@@ -246,9 +209,28 @@ foreach ($rid in $Rids) {
         }
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $($p.id) / $rid" }
 
-        if ($p.output -ceq 'plugin') { Set-VulkanNatives -Rid $rid -Dest $outDir }
-        Write-Host "  -> $outDir"
+        New-Item -ItemType Directory -Path $ridDir -Force | Out-Null
+        if ($p.output -ceq 'plugin') {
+            $PackageRootOutput = @(dotnet msbuild (Join-Path $PSScriptRoot $p.project) -getProperty:NuGetPackageRoot)
+            if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the restored NuGet package root.' }
+            $PackageRoot = ($PackageRootOutput -join "`n").Trim()
+            if (-not (Test-Path -LiteralPath $PackageRoot -PathType Container)) { throw 'NuGetPackageRoot must be one existing directory.' }
+            dotnet run --project (Join-Path $PSScriptRoot 'tools/Scrinia.ReleaseTools') -c Release -- `
+                stage-embeddings --raw $outDir --root $ridDir --rid $rid --version $Version `
+                --nuget-root $PackageRoot --policy (Join-Path $PSScriptRoot 'release/embeddings-payloads.json')
+            if ($LASTEXITCODE -ne 0) { throw "Embeddings staging failed for $rid" }
+        } else {
+            $ext = if ($rid -ceq 'win-x64') { '.exe' } else { '' }
+            Copy-Item -LiteralPath (Join-Path $outDir ($p.id + $ext)) -Destination $ridDir -Force
+        }
+        Write-Host "  -> $ridDir"
     }
+}
+} finally {
+    $ResolvedRawRoot = [IO.Path]::GetFullPath($RawRoot)
+    if (-not $ResolvedRawRoot.StartsWith($TempParent, [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($ResolvedRawRoot) -notlike 'scrinia-publish-*') { throw 'Unsafe raw publish cleanup path.' }
+    Remove-Item -LiteralPath $ResolvedRawRoot -Recurse -Force
 }
 
 Write-Host ''
@@ -260,7 +242,7 @@ foreach ($rid in $Rids) {
         Write-Host
     if ($WithEmbeddings) {
         $ext = if ($rid -like 'win-*') { '.exe' } else { '' }
-        Get-ChildItem "$ridDir/plugins/scri-plugin-embeddings/scri-plugin-embeddings$ext" -ErrorAction SilentlyContinue |
+        Get-ChildItem "$ridDir/plugins/scri-plugin-embeddings/$Version/$rid/scri-plugin-embeddings$ext" -ErrorAction SilentlyContinue |
             ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |
             Write-Host
     }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using FluentAssertions.Execution;
@@ -45,6 +46,8 @@ public sealed class PublishManifestTests
         ["Scrinia.TestProcess"] =
             "Child-process harness for admission and vector integration tests; built by the " +
             "solution for tests and never distributed to users.",
+        ["Scrinia.ReleaseTools"] =
+            "Build-only payload stager; not a shipped release unit or NuGet package.",
     };
 
     /// <summary>
@@ -138,8 +141,8 @@ public sealed class PublishManifestTests
                 string stubName = OperatingSystem.IsWindows() ? "dotnet.cmd" : "dotnet";
                 string stubPath = Path.Combine(root, stubName);
                 File.WriteAllText(stubPath, OperatingSystem.IsWindows()
-                    ? "@echo off\r\nexit /b 0\r\n"
-                    : "#!/usr/bin/env bash\nexit 0\n");
+                    ? "@echo off\r\nif \"%1\"==\"msbuild\" (echo 9.8.7& exit /b 0)\r\n:next\r\nif \"%~1\"==\"--output\" goto output\r\nif \"%~1\"==\"\" exit /b 1\r\nshift\r\ngoto next\r\n:output\r\nshift\r\nmkdir \"%~1\"\r\necho executable>\"%~1\\scri.exe\"\r\nexit /b 0\r\n"
+                    : "#!/usr/bin/env bash\nif [ \"$1\" = msbuild ]; then echo 9.8.7; exit 0; fi\nwhile [ \"$1\" != --output ]; do shift; done\nshift\nmkdir -p \"$1\"\nprintf executable > \"$1/scri.exe\"\n");
                 if (!OperatingSystem.IsWindows())
                     System.Diagnostics.Process.Start(new ProcessStartInfo("chmod", $"+x \"{stubPath}\""))!.WaitForExit();
             }
@@ -550,7 +553,7 @@ public sealed class PublishManifestTests
     }
 
     [Fact]
-    public void VulkanBackendVersion_MatchesThePackageReference()
+    public void PayloadPolicy_PackageVersionsMatchTheBackendReference()
     {
         string csproj = File.ReadAllText(RepoPaths.Combine(
             "src", "Scrinia.Plugin.Embeddings", "Scrinia.Plugin.Embeddings.csproj"));
@@ -559,31 +562,21 @@ public sealed class PublishManifestTests
         declared.Success.Should().BeTrue(because: "the plugin must still reference the Vulkan backend");
         string version = declared.Groups[1].Value;
 
-        // Anchored on the assignment itself and compared for equality, not a bare substring
-        // search over the whole script: a substring check still passes if the OLD version
-        // survives anywhere else in the file — e.g. a "# upgraded from 0.25.0" comment left next
-        // to a bumped assignment — on exactly the broken tree this test exists to catch.
-        var scriptVersionPatterns = new Dictionary<string, string>
+        using var policy = JsonDocument.Parse(File.ReadAllBytes(RepoPaths.Combine("release", "embeddings-payloads.json")));
+        foreach (var rid in policy.RootElement.EnumerateObject())
         {
-            ["publish.sh"] = @"VULKAN_BACKEND_VERSION=""([^""]+)""",
-            ["publish.ps1"] = @"\$VulkanBackendVersion\s*=\s*'([^']+)'",
-        };
-
-        using var scope = new AssertionScope();
-        foreach ((string script, string pattern) in scriptVersionPatterns)
-        {
-            string text = File.ReadAllText(RepoPaths.Combine(script));
-            var matches = Regex.Matches(text, pattern);
-            matches.Should().HaveCount(1,
-                because: $"{script} must declare VULKAN_BACKEND_VERSION exactly once — a second " +
-                         "assignment could disagree with the first and neither would be caught by name");
-
-            if (matches.Count == 1)
+            var files = rid.Value.GetProperty("nativeFiles").EnumerateArray().ToArray();
+            files.Should().HaveCount(rid.Name == "osx-arm64" ? 8 : 6);
+            foreach (var file in files)
             {
-                matches[0].Groups[1].Value.Should().Be(version,
-                    because: $"{script} builds the Vulkan native path from this hardcoded version; when " +
-                             "it drifts from the PackageReference the path does not exist and the " +
-                             "overwrite is skipped, shipping the CPU backend under a Vulkan switch");
+                file.GetProperty("packageVersion").GetString().Should().Be(version);
+                string name = file.GetProperty("name").GetString()!;
+                bool cpu = rid.Name == "osx-arm64" || name.Contains("ggml-cpu", StringComparison.Ordinal);
+                file.GetProperty("package").GetString().Should().Be(cpu
+                    ? "llamasharp.backend.cpu"
+                    : "llamasharp.backend.vulkan." + (rid.Name == "win-x64" ? "windows" : "linux"));
+                file.GetProperty("packageRelativePath").GetString().Should().Be(
+                    $"runtimes/{rid.Name}/native/{(rid.Name == "osx-arm64" ? string.Empty : cpu ? "noavx/" : "vulkan/")}{name}");
             }
         }
     }
@@ -671,8 +664,15 @@ public sealed class PublishManifestTests
         }
 
         scripts.Should().Contain("rids=host");
-        scripts.Should().Contain("Set-VulkanNatives");
-        scripts.Should().Contain("overwrite_vulkan_natives");
+        foreach (string script in new[] { "publish.sh", "publish.ps1" })
+        {
+            string text = File.ReadAllText(RepoPaths.Combine(script));
+            text.Should().Contain("stage-embeddings");
+            text.Should().Contain("release/embeddings-payloads.json");
+            text.Should().Contain("-getProperty:Version");
+            text.Should().Contain("-getProperty:NuGetPackageRoot");
+            text.Should().NotContain("llamasharp.backend.vulkan.");
+        }
     }
 
     private sealed record WorkflowStep(

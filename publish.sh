@@ -7,10 +7,6 @@ PLATFORM=""
 ALL_RIDS=("win-x64" "linux-x64" "osx-arm64")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="$SCRIPT_DIR/publish.projects.tsv"
-# Kept in step with the LLamaSharp.Backend.Vulkan PackageReference in the
-# Scrinia.Plugin.Embeddings project file by a test — a drift here makes the overwrite path
-# below not exist, which used to be a silent skip.
-VULKAN_BACKEND_VERSION="0.25.0"
 
 # OS and architecture are resolved separately and joined: a Linux or Windows arm64 host must not
 # be mistaken for its x64 sibling.
@@ -153,6 +149,7 @@ for i in "${!OUTPUTS[@]}"; do
     if [ "${OUTPUTS[$i]}" = "rid" ]; then
         single_file_count=$((single_file_count + 1))
         single_file_id="${IDS[$i]}"
+        single_file_index="$i"
     fi
 done
 if [ "$single_file_count" -ne 1 ]; then
@@ -164,46 +161,15 @@ if [ "$single_file_id" != "scri" ]; then
     exit 1
 fi
 
-# Overwrites the published native DLLs with the Vulkan-compiled variants. Single-file publish
-# flattens all native DLLs to the root, and the CPU backend's (ggml-base, ggml, llama, mtmd)
-# overwrite the Vulkan ones since they share filenames — so LLamaSharp would load CPU.
-overwrite_vulkan_natives() {
-    local rid="$1" dest="$2" pkg src expected file
-    local -a expected_files
-    case "$rid" in
-        win-*)
-            pkg="llamasharp.backend.vulkan.windows"
-            expected_files=("mtmd.dll" "llama.dll" "ggml.dll" "ggml-vulkan.dll" "ggml-base.dll")
-            ;;
-        linux-*)
-            pkg="llamasharp.backend.vulkan.linux"
-            expected_files=("libmtmd.so" "libllama.so" "libggml.so" "libggml-vulkan.so" "libggml-base.so")
-            ;;
-        *)
-            # macOS has no Vulkan package in the supported release contract. Keep the explicit,
-            # intentional CPU fallback for that platform; Windows and Linux fail below instead.
-            echo "  [info] no Vulkan backend package exists for $rid; using the configured macOS CPU fallback." >&2
-            return 0 ;;
-    esac
-    src="$HOME/.nuget/packages/$pkg/$VULKAN_BACKEND_VERSION/runtimes/$rid/native/vulkan"
-    if [ ! -d "$src" ]; then
-        echo "Error: Vulkan natives not found at $src; refusing to ship a CPU fallback for $rid." >&2
-        exit 1
-    fi
-    for expected in "${expected_files[@]}"; do
-        file="$src/$expected"
-        if [ ! -f "$file" ]; then
-            echo "Error: expected Vulkan native is missing: $file" >&2
-            exit 1
-        fi
-        cp -f "$file" "$dest/$expected"
-        if [ ! -f "$dest/$expected" ] || ! cmp -s "$file" "$dest/$expected"; then
-            echo "Error: copied Vulkan native does not match its package source: $dest/$expected" >&2
-            exit 1
-        fi
-    done
-    echo "    Overwrote and verified root native DLLs with Vulkan variants"
-}
+VERSION="$(dotnet msbuild "$SCRIPT_DIR/${PROJECTS[$single_file_index]}" -getProperty:Version)"
+VERSION="$(printf '%s' "$VERSION" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+    echo 'Error: MSBuild must return one semantic version value.' >&2
+    exit 1
+fi
+VERSION="${VERSION%%+*}"
+RAW_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/scrinia-publish.XXXXXXXX")"
+trap 'rm -rf -- "$RAW_ROOT"' EXIT
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -232,8 +198,8 @@ for rid in "${RIDS[@]}"; do
         fi
 
         case "${OUTPUTS[$i]}" in
-            rid)    out_dir="$rid_dir" ;;
-            plugin) out_dir="$rid_dir/plugins/${IDS[$i]}" ;;
+            rid)    out_dir="$RAW_ROOT/$rid/host" ;;
+            plugin) out_dir="$RAW_ROOT/$rid/plugin" ;;
             *)
                 echo "Error: unknown output kind '${OUTPUTS[$i]}' for ${IDS[$i]}" >&2
                 exit 1 ;;
@@ -270,9 +236,23 @@ for rid in "${RIDS[@]}"; do
         esac
 
         if [ "${OUTPUTS[$i]}" = "plugin" ]; then
-            overwrite_vulkan_natives "$rid" "$out_dir"
+            package_root="$(dotnet msbuild "$SCRIPT_DIR/${PROJECTS[$i]}" -getProperty:NuGetPackageRoot)"
+            package_root="$(printf '%s' "$package_root" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            if [ ! -d "$package_root" ]; then
+                echo 'Error: NuGetPackageRoot must be one existing directory.' >&2
+                exit 1
+            fi
+            mkdir -p "$rid_dir"
+            dotnet run --project "$SCRIPT_DIR/tools/Scrinia.ReleaseTools" -c Release -- \
+                stage-embeddings --raw "$out_dir" --root "$rid_dir" --rid "$rid" --version "$VERSION" \
+                --nuget-root "$package_root" --policy "$SCRIPT_DIR/release/embeddings-payloads.json"
+        else
+            ext=""
+            if [ "$rid" = "win-x64" ]; then ext=".exe"; fi
+            mkdir -p "$rid_dir"
+            cp -p "$out_dir/${IDS[$i]}$ext" "$rid_dir/"
         fi
-        echo "  -> $out_dir"
+        echo "  -> $rid_dir"
     done
 done
 
@@ -286,6 +266,6 @@ for rid in "${RIDS[@]}"; do
     fi
     ls -lh "$rid_dir"/scri* 2>/dev/null || true
     if [ "$WITH_EMBEDDINGS" = true ]; then
-        ls -lh "$rid_dir"/plugins/scri-plugin-embeddings/scri-plugin-embeddings* 2>/dev/null || true
+        ls -lh "$rid_dir"/plugins/scri-plugin-embeddings/"$VERSION"/"$rid"/scri-plugin-embeddings* 2>/dev/null || true
     fi
 done
