@@ -337,6 +337,7 @@ public sealed class ModelRelocationTests : IDisposable
     [Fact]
     public void MigrateLegacyAssets_MovesExecutableRelativeModelsIntoHome()
     {
+        WorkspaceSetup.Configure(_workspace);
         string legacyModels = Path.Combine(_legacyRoot, "models");
         Directory.CreateDirectory(legacyModels);
         File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy-model");
@@ -396,6 +397,7 @@ public sealed class ModelRelocationTests : IDisposable
     [Fact]
     public void MigrateLegacyAssets_SecondRun_IsIdempotentNoOp()
     {
+        WorkspaceSetup.Configure(_workspace);
         string legacyModels = Path.Combine(_legacyRoot, "models");
         Directory.CreateDirectory(legacyModels);
         File.WriteAllText(Path.Combine(legacyModels, "model.safetensors"), "legacy-model");
@@ -460,6 +462,7 @@ public sealed class ModelRelocationTests : IDisposable
     [Fact]
     public void MigrateLegacyAssets_PreservesExistingDestinationFiles()
     {
+        WorkspaceSetup.Configure(_workspace);
         string homeModels = Path.Combine(_home, "models");
         Directory.CreateDirectory(homeModels);
         File.WriteAllText(Path.Combine(homeModels, "model.safetensors"), "HOME-USER-MODEL");
@@ -510,6 +513,7 @@ public sealed class ModelRelocationTests : IDisposable
     [Fact]
     public void MigrateLegacyAssets_MoveFailure_RemainsNonFatal()
     {
+        WorkspaceSetup.Configure(_workspace);
         // A pre-existing FILE at the models destination makes Directory.CreateDirectory(move target)
         // fail deterministically; the boundary must swallow it and preserve startup.
         string malformedModels = Path.Combine(_altHome, "models");
