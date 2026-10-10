@@ -295,7 +295,7 @@ public sealed class ModelRelocationTests : IDisposable
             Scrinia.Commands.WorkspaceConfig.SetValue(_workspace, "plugins:embeddings:version", "1.2.3");
 
             // Install the plugin at the mandatory version/RID location under SCRINIA_HOME.
-            string rid = RuntimeInformation.RuntimeIdentifier;
+            string rid = EmbeddingsRuntimeIdentity.CurrentRid;
             string pluginDir = Path.Combine(_home, "plugins", PluginName, "1.2.3", rid);
             Directory.CreateDirectory(pluginDir);
             string installedExe = Path.Combine(pluginDir, pluginFileName);
@@ -377,7 +377,7 @@ public sealed class ModelRelocationTests : IDisposable
 
             ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
 
-            string rid = RuntimeInformation.RuntimeIdentifier;
+            string rid = EmbeddingsRuntimeIdentity.CurrentRid;
             string target = Path.Combine(_home, "plugins", "scri-plugin-embeddings", "1.2.3", rid, "scri-plugin-embeddings.dll");
             target.StartsWith(_home, StringComparison.Ordinal).Should().BeTrue(
                 "legacy plugins migrate into the mandatory SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/ hierarchy");
@@ -412,6 +412,49 @@ public sealed class ModelRelocationTests : IDisposable
             .Should().Be("legacy-model", "the already-migrated home model is not overwritten by a stale reseed");
         File.Exists(Path.Combine(legacyModels, "model.safetensors"))
             .Should().BeTrue("idempotent second run leaves the reseeded legacy file untouched (no re-migration)");
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_LeavesVersionedBundleWhenNoVersionIsConfigured()
+    {
+        WorkspaceSetup.Configure(_workspace);
+        using var version = new EnvironmentVariableScope("PLUGINS_EMBEDDINGS_VERSION", null);
+        using var doubleVersion = new EnvironmentVariableScope("PLUGINS__EMBEDDINGS__VERSION", null);
+        string bundle = Path.Combine(_legacyRoot, "plugins", "scri-plugin-embeddings", "0.6.0", RuntimeInformation.RuntimeIdentifier);
+        Directory.CreateDirectory(bundle);
+        string payload = Path.Combine(bundle, "runtime.bin");
+        File.WriteAllText(payload, "bundle must remain immutable");
+        File.WriteAllText(Path.Combine(_legacyRoot, "embeddings-bundle.json"), "bundle marker");
+
+        ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+        File.ReadAllText(payload).Should().Be("bundle must remain immutable");
+        File.Exists(Path.Combine(_home, "migration-state.json")).Should().BeFalse();
+        Directory.Exists(Path.Combine(_home, "plugins")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void MigrateLegacyAssets_MigratesFlatFilesAndModelsBesideVersionedBundle()
+    {
+        WorkspaceSetup.Configure(_workspace);
+        using var version = new EnvironmentVariableScope("PLUGINS_EMBEDDINGS_VERSION", "1.2.3");
+        string legacyPlugin = Path.Combine(_legacyRoot, "plugins", "scri-plugin-embeddings");
+        string bundle = Path.Combine(legacyPlugin, "0.6.0", RuntimeInformation.RuntimeIdentifier);
+        Directory.CreateDirectory(bundle);
+        File.WriteAllText(Path.Combine(bundle, "runtime.bin"), "immutable bundle");
+        File.WriteAllText(Path.Combine(legacyPlugin, "legacy.dll"), "flat legacy plugin");
+        string legacyModels = Path.Combine(_legacyRoot, "models");
+        Directory.CreateDirectory(legacyModels);
+        File.WriteAllText(Path.Combine(legacyModels, "old-model.bin"), "legacy model");
+        File.WriteAllText(Path.Combine(_legacyRoot, "embeddings-bundle.json"), "bundle marker");
+
+        ScriniaCommands.MigrateLegacyAssets(_legacyRoot, _home);
+
+        File.ReadAllText(Path.Combine(bundle, "runtime.bin")).Should().Be("immutable bundle");
+        File.ReadAllText(Path.Combine(_home, "plugins", "scri-plugin-embeddings", "1.2.3", EmbeddingsRuntimeIdentity.CurrentRid, "legacy.dll"))
+            .Should().Be("flat legacy plugin");
+        File.ReadAllText(Path.Combine(_home, "models", "old-model.bin")).Should().Be("legacy model");
+        File.Exists(Path.Combine(legacyPlugin, "legacy.dll")).Should().BeFalse();
     }
 
     [Fact]

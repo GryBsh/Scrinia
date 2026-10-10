@@ -80,6 +80,11 @@ internal static class WorkspaceSetup
         if (key == "Scrinia:Shared:Enabled")
             return WorkspaceConfig.GetValue(Root, key) ?? defaultValue;
 
+        return GetEnvironmentValue(key) ?? WorkspaceConfig.GetValue(Root, key) ?? defaultValue;
+    }
+
+    internal static string? GetEnvironmentValue(string key)
+    {
         // 1. Environment variable, single-underscore form (highest priority)
         string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
         string? value = Environment.GetEnvironmentVariable(envKey);
@@ -92,7 +97,6 @@ internal static class WorkspaceSetup
         value = Environment.GetEnvironmentVariable(envKey);
         if (value is not null) return value;
 
-        // 3. Config file (workspace-scoped)
-        return WorkspaceConfig.GetValue(Root, key) ?? defaultValue;
+        return null;
     }
 }

@@ -52,7 +52,18 @@ public sealed class PluginDiscoveryDiagnosticTests : IDisposable
         _environmentLock.Dispose();
     }
 
-    private static string CurrentRid() => RuntimeInformation.RuntimeIdentifier;
+    private static string CurrentRid() => EmbeddingsRuntimeIdentity.CurrentRid;
+
+    [Fact]
+    public void PortableBundleRidResolvesWithoutDegradation()
+    {
+        string portable = OperatingSystem.IsWindows() ? "win-x64" : OperatingSystem.IsMacOS() ? "osx-arm64" : "linux-x64";
+        string expected = CreateMandatoryPlugin("0.6.0", portable);
+        var resolution = EmbeddingsHost.ResolvePluginDirectory(PluginName, "0.6.0");
+        resolution.PluginDir.Should().Be(expected);
+        resolution.Degraded.Should().BeFalse();
+        resolution.Diagnostics.Should().NotContain("degraded");
+    }
 
     /// <summary>Creates the mandatory <c>plugins/&lt;plugin&gt;/&lt;version&gt;/&lt;rid&gt;/</c> tree with a
     /// single executable named after the plugin and returns the resolved directory.</summary>

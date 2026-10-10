@@ -42,6 +42,82 @@ public sealed class WorkspaceConfigMutationTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchAndSingleValueWritersRetainAllKeys()
+    {
+        WorkspaceConfig.Save(_root, new Dictionary<string, string> { ["existing"] = "preserve" });
+        WorkspaceConfig singleWriter = WorkspaceConfig.Load(_root);
+        using var ready = new Barrier(2);
+        Task batchWrite = Task.Run(() =>
+        {
+            ready.SignalAndWait();
+            WorkspaceConfig.SetValues(_root, new Dictionary<string, string>
+            {
+                ["plugins:embeddings"] = "scri-plugin-embeddings",
+                ["plugins:embeddings:version"] = "0.6.0",
+            });
+        });
+        Task singleWrite = Task.Run(() =>
+        {
+            ready.SignalAndWait();
+            singleWriter.SetValue("unrelated", "fresh");
+        });
+
+        await Task.WhenAll(batchWrite, singleWrite);
+
+        var values = WorkspaceConfig.LoadValuesUncached(_root);
+        values.Should().Contain(new Dictionary<string, string>
+        {
+            ["existing"] = "preserve", ["unrelated"] = "fresh",
+            ["plugins:embeddings"] = "scri-plugin-embeddings", ["plugins:embeddings:version"] = "0.6.0",
+        });
+    }
+
+    [Fact]
+    public void FailedAtomicBatchLeavesBothKeysFileAndCacheUnchanged()
+    {
+        WorkspaceConfig.Save(_root, new Dictionary<string, string>
+        {
+            ["plugins:embeddings"] = "previous", ["plugins:embeddings:version"] = "0.5.0",
+        });
+        byte[] before = File.ReadAllBytes(Path.Combine(_root, ".scrinia", "config.json"));
+        DurableFile.FailureInjector = (phase, _) => phase == DurableWritePhase.BeforeMove
+            ? new IOException("injected before batch move") : null;
+
+        Action mutate = () => WorkspaceConfig.SetValues(_root, new Dictionary<string, string>
+        {
+            ["plugins:embeddings"] = "scri-plugin-embeddings", ["plugins:embeddings:version"] = "0.6.0",
+        });
+
+        mutate.Should().Throw<ScriniaConfigurationException>();
+        File.ReadAllBytes(Path.Combine(_root, ".scrinia", "config.json")).Should().Equal(before);
+        WorkspaceConfig.Load(_root).GetValue("plugins:embeddings").Should().Be("previous");
+        WorkspaceConfig.Load(_root).GetValue("plugins:embeddings:version").Should().Be("0.5.0");
+    }
+
+    [Theory]
+    [InlineData("", "value")]
+    [InlineData("key", null)]
+    public void InvalidBatchEntryDoesNotCreateConfiguration(string key, string? value)
+    {
+        Action mutate = () => WorkspaceConfig.SetValues(_root, new Dictionary<string, string>
+        {
+            ["valid-first"] = "must not be written", [key] = value!,
+        });
+        mutate.Should().Throw<ArgumentException>();
+        Directory.Exists(Path.Combine(_root, ".scrinia")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void InvalidBatchArgumentsDoNotCreateConfiguration()
+    {
+        Action missingRoot = () => WorkspaceConfig.SetValues("", new Dictionary<string, string>());
+        Action missingValues = () => WorkspaceConfig.SetValues(_root, null!);
+        missingRoot.Should().Throw<ArgumentException>();
+        missingValues.Should().Throw<ArgumentNullException>();
+        Directory.Exists(Path.Combine(_root, ".scrinia")).Should().BeFalse();
+    }
+
+    [Fact]
     public void FailedAtomicMutationLeavesFileAndCacheUnchanged()
     {
         WorkspaceConfig.Save(_root, new Dictionary<string, string> { ["existing"] = "old" });

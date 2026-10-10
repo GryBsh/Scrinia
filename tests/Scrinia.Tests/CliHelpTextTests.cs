@@ -7,6 +7,14 @@ namespace Scrinia.Tests;
 public sealed class CliHelpTextTests
 {
     [Fact]
+    public async Task SetupHelp_DescribesExplicitBundleDirectory()
+    {
+        string help = await GetHelpAsync("setup");
+        help.Should().Contain("--embeddings-source");
+        help.Should().Contain("Directory containing embeddings-bundle.json");
+    }
+
+    [Fact]
     public async Task RestoreHelp_UsesTaskFirstSummary()
     {
         string help = await GetHelpAsync("restore");
