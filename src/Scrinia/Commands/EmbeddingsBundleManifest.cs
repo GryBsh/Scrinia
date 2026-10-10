@@ -40,17 +40,23 @@ internal static class EmbeddingsBundleValidator
         Validate(root, hostVersion, rid, File.GetAttributes,
             path => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read));
 
+    internal static ValidatedEmbeddingsBundle Validate(string root, string hostVersion, string rid, CancellationToken ct) =>
+        Validate(root, hostVersion, rid, File.GetAttributes,
+            path => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read), ct);
+
     // Call-local seams make denial and nonseekable/growing streams reproducible without mutable global hooks.
     internal static ValidatedEmbeddingsBundle Validate(string root, string hostVersion, string rid,
-        Func<string, FileAttributes> inspect, Func<string, Stream> openRead)
+        Func<string, FileAttributes> inspect, Func<string, Stream> openRead, CancellationToken ct = default)
     {
         try
         {
+            ct.ThrowIfCancellationRequested();
             string canonicalRoot = CanonicalRoot(root, inspect);
             string manifestPath = Path.Combine(canonicalRoot, "embeddings-bundle.json");
             InspectDescendant(canonicalRoot, manifestPath, directory: false, inspect);
             EmbeddingsBundleManifest manifest;
-            using (Stream input = openRead(manifestPath)) manifest = ReadManifest(input);
+            ct.ThrowIfCancellationRequested();
+            using (Stream input = openRead(manifestPath)) manifest = ReadManifest(input, ct);
             string version = hostVersion.Split('+')[0];
             if (manifest.Plugin != "scri-plugin-embeddings" || manifest.PluginVersion != version ||
                 !StableVersion(version) || manifest.Rid != rid)
@@ -63,6 +69,7 @@ internal static class EmbeddingsBundleValidator
             var inventory = new HashSet<string>(StringComparer.Ordinal);
             foreach (string entry in Directory.EnumerateFileSystemEntries(payload))
             {
+                ct.ThrowIfCancellationRequested();
                 if (inventory.Count >= FileCountLimit) throw Invalid("Payload inventory exceeds 32 files.");
                 InspectDescendant(canonicalRoot, entry, directory: false, inspect);
                 inventory.Add(Path.GetFileName(entry));
@@ -71,6 +78,7 @@ internal static class EmbeddingsBundleValidator
             long total = 0;
             foreach (EmbeddingsBundleFile file in manifest.Files)
             {
+                ct.ThrowIfCancellationRequested();
                 string path = Path.Combine(payload, file.Name);
                 InspectDescendant(canonicalRoot, path, directory: false, inspect);
                 using Stream input = openRead(path);
@@ -78,9 +86,12 @@ internal static class EmbeddingsBundleValidator
                 using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 byte[] buffer = new byte[128 * 1024];
                 long length = 0;
-                int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) != 0)
+                while (true)
                 {
+                    ct.ThrowIfCancellationRequested();
+                    int read = input.Read(buffer, 0, buffer.Length);
+                    ct.ThrowIfCancellationRequested();
+                    if (read == 0) break;
                     length = checked(length + read);
                     total = checked(total + read);
                     if (length > file.Length || length > FileLimit || total > TotalLimit)
@@ -99,7 +110,7 @@ internal static class EmbeddingsBundleValidator
         }
     }
 
-    internal static EmbeddingsBundleManifest ReadManifest(Stream input)
+    internal static EmbeddingsBundleManifest ReadManifest(Stream input, CancellationToken ct = default)
     {
         try
         {
@@ -107,7 +118,9 @@ internal static class EmbeddingsBundleValidator
             int count = 0;
             while (count < bytes.Length)
             {
+                ct.ThrowIfCancellationRequested();
                 int read = input.Read(bytes, count, bytes.Length - count);
+                ct.ThrowIfCancellationRequested();
                 if (read == 0) break;
                 count += read;
             }

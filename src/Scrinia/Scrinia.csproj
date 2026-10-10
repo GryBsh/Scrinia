@@ -49,6 +49,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Scrinia.Tests" />
+    <InternalsVisibleTo Include="Scrinia.TestProcess" />
   </ItemGroup>
 
   <ItemGroup>
