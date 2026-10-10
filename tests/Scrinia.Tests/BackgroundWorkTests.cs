@@ -235,50 +235,168 @@ public sealed class BackgroundWorkTests
     }
 
     [Fact]
-    public async Task DrainAsync_HoldsAdmissionsAfterFinalQuiescenceUntilDrainReturns()
+    public async Task DrainAsync_PublishesCompletionBeforeReleasingDeferredAdmissions()
     {
         await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
         var admitted = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var quiescenceReached = new TaskCompletionSource<bool>(
+        var releaseReached = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseQuiescence = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var fireInvoked = new TaskCompletionSource<bool>(
+        var allowRelease = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        BackgroundWork.BeforeFinalQuiescenceForTests = () =>
+        BackgroundWork.BeforeDeferredWorkReleaseForTests = _ =>
         {
-            quiescenceReached.TrySetResult(true);
-            releaseQuiescence.Task.GetAwaiter().GetResult();
+            releaseReached.TrySetResult(true);
+            allowRelease.Task.GetAwaiter().GetResult();
         };
         try
         {
             var drain = BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
-            (await quiescenceReached.Task.WaitAsync(TimeSpan.FromSeconds(1))).Should().BeTrue();
-            var fire = Task.Run(() =>
+            await releaseReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            BackgroundWork.Fire(_ =>
             {
-                fireInvoked.TrySetResult(true);
-                BackgroundWork.Fire(_ =>
-                {
-                    admitted.TrySetResult(true);
-                    return Task.CompletedTask;
-                }, "finalization-race");
-            });
-            (await fireInvoked.Task.WaitAsync(TimeSpan.FromSeconds(1))).Should().BeTrue();
-            releaseQuiescence.TrySetResult(true);
-
-            (await drain).Should().BeTrue();
+                admitted.TrySetResult(true);
+                return Task.CompletedTask;
+            }, "finalization-boundary");
             admitted.Task.IsCompleted.Should().BeFalse(
-                "work arriving after the final quiescence decision must be held until drain has returned");
-            await fire;
-            BackgroundWork.BeforeFinalQuiescenceForTests = null;
+                "deferred work remains ineligible while release is paused");
+            drain.IsCompletedSuccessfully.Should().BeTrue(
+                "the returned task must publish completion before deferred work becomes eligible");
+        }
+        finally
+        {
+            BackgroundWork.BeforeDeferredWorkReleaseForTests = null;
+            allowRelease.TrySetResult(true);
             (await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
-            (await admitted.Task.WaitAsync(TimeSpan.FromSeconds(1))).Should().BeTrue();
+        }
+        (await admitted.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task DrainAsync_SerializesOverlappingDrainsThroughDeferredRelease()
+    {
+        await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+        var firstReleaseReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowFirstRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondAdmission = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deferredStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishDeferred = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int releases = 0;
+        BackgroundWork.BeforeDeferredWorkReleaseForTests = _ =>
+        {
+            if (Interlocked.Increment(ref releases) != 1) return;
+            firstReleaseReached.TrySetResult(true);
+            allowFirstRelease.Task.GetAwaiter().GetResult();
+        };
+        Task<bool>? second = null;
+        try
+        {
+            var first = BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+            await firstReleaseReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            BackgroundWork.Fire(async _ =>
+            {
+                deferredStarted.TrySetResult(true);
+                await finishDeferred.Task;
+            }, "overlapping-drain-deferred-work");
+            BackgroundWork.DrainGateWaitObservedForTests = acquired => secondAdmission.TrySetResult(acquired);
+            second = BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+            (await secondAdmission.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeFalse(
+                "the first drain retains admission ownership through deferred release");
+            first.IsCompletedSuccessfully.Should().BeTrue();
+            second.IsCompleted.Should().BeFalse();
+            deferredStarted.Task.IsCompleted.Should().BeFalse();
+
+            allowFirstRelease.TrySetResult(true);
+            await deferredStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            second.IsCompleted.Should().BeFalse(
+                "the next drain must observe deferred work replayed by its predecessor");
+            finishDeferred.TrySetResult(true);
+            (await second.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        }
+        finally
+        {
+            BackgroundWork.DrainGateWaitObservedForTests = null;
+            BackgroundWork.BeforeDeferredWorkReleaseForTests = null;
+            allowFirstRelease.TrySetResult(true);
+            finishDeferred.TrySetResult(true);
+            if (second is not null) await second.WaitAsync(TimeSpan.FromSeconds(5));
+            await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task DrainAsync_PublishesOriginalFailureAndReleasesFinalization()
+    {
+        await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+        var expected = new InvalidOperationException("final-quiescence-failure");
+        var releaseReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        BackgroundWork.BeforeFinalQuiescenceForTests = () => throw expected;
+        BackgroundWork.BeforeDeferredWorkReleaseForTests = _ =>
+        {
+            releaseReached.TrySetResult(true);
+            allowRelease.Task.GetAwaiter().GetResult();
+        };
+        try
+        {
+            var drain = BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+            await releaseReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            drain.IsFaulted.Should().BeTrue();
+            Func<Task> observe = async () => await drain;
+            (await observe.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(expected);
         }
         finally
         {
             BackgroundWork.BeforeFinalQuiescenceForTests = null;
+            BackgroundWork.BeforeDeferredWorkReleaseForTests = null;
+            allowRelease.TrySetResult(true);
+            (await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task DrainAsync_ReleaseHookBelongsToInvocationDespitePublishedPredecessor()
+    {
+        await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+        var quiescenceReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowQuiescence = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedDrain = new TaskCompletionSource<Task<bool>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRelease = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        BackgroundWork.BeforeFinalQuiescenceForTests = () =>
+        {
+            quiescenceReached.TrySetResult(true);
+            allowQuiescence.Task.GetAwaiter().GetResult();
+        };
+        Task<bool>? predecessor = null;
+        Task<bool>? intended = null;
+        try
+        {
+            predecessor = BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+            await quiescenceReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            BackgroundWork.BeforeFinalQuiescenceForTests = null;
+            BackgroundWork.BeforeDeferredWorkReleaseForTests = drain =>
+            {
+                observedDrain.TrySetResult(drain);
+                allowRelease.Task.GetAwaiter().GetResult();
+            };
+            intended = BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
+            allowQuiescence.TrySetResult(true);
+
+            (await observedDrain.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeSameAs(intended,
+                "installing a hook for the next invocation must not attach it to the finalizing predecessor");
+            predecessor.IsCompletedSuccessfully.Should().BeTrue();
+            intended.IsCompletedSuccessfully.Should().BeTrue();
+        }
+        finally
+        {
+            BackgroundWork.BeforeFinalQuiescenceForTests = null;
+            BackgroundWork.BeforeDeferredWorkReleaseForTests = null;
+            allowQuiescence.TrySetResult(true);
+            allowRelease.TrySetResult(true);
+            if (predecessor is not null) await predecessor.WaitAsync(TimeSpan.FromSeconds(5));
+            if (intended is not null) await intended.WaitAsync(TimeSpan.FromSeconds(5));
+            await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
         }
     }
 

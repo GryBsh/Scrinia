@@ -12,6 +12,47 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class Nmp2ChunkedEncoderTests
 {
+    [Fact]
+    public void SingleIndependentChunkReadDoesNotVerifyWholeHeaderCrc()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("single");
+        int crcStart = artifact.IndexOf("CRC32:", StringComparison.Ordinal) + 6;
+        string changed = artifact[..crcStart] + "00000000" + artifact[(crcStart + 8)..];
+        Assert.Equal("single", Nmp2ChunkedEncoder.DecodeChunk(changed, 1));
+        Assert.Throws<InvalidDataException>(() => Nmp2Strategy.Instance.Decode(changed));
+    }
+
+    [Fact]
+    public void AppendVerifiesThePredecessorsCrcBeforeCombining()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
+        int crcStart = artifact.IndexOf("CRC32:", StringComparison.Ordinal) + 6;
+        string tampered = artifact[..crcStart] + "00000000" + artifact[(crcStart + 8)..];
+        Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.AppendChunk(tampered, "new"));
+    }
+
+    [Fact]
+    public void IndependentChunkReadDoesNotVerifyUnrelatedChunkBytes()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
+        string replacement = Nmp2Strategy.ExtractRawChunkSections(Nmp2ChunkedEncoder.EncodeChunks(["first", "change"]), 2)[1];
+        string old = Nmp2Strategy.ExtractRawChunkSections(artifact, 2)[1];
+        string tampered = artifact.Replace(old, replacement, StringComparison.Ordinal);
+        Assert.Equal("first", Nmp2ChunkedEncoder.DecodeChunk(tampered, 1));
+        Assert.Contains("CRC32", Assert.Throws<InvalidDataException>(() => Nmp2Strategy.Instance.Decode(tampered)).Message);
+        Assert.Contains("CRC32", Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.DecodeAllChunksVerified(tampered)).Message);
+        Assert.Contains("CRC32", Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.AppendChunk(tampered, "new")).Message);
+    }
+
+    [Fact]
+    public void EmptyAppendPreservesValidEmptyPredecessor()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("");
+        string appended = Nmp2ChunkedEncoder.AppendChunk(artifact, "");
+        Assert.Equal(2, Nmp2ChunkedEncoder.GetChunkCount(appended));
+        Assert.Empty(Nmp2Strategy.Instance.Decode(appended));
+    }
+
     // ── Test data helpers ─────────────────────────────────────────────────────
 
     private static string SmallInput() => TestHelpers.Facts.Fact1;

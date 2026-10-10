@@ -2888,34 +2888,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 "Append admission found a missing live artifact after the transaction lock was acquired.");
 
         string appended = write.RawContent[0];
-        string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended);
+        string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended,
+            out string[] verifiedChunks, out long verifiedBytes);
 
         // The pipeline derives over the memory's FULL post-append content with the appended chunk
         // last (D-22 reads only that last element for attributes and the new chunk entry).
-        int priorChunks = Nmp2ChunkedEncoder.GetChunkCount(existingArtifact);
+        int priorChunks = verifiedChunks.Length;
         string[] fullContent = new string[priorChunks + 1];
-        if (priorChunks > 0)
-        {
-            if (Nmp2Strategy.IsMultiChunk(existingArtifact))
-            {
-                int count = Nmp2Strategy.ParseChunkCount(existingArtifact);
-                var sections = Nmp2Strategy.ExtractRawChunkSections(existingArtifact, count);
-                for (int i = 0; i < sections.Count && i < priorChunks; i++)
-                {
-                    byte[] bytes = Nmp2Strategy.DecodeChunkSectionFrom(sections[i], Nmp2Strategy.MaxDecodedBytes);
-                    fullContent[i] = System.Text.Encoding.UTF8.GetString(bytes);
-                }
-            }
-            else
-            {
-                // Single-chunk artifact: no ##CHUNK: marker exists, so keep the original decode path.
-                fullContent[0] = Nmp2ChunkedEncoder.DecodeChunk(existingArtifact, 1);
-            }
-        }
+        verifiedChunks.CopyTo(fullContent, 0);
         fullContent[priorChunks] = appended;
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
-        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(fullContent));
+        long originalBytes = verifiedBytes + System.Text.Encoding.UTF8.GetByteCount(appended);
 
         // Everything the memory already carries that an append must not destroy. A server-side REST
         // append used to lose the curated keywords (D-12) and the drift baseline (D-21) outright.

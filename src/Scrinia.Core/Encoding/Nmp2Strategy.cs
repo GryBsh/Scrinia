@@ -129,52 +129,34 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 
     private byte[] DecodeCore(string artifact)
     {
-        int maxBytes = MaxDecodedBytes;
-
-        if (IsMultiChunk(artifact))
+        byte[][] chunks = DecodeSections(artifact);
+        byte[] result = new byte[chunks.Sum(chunk => chunk.Length)];
+        int offset = 0;
+        foreach (byte[] chunk in chunks)
         {
-            int count = ParseChunkCount(artifact);
-            if (count < 1 || count > MaxChunkCount)
-                throw new InvalidDataException(
-                    $"NMP/2 artifact declares {count} chunks; must be 1..{MaxChunkCount}.");
-
-            var sections = ExtractRawChunkSections(artifact, count);
-            var chunks = new List<byte[]>(Math.Min(count, 256));
-            long runningTotal = 0;
-            for (int i = 0; i < sections.Count; i++)
-            {
-                byte[] chunkBytes = DecodeChunkSectionFrom(sections[i], maxBytes - runningTotal);
-                runningTotal += chunkBytes.Length;
-                if (runningTotal > maxBytes)
-                    throw new InvalidDataException(
-                        $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i + 1}).");
-                chunks.Add(chunkBytes);
-            }
-
-            byte[] result = new byte[runningTotal];
-            int offset = 0;
-            foreach (var chunk in chunks)
-            {
-                chunk.CopyTo(result, offset);
-                offset += chunk.Length;
-            }
-            return result;
+            chunk.CopyTo(result, offset);
+            offset += chunk.Length;
         }
+        return result;
+    }
 
-        // Single-chunk: collect Base64 chars from data lines (between header and footer)
-        var sb64 = new StringBuilder();
-        foreach (var line in EnumerateLines(artifact).Skip(1))
+    internal static byte[][] DecodeSections(string artifact)
+    {
+        Nmp2Header header = Nmp2Header.Parse(artifact);
+        Nmp2Scan scan = Nmp2BodyScanner.Scan(artifact, header);
+        return DecodeSections(artifact, header, scan);
+    }
+
+    internal static byte[][] DecodeSections(string artifact, Nmp2Header header, Nmp2Scan scan)
+    {
+        var chunks = new byte[scan.Sections.Count][];
+        long total = 0;
+        for (int i = 0; i < chunks.Length; i++)
         {
-            if (line.StartsWith("##", StringComparison.Ordinal)) break;
-            if (line.Equals("NMP/END", StringComparison.Ordinal)) break;
-
-            sb64.Append(line);
+            chunks[i] = DecodeSection(artifact, scan.Sections[i], header.HasChunkMarker, MaxDecodedBytes - total);
+            total += chunks[i].Length;
         }
-
-        int pad = ParsePad(artifact);
-        byte[] padded = Base64UrlDecode(sb64.ToString());
-
-        return DecompressPadded(padded, pad, maxBytes);
+        return chunks;
     }
 
     /// <summary>Verifies decoded output against the header's declared length and CRC32.
@@ -217,19 +199,6 @@ public sealed class Nmp2Strategy : IEncodingStrategy
             Crc32: header.Crc32);
     }
 
-    private static int ParsePad(string artifact)
-    {
-        foreach (var line in EnumerateLines(artifact))
-        {
-            if (!line.StartsWith("##", StringComparison.Ordinal)) continue;
-            if (line.StartsWith("##PAD:", StringComparison.Ordinal) &&
-                int.TryParse(line[6..], out int pad))
-                return pad;
-            break;
-        }
-        return 0;
-    }
-
     /// <summary>Returns whether the validated header has an explicit chunk marker.</summary>
     internal static bool IsMultiChunk(string artifact) => Nmp2Header.Parse(artifact).HasChunkMarker;
 
@@ -250,69 +219,25 @@ public sealed class Nmp2Strategy : IEncodingStrategy
     /// </summary>
     internal static byte[] DecodeChunkSection(string artifact, int chunkIndex, long maxBytes)
     {
-        string chunkMarker = $"##CHUNK:{chunkIndex}";
-        bool inChunk = false;
-        var sb64 = new StringBuilder();
-        int pad = 0;
-
-        foreach (var line in EnumerateLines(artifact))
-        {
-            if (!inChunk)
-            {
-                if (line.Equals(chunkMarker, StringComparison.Ordinal))
-                    inChunk = true;
-                continue;
-            }
-
-            if (line.StartsWith("##PAD:", StringComparison.Ordinal))
-            {
-                if (int.TryParse(line[6..], out int p))
-                    pad = p;
-                break;
-            }
-            if (line.StartsWith("##", StringComparison.Ordinal)) break;
-            if (line.Equals("NMP/END", StringComparison.Ordinal)) break;
-
-            sb64.Append(line);
-        }
-
-        byte[] padded = Base64UrlDecode(sb64.ToString());
-        return DecompressPadded(padded, pad, maxBytes);
+        Nmp2Header header = Nmp2Header.Parse(artifact);
+        Nmp2Scan scan = Nmp2BodyScanner.Scan(artifact, header);
+        if (chunkIndex < 1 || chunkIndex > scan.Sections.Count)
+            throw new ArgumentOutOfRangeException(nameof(chunkIndex));
+        return DecodeSection(artifact, scan.Sections[chunkIndex - 1], header.HasChunkMarker, maxBytes);
     }
 
     /// <summary>
     /// Extracts the raw text of each <c>##CHUNK:N</c> .. <c>##PAD:N</c> section from a
     /// multi-chunk artifact in a single left-to-right pass, preserving exact formatting for
-    /// verbatim copy. Each <c>IndexOf</c> starts where the previous section ended rather than
-    /// re-scanning from index 0, so the whole extraction is O(n) instead of O(k·n).
+    /// verbatim copy. The body scanner validates complete line tokens and exact chunk count.
     /// </summary>
     internal static List<string> ExtractRawChunkSections(string artifact, int chunkCount)
     {
-        var sections = new List<string>(chunkCount);
-        int from = 0;
-        for (int i = 1; i <= chunkCount; i++)
-        {
-            string marker = $"##CHUNK:{i}";
-            int start = artifact.IndexOf(marker + "\n", from, StringComparison.Ordinal);
-            int markerLength = marker.Length + 1;
-            if (start < 0)
-            {
-                start = artifact.IndexOf(marker + "\r\n", from, StringComparison.Ordinal);
-                markerLength++;
-            }
-            if (start < 0)
-                throw new FormatException($"Could not find ##CHUNK:{i} marker in artifact.");
-            // find ##PAD: after the marker
-            string padPrefix = "##PAD:";
-            int padStart = artifact.IndexOf(padPrefix, start + markerLength, StringComparison.Ordinal);
-            if (padStart < 0)
-                throw new FormatException($"Could not find ##PAD: after ##CHUNK:{i}.");
-            int padEnd = artifact.IndexOf('\n', padStart);
-            if (padEnd < 0) padEnd = artifact.Length; else padEnd++; // include newline
-            sections.Add(artifact[start..padEnd]);
-            from = padEnd; // next section starts here — makes the whole extraction O(n)
-        }
-        return sections;
+        Nmp2Header header = Nmp2Header.Parse(artifact);
+        if (chunkCount != header.ChunkCount)
+            throw new InvalidDataException("NMP/2 requested chunk count does not match its header.");
+        return Nmp2BodyScanner.Scan(artifact, header).Sections
+            .Select(section => artifact.Substring(section.Start, section.Length)).ToList();
     }
 
     /// <summary>
@@ -320,27 +245,30 @@ public sealed class Nmp2Strategy : IEncodingStrategy
     /// <c>##PAD:N</c> markers) into decompressed bytes, bounded by <paramref name="maxBytes"/>.
     /// Operates on the pre-extracted slice rather than re-walking the whole artifact.
     /// </summary>
-    internal static byte[] DecodeChunkSectionFrom(string section, long maxBytes)
+    private static byte[] DecodeSection(string artifact, Nmp2Section section, bool hasMarker, long maxBytes)
     {
         var sb64 = new StringBuilder();
-        int pad = 0;
-        foreach (var line in EnumerateLines(section))
+        int position = section.Start;
+        int end = section.Start + section.Length;
+        if (hasMarker) position = artifact.IndexOf('\n', position) + 1;
+        while (position < end)
         {
-            // The section's first line is the ##CHUNK:N marker copied verbatim from the artifact;
-            // skip it, exactly as DecodeChunkSection skipped the marker before collecting.
-            if (line.StartsWith("##CHUNK:", StringComparison.Ordinal)) continue;
-            if (line.StartsWith("##PAD:", StringComparison.Ordinal))
-            {
-                if (int.TryParse(line[6..], out int p)) pad = p;
-                break;
-            }
-            if (line.StartsWith("##", StringComparison.Ordinal)) break;
-            if (line.Equals("NMP/END", StringComparison.Ordinal)) break;
+            int newline = artifact.IndexOf('\n', position, end - position);
+            int tokenEnd = newline < 0 ? end : newline;
+            if (tokenEnd > position && artifact[tokenEnd - 1] == '\r') tokenEnd--;
+            ReadOnlySpan<char> line = artifact.AsSpan(position, tokenEnd - position);
+            if (line.StartsWith("##PAD:", StringComparison.Ordinal)) break;
             sb64.Append(line);
+            position = newline < 0 ? end : newline + 1;
         }
-
-        byte[] padded = Base64UrlDecode(sb64.ToString());
-        return DecompressPadded(padded, pad, maxBytes);
+        try
+        {
+            return DecompressPadded(Base64UrlDecode(sb64.ToString()), section.Pad, maxBytes);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidDataException("NMP/2 base64 payload is invalid.", exception);
+        }
     }
 
     /// <summary>
@@ -358,18 +286,6 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         if (compressedLen == 0) return [];
         byte[] compressed = padded[..compressedLen];
         return BrotliDecompressBounded(compressed, maxBytes);
-    }
-
-    private static IEnumerable<string> EnumerateLines(string text)
-    {
-        int start = 0;
-        while (start < text.Length)
-        {
-            int end = text.IndexOf('\n', start);
-            if (end < 0) end = text.Length;
-            yield return text[start..end].TrimEnd('\r');
-            start = end + 1;
-        }
     }
 
     internal static string Base64UrlEncode(byte[] data)

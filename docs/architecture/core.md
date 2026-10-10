@@ -85,7 +85,7 @@ public static class Nmp2ChunkedEncoder
 - Single-chunk → two-chunk: rewrites header with `C:2`, wraps existing content as `##CHUNK:1`, appends new `##CHUNK:2`
 - Multi-chunk → N+1 chunks: appends new chunk section, updates header count and CRC32
 
-CRC32 combination uses GF(2) matrix math (zlib algorithm) to incrementally update the checksum without re-reading existing data. This makes append O(new chunk size) instead of O(total artifact size).
+Append fully decodes and verifies the predecessor's length and CRC32 before combining checksums with GF(2) matrix math (the zlib algorithm). Verification reads all existing bytes; append preserves the exact existing encoded sections and compresses only the new chunk.
 
 ## Data Models
 

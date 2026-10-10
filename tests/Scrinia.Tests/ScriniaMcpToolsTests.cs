@@ -17,6 +17,37 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class ScriniaMcpToolsTests
 {
+    [Theory]
+    [MemberData(nameof(Nmp2BodyScannerTests.MalformedBodies), MemberType = typeof(Nmp2BodyScannerTests))]
+    public async Task Append_MalformedStoredBodyReturnsInternalAndPreservesLiveMembers(string malformed)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await Tools().MemoryRemember("/scanner-caller", ["first", "second"]);
+        await File.WriteAllTextAsync(store.ArtifactPath("scanner-caller"), malformed);
+        byte[] body = File.ReadAllBytes(store.ArtifactPath("scanner-caller"));
+        byte[] sidecar = File.ReadAllBytes(store.MetaPath("scanner-caller"));
+        var response = ResponseParser.Parse(await Tools().MemoryAppend("/scanner-caller", "new"));
+        Assert.Equal(ErrorCodes.Internal, response.ErrorCode);
+        Assert.False(string.IsNullOrEmpty(response.OperationId));
+        Assert.Equal(body, File.ReadAllBytes(store.ArtifactPath("scanner-caller")));
+        Assert.Equal(sidecar, File.ReadAllBytes(store.MetaPath("scanner-caller")));
+        Assert.Null(store.LastPreparedAppendTransactionForTest);
+    }
+
+    [Fact]
+    public async Task ImportMalformedBodyReturnsInvalidBundleWithoutPublishingValidEarlierTopic()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundle = Path.Combine(scope.WorkspaceDir, "malformed.scrinia-bundle");
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]) + "\ntrailing";
+        BundleRoundTripTotalityTests.WriteMalformedScannerBundle(bundle, artifact);
+        McpResponse response = await Tools().Import(bundle, overwrite: true);
+        Assert.Equal(ErrorCodes.InvalidBundle, response.ErrorCode);
+        Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-good"));
+        Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-bad"));
+    }
+
     private static ScriniaMcpTools Tools() => new();
 
     [Fact]

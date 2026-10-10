@@ -10,6 +10,56 @@ namespace Scrinia.Tests;
 public sealed class CliWholeMemoryTransactionTests
 {
     [Fact]
+    public async Task ImportMalformedBodyReturnsInvalidBundleAndExitOneWithoutPublishingTopics()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundle = Path.Combine(scope.WorkspaceDir, "scanner-malformed.scrinia-bundle");
+        BundleRoundTripTotalityTests.WriteMalformedScannerBundle(bundle,
+            Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("plain") + "\ntrailing");
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Import(bundle, workspaceRoot: scope.WorkspaceDir, overwrite: true, json: true);
+            Assert.Equal(1, exit);
+            CliImportOutput envelope = JsonSerializer.Deserialize(output.ToString(), CliJsonContext.Default.CliImportOutput)!;
+            Assert.Equal(ErrorCodes.InvalidBundle, envelope.ErrorCode);
+            Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-good"));
+            Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-bad"));
+        }
+        finally { Console.SetOut(prior); }
+    }
+
+    [Fact]
+    public async Task AppendMalformedStoredBodyUsesInternalEnvelopeAndExitOneWithoutMutation()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await new ScriniaMcpTools().MemoryRemember("/cli/scanner", ["first", "second"]);
+        string path = store.ArtifactPath("scanner", "local:cli");
+        string malformed = (await File.ReadAllTextAsync(path)).Replace("##PAD:0", "##PAD:0\n##PAD:0", StringComparison.Ordinal);
+        await File.WriteAllTextAsync(path, malformed);
+        byte[] body = File.ReadAllBytes(path);
+        byte[] sidecar = File.ReadAllBytes(store.MetaPath("scanner", "local:cli"));
+        string input = Path.Combine(scope.WorkspaceDir, "new.md");
+        await File.WriteAllTextAsync(input, "new");
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Append("/cli/scanner", input, workspaceRoot: scope.WorkspaceDir, json: true);
+            Assert.Equal(1, exit);
+            CliErrorOutput envelope = JsonSerializer.Deserialize(output.ToString(), CliJsonContext.Default.CliErrorOutput)!;
+            Assert.Equal(ErrorCodes.Internal, envelope.Code);
+            Assert.Equal(body, File.ReadAllBytes(path));
+            Assert.Equal(sidecar, File.ReadAllBytes(store.MetaPath("scanner", "local:cli")));
+        }
+        finally { Console.SetOut(prior); }
+    }
+
+    [Fact]
     public async Task CompactRecoveryJsonUsesTheSharedHandlerEnvelopeAndWarningExitPolicy()
     {
         using var scope = new TestHelpers.StoreScope();

@@ -7,6 +7,29 @@ namespace Scrinia.Tests;
 
 public sealed class Nmp2IntegrityTests
 {
+    [Theory]
+    [InlineData("missing-pad")]
+    [InlineData("duplicate-pad")]
+    [InlineData("missing-footer")]
+    [InlineData("trailing-content")]
+    [InlineData("embedded-marker")]
+    public void SingleArtifactFullReadRejectsMalformedStructure(string mutation)
+    {
+        string artifact = Encode("plain artifact");
+        string malformed = mutation switch
+        {
+            "missing-pad" => artifact.Replace("##PAD:0\n", "", StringComparison.Ordinal),
+            "duplicate-pad" => artifact.Replace("##PAD:0", "##PAD:0\n##PAD:0", StringComparison.Ordinal),
+            "missing-footer" => artifact.Replace("NMP/END", "", StringComparison.Ordinal),
+            "trailing-content" => artifact + "\ntrailing",
+            "embedded-marker" => artifact.Replace("##PAD:0", "payload##PAD:0", StringComparison.Ordinal),
+            _ => throw new ArgumentException("Unknown mutation.", nameof(mutation)),
+        };
+        Assert.Throws<InvalidDataException>(() => Nmp2Strategy.Instance.Decode(malformed));
+        Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.DecodeAllChunksVerified(malformed));
+        Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.AppendChunk(malformed, "new"));
+    }
+
     private static string Encode(string text) =>
         Nmp2Strategy.Instance.Encode(Encoding.UTF8.GetBytes(text), new EncodingOptions()).Artifact;
 

@@ -29,6 +29,56 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class BundleRoundTripTotalityTests : IDisposable
 {
+    [Theory]
+    [MemberData(nameof(Nmp2BodyScannerTests.MalformedBodies), MemberType = typeof(Nmp2BodyScannerTests))]
+    public void CoreImportRejectsMalformedBodyBeforePublishingAnyTopic(string malformed)
+    {
+        string zipPath = Path.Combine(_workspaceRoot, "scanner-malformed.scrinia-bundle");
+        WriteMalformedScannerBundle(zipPath, malformed);
+        _store.Upsert(new ArtifactEntry("valid", "old", 3, 1, DateTimeOffset.UtcNow), "local:scanner-good");
+        _store.WriteArtifactAsync("valid", "local:scanner-good", Nmp2ChunkedEncoder.Encode("old")).GetAwaiter().GetResult();
+        string path = _store.ArtifactPath("valid", "local:scanner-good");
+        string metaPath = _store.MetaPath("valid", "local:scanner-good");
+        byte[] bodyBefore = File.ReadAllBytes(path);
+        byte[] metaBefore = File.ReadAllBytes(metaPath);
+        using var stream = File.OpenRead(zipPath);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+        Assert.Throws<BundleValidationException>(() => BundleFormatService.ImportTopicsFromZip(zip, _store, null, true));
+        Assert.Equal(bodyBefore, File.ReadAllBytes(path));
+        Assert.Equal(metaBefore, File.ReadAllBytes(metaPath));
+        Assert.Empty(_store.LoadIndex("local:scanner-bad"));
+        Assert.False(File.Exists(_store.ArtifactPath("invalid", "local:scanner-bad")));
+        Assert.False(File.Exists(Path.Combine(_workspaceRoot, ".scrinia", ".bundle-restore-journal.json")));
+    }
+
+    internal static void WriteMalformedScannerBundle(string path, string malformed)
+    {
+        using var stream = File.Create(path);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+        foreach (var (topic, name, artifact) in new[]
+        {
+            ("scanner-good", "valid", Nmp2ChunkedEncoder.Encode("new")),
+            ("scanner-bad", "invalid", malformed),
+        })
+        {
+            using (var writer = new StreamWriter(zip.CreateEntry($"topics/{topic}/index.json").Open()))
+                writer.Write(new JsonObject
+                {
+                    ["entries"] = new JsonArray(new JsonObject { ["name"] = name, ["originalBytes"] = 3, ["chunkCount"] = 1 }),
+                }.ToJsonString());
+            using (var writer = new StreamWriter(zip.CreateEntry($"topics/{topic}/{name}.nmp2").Open()))
+                writer.Write(artifact);
+        }
+        using var manifest = new StreamWriter(zip.CreateEntry("manifest.json").Open());
+        manifest.Write(new JsonObject
+        {
+            ["version"] = 1,
+            ["exported"] = DateTimeOffset.UtcNow.ToString("o"),
+            ["topics"] = new JsonArray("scanner-good", "scanner-bad"),
+            ["totalEntries"] = 2,
+        }.ToJsonString());
+    }
+
     private readonly string _tempDir;
     private readonly string _workspaceRoot;
     private readonly FileMemoryStore _store;
