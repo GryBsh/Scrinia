@@ -13,6 +13,33 @@ public sealed class ProcessEnvironmentTestsGroup;
 public sealed class ScriniaMcpSessionTests
 {
     [Fact]
+    public async Task Process_exit_after_tool_reply_cannot_be_accepted_as_a_successful_episode()
+    {
+        using var temp = new ScratchDirectory();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        string marker = Path.Combine(temp.Root, "exit-fixture.txt");
+        string host = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+        var settings = Payload() with { Executable = host, PrefixArguments = [typeof(ProcessFixture).Assembly.Location, "--mcp-fixture", "exit-after-guide", marker] };
+        var paths = new AttemptWorkspace().Create(Path.Combine(temp.Root, "run"), 1, 1, settings);
+        await using var events = new CapturingEvents();
+        var fake = new ScriptedChatClient(ScriptedChatClient.Call("guide", "guide", []), ScriptedChatClient.Text("ordinary final text"));
+        var error = await Assert.ThrowsAsync<BenchmarkFailureException>(async () =>
+        {
+            await using var session = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token);
+            fake.OnRequest = () =>
+            {
+                if (fake.Requests.Count != 2) return;
+                File.WriteAllText(marker + ".exit", "exit");
+                Assert.True(session.Completion.Wait(TimeSpan.FromSeconds(10)), "The owned fixture must exit before final text is returned.");
+            };
+            await new AgentEpisode(_ => fake).RunAsync(new(EpisodePhase.Learn, "input"), session,
+                ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token);
+        });
+        Assert.Equal(BenchmarkFailureCode.MCP_DISCONNECTED, error.Code);
+        Assert.Equal(2, fake.Requests.Count);
+    }
+
+    [Fact]
     public async Task Hostile_parent_settings_do_not_reach_the_workspace_server()
     {
         using var temp = new ScratchDirectory();

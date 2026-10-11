@@ -27,8 +27,9 @@ public sealed class LongMemEvalReader
         var selection = new HashSet<string>(StringComparer.Ordinal);
         foreach (string id in selectedIds)
             if (string.IsNullOrWhiteSpace(id) || !selection.Add(id))
-                throw new InvalidDataException($"Invalid or duplicate selected question_id '{id}'.");
+                throw InputDiagnostics.Invalid("Invalid or duplicate selected question_id.");
 
+        PathSafety.RequireNoLinks(path);
         byte[] bytes = await File.ReadAllBytesAsync(path, ct);
         RawLongMemEvalCase?[]? source;
         try
@@ -39,10 +40,10 @@ public sealed class LongMemEvalReader
         }
         catch (JsonException ex)
         {
-            throw new InvalidDataException($"Invalid dataset JSON at {ex.Path}: {ex.Message}", ex);
+            throw InputDiagnostics.Invalid($"Invalid dataset JSON at line {ex.LineNumber}, byte {ex.BytePositionInLine}.");
         }
         if (source is null || source.Length == 0)
-            throw new InvalidDataException("Dataset must contain at least one case.");
+            throw InputDiagnostics.Invalid("Dataset must contain at least one case.");
 
         var indexed = new Dictionary<string, RawLongMemEvalCase>(StringComparer.Ordinal);
         var orderedIds = new List<string>(source.Length);
@@ -125,7 +126,7 @@ public sealed class LongMemEvalReader
             ? date : throw Invalid(id, field, "has an unsupported date format");
 
     private static InvalidDataException Invalid(string id, string field, string reason)
-        => new($"Case '{id}': {field} {reason}.");
+        => InputDiagnostics.Mark(new InvalidDataException($"Case '{id}': {field} {reason}."), $"Dataset field {field} {reason}.");
 }
 
 // Source-only records never cross the agent boundary. Extra benchmark annotations are ignored.

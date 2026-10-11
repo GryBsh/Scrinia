@@ -10,17 +10,24 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
     private readonly McpClient _client;
     private readonly Diagnostics _diagnostics;
     private readonly IRunEvents _events;
+    private readonly object _lifetime = new();
+    private readonly CancellationTokenSource _failure;
+    private readonly Task _completionMonitor;
+    private bool _prematureExit;
     private bool _disposed;
     public IReadOnlyList<McpClientTool> Tools { get; }
     public string CatalogHash { get; }
     public string ServerVersion => _client.ServerInfo.Version;
-    public CancellationToken FailureToken => _diagnostics.FailureToken;
+    public CancellationToken FailureToken => _failure.Token;
     internal int? CompletedProcessId { get; private set; }
+    internal Task<ClientCompletionDetails> Completion => _client.Completion;
 
     private ScriniaMcpSession(McpClient client, IReadOnlyList<McpClientTool> tools, Diagnostics diagnostics, IRunEvents events)
     {
         _client = client; Tools = tools; CatalogHash = ToolCatalog.ComputeHash(tools);
         _diagnostics = diagnostics; _events = events;
+        _failure = CancellationTokenSource.CreateLinkedTokenSource(diagnostics.FailureToken);
+        _completionMonitor = MonitorCompletionAsync();
     }
 
     public static async Task<ScriniaMcpSession> OpenAsync(ScriniaSettings settings, AttemptPaths paths, IRunEvents events, CancellationToken ct)
@@ -51,10 +58,9 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
                 (Directory.Exists(Path.Combine(paths.Home, "plugins")) && Directory.EnumerateFileSystemEntries(Path.Combine(paths.Home, "plugins")).Any());
             if (requiresPlugin) await diagnostics.RequirePluginReadyAsync(startup.Token);
             await diagnostics.CheckAsync();
-            var result = new ScriniaMcpSession(client, tools.ToArray(), diagnostics, events);
             await events.WriteAsync("mcp", "connected", JsonSerializer.SerializeToElement(new Dictionary<string, string>
             {
-                ["name"] = client.ServerInfo.Name, ["version"] = client.ServerInfo.Version, ["catalogHash"] = result.CatalogHash
+                ["name"] = client.ServerInfo.Name, ["version"] = client.ServerInfo.Version, ["catalogHash"] = ToolCatalog.ComputeHash(tools.ToArray())
             }, RecordJsonContext.Default.DictionaryStringString), ct);
             await events.WriteAsync("mcp", "catalog", ChatEvidence.Build(w =>
             {
@@ -63,7 +69,7 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
                     JsonSerializer.Serialize(w, tool.ProtocolTool, RecordJsonContext.Default.Tool);
                 w.WriteEndArray();
             }), ct);
-            return result;
+            return new ScriniaMcpSession(client, tools.ToArray(), diagnostics, events);
         }
         catch
         {
@@ -73,21 +79,50 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
         }
     }
 
-    public Task CheckHealthAsync() => _diagnostics.CheckAsync();
+    private async Task MonitorCompletionAsync()
+    {
+        await _client.Completion;
+        lock (_lifetime)
+        {
+            if (_disposed) return;
+            _prematureExit = true;
+        }
+        await _failure.CancelAsync();
+    }
+
+    public async Task CheckHealthAsync()
+    {
+        await _diagnostics.CheckAsync();
+        lock (_lifetime)
+        {
+            if (_prematureExit || (!_disposed && _client.Completion.IsCompleted))
+                throw new BenchmarkFailureException(BenchmarkFailureCode.MCP_DISCONNECTED, "Scrinia exited before the episode completed.");
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
-        _disposed = true;
+        lock (_lifetime)
+        {
+            if (_disposed) return;
+            _prematureExit |= _client.Completion.IsCompleted;
+            _disposed = true;
+        }
         try
         {
             await _client.DisposeAsync();
             var completion = await _client.Completion;
             if (completion is StdioClientCompletionDetails stdio) CompletedProcessId = stdio.ProcessId;
         }
-        finally { await _diagnostics.DisposeAsync(); }
+        finally
+        {
+            try { await _completionMonitor; await _diagnostics.DisposeAsync(); }
+            finally { _failure.Dispose(); }
+        }
         await _events.WriteAsync("mcp", "disconnected", JsonSerializer.SerializeToElement(
             CompletedProcessId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable", ConfigurationJsonContext.Default.String), CancellationToken.None);
+        if (_prematureExit)
+            throw new BenchmarkFailureException(BenchmarkFailureCode.MCP_DISCONNECTED, "Scrinia exited before the episode completed.");
     }
 
     private sealed class Diagnostics : IAsyncDisposable

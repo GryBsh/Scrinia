@@ -12,7 +12,8 @@ public static class ModelClientFactory
     {
         var secret = Environment.GetEnvironmentVariable(settings.ApiKeyEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(secret))
-            throw new InvalidOperationException($"Set the nonempty credential variable {settings.ApiKeyEnvironmentVariable} before running inference.");
+            throw InputDiagnostics.Mark(new InvalidOperationException("A model credential is missing."),
+                $"Set the nonempty credential variable {settings.ApiKeyEnvironmentVariable} before running inference.");
         var options = new OpenAIClientOptions { Endpoint = settings.Endpoint, RetryPolicy = new ClientRetryPolicy(0) };
         if (transport is not null) options.Transport = new HttpClientPipelineTransport(transport);
         return new OpenAIClient(new ApiKeyCredential(secret), options).GetChatClient(settings.Model).AsIChatClient();

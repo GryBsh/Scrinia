@@ -34,7 +34,7 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
             hashes["localInputs"] = local;
             using var ownership = RunJournal.AcquireOwnership(root);
             if (resume is not null) RunJournal.ValidateLocalResumeFingerprint(root, local);
-            else if (File.Exists(Path.Combine(root, "manifest.json"))) throw new InvalidDataException("Run already exists; use --resume.");
+            else if (File.Exists(Path.Combine(root, "manifest.json"))) throw InputDiagnostics.Invalid("Run already exists; use --resume.");
             var previousManifest = resume is null ? null : RunJournal.ReadManifest(root);
             var factory = createClient ?? ModelClientFactory.Create;
             preflighting = true;
@@ -89,6 +89,7 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
             await using var journal = await RunJournal.OpenAsync(root, manifest, resume is not null, ct);
             running = true;
             var runner = new CaseRunner(new AgentEpisode(factory, hashes["agentModel"]), new AnswerGrader(factory, hashes["judgeModel"]));
+            Exception? runFailure = null;
             try
             {
                 var previous = (await journal.ReadOutcomesAsync(ct)).ToDictionary(o => o.QuestionId, StringComparer.Ordinal);
@@ -103,7 +104,12 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
                     if (outcome.State == CaseState.Cancelled) break;
                 }
             }
-            finally { await SummaryWriter.WriteAsync(root, dataset, journal, stdout, CancellationToken.None); }
+            catch (Exception failure) { runFailure = failure; throw; }
+            finally
+            {
+                try { await SummaryWriter.WriteAsync(root, dataset, journal, stdout, CancellationToken.None); }
+                catch when (runFailure is not null) { /* Retain the primary failure; incomplete evidence remains on disk. */ }
+            }
             if (ct.IsCancellationRequested) return 130;
             return RunSummary.Compute(manifest.SelectedIds, await journal.ReadOutcomesAsync(ct)).Provisional ? 1 : 0;
         }
@@ -114,6 +120,7 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
             // Never echo provider exception messages or raw configuration values.
             await stderr.WriteLineAsync($"{code}: {failure.GetType().Name}. Check configuration and retained evidence.");
             if (failure is BenchmarkFailureException known) await stderr.WriteLineAsync(known.Message);
+            else if (InputDiagnostics.Get(failure) is { } diagnostic) await stderr.WriteLineAsync(diagnostic);
             return running ? 1 : 2;
         }
     }

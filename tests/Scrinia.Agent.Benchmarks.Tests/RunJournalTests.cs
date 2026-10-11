@@ -7,6 +7,22 @@ namespace Scrinia.Agent.Benchmarks.Tests;
 public sealed class RunJournalTests
 {
     [Fact]
+    public async Task Cancelled_file_append_retains_the_original_cancellation_through_cleanup_and_snapshot()
+    {
+        using var temp = new ScratchDirectory();
+        using var cancellation = new CancellationTokenSource();
+        await using var sink = new RunJournal.EventSink(temp.Root, cancellation.Cancel);
+        var first = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await sink.WriteAsync("learn", "start", Data(), cancellation.Token));
+        Assert.True(File.Exists(Path.Combine(temp.Root, "events.ndjson")));
+        var cleanup = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await sink.WriteAsync("learn", "phase-end", Data(), CancellationToken.None));
+        var snapshot = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sink.SnapshotAsync(true, CancellationToken.None));
+        Assert.Same(first, cleanup);
+        Assert.Same(first, snapshot);
+    }
+
+    [Fact]
     public async Task Disposing_journal_closes_its_attempt_event_sinks()
     {
         using var temp = new ScratchDirectory();
@@ -135,9 +151,10 @@ public sealed class RunJournalTests
         var paths = new AttemptWorkspace().Create(config.OutputDirectory, 1, 1, config.Scrinia);
         var events = journal.CreateEvents(paths);
         Directory.CreateDirectory(Path.Combine(paths.Evidence, "events.ndjson"));
-        await Assert.ThrowsAnyAsync<Exception>(async () => await events.WriteAsync("learn", "started", Data(), CancellationToken.None));
-        await Assert.ThrowsAsync<InvalidDataException>(() => journal.CommitOutcomeAsync(paths,
+        var first = await Assert.ThrowsAnyAsync<Exception>(async () => await events.WriteAsync("learn", "started", Data(), CancellationToken.None));
+        var repeated = await Assert.ThrowsAnyAsync<Exception>(() => journal.CommitOutcomeAsync(paths,
             new("sample_abs", 1, CaseState.ExecutionFailed, null, "learn", "io"), CancellationToken.None));
+        Assert.Same(first, repeated);
         Assert.False(File.Exists(Path.Combine(paths.Evidence, "outcome.json")));
     }
 

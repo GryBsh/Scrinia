@@ -82,9 +82,10 @@ public sealed class EndToEndTests
         using var errors = new StringWriter();
         try
         {
-            Assert.Equal(1, await new BenchmarkApplication(_ => clients.Dequeue(), new StringWriter(), errors).RunAsync(["run", "--config", file], CancellationToken.None));
+            Assert.Equal(1, await new BenchmarkApplication(_ => clients.Dequeue(), afterAnswer ? new FailingReportWriter() : new StringWriter(), errors).RunAsync(["run", "--config", file], CancellationToken.None));
         }
         finally { blockedEvidence?.Dispose(); }
+        Assert.Contains("JOURNAL_FAILED", errors.ToString());
         Assert.False(File.Exists(Path.Combine(priorEvidence, "outcome.json")));
         Assert.Equal(afterAnswer, File.Exists(Path.Combine(priorEvidence, "answer.saved.json")));
         string oldEvents = File.ReadAllText(Path.Combine(priorEvidence, "events.ndjson"));
@@ -112,6 +113,11 @@ public sealed class EndToEndTests
         Assert.Equal(2, report.RootElement.GetProperty("attempts").GetArrayLength());
         Assert.Equal(2, report.RootElement.GetProperty("preflight").GetArrayLength());
         KeepProof(temp.Root, afterAnswer ? "after-answer" : "before-answer");
+    }
+
+    private sealed class FailingReportWriter : StringWriter
+    {
+        public override Task WriteLineAsync(string? value) => throw new IOException("Injected secondary report failure.");
     }
 
     private static void KeepProof(string source, string scenario)

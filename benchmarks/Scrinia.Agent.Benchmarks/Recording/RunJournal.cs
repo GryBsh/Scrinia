@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -242,11 +243,11 @@ public sealed class RunJournal : IAsyncDisposable
         foreach (var sink in _sinks.Values) await sink.DisposeAsync();
     }
 
-    private sealed class EventSink(string directory) : IRunEvents
+    internal sealed class EventSink(string directory, Action? beforeAppend = null) : IRunEvents
     {
         private readonly SemaphoreSlim _gate = new(1, 1);
         private int _sequence;
-        private bool _failed;
+        private ExceptionDispatchInfo? _failure;
         private bool _sealed;
         private bool _disposed;
         private string EventPath => Path.Combine(directory, "events.ndjson");
@@ -264,12 +265,13 @@ public sealed class RunJournal : IAsyncDisposable
                 var item = new RunEvent(_sequence + 1, DateTimeOffset.UtcNow, phase, kind, data);
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(item, Strict.RunEvent);
                 await using var stream = new FileStream(EventPath, FileMode.Append, FileAccess.Write, FileShare.Read, 4096, FileOptions.Asynchronous);
+                beforeAppend?.Invoke();
                 await stream.WriteAsync(bytes, ct);
                 await stream.WriteAsync("\n"u8.ToArray(), ct);
                 stream.Flush(flushToDisk: true);
                 _sequence++;
             }
-            catch { _failed = true; throw; }
+            catch (Exception error) { _failure ??= ExceptionDispatchInfo.Capture(error); throw; }
             finally { _gate.Release(); }
         }
 
@@ -291,7 +293,8 @@ public sealed class RunJournal : IAsyncDisposable
         private void RequireHealthy()
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_failed || _sealed) throw new InvalidDataException("Event sink failed or has already published its outcome.");
+            _failure?.Throw();
+            if (_sealed) throw new InvalidDataException("Event sink has already published its outcome.");
         }
 
         public async ValueTask DisposeAsync()
