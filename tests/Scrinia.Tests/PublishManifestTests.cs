@@ -212,6 +212,10 @@ public sealed class PublishManifestTests
         ["Scrinia.Retrieval.Benchmarks"] =
             "Benchmark harness under benchmarks/ — run from source via `dotnet run`, never " +
             "distributed to users.",
+        ["Scrinia.Agent.Benchmarks"] =
+            "Developer LongMemEval agent harness under benchmarks/; run from source, not a shipped release unit.",
+        ["Scrinia.Agent.Benchmarks.Tests"] =
+            "Test assembly with a readable child-process fixture entry point; never distributed to users.",
         ["Scrinia.Benchmarks"] =
             "Benchmark harness under tests/ — run from source via `dotnet run`, never distributed " +
             "to users.",
