@@ -2,7 +2,7 @@
 
 Date: 2026-10-11
 
-Status: Design agreed in conversation; written specification awaiting user review.
+Status: Written specification approved by the user on 2026-10-11; implementation planning authorized.
 
 ## Purpose and agreed scope
 
