@@ -10,4 +10,6 @@ namespace Scrinia.Agent.Benchmarks;
 [JsonSerializable(typeof(AnswerRecord))]
 [JsonSerializable(typeof(UsageTotals))]
 [JsonSerializable(typeof(OutcomeEnvelope))]
+[JsonSerializable(typeof(ModelContextProtocol.Protocol.Tool))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 internal partial class RecordJsonContext : JsonSerializerContext;

@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <GenerateProgramFile>false</GenerateProgramFile>
     <RootNamespace>Scrinia.Agent.Benchmarks.Tests</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -15,8 +17,15 @@
     </PackageReference>
     <PackageReference Include="FluentAssertions" Version="6.12.2" />
     <ProjectReference Include="../../benchmarks/Scrinia.Agent.Benchmarks/Scrinia.Agent.Benchmarks.csproj" />
+    <ProjectReference Include="../../src/Scrinia/Scrinia.csproj" ReferenceOutputAssembly="false" />
     <Using Include="Xunit" />
     <None Update="Fixtures/**/*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="CopyCurrentScriniaPayload" AfterTargets="Build">
+    <ItemGroup>
+      <_ScriniaPayload Include="$(MSBuildProjectDirectory)/../../src/Scrinia/bin/$(Configuration)/net10.0/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ScriniaPayload)" DestinationFiles="@(_ScriniaPayload->'$(OutDir)scrinia-payload/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
