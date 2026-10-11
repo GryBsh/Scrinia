@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "dataset": "../../../datasets/longmemeval/longmemeval_s_cleaned.json",
+  "caseIds": ["REPLACE_WITH_SELECTED_CASE_ID"],
+  "scrinia": {
+    "payloadDirectory": "../../../artifacts/agent-bench/scri",
+    "executable": "scri.exe",
+    "prefixArguments": [],
+    "workspaceConfig": {},
+    "homeSeedDirectory": null
+  },
+  "agent": {
+    "endpoint": "http://localhost:1234/v1",
+    "model": "benchmark-agent",
+    "apiKeyEnvironmentVariable": "BENCH_AGENT_API_KEY",
+    "temperature": 0,
+    "maxOutputTokens": 4096
+  },
+  "judge": {
+    "endpoint": "http://localhost:1234/v1",
+    "model": "benchmark-judge",
+    "apiKeyEnvironmentVariable": "BENCH_JUDGE_API_KEY",
+    "temperature": 0,
+    "maxOutputTokens": 512
+  },
+  "limits": {
+    "maxModelTurnsPerEpisode": 16,
+    "episodeSeconds": 120,
+    "caseSeconds": 1800,
+    "maxModelAttempts": 2
+  },
+  "outputDirectory": "../runs/longmemeval-smoke"
+}

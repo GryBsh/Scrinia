@@ -10,7 +10,7 @@
 
 **Spec:** [Approved design](../specs/2026-10-11-longmemeval-agent-runner-design.md).
 
-**Status:** Written spec approved 2026-10-11. This implementation plan awaits review and execution-method selection. No implementation or live inference has run.
+**Status:** Spec and plan approved 2026-10-11; Native inline execution selected. Tasks 1–7 implemented and verified. Final offline proof/documentation is in progress. Live inference is deferred at the user's request.
 
 ## Global Constraints
 

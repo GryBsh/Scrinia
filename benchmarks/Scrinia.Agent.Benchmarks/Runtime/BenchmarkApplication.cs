@@ -142,7 +142,12 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
         };
         // Fingerprint deployed assemblies, including the actual SDK implementation and prompt builders.
         foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll").Order(StringComparer.Ordinal))
+        {
             hashes["runtime/" + Path.GetFileName(file)] = FileHash(file);
+            hashes["runtimeVersion/" + Path.GetFileName(file)] = System.Diagnostics.FileVersionInfo.GetVersionInfo(file).ProductVersion ?? "unavailable";
+        }
+        string product = Path.Combine(config.Scrinia.PayloadDirectory, "scri.dll");
+        hashes["productVersion"] = System.Diagnostics.FileVersionInfo.GetVersionInfo(File.Exists(product) ? product : config.Scrinia.Executable).ProductVersion ?? "unavailable";
         return hashes;
     }
 

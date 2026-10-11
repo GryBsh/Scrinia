@@ -56,6 +56,13 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
             {
                 ["name"] = client.ServerInfo.Name, ["version"] = client.ServerInfo.Version, ["catalogHash"] = result.CatalogHash
             }, RecordJsonContext.Default.DictionaryStringString), ct);
+            await events.WriteAsync("mcp", "catalog", ChatEvidence.Build(w =>
+            {
+                w.WriteStartArray("tools");
+                foreach (var tool in tools.OrderBy(t => t.Name, StringComparer.Ordinal))
+                    JsonSerializer.Serialize(w, tool.ProtocolTool, RecordJsonContext.Default.Tool);
+                w.WriteEndArray();
+            }), ct);
             return result;
         }
         catch
