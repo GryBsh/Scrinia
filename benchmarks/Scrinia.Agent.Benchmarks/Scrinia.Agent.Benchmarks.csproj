@@ -10,6 +10,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Evaluation/rubrics.json" LogicalName="Scrinia.Agent.Benchmarks.rubrics.json" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
   </ItemGroup>
