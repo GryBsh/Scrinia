@@ -6,13 +6,13 @@ namespace Scrinia.Agent.Benchmarks;
 
 public enum EpisodePhase { Learn, Answer }
 public sealed record EpisodeInput(EpisodePhase Phase, string UserMessage);
-public sealed record EpisodeResult(string FinalText, UsageTotals Usage, int ModelRequests, int ToolCalls, int ToolErrors);
+public sealed record EpisodeResult(string FinalText, UsageTotals Usage, int ModelRequests, int ToolCalls, int ToolErrors, string? ReportedModelId = null);
 public interface IAgentEpisode
 {
     Task<EpisodeResult> RunAsync(EpisodeInput input, ScriniaMcpSession session, ModelSettings settings,
         RunLimits limits, IRunEvents events, CancellationToken ct);
 }
-public sealed class AgentEpisode(Func<ModelSettings, IChatClient> createClient) : IAgentEpisode
+public sealed class AgentEpisode(Func<ModelSettings, IChatClient> createClient, string? expectedModelId = null) : IAgentEpisode
 {
     public async Task<EpisodeResult> RunAsync(EpisodeInput input, ScriniaMcpSession session, ModelSettings settings,
         RunLimits limits, IRunEvents events, CancellationToken ct)
@@ -20,7 +20,7 @@ public sealed class AgentEpisode(Func<ModelSettings, IChatClient> createClient) 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, session.FailureToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(limits.EpisodeSeconds));
         string phase = input.Phase == EpisodePhase.Learn ? "learn" : "answer";
-        var observed = new ObservedChatClient(createClient(settings), settings, limits, events, phase);
+        var observed = new ObservedChatClient(createClient(settings), settings, limits, events, phase, expectedModelId);
         var observation = new ToolObservation(events, phase, deadline);
         // This is the SDK's function loop. Configure its ceiling explicitly so its default
         // 40 iterations cannot silently undercut the benchmark's declared request budget.
@@ -44,9 +44,10 @@ public sealed class AgentEpisode(Func<ModelSettings, IChatClient> createClient) 
             await session.CheckHealthAsync();
             deadline.Token.ThrowIfCancellationRequested();
             var final = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
-            if (final is null || final.Contents.OfType<FunctionCallContent>().Any() || string.IsNullOrWhiteSpace(final.Text))
+            if (final is null || final.Contents.OfType<FunctionCallContent>().Any() ||
+                (input.Phase == EpisodePhase.Answer && string.IsNullOrWhiteSpace(final.Text)))
                 throw new InvalidDataException("Agent did not produce a complete final response.");
-            return new(final.Text, observed.Usage, observed.ModelRequests, observation.Calls, observation.Errors);
+            return new(final.Text, observed.Usage, observed.ModelRequests, observation.Calls, observation.Errors, observed.ReportedModelId);
         }
         catch
         {
@@ -72,7 +73,10 @@ public sealed class AgentEpisode(Func<ModelSettings, IChatClient> createClient) 
                     w.WriteString("name", tool.Name); w.WritePropertyName("arguments"); ChatEvidence.WriteValue(w, arguments);
                 }), ct);
                 Calls++;
-                var result = await tool.InvokeAsync(arguments, ct);
+                object? result;
+                try { result = await tool.InvokeAsync(arguments, ct); }
+                catch (Exception transportError) when (transportError is not OperationCanceledException)
+                { throw new BenchmarkFailureException(BenchmarkFailureCode.TOOL_COMPLETION_UNCERTAIN, "Tool completion is uncertain; the attempt must not replay it.", transportError); }
                 bool error = ChatEvidence.IsToolError(result);
                 if (error) Errors++;
                 await events.WriteAsync(phase, "tool-result", ChatEvidence.Build(w =>

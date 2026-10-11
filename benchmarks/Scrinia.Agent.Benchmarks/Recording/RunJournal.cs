@@ -188,7 +188,7 @@ public sealed class RunJournal : IAsyncDisposable
     private static int ParseOrdinal(string text) => int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out int value) && value > 0 && text == value.ToString("D6", CultureInfo.InvariantCulture)
         ? value : throw new InvalidDataException("Invalid case or attempt ordinal.");
 
-    private static RunManifest ReadManifest(string root)
+    internal static RunManifest ReadManifest(string root)
     {
         var manifest = ReadJson(Path.Combine(root, "manifest.json"), Strict.RunManifest);
         ValidateManifest(manifest);

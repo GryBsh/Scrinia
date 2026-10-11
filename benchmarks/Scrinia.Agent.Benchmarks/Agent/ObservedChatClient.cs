@@ -6,8 +6,9 @@ using System.Text.Json;
 namespace Scrinia.Agent.Benchmarks;
 
 public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings, RunLimits limits,
-    IRunEvents events, string phase) : DelegatingChatClient(inner)
+    IRunEvents events, string phase, string? expectedModelId = null) : DelegatingChatClient(inner)
 {
+    private bool _observedIdentity;
     private readonly EpisodeBudget _budget = new(limits.MaxModelTurnsPerEpisode);
     private long? _inputTokens = 0;
     private long? _outputTokens = 0;
@@ -70,7 +71,7 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
             }
             _inputTokens = AddUsage(_inputTokens, response.Usage?.InputTokenCount);
             _outputTokens = AddUsage(_outputTokens, response.Usage?.OutputTokenCount);
-            ReportedModelId = response.ModelId;
+            string identity = response.ModelId ?? "unavailable";
             await events.WriteAsync(phase, "model-response", ChatEvidence.Build(w =>
             {
                 w.WriteNumber("request", ModelRequests);
@@ -82,6 +83,11 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
                 w.WritePropertyName("messages");
                 ChatEvidence.WriteMessages(w, response.Messages);
             }), cancellationToken);
+            if ((expectedModelId is not null && identity != expectedModelId) ||
+                (_observedIdentity && identity != (ReportedModelId ?? "unavailable")))
+                throw new BenchmarkFailureException(BenchmarkFailureCode.MODEL_DRIFT, "Reported model identity changed before tool dispatch.");
+            ReportedModelId = response.ModelId;
+            _observedIdentity = true;
             if (response.FinishReason != ChatFinishReason.Stop && response.FinishReason != ChatFinishReason.ToolCalls)
                 throw new InvalidDataException("Model response did not finish normally; no tool calls were dispatched.");
             if (response.Messages.Count == 0 || response.Messages.SelectMany(m => m.Contents).Any(c => c is FunctionCallContent f &&

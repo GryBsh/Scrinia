@@ -6,6 +6,19 @@ namespace Scrinia.Agent.Benchmarks.Tests;
 public sealed class ObservedChatClientTests
 {
     [Fact]
+    public async Task Refuses_identity_change_before_returning_tool_calls()
+    {
+        await using var events = new CapturingEvents();
+        var first = ScriptedChatClient.Text("one");
+        var second = ScriptedChatClient.Text("two");
+        second.ModelId = "different-model";
+        using var observed = new ObservedChatClient(new ScriptedChatClient(first, second), Settings, Limits, events, "learn");
+        await observed.GetResponseAsync([new(ChatRole.User, "input")]);
+        var error = await Assert.ThrowsAsync<BenchmarkFailureException>(() => observed.GetResponseAsync([new(ChatRole.User, "input")]));
+        Assert.Equal(BenchmarkFailureCode.MODEL_DRIFT, error.Code);
+    }
+
+    [Fact]
     public async Task Usage_sums_known_values_and_stays_unknown_after_missing_usage()
     {
         await using var events = new CapturingEvents();

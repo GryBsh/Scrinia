@@ -31,7 +31,7 @@ internal sealed class ScriptedChatClient(params object[] script) : IChatClient
 
 internal sealed class CapturingEvents : IRunEvents
 {
-    public List<(string Phase, string Kind, JsonElement Data)> Items { get; } = [];
+    public System.Collections.Concurrent.ConcurrentQueue<(string Phase, string Kind, JsonElement Data)> Items { get; } = new();
     public bool Fail { get; set; }
     public string? FailOnceOnKind { get; set; }
     public ValueTask WriteAsync(string phase, string kind, JsonElement data, CancellationToken ct)
@@ -39,7 +39,7 @@ internal sealed class CapturingEvents : IRunEvents
         ct.ThrowIfCancellationRequested();
         if (Fail) throw new IOException("Injected evidence failure.");
         if (kind == FailOnceOnKind) { FailOnceOnKind = null; throw new IOException("Injected tool evidence failure."); }
-        Items.Add((phase, kind, data.Clone()));
+        Items.Enqueue((phase, kind, data.Clone()));
         return ValueTask.CompletedTask;
     }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

@@ -5,6 +5,22 @@ namespace Scrinia.Agent.Benchmarks.Tests;
 public sealed class AgentEpisodeTests
 {
     [Fact]
+    public async Task Normal_empty_learning_response_is_allowed_but_empty_answer_is_not()
+    {
+        using var temp = new ScratchDirectory();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var settings = ScriniaMcpSessionTests.Payload();
+        var paths = new AttemptWorkspace().Create(Path.Combine(temp.Root, "run"), 1, 1, settings);
+        await using var events = new CapturingEvents();
+        await using var session = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token);
+        var runner = new AgentEpisode(_ => new ScriptedChatClient(ScriptedChatClient.Text("")));
+        Assert.Equal("", (await runner.RunAsync(new(EpisodePhase.Learn, "Input"), session,
+            ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token)).FinalText);
+        await Assert.ThrowsAsync<InvalidDataException>(() => runner.RunAsync(new(EpisodePhase.Answer, "Question"), session,
+            ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token));
+    }
+
+    [Fact]
     public async Task Tool_completion_evidence_failure_is_recorded_and_stops_without_replay()
     {
         using var temp = new ScratchDirectory();
