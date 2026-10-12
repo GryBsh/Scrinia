@@ -10,7 +10,7 @@
 
 **Spec:** [Approved design](../specs/2026-10-11-longmemeval-agent-runner-design.md).
 
-**Status:** Spec and plan approved 2026-10-11; Native inline execution selected. Tasks 1–7 and the offline portion of Task 8 are implemented and verified (166/166 final benchmark tests). One independent review and its remediation pass are complete. Live inference and live interruption proof remain pending at the user's request.
+**Status:** Spec and plan approved 2026-10-11; Native inline execution selected. Tasks 1–7 and the offline portion of Task 8 are implemented and verified (166/166 final benchmark tests). One independent review and its remediation pass are complete. The user authorized live inference on 2026-10-12; the frozen seven-case run is in progress. Live interruption/resume proof remains pending.
 
 ## Global Constraints
 
@@ -501,7 +501,7 @@ rtk proxy pwsh -NoProfile -File scripts/release/Check-ReleaseContracts.ps1 -Root
 ```
 
 Also run the new-project MCP/process suite on available native Windows and Linux environments; report an unavailable lane as unverified. Reuse the project's pinned SDK; no global repair. Test failures require diagnosis and focused correction before repeating the relevant gate. Existing optional model/platform skips remain separately explained.
-- [ ] Before live inference, obtain the actual agent/judge endpoints, model IDs, credential-variable names and approval for the bounded proving run if not already supplied. Do not read unrelated secrets or assume the illustrative local aliases exist. All offline work above continues without these inputs. Announce selected IDs and configured ceilings before running. Reject a full-dataset default during smoke configuration preparation: create a nonempty recorded selection first.
+- [x] Before live inference, obtain the actual agent/judge endpoints, model IDs, credential-variable names and approval for the bounded proving run if not already supplied. Do not read unrelated secrets or assume the illustrative local aliases exist. All offline work above continues without these inputs. Announce selected IDs and configured ceilings before running. Reject a full-dataset default during smoke configuration preparation: create a nonempty recorded selection first.
 - [ ] Select deterministic smoke cases without looking at model answers: lexicographically first ID in each of the six official categories with non-abstention status, plus first abstention ID; deduplicate and record them in the concrete run config with the dataset hash. Inspect source records only to verify category coverage and valid parsing, not to tune prompts for their reference facts. Run the configured CLI:
 
 ```powershell

@@ -1,6 +1,22 @@
 # LongMemEval agent runner verification
 
-Date: 2026-10-11. Live proof pending: the user requested offline validation only. No live inference or benchmark quality measurement was performed.
+Offline verification: 2026-10-11. Bounded live proof started on 2026-10-12 after the user supplied the endpoint/model, made the two named credential variables available, and requested continuation. Live outcomes and interruption/resume acceptance remain pending while execution is in progress.
+
+## Live proof in progress (2026-10-12)
+
+The frozen seven-case run uses the original cleaned LongMemEval-S dataset (500 cases; SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`). Selection was fixed before inference: `01493427`, `00ca467f`, `0e5e2d1a`, `06878be2`, `001be529`, `08f4fc43`, and `031748ae_abs`. These cover the six official categories plus an abstention case.
+
+Both roles use the user-supplied OpenAI-compatible endpoint and requested model `SC117/Ornith-1.5-35B-A3B-MTP-APEX-GGUF:Ornith-1.5-35B-A3B-MTP-APEX-I-Compact`. The provider reports `SC117/Ornith-1.5-35B-A3B-MTP-APEX-GGUF`. Credentials remain in `BENCH_AGENT_API_KEY` and `BENCH_JUDGE_API_KEY`, outside configuration and evidence. Temperature is zero; output limits are 4,096 agent / 512 judge tokens. Episode ceilings are 16 model requests, 120 seconds, and at most two attempts per transient request; each case has 1,800 seconds.
+
+The user subsequently approved a new run with a 3,600-second case ceiling if the original first case reaches its 1,800-second deadline. The conditional follow-up preserves the same selection, model settings, prompts, episode ceilings, and runtime binaries; it writes to a separate output directory. Original evidence remains untouched.
+
+Preflight successfully executed a real `guide` call and a separate tool-free judge capability check. Initial learning traces contain real memory reads/writes and exactly preserve source user/assistant turns and dates. No case grade is claimed yet. Evidence is retained under `artifacts/agent-bench/live-2026-10-12/`; `audit.py` checks observed learning inputs against the original dataset without printing transcript contents.
+
+### Dataset compatibility correction
+
+The first launch stopped during validation before inference because the reader incorrectly required unique source session IDs. Thirteen source cases reuse a session ID; in selected case `001be529`, an identical transcript appears at two different dates. The reader now preserves both dated occurrences and still requires unique question IDs and nonempty session IDs. The dataset and selection were not altered. A regression first failed on the old guard, then the reader/input-isolation checks passed 22/22 with zero skips. The full benchmark suite subsequently passed 167/167 with zero skips in 4m31s (Debug, preserving the active Release binaries); its TRX is retained under `live-2026-10-12/full-regression/`. Runtime build `6219b3a` contains this fix; subsequent source line-ending cleanup does not change the frozen Release binaries.
+
+Ruling: treat source session IDs as reusable transcript identifiers, preserving every dated occurrence in stable chronological order. Requiring uniqueness would reject valid source data; deduplication would change benchmark information. Cost if wrong: malformed repeated records remain visible to the agent, consistent with preserving the original benchmark rather than silently repairing it.
 
 ## Verified offline
 
