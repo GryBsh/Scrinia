@@ -43,7 +43,7 @@ public sealed class LongMemEvalReaderTests
             case "sessions": item["haystack_sessions"]!.AsArray().Clear(); break;
             case "role": item["haystack_sessions"]![0]![0]!["role"] = "system"; break;
             case "content": item["haystack_sessions"]![0]![0]!["content"] = ""; break;
-            case "session-id": item["haystack_session_ids"]![1] = "answer_evidence"; break;
+            case "session-id": item["haystack_session_ids"]![1] = ""; break;
             case "answer-shape": item["answer"] = new JsonObject(); break;
         }
         await Assert.ThrowsAsync<InvalidDataException>(() => new LongMemEvalReader().LoadAsync(
@@ -104,5 +104,24 @@ public sealed class LongMemEvalReaderTests
             Assert.Equal(date, result.Cases[0].Sessions[0].Date);
         }
         finally { CultureInfo.CurrentCulture = previous; }
+    }
+
+    [Fact]
+    public async Task Repeated_source_session_ids_preserve_every_dated_occurrence()
+    {
+        using var scratch = new ScratchDirectory();
+        var data = JsonNode.Parse(File.ReadAllText(Fixture))!.AsArray();
+        var item = data[0]!;
+        item["haystack_session_ids"]![1] = item["haystack_session_ids"]![0]!.DeepClone();
+        item["haystack_sessions"]![1] = item["haystack_sessions"]![0]!.DeepClone();
+        item["haystack_dates"] = new JsonArray("2023/05/30 (Tue) 04:52", "2023/05/25 (Thu) 12:40");
+        string path = scratch.Write("data.json", data.ToJsonString());
+        var result = await new LongMemEvalReader().LoadAsync(path, [], CancellationToken.None);
+        var sessions = Assert.Single(result.Cases).Sessions;
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal([1, 2], sessions.Select(s => s.Ordinal));
+        Assert.Equal(["2023/05/25 (Thu) 12:40", "2023/05/30 (Tue) 04:52"], sessions.Select(s => s.Date));
+        Assert.Equal(sessions[0].Turns, sessions[1].Turns);
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(path))), result.Sha256);
     }
 }

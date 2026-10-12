@@ -90,12 +90,11 @@ public sealed class LongMemEvalReader
         if (ids is null || ids.Length != sessions.Length)
             throw Invalid(id, "haystack_session_ids", "must align with haystack_sessions");
 
-        var unique = new HashSet<string>(StringComparer.Ordinal);
         var ordered = new List<(DateTimeOffset Instant, int Index, string Date, TranscriptTurn[] Turns)>();
         for (int i = 0; i < sessions.Length; i++)
         {
-            string sourceId = Required(ids[i], id, $"haystack_session_ids[{i}]");
-            if (!unique.Add(sourceId)) throw Invalid(id, $"haystack_session_ids[{i}]", "is duplicated");
+            // Source IDs identify reusable transcripts, not unique dated occurrences.
+            _ = Required(ids[i], id, $"haystack_session_ids[{i}]");
             string date = Required(dates[i], id, $"haystack_dates[{i}]");
             var instant = ParseDate(date, id, $"haystack_dates[{i}]");
             var turns = sessions[i];
