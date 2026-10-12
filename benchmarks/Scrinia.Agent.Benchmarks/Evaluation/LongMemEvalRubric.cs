@@ -28,7 +28,7 @@ public static class LongMemEvalRubric
     }
 
     public static bool? ParseVerdict(string text) => text.Trim().ToLowerInvariant() switch
-    { "yes" => true, "no" => false, _ => null };
+    { "yes" or "yes." => true, "no" or "no." => false, _ => null };
 
     private static (RubricDocument, string) Load()
     {

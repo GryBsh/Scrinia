@@ -102,7 +102,7 @@ SDK retry behavior must be bounded and recorded. A normal tool error returned to
 
 Adapt and pin the official LongMemEval evaluator's category-specific prompt templates: extraction/multi-session, temporal reasoning, knowledge update, preference, and abstention. Record the upstream revision and local prompt hash. Preserve its rubric semantics rather than using the old generic grader. Report the actual judge model and settings; using the same rubric with a different judge does not establish identical published scores.
 
-The judge sees only the question, reference answer or rubric, candidate final answer, and evaluation category needed to select the template. It receives no tools, persisted memory, or tested-agent transcript. Parse an unambiguous yes/no response; malformed output or exhausted retries is `grading_failed`, not an incorrect answer.
+The judge sees only the question, reference answer or rubric, candidate final answer, and evaluation category needed to select the template. It receives no tools, persisted memory, or tested-agent transcript. Parse an unambiguous yes/no response, allowing surrounding whitespace, case differences, and one optional trailing ASCII period (approved during live proof on 2026-10-12); explanations, mixed answers, repeated punctuation, malformed output, or exhausted retries is `grading_failed`, not an incorrect answer.
 
 Retain separate case states: `pending`, `running`, `answered`, `correct`, `incorrect`, `execution_failed`, `grading_failed`, and `cancelled`. Correct abstention is scored under the official abstention rubric, not inferred merely from an empty response. Record the failed phase, cause, attempt, and any partial artifacts for operational failures.
 

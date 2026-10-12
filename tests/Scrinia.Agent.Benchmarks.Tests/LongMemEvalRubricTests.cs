@@ -23,7 +23,16 @@ public sealed class LongMemEvalRubricTests
     [InlineData("yes or no", null)]
     [InlineData("not yes", null)]
     [InlineData("", null)]
-    [InlineData("yes.", null)]
+    [InlineData("yes.", true)]
+    [InlineData("No.", false)]
+    [InlineData(" YES. \n", true)]
+    [InlineData(" no. \n", false)]
+    [InlineData("yes..", null)]
+    [InlineData("no...", null)]
+    [InlineData("yes. no.", null)]
+    [InlineData("no. explanation", null)]
+    [InlineData("yes .", null)]
+    [InlineData("no!", null)]
     public void Verdict_is_unambiguous(string text, bool? expected) => Assert.Equal(expected, LongMemEvalRubric.ParseVerdict(text));
 
     [Fact]

@@ -416,18 +416,22 @@ AnswerGrader(Func<ModelSettings, Microsoft.Extensions.AI.IChatClient> createClie
 [InlineData(" NO \n", false)]
 [InlineData("yes or no", null)]
 [InlineData("not yes", null)]
+[InlineData("Yes.", true)]
+[InlineData("No.", false)]
+[InlineData("yes..", null)]
+[InlineData("no. explanation", null)]
 [InlineData("", null)]
 public void Verdict_is_unambiguous(string text, bool? expected)
     => Assert.Equal(expected, LongMemEvalRubric.ParseVerdict(text));
 ```
 
-- [x] Run `rtk proxy dotnet test tests/Scrinia.Agent.Benchmarks.Tests/Scrinia.Agent.Benchmarks.Tests.csproj --filter "FullyQualifiedName~LongMemEvalRubricTests|FullyQualifiedName~AnswerGraderTests"`; record RED; implement category selection and rendering from embedded templates. Verdict parsing is trim + ordinal-ignore-case exact `yes`/`no`; do not use substring matching or a model to repair the judge response.
+- [x] Run `rtk proxy dotnet test tests/Scrinia.Agent.Benchmarks.Tests/Scrinia.Agent.Benchmarks.Tests.csproj --filter "FullyQualifiedName~LongMemEvalRubricTests|FullyQualifiedName~AnswerGraderTests"`; record RED; implement category selection and rendering from embedded templates. Verdict parsing accepts case-insensitive `yes`/`no` after trimming surrounding whitespace, with one optional trailing ASCII period (user-approved during live proof on 2026-10-12). Explanations, mixed answers, internal whitespace, and repeated punctuation remain invalid; do not use substring matching or a model to repair the judge response.
 
 ```csharp
 return text.Trim().ToLowerInvariant() switch
 {
-    "yes" => true,
-    "no" => false,
+    "yes" or "yes." => true,
+    "no" or "no." => false,
     _ => null
 };
 ```

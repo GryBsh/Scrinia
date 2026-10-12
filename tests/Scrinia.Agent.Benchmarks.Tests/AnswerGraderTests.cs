@@ -7,6 +7,10 @@ public sealed class AnswerGraderTests
 {
     [Theory]
     [InlineData("yes", true)]
+    [InlineData("Yes.", true)]
+    [InlineData("No.", false)]
+    [InlineData("yes. no.", null)]
+    [InlineData("no. explanation", null)]
     [InlineData(" NO\n", false)]
     [InlineData("yes or no", null)]
     [InlineData("not yes", null)]
