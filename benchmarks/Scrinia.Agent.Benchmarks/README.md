@@ -66,7 +66,7 @@ The output directory contains:
 - `summary.json`: latest case states, overall/category accuracy, coverage, all attempt costs, and separate preflight costs.
 - `answers.jsonl`: one verified answer from the latest attempt per question in the official evaluator's `question_id`/`hypothesis` shape, including incorrect and ungraded answers. Older answers remain in attempt evidence.
 
-Accuracy is correct/graded. Coverage is graded/selected. End-to-end success is correct/selected. Incomplete coverage is prominently marked provisional; zero graded cases yields unknown accuracy. Operational failures remain distinct from judged-incorrect answers. The pinned [LongMemEval rubric and attribution](Evaluation/UPSTREAM.md) preserve category-specific prompts; only an unambiguous `yes` or `no` is accepted. Malformed judge output is a grading failure. A different judge model does not imply scores comparable with published results.
+Accuracy is correct/graded. Coverage is graded/selected. End-to-end success is correct/selected. Incomplete coverage is prominently marked provisional; zero graded cases yields unknown accuracy. Operational failures remain distinct from judged-incorrect answers. The pinned [LongMemEval rubric and attribution](Evaluation/UPSTREAM.md) preserve category-specific prompts; the first nonblank judge-response line must be a standalone `yes` or `no` (case-insensitive, with an optional final period). Explanations may follow on later lines. A later conflicting standalone verdict, same-line prose, or any other opening text is a grading failure. A different judge model does not imply scores comparable with published results.
 
 | Exit code | Meaning |
 | --- | --- |

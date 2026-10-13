@@ -14,6 +14,10 @@ public sealed class AnswerGraderTests
     [InlineData(" NO\n", false)]
     [InlineData("yes or no", null)]
     [InlineData("not yes", null)]
+    [InlineData("Yes\n\nThe answer matches the reference.", true)]
+    [InlineData("No.\r\nThe answer invents information.", false)]
+    [InlineData("Yes\nExplanation.\nNo", null)]
+    [InlineData("No\nExplanation.\nYes.", null)]
     public async Task Judge_is_tool_free_and_raw_reply_precedes_verdict(string raw, bool? expected)
     {
         await using var events = new CapturingEvents();

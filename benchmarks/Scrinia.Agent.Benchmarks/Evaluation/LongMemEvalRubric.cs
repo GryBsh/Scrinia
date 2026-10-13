@@ -27,7 +27,24 @@ public static class LongMemEvalRubric
         return string.Concat(parts[0], input.Question, parts[1], evaluation.ReferenceAnswer, parts[2], candidate, parts[3]);
     }
 
-    public static bool? ParseVerdict(string text) => text.Trim().ToLowerInvariant() switch
+    /// <summary>
+    /// Reads a standalone verdict on the first nonblank line, allowing later explanations
+    /// unless another standalone verdict contradicts it.
+    /// </summary>
+    public static bool? ParseVerdict(string text)
+    {
+        string[] lines = text.Split(['\r', '\n'],
+            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length == 0) return null;
+        bool? verdict = ParseVerdictLine(lines[0]);
+        if (verdict is null) return null;
+        foreach (string line in lines.Skip(1))
+            if (ParseVerdictLine(line) is bool later && later != verdict.Value)
+                return null;
+        return verdict;
+    }
+
+    private static bool? ParseVerdictLine(string line) => line.ToLowerInvariant() switch
     { "yes" or "yes." => true, "no" or "no." => false, _ => null };
 
     private static (RubricDocument, string) Load()

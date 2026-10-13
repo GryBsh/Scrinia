@@ -185,3 +185,17 @@ One fresh whole-branch review found no Critical findings and four Important find
 The integration suite also identified the two new executable projects as unexplained release omissions. Both are now explicitly classified as development/test tools in the existing inventory test; the release manifest is unchanged.
 
 Deferred minor findings: README commands still name the example after instructing users to copy it; console accuracy shows `0/0` when no case is graded; “phase costs” refers to tokens/time rather than money; “empty workspace/home” wording omits recreated configuration and optional seed assets. The report-only UX review recorded two Must fix and three Should fix findings; the functional diagnostic issue was included in the correctness remediation.
+
+## 2026-10-13: completed seven-case smoke and derived judge scoring
+
+The run in `artifacts/agent-bench/live-2026-10-12/smoke-16k-link-fix-run` completed in approximately 5 hours 2 minutes with both agent and judge output limits set to 16,384 tokens. It selected **7 of the 500 LongMemEval_S questions (1.4%)**, covering six question categories and an abstention case. This was the complete smoke selection, not the full benchmark. All seven questions produced answers with no execution failures. The fixed payload completed 30 link calls with no link errors; 22 errors occurred among 2,593 total tool calls.
+
+The frozen original summary records five correct graded answers and two grading failures. Both failed judge replies began with a standalone verdict followed by an explanation. The approved parser policy, `standalone-opening-line-v1`, accepts a case-insensitive `yes` or `no` on the first nonblank line, optionally ending in one period. Explanations may follow on later lines. A later conflicting standalone verdict is rejected; verdict words embedded in prose are not interpreted. Same-line explanations and prefix matches such as `Yesterday` remain invalid.
+
+Offline re-scoring with the compiled C# parser gives **6 correct / 7 graded (85.7%)**, with 100% grading coverage of the selected smoke cases. Case `00ca467f` becomes correct; abstention case `031748ae_abs` becomes incorrect. The other five verdicts remain correct. This small subset does not establish full-benchmark accuracy.
+
+The separate derived report is `artifacts/agent-bench/live-2026-10-12/derived-scores/standalone-opening-line-v1.json`. It records original grades and outcomes, derived verdicts, policy identity, source-manifest hash, and parser source/assembly hashes. No new model calls were made, and no original grade, outcome, summary, manifest, or event file was rewritten. The frozen Release runner was not rebuilt.
+
+All 1,589 files in the historical hash snapshot still match. A .NET enumeration additionally found eight existing version-metadata files at Windows paths of 260–263 characters that the earlier Python snapshot omitted. The supplemental source inventory records all 1,597 files, verified unchanged before and after re-scoring. The readable local re-scoring utility is retained under `artifacts/agent-bench/parser-v2-rescore/`.
+
+Validation: the new regression cases first produced 10 expected failures against the old parser. After the change, all 48 focused rubric/grader tests and all 200 benchmark-project tests passed. The solution Debug build completed with zero warnings or errors. TRX files are retained under `artifacts/agent-bench/parser-v2-tests/`. The unrelated whole-solution test suite was not repeated for this benchmark-only change.
