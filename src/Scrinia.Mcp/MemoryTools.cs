@@ -868,6 +868,22 @@ public sealed partial class ScriniaMcpTools
         {
             return RecoveryBlockedResponse(ex).ToYaml();
         }
+        catch (DurableWriteException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (ScopeReadOnlyException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (FileLockTimeoutException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (ArgumentException ex)
+        {
+            return ResponseBuilder.Error(ex.Message, ErrorCodes.InvalidParameter).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "restore"), Description(

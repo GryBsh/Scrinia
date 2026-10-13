@@ -1507,8 +1507,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Create a bidirectional relationship between two memories. Writes a unified
-    /// <c>ref</c> attribute on each side, handed to <see cref="UpdateMeta"/> as an attribute and
-    /// never minted as a <c>ref:{name}</c>-shaped keyword for routing to turn back into one.
+    /// <c>ref</c> attribute on indexed/ephemeral memories or a sidecar reference on file entities.
     /// Refuses without writing anything unless both memories already exist.
     /// <para>Either side may be an ephemeral <c>~name</c> <i>as far as this method is concerned</i>
     /// — but that only reaches a caller whose process is the one holding the ephemeral. It is real
@@ -1538,7 +1537,8 @@ public sealed partial class ScriniaMcpTools
         // An ephemeral side is no longer refused at all: UpdateMeta handles a ~name, in both store
         // modes, so existence is the only thing left for link itself to check.
         var store = CurrentStore;
-        string? missing = !Exists(store, from) ? from.ToString() : !Exists(store, to) ? to.ToString() : null;
+        string? missing = !LinkEndpointExists(store, from, to, cancellationToken) ? from.ToString()
+            : !LinkEndpointExists(store, to, from, cancellationToken) ? to.ToString() : null;
         if (missing is not null)
             return ResponseBuilder.Error(
                 $"Memory '{missing}' not found — nothing was written.",
@@ -1558,25 +1558,20 @@ public sealed partial class ScriniaMcpTools
         // same loop with short names left both untouched, which is the whole tell: the growth was
         // the DEGRADATION, not the linking. Writing the attribute directly removes the conversion,
         // so the destination's name length stops mattering at all.
-        McpResponse result1 = await UpdateMeta(
-            from, attributes: ReferenceTo(to), cancellationToken: cancellationToken);
-        McpResponse result2 = await UpdateMeta(
-            to, attributes: ReferenceTo(from), cancellationToken: cancellationToken);
+        McpResponse result1 = await LinkEndpoint(from, to, cancellationToken);
+        if (result1.IsError) return result1;
+        McpResponse result2 = from == to ? result1 : await LinkEndpoint(to, from, cancellationToken);
 
-        if (result1.IsError || result2.IsError)
-        {
-            var firstError = result1.IsError ? result1 : result2;
-            return ResponseBuilder.Error(
-                firstError.Error ?? firstError.Content ?? "Partial link failure",
-                ErrorCodes.Internal,
-                $"Verify both '{from}' and '{to}' exist via recall.")
-                .WithInfo($"partial: {from} -> {to}");
-        }
+        if (result2.IsError)
+            return result2.WithInfo([.. result2.Info ?? [], $"partial: {from} -> {to}"]);
 
         string linkMsg = $"Linked '{from}' <-> '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))
             linkMsg += $" Reason: {reason}";
-        return ResponseBuilder.Success(linkMsg).WithAction("linked");
+        McpResponse response = result1.IsWarning ? result1 with { Content = linkMsg }
+            : result2.IsWarning ? result2 with { Content = linkMsg }
+            : ResponseBuilder.Success(linkMsg);
+        return response.WithAction("linked");
     }
 
     /// <summary>The one-key attribute map naming <paramref name="name"/> as a reference — the shape
