@@ -30,6 +30,8 @@ public sealed class LongMemEvalReaderTests
     [InlineData("sessions")]
     [InlineData("role")]
     [InlineData("content")]
+    [InlineData("content-missing")]
+    [InlineData("content-number")]
     [InlineData("session-id")]
     [InlineData("answer-shape")]
     public async Task Malformed_history_is_rejected_instead_of_skipped(string mutation)
@@ -42,12 +44,43 @@ public sealed class LongMemEvalReaderTests
             case "dates": item["haystack_dates"]!.AsArray().RemoveAt(0); break;
             case "sessions": item["haystack_sessions"]!.AsArray().Clear(); break;
             case "role": item["haystack_sessions"]![0]![0]!["role"] = "system"; break;
-            case "content": item["haystack_sessions"]![0]![0]!["content"] = ""; break;
+            case "content": item["haystack_sessions"]![0]![0]!["content"] = null; break;
+            case "content-missing": item["haystack_sessions"]![0]![0]!.AsObject().Remove("content"); break;
+            case "content-number": item["haystack_sessions"]![0]![0]!["content"] = 42; break;
             case "session-id": item["haystack_session_ids"]![1] = ""; break;
             case "answer-shape": item["answer"] = new JsonObject(); break;
         }
         await Assert.ThrowsAsync<InvalidDataException>(() => new LongMemEvalReader().LoadAsync(
             scratch.Write("data.json", data.ToJsonString()), [], CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("user", "")]
+    [InlineData("assistant", "")]
+    [InlineData("user", " \t\n")]
+    public async Task Empty_or_whitespace_turns_preserve_content_role_and_position(string role, string content)
+    {
+        using var scratch = new ScratchDirectory();
+        var data = JsonNode.Parse(File.ReadAllText(Fixture))!.AsArray();
+        var item = data[0]!;
+        item["haystack_dates"] = new JsonArray("2024-06-14", "2024-06-14");
+        item["haystack_sessions"]![0]![0]!["role"] = role;
+        item["haystack_sessions"]![0]![0]!["content"] = content;
+        string path = scratch.Write("data.json", data.ToJsonString());
+        var result = await new LongMemEvalReader().LoadAsync(path, [], CancellationToken.None);
+        var sessions = Assert.Single(result.Cases).Sessions;
+        Assert.Equal(item["haystack_sessions"]!.AsArray().Count, sessions.Count);
+        for (int i = 0; i < sessions.Count; i++)
+        {
+            var source = item["haystack_sessions"]![i]!.AsArray();
+            Assert.Equal(source.Count, sessions[i].Turns.Count);
+            for (int j = 0; j < source.Count; j++)
+            {
+                Assert.Equal(source[j]!["role"]!.GetValue<string>(), sessions[i].Turns[j].Role);
+                Assert.Equal(source[j]!["content"]!.GetValue<string>(), sessions[i].Turns[j].Content);
+            }
+        }
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(path))), result.Sha256);
     }
 
     [Theory]

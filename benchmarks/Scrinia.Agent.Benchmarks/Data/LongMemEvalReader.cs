@@ -106,7 +106,8 @@ public sealed class LongMemEvalReader
                 var turn = turns[j] ?? throw Invalid(id, field, "must be an object");
                 string role = Required(turn.Role, id, field + ".role");
                 if (role is not ("user" or "assistant")) throw Invalid(id, field + ".role", "must be user or assistant");
-                visible[j] = new(role, Required(turn.Content, id, field + ".content"));
+                // Empty message bodies occur in the cleaned dataset; preserve each turn verbatim.
+                visible[j] = new(role, turn.Content ?? throw Invalid(id, field + ".content", "must be a string"));
             }
             ordered.Add((instant, i, date, visible));
         }
