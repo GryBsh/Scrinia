@@ -1,12 +1,12 @@
 # LongMemEval agent runner verification
 
-Offline verification: 2026-10-11. Bounded live proof started on 2026-10-12 after the user supplied the endpoint/model, made the two named credential variables available, and requested continuation. Live outcomes and interruption/resume acceptance remain pending while execution is in progress.
+Offline verification: 2026-10-11. Bounded live proof started on 2026-10-12 after the user supplied the endpoint/model, made the two named credential variables available, and requested continuation. The seven-case live run finished with explained outcomes on 2026-10-12. The separate process proof verified interruption and clean restart, but endpoint connectivity blocked the saved-answer, judge-only resume, and completed-case skip boundaries.
 
-## Live proof in progress (2026-10-12)
+## Bounded live proof (2026-10-12 to 2026-10-13 UTC)
 
 The frozen seven-case run uses the original cleaned LongMemEval-S dataset (500 cases; SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`). Selection was fixed before inference: `01493427`, `00ca467f`, `0e5e2d1a`, `06878be2`, `001be529`, `08f4fc43`, and `031748ae_abs`. These cover the six official categories plus an abstention case.
 
-Both roles use the user-supplied OpenAI-compatible endpoint and requested model `SC117/Ornith-1.5-35B-A3B-MTP-APEX-GGUF:Ornith-1.5-35B-A3B-MTP-APEX-I-Compact`. The provider reports `SC117/Ornith-1.5-35B-A3B-MTP-APEX-GGUF`. Credentials remain in `BENCH_AGENT_API_KEY` and `BENCH_JUDGE_API_KEY`, outside configuration and evidence. Temperature is zero; output limits are 4,096 agent / 512 judge tokens. Episode ceilings are 16 model requests, 120 seconds, and at most two attempts per transient request; each case has 1,800 seconds.
+Both roles use the user-supplied OpenAI-compatible endpoint and requested model `SC117/Ornith-1.5-35B-A3B-MTP-APEX-GGUF:Ornith-1.5-35B-A3B-MTP-APEX-I-Compact`. The provider reports `SC117/Ornith-1.5-35B-A3B-MTP-APEX-GGUF`. Credentials remain in `BENCH_AGENT_API_KEY` and `BENCH_JUDGE_API_KEY`, outside configuration and evidence. Temperature is zero; output limits are 4,096 agent / 512 judge tokens. The original run used episode ceilings of 16 model requests and 120 seconds, at most two attempts per transient request, and a 1,800-second case ceiling.
 
 The original first case reached its 1,800-second deadline during learning: 33 historical sessions completed and the 34th was interrupted. Its immutable outcome is `ExecutionFailed / learn / CASE_DEADLINE`, with no answer or grade. Responses reported 2,322,147 input and 83,580 output tokens; an interrupted request may have additional unavailable usage. The following case had begun when the original owned process tree was stopped; later cases remained unattempted. This run is incomplete, not a quality score.
 
@@ -16,11 +16,31 @@ The 60-minute run's first case later failed with `EPISODE_DEADLINE`: 19 learning
 
 Case two of that run also stopped before answering: `EPISODE_LIMIT` during session 42 after 41 completed learning sessions and 16 model requests in the final episode. Its outcome remains an execution failure, not a grade. The third case had begun when this owned run was stopped; 292 files are preserved with hashes in `smoke-60m-preserved-hashes.json`.
 
-A fresh `smoke-5m-episodes.json` run now uses 300 seconds and 40 model requests per episode, retaining the user-approved 3,600-second case ceiling. This execution adjustment addresses the two observed episode constraints without altering prompts, models, data, tools, binaries, output-token limits, retry count, or the seven-case selection. Preflight passed again; only limit settings and output directory differ, and both earlier evidence directories remain hash-identical. This configuration remains fixed for the remaining proof.
+The final `smoke-5m-episodes.json` run used 300 seconds and 40 model requests per episode, retaining the user-approved 3,600-second case ceiling. This execution adjustment addresses the two observed episode constraints without altering prompts, models, data, tools, binaries, output-token limits, retry count, or the seven-case selection. Preflight passed again; only limit settings and output directory differ, and both earlier evidence directories remain hash-identical. These settings stayed fixed through all seven cases and the separate recovery attempts.
 
 Ruling: enlarge episode bounds within the approved total case allowance after both episode limits prevented answering. Cost if wrong: the new attempt incurs additional ingestion work and may still fail within the case limit; all earlier failures and costs remain visible, and no quality score is discarded or substituted.
 
-Preflight successfully executed a real `guide` call and a separate tool-free judge capability check. Initial learning traces contain real memory reads/writes and exactly preserve source user/assistant turns and dates. No case grade is claimed yet. Evidence is retained under `artifacts/agent-bench/live-2026-10-12/`; `audit.py` checks observed learning inputs against the original dataset without printing transcript contents.
+Preflight successfully executed a real `guide` call and a separate tool-free judge capability check. Initial learning traces contain real memory reads/writes and exactly preserve source user/assistant turns and dates. The final frozen-run outcomes are recorded below. Evidence is retained under `artifacts/agent-bench/live-2026-10-12/`; `audit.py` checks observed learning inputs against the original dataset without printing transcript contents.
+
+### Frozen-run outcomes
+
+The run finished at about 23:54 UTC on 2026-10-12 with all seven cases terminal. It saved five answers, produced two valid grades (both correct), and recorded three grading failures plus two execution failures. Coverage is 2/7 and end-to-end success is 2/7; accuracy among the two graded cases is provisional and is not a full seven-case quality result. These are the actual frozen-runtime outcomes, without reparsing or replacing evidence.
+
+| Case | Actual outcome | Evidence |
+| --- | --- | --- |
+| `01493427` | `GradingFailed / JUDGE_INVALID_VERDICT` | All 47 learning sessions completed and an answer was saved. Raw judge `No.` was rejected by the frozen strict parser. |
+| `00ca467f` | `Correct` | All 47 learning sessions completed; raw judge `Yes`. 264 requests/responses, 3,237,534 input and 102,118 output tokens. Eight tool errors were recovered without an execution failure. |
+| `0e5e2d1a` | `ExecutionFailed / RESPONSE_TRUNCATED` | 21 of 46 learning sessions completed. Session 22 returned `finishReason: length` with 4,096 output tokens, the configured limit. No answer or grade was produced. |
+| `06878be2` | `GradingFailed / JUDGE_REQUEST_FAILED` | All 48 learning sessions completed and an answer was saved. The judge returned `finishReason: length` at 512 output tokens without verdict text. 256 requests/responses, 3,088,869 input and 102,009 output tokens. |
+| `001be529` | `Correct` | All 51 learning sessions completed, including repeated source IDs at distinct dates; raw judge `Yes`. 280 requests/responses, 3,505,507 input and 114,623 output tokens. |
+| `08f4fc43` | `ExecutionFailed / PROVIDER_FAILED` | 41 of 47 learning sessions completed. Session 42 received HTTP 502 twice, exhausting the configured two attempts; no answer or grade. The episode used 13 requests, 11 responses, and about 242 seconds. |
+| `031748ae_abs` | `GradingFailed / JUDGE_REQUEST_FAILED` | All 52 learning sessions completed and an answer was saved. The judge returned `finishReason: length` at 512 output tokens without verdict text. |
+
+The independent audit verified 309 observed source learning inputs (307 completed sessions), plus fresh question/date-only answer inputs and exact pinned judge prompts for all five answered cases. `verify_closed.py` also verified all terminal event hashes and saved-answer receipts. The truncation remains an explained failure under the fixed configuration; no output-token increase or replacement attempt is planned for this smoke run.
+
+The dataset SHA-256 and all five JSONL exports were independently verified. The completed run's 1,363 files are protected by `smoke-5m-preserved-hashes.json`. The original Release runtime is copied to `frozen-smoke-runtime/`; all 29 assembly hashes match its manifest, and all 33 copied files have recorded hashes. The tested corrected Release build subsequently succeeded with zero warnings and errors for the separate recovery proof.
+
+Recorded case responses report at least 21,415,796 input and 713,552 output tokens. Total case usage remains explicitly unknown because the two failed provider requests may have unreported usage. Preflight is separate: 12,832 input and 122 output tokens. The runner exited 1 for incomplete successful coverage and kept both the official-shaped five-answer export and the coverage-aware summary.
 
 ### Judge punctuation correction
 
@@ -28,7 +48,25 @@ The frozen 300-second episode run completed all 47 learning sessions for first c
 
 The user approved accepting one trailing period. The source parser now accepts `yes.` and `no.` with existing case/outer-whitespace handling; explanations, mixed answers, internal spaces, other punctuation, and repeated periods remain invalid. Six new acceptance cases failed against the old parser, then all 28 focused rubric/grader tests passed with the correction. Tests also confirm the raw reply remains unchanged and is recorded before the verdict.
 
-The full benchmark regression suite passed 180/180 with zero skips in 4m11s in Debug; its TRX is retained under `live-2026-10-12/verdict-regression/`. All 29 Release assembly hashes still matched the active manifest after this verification, so the live Release binary remains frozen. Existing answers, receipts, grades, outcomes, and manifests are not rewritten. A later run using the corrected binary requires a new runtime fingerprint; it cannot resume this frozen manifest.
+The full benchmark regression suite passed 180/180 with zero skips in 4m11s in Debug; its TRX is retained under `live-2026-10-12/verdict-regression/`. All 29 Release assembly hashes still matched the active manifest after this verification, so the active smoke binary stayed frozen through completion. Existing answers, receipts, grades, outcomes, and manifests are not rewritten. The corrected binary was built only after smoke completion and used a new recovery-run manifest; no frozen-manifest fingerprint was bypassed.
+
+### Live interruption and recovery: partially verified
+
+After the smoke ended, the corrected Release runtime used the same dataset, selection, prompts, model settings, tools, payload, and execution limits in a new `resume-run/`. Its manifest content hashes differ only for the runner DLL, runner version, and derived local-input fingerprint. The output directory is separate.
+
+| Boundary | Live evidence |
+| --- | --- |
+| Interrupt after a persistent write, before answering | Verified. The controller terminated only its owned process tree after successful `remember` calls. Two real `.nmp2` memories remained in the interrupted workspace. |
+| Restart incomplete learning from clean state | Verified. Attempt 2 began with the same initial workspace file list (recreated configuration and lock files) and an empty user home, before its first tool call. Source inputs were audited again. |
+| Interrupt after a durable saved answer | Not reached. Attempt 2 failed during learning session 4 after three completed sessions. |
+| Resume grading without replaying learning | Unverified live; the offline boundary tests pass. |
+| Skip a completed case on resume | Unverified live; the offline tests pass. |
+
+The failed recovery request recorded `ClientResultException`, status 0, and `PROVIDER_FAILED` after about 92.6 seconds, without a saved answer. One bounded continuation kept the same configuration and retained every attempt. It failed during preflight with another status-0 transport error after about 21.1 seconds; no third attempt for the first case was created. A credential-free request to the endpoint then timed out connecting after ten seconds. Further live attempts stopped because the endpoint was unreachable from the runner.
+
+`resume-control.json` and `resume-continuation-control.json` record both controllers and their owned processes. `audit_resume.py` verifies the observed source inputs. All 60 recovery files remain on disk, with hashes recorded in `resume-final-hashes.json`. The final preservation check confirmed that the original run (204 files), the 60-minute run (292 files), the completed smoke (1,363 files), and the copied original runtime (33 files) are unchanged.
+
+Remaining gate: once the endpoint is reachable, finish the saved-answer interruption, judge-only resume, and completed-case skip proof with preserved attempts and unchanged configuration. This live recovery gate remains unchecked; the current run does not establish it.
 
 ### Dataset compatibility correction
 
@@ -41,7 +79,7 @@ Ruling: treat source session IDs as reusable transcript identifiers, preserving 
 The standalone runner uses Microsoft Agent Framework 1.24.0, MCP C# SDK 2.2.0, and real Scrinia 0.6.0 subprocesses. Scripted SDK model replies drive the tests; memory operations use actual discovered MCP tools, with no direct production memory-store references.
 
 - Tasks 1–7: 156 tests passed, zero skipped, in the committed orchestration gate.
-- Final offline gate after review fixes (`c2502fc`): 166/166 passed, zero skipped, in 4m28s. Live proof remains pending; this closes only the authorized offline portion of Task 8.
+- Final offline gate after review fixes (`c2502fc`): 166/166 passed, zero skipped, in 4m28s. This closed the original offline portion of Task 8; the later live results and remaining gate are recorded above.
 - Final end-to-end proof: 3 tests passed, zero skipped. The initial proof failed on missing recorded tool definitions; definitions and readable deployed runtime/product versions were added and the proof passed.
 - Dedicated model-free payload: `dotnet publish src/Scrinia/Scrinia.csproj -c Release -o artifacts/agent-bench/scri` succeeded.
 - Whole-solution Release build succeeded with zero warnings and zero errors.
@@ -51,7 +89,7 @@ The standalone runner uses Microsoft Agent Framework 1.24.0, MCP C# SDK 2.2.0, a
 
 The end-to-end cases demonstrate an assistant-originated location, a corrected appointment, persisted recall across restarted processes, isolation of a second abstention case, tool-free judging, official-shaped JSONL, and summary totals. Scripted verdicts are plumbing assertions, not accuracy evidence.
 
-The interruption cases deny a durable event append after a real memory write, or after a fully saved answer. Both leave prior evidence unchanged. A retry before the answer receipt uses a fresh workspace; a retry after it invokes only the judge. This proves recovery at those durable boundaries. A live process-interruption demonstration remains pending.
+The interruption cases deny a durable event append after a real memory write, or after a fully saved answer. Both leave prior evidence unchanged. A retry before the answer receipt uses a fresh workspace; a retry after it invokes only the judge. This proves recovery at those durable boundaries. The later live run verified the pre-answer interruption and clean restart; the saved-answer and completed-case boundaries remain unverified live, as described above.
 
 ## Retained evidence
 
@@ -67,13 +105,11 @@ Local, ignored artifacts are under `artifacts/agent-bench/`:
 
 Retained manifests record original temporary fixture paths. These copies are evidence for inspection; they are not ready-to-run live configurations. The model identity `reported-fixture-model` belongs to the scripted test double.
 
-## Platform limits and next live step
+## Platform limits and remaining live step
 
 Windows is the validated process lane. The full Linux suite remains unverified: Ubuntu has SDK 10.0.112 and fails resolution of the repository's pinned 10.0.203; Ubuntu-24.04 has no `dotnet`. A standalone managed fixture ran directly on Ubuntu's installed .NET 10 runtime: the original path guard accepted a FIFO; the corrected guard rejects FIFOs, sockets, symlinks, and devices without opening them, while accepting regular files, directories, and missing paths. No SDK installation, global repair, or `global.json` change was made.
 
-For the bounded live proving run, provide agent/judge endpoint URLs and exact model IDs, then set `BENCH_AGENT_API_KEY` and `BENCH_JUDGE_API_KEY` (or choose different variable names in the config) in the runner's inherited environment. Restart the agent application if necessary. Secret values stay outside configuration and evidence.
-
-Before inference, freeze and announce the lexicographically first non-abstention ID in each official category plus the first abstention ID, along with the dataset hash and ceilings. Complete that bounded run and a separate interruption/resume demonstration, inspect traces, and present the evidence for acceptance. The full baseline and additional datasets remain outside this scope.
+The endpoint, model IDs, credential-variable names, and bounded run scope were supplied and exercised. Secret values stay outside configuration and evidence. The remaining live recovery boundaries require the endpoint to become reachable again; no new credentials or configuration change is implied by the transport failures. The full baseline, other datasets, and legacy-runner retirement remain outside this scope.
 
 ## Independent review and remediation
 
@@ -83,7 +119,7 @@ Before inference, freeze and announce the lexicographically first non-abstention
 - Export one verified saved answer from the latest attempt per question to official-shaped answers.jsonl, retaining every older answer in immutable attempt evidence — duplicate question IDs from all attempts would make the official evaluator's input ambiguous; summary explicitly states this policy — cost if wrong: consumers wanting every historical answer must read attempt evidence instead of the official export.
 - Preserve the original resolved configuration in a resumed immutable manifest while recording current resolved paths in each preflight — behavior and content fingerprints exclude relocation paths by design, so byte-identical relocated inputs can resume without rewriting provenance — cost if wrong: readers must inspect the latest preflight for current local paths.
 - Fingerprint deployed runtime assemblies instead of relying only on the NuGet lock file — this captures the actual SDK and prompt-builder implementations used by an installed runner — cost if wrong: unrelated DLL changes beside the runner conservatively refuse resume.
-- Live model quality and live process interruption remain pending — the user explicitly restricted this stage to offline execution; scripted tests establish harness behavior, not model quality — cost if wrong: deployment confidence awaits a separately authorized bounded live run.
+- The original offline-only scope was superseded by the authorized bounded live proof above. Its scoring coverage is incomplete, and the remaining live recovery boundaries are blocked by endpoint connectivity. Scripted tests establish those offline behaviors; they do not substitute for the missing live evidence.
 - Native Linux whole-suite execution remains unverified — the installed SDK cannot satisfy the repository pin; a standalone native-runtime regression verifies the concrete Unix file-type fix — cost if wrong: Linux integration issues may remain beyond that tested boundary.
 - Legacy runner retirement, other datasets, full baselines, and dollar estimates remain deferred — the approved scope proves LongMemEval first and records tokens/time without inventing provider pricing — cost if wrong: users retain two runners and must calculate monetary costs separately.
 - Hostile concurrent filesystem replacement and physical power-loss guarantees remain outside this proof — path validation is not an OS sandbox; tests cover ordinary write failures and durable recovery boundaries — cost if wrong: stronger adversarial/crash guarantees need separate architecture and testing.
