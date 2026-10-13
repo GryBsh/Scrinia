@@ -1,6 +1,6 @@
 # LongMemEval agent runner verification
 
-Offline verification: 2026-10-11. Bounded live proof started on 2026-10-12 after the user supplied the endpoint/model, made the two named credential variables available, and requested continuation. The seven-case live run finished with explained outcomes on 2026-10-12. The separate process proof verified interruption and clean restart, but endpoint connectivity blocked the saved-answer, judge-only resume, and completed-case skip boundaries.
+Offline verification: 2026-10-11. Bounded live proof started on 2026-10-12 after the user supplied the endpoint/model, made the two named credential variables available, and requested continuation. The seven-case live run finished with explained outcomes on 2026-10-12. The separate process proof verified interruption and clean restart, but the saved-answer, judge-only resume, and completed-case skip boundaries remain unverified. Connectivity initially blocked recovery; after the endpoint returned, the next attempt failed at the fixed output-token limit.
 
 ## Bounded live proof (2026-10-12 to 2026-10-13 UTC)
 
@@ -58,7 +58,7 @@ After the smoke ended, the corrected Release runtime used the same dataset, sele
 | --- | --- |
 | Interrupt after a persistent write, before answering | Verified. The controller terminated only its owned process tree after successful `remember` calls. Two real `.nmp2` memories remained in the interrupted workspace. |
 | Restart incomplete learning from clean state | Verified. Attempt 2 began with the same initial workspace file list (recreated configuration and lock files) and an empty user home, before its first tool call. Source inputs were audited again. |
-| Interrupt after a durable saved answer | Not reached. Attempt 2 failed during learning session 4 after three completed sessions. |
+| Interrupt after a durable saved answer | Not reached. Attempt 2 lost connectivity during session 4; attempt 3 hit the output-token limit during session 38 after 37 completed sessions. |
 | Resume grading without replaying learning | Unverified live; the offline boundary tests pass. |
 | Skip a completed case on resume | Unverified live; the offline tests pass. |
 
@@ -66,7 +66,13 @@ The failed recovery request recorded `ClientResultException`, status 0, and `PRO
 
 `resume-control.json` and `resume-continuation-control.json` record both controllers and their owned processes. `audit_resume.py` verifies the observed source inputs. All 60 recovery files remain on disk, with hashes recorded in `resume-final-hashes.json`. The final preservation check confirmed that the original run (204 files), the 60-minute run (292 files), the completed smoke (1,363 files), and the copied original runtime (33 files) are unchanged.
 
-Remaining gate: once the endpoint is reachable, finish the saved-answer interruption, judge-only resume, and completed-case skip proof with preserved attempts and unchanged configuration. This live recovery gate remains unchecked; the current run does not establish it.
+On the user's next continuation request, the endpoint returned the expected unauthenticated HTTP 401 in about 63 ms. Both named credentials were present, authenticated preflight passed, and all 29 runtime assembly hashes matched the recovery manifest. The unchanged configuration resumed case 1 as attempt 3 with the expected initial workspace files and empty user home.
+
+Attempt 3 completed 37 of 47 learning sessions, then failed during session 38 with `ExecutionFailed / learn / RESPONSE_TRUNCATED` after about 35 minutes. The final response reported `finishReason: length` and exactly 4,096 output tokens; the attempt recorded zero model-request errors. No answer or answer receipt was saved. All 38 observed learning inputs match the source dataset. The controller stopped its owned process tree after the failure; case 2 had begun attempt 2 but had not issued a learning request. No benchmark process remains running.
+
+`resume-return-control.json` records this continuation and its clean-start observation. The new `return-preservation-check.json` verifies every original smoke/runtime file and all 60 prior recovery files unchanged; `resume-return-final-hashes.json` records all 265 retained recovery files. Durable event/answer envelope verification also passed. The controller and prior reports remain preserved separately.
+
+Remaining gate: finish the saved-answer interruption, judge-only resume, and completed-case skip proof. Endpoint connectivity is no longer the observed blocker; the fixed 4,096-token agent response ceiling prevented this attempt from reaching the answer boundary. Increasing that ceiling requires a new run configuration and manifest, not a change to this frozen run. The live recovery gate remains unchecked.
 
 ### Dataset compatibility correction
 
@@ -109,7 +115,7 @@ Retained manifests record original temporary fixture paths. These copies are evi
 
 Windows is the validated process lane. The full Linux suite remains unverified: Ubuntu has SDK 10.0.112 and fails resolution of the repository's pinned 10.0.203; Ubuntu-24.04 has no `dotnet`. A standalone managed fixture ran directly on Ubuntu's installed .NET 10 runtime: the original path guard accepted a FIFO; the corrected guard rejects FIFOs, sockets, symlinks, and devices without opening them, while accepting regular files, directories, and missing paths. No SDK installation, global repair, or `global.json` change was made.
 
-The endpoint, model IDs, credential-variable names, and bounded run scope were supplied and exercised. Secret values stay outside configuration and evidence. The remaining live recovery boundaries require the endpoint to become reachable again; no new credentials or configuration change is implied by the transport failures. The full baseline, other datasets, and legacy-runner retirement remain outside this scope.
+The endpoint, model IDs, credential-variable names, and bounded run scope were supplied and exercised. Secret values stay outside configuration and evidence. The endpoint returned and authenticated inference succeeded on the latest continuation. The remaining live recovery boundaries were then blocked by response truncation at the fixed agent output limit; no credential change was needed. The full baseline, other datasets, and legacy-runner retirement remain outside this scope.
 
 ## Independent review and remediation
 
@@ -119,7 +125,7 @@ The endpoint, model IDs, credential-variable names, and bounded run scope were s
 - Export one verified saved answer from the latest attempt per question to official-shaped answers.jsonl, retaining every older answer in immutable attempt evidence — duplicate question IDs from all attempts would make the official evaluator's input ambiguous; summary explicitly states this policy — cost if wrong: consumers wanting every historical answer must read attempt evidence instead of the official export.
 - Preserve the original resolved configuration in a resumed immutable manifest while recording current resolved paths in each preflight — behavior and content fingerprints exclude relocation paths by design, so byte-identical relocated inputs can resume without rewriting provenance — cost if wrong: readers must inspect the latest preflight for current local paths.
 - Fingerprint deployed runtime assemblies instead of relying only on the NuGet lock file — this captures the actual SDK and prompt-builder implementations used by an installed runner — cost if wrong: unrelated DLL changes beside the runner conservatively refuse resume.
-- The original offline-only scope was superseded by the authorized bounded live proof above. Its scoring coverage is incomplete, and the remaining live recovery boundaries are blocked by endpoint connectivity. Scripted tests establish those offline behaviors; they do not substitute for the missing live evidence.
+- The original offline-only scope was superseded by the authorized bounded live proof above. Its scoring coverage is incomplete, and the remaining live recovery boundaries are unverified after transport failures followed by response truncation when connectivity returned. Scripted tests establish those offline behaviors; they do not substitute for the missing live evidence.
 - Native Linux whole-suite execution remains unverified — the installed SDK cannot satisfy the repository pin; a standalone native-runtime regression verifies the concrete Unix file-type fix — cost if wrong: Linux integration issues may remain beyond that tested boundary.
 - Legacy runner retirement, other datasets, full baselines, and dollar estimates remain deferred — the approved scope proves LongMemEval first and records tokens/time without inventing provider pricing — cost if wrong: users retain two runners and must calculate monetary costs separately.
 - Hostile concurrent filesystem replacement and physical power-loss guarantees remain outside this proof — path validation is not an OS sandbox; tests cover ordinary write failures and durable recovery boundaries — cost if wrong: stronger adversarial/crash guarantees need separate architecture and testing.
