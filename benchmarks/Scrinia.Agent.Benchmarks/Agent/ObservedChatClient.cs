@@ -25,7 +25,10 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
         actual.Temperature = settings.Temperature;
         actual.MaxOutputTokens = settings.MaxOutputTokens;
         actual.ConversationId = null;
-        actual.RawRepresentationFactory = null;
+        actual.TopP = settings.TopP;
+        actual.TopK = settings.TopK;
+        actual.RawRepresentationFactory = settings.TopK is { } topK
+            ? _ => ModelClientFactory.CreateSamplingOptions(topK) : null;
         for (int attempt = 1; ; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -36,6 +39,8 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
                 w.WriteNumber("attempt", attempt);
                 w.WriteString("model", settings.Model);
                 w.WriteNumber("temperature", settings.Temperature);
+                if (settings.TopP is { } topP) w.WriteNumber("topP", topP);
+                if (settings.TopK is { } topK) w.WriteNumber("topK", topK);
                 w.WriteNumber("maxOutputTokens", settings.MaxOutputTokens);
                 w.WriteString("instructions", actual.Instructions);
                 w.WritePropertyName("messages");

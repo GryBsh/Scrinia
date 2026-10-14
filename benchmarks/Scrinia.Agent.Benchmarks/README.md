@@ -43,6 +43,8 @@ Completed correct/incorrect cases are skipped. A durably saved answer resumes wi
 
 | Setting | Meaning |
 | --- | --- |
+| `agent.topP`, `judge.topP` | Optional nucleus-sampling probability, greater than 0 and at most 1. Omit or use null to leave the server default. |
+| `agent.topK`, `judge.topK` | Optional positive integer sent as `top_k`. Requires an endpoint supporting this extension; omit or use null to leave the server default. |
 | `agent.maxOutputTokens`, `judge.maxOutputTokens` | Maximum requested output tokens per model request; not a context-window or input-token limit. |
 | `maxModelTurnsPerEpisode` | Maximum actual model requests per learning, answering, or judging episode, including retries. |
 | `maxModelAttempts` | Maximum attempts for one transient model request, within the episode request ceiling. |

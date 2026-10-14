@@ -116,7 +116,8 @@ public sealed class ConfigurationReader
             model.Endpoint.Query.Length != 0 || model.Endpoint.Fragment.Length != 0 ||
             string.IsNullOrWhiteSpace(model.Model) ||
             !Regex.IsMatch(model.ApiKeyEnvironmentVariable ?? "", "^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant) ||
-            !float.IsFinite(model.Temperature) || model.Temperature is < 0 or > 2 || model.MaxOutputTokens is < 1 or > 131072)
+            !float.IsFinite(model.Temperature) || model.Temperature is < 0 or > 2 || model.MaxOutputTokens is < 1 or > 131072 ||
+            (model.TopP is { } topP && (!float.IsFinite(topP) || topP is <= 0 or > 1)) || model.TopK is <= 0)
             throw InputDiagnostics.Invalid($"Invalid {name} model settings.");
     }
 

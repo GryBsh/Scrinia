@@ -7,6 +7,17 @@ namespace Scrinia.Agent.Benchmarks;
 
 public static class ModelClientFactory
 {
+    // Some OpenAI-compatible servers support top_k, which is not a modeled OpenAI field.
+    // Use the SDK extension point so its normal serialization and tool loop remain intact.
+    internal static OpenAI.Chat.ChatCompletionOptions CreateSamplingOptions(int topK)
+    {
+        var options = new OpenAI.Chat.ChatCompletionOptions();
+#pragma warning disable SCME0001 // JsonPatch is the pinned SDK's additional-property API.
+        options.Patch.Set("$.top_k"u8, topK);
+#pragma warning restore SCME0001
+        return options;
+    }
+
     public static IChatClient Create(ModelSettings settings) => Create(settings, null);
     internal static IChatClient Create(ModelSettings settings, HttpClient? transport)
     {

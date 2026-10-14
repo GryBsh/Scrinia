@@ -24,6 +24,10 @@ public sealed class RunFingerprintTests
         var variations = new[] {
             config with { CaseIds = ["b", "a"] },
             config with { Agent = config.Agent with { Model = "changed" } },
+            config with { Agent = config.Agent with { TopP = 0.95f } },
+            config with { Agent = config.Agent with { TopK = 20 } },
+            config with { Judge = config.Judge with { TopP = 0.95f } },
+            config with { Judge = config.Judge with { TopK = 20 } },
             config with { Agent = config.Agent with { ApiKeyEnvironmentVariable = "OTHER_KEY" } },
             config with { Judge = config.Judge with { Temperature = 1 } },
             config with { Limits = config.Limits with { MaxModelAttempts = 3 } },

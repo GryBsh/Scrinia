@@ -1,7 +1,7 @@
 namespace Scrinia.Agent.Benchmarks;
 
 public sealed record ModelSettings(Uri Endpoint, string Model,
-    string ApiKeyEnvironmentVariable, float Temperature, int MaxOutputTokens);
+    string ApiKeyEnvironmentVariable, float Temperature, int MaxOutputTokens, float? TopP = null, int? TopK = null);
 public sealed record RunLimits(int MaxModelTurnsPerEpisode, int EpisodeSeconds,
     int CaseSeconds, int MaxModelAttempts);
 public sealed record ScriniaSettings(string PayloadDirectory, string Executable,
