@@ -69,6 +69,22 @@ public sealed class ModelClientFactoryTests
     }
 
     [Fact]
+    public void Requests_use_the_explicit_network_timeout_instead_of_the_sdk_default()
+    {
+        var variable = "BENCH_TEST_" + Guid.NewGuid().ToString("N");
+        Environment.SetEnvironmentVariable(variable, "offline-placeholder");
+        try
+        {
+            using var client = ModelClientFactory.Create(
+                ObservedChatClientTests.Settings with { ApiKeyEnvironmentVariable = variable });
+            var sdk = Assert.IsType<OpenAI.Chat.ChatClient>(client.GetService<OpenAI.Chat.ChatClient>());
+            using var request = sdk.Pipeline.CreateMessage();
+            Assert.Equal(TimeSpan.FromSeconds(180), request.NetworkTimeout);
+        }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+    }
+
+    [Fact]
     public void Missing_named_credential_fails_before_creating_a_client()
     {
         var settings = ObservedChatClientTests.Settings with { ApiKeyEnvironmentVariable = "BENCH_MISSING_" + Guid.NewGuid().ToString("N") };
