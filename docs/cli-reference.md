@@ -913,7 +913,7 @@ Memory paths are free-form, but a small set of namespaces have first-class behav
 | Path | Purpose |
 |------|---------|
 | `/skill/...` | Reusable specialist prompts (built-in or override). Routed through `recall` (load/list) and `remember` (create/override) to disk under `.scrinia/skills/`. |
-| `/agent/...` | Agent profile and behavioral norms (`.scrinia/agent/{name}.md` with sidecar metadata). |
+| `/agent/...` | AI assistant persona and behavioral instructions (`.scrinia/agent/{name}.md` with sidecar metadata). Store user facts in ordinary memory paths such as `/people/user/travel`. |
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date. |
 | `/checkpoint/...` | State snapshots. |

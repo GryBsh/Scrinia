@@ -12,6 +12,16 @@ Memory addresses are logical values, not filesystem paths or URIs. Persistent ad
 
 When writing integrations in .NET, use `MemoryAddress.Parse(raw)` when invalid input should throw, or `MemoryAddress.TryParse(raw, out address, out error)` when it should be reported to the caller. Store and plugin contracts use the typed `MemoryAddress`; artifact locations are opaque `ArtifactKey` values and must not be interpreted as URIs.
 
+### Choosing a path
+
+Store facts about people, their preferences, possessions, relationships, and past events in ordinary memory paths. For example, use `/people/user/travel`, `/preferences/food`, or `/events/weekend-hike`. These are examples, not reserved prefixes; choose a topic that makes the fact easy to find later.
+
+Reserve `/agent/...` for the **AI assistant's own persona, role, and behavioral instructions**. A profile of the human user belongs in ordinary memory, even when it contains durable preferences or working habits. Do not put user facts in `/agent/user` or copy them into an assistant persona.
+
+A project instruction file such as `AGENTS.md` is a separate filesystem document. Recording Scrinia usage there does not mean storing the guide or conversation facts under `/agent/...`.
+
+Use `append` to add information to an existing memory. `remember` replaces the content at an existing path; use it only when the supplied content is the complete intended replacement. Prefer a separate topic path when adding an unrelated fact.
+
 ### Chunks
 
 A memory's `content` is an **array of chunks**, each stored and retrieved independently. Split a memory along its semantically distinct parts — like the sections of a document — not by size:
@@ -103,7 +113,7 @@ Use it before non-trivial work; skip it when the request is self-contained.
 
 ### restore — resume your context
 
-`restore()` — reloads your agent profile, patterns, today's session log, skills, and unresolved conflicts. Rarely called directly; `guide()` folds it in at session start.
+`restore()` — reloads the AI assistant's persona, patterns, today's session log, skills, and unresolved conflicts. Rarely called directly; `guide()` folds it in at session start.
 
 ### facts — query the entity graph
 
@@ -172,7 +182,7 @@ Any path works; a few prefixes carry first-class behavior:
 | Path | Purpose |
 |------|---------|
 | `/skill/...` | Reusable specialist prompts (load via `recall`, override by storing) |
-| `/agent/...` | Agent profile and behavioral norms |
+| `/agent/...` | AI assistant persona and behavioral instructions; not human-user facts |
 | `/patterns/...` | Recurring patterns and conventions |
 | `/findings/...` | Audit, review, and QA findings |
 | `/learn/...` | Retrospectives and durable lessons |
@@ -211,7 +221,7 @@ Keep a running log: `append({ path: '/sessions/2026-07-16', content: '...' })`.
 
 ### Recovery
 
-After a context reset, `restore()` brings back your profile, patterns, session log, skills, and unresolved conflicts. Read its `actionNeeded` warnings first, then follow `followUp`.
+After a context reset, `restore()` brings back the AI assistant's persona, patterns, session log, skills, and unresolved conflicts. Read its `actionNeeded` warnings first, then follow `followUp`.
 
 ### Workspace
 

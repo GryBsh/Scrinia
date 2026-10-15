@@ -112,7 +112,8 @@ public sealed partial class ScriniaMcpTools
     [McpServerTool(Name = "guide"), Description(
         "Required reading — call at session start. Returns the agent guide AND auto-restores " +
         "workspace context (available skills, recent sessions, patterns) so you have everything " +
-        "needed for the session in one tool call. Then commit content to your project's agent file.")]
+        "needed for the session in one tool call. If maintaining project instructions, record Scrinia usage " +
+        "in a file such as AGENTS.md. That instruction file is distinct from the /agent/ persona namespace.")]
     public async Task<string> Guide(CancellationToken cancellationToken = default)
     {
         string guideContent = EmbeddedPrompts.LoadGuide()
@@ -206,7 +207,9 @@ public sealed partial class ScriniaMcpTools
     /// consolidation. The facade and CLI policies are pinned behaviourally by the test suite.</para>
     /// </summary>
     [McpServerTool(Name = "remember"), Description(
-        "Persist a memory at a path. content is an array — each element becomes one independently " +
+        "Persist a memory at a path. Store facts about people, their preferences, and past events under ordinary " +
+        "paths such as /people/user/travel. Reserve /agent/ for the AI assistant's own persona and behavior, " +
+        "not the human user's profile. Content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
         "a searcher would use. A keywords entry shaped 'key:value' (e.g. 'person:maria') is routed " +
@@ -215,7 +218,8 @@ public sealed partial class ScriniaMcpTools
         "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string? path,
+        [Description("Ordinary memory path (e.g. '/people/user/travel', '/preferences/food', '/findings/SEC-001'). " +
+                     "/agent/ is reserved for the AI assistant's persona, not facts about the user.")] string? path,
         [Description("Content array — each element becomes one independently retrievable chunk. Everything " +
                      "below follows one rule: extraction reads all of the text except inside a properly " +
                      "closed fenced code block (```) — YAML frontmatter and inline `code` spans are read as " +
@@ -887,7 +891,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "restore"), Description(
-        "Resume workspace context — agent profile, patterns, today's session log, available skills, " +
+        "Resume workspace context — the AI assistant's persona, patterns, today's session log, available skills, " +
         "unresolved merge conflicts. Usually unnecessary because guide() folds this in at session start; " +
         "call this mid-session to refresh after a long gap.")]
     public async Task<string> MemoryRestore(CancellationToken cancellationToken = default)

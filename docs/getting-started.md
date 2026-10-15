@@ -213,7 +213,7 @@ A small set of paths have first-class behavior; everything else is plain memory 
 | Path | Purpose |
 |------|---------|
 | `/skill/...` | Reusable specialist prompts (built-in or override). Stored at `.scrinia/skills/{name}.md`. |
-| `/agent/...` | Agent profile and behavioral norms. |
+| `/agent/...` | AI assistant persona and behavioral instructions; user facts belong in ordinary memory paths such as `/people/user/travel`. |
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
 | `/checkpoint/...` | State snapshots. |
