@@ -220,7 +220,7 @@ A small set of paths have first-class behavior; everything else is plain memory 
 | `/temp/...` | Ephemeral — an alias for `~subject`; both spell the same memory. |
 
 Reserved paths are not ordinary memories. Skills are loaded or overridden through `/skill/...`,
-and agent profiles use `/agent/...`; unsupported operations fail explicitly rather than falling
+and AI assistant personas use `/agent/...`; unsupported operations fail explicitly rather than falling
 through to the memory store.
 
 ### Search and embeddings migration

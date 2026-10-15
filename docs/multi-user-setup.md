@@ -51,9 +51,9 @@ after changing shared files outside it, call `shared_refresh` for the base. A mu
 `SHARED_BASE_STALE` needs a refresh before retrying.
 
 `shared_link` resolves both endpoints in the selected base. Ordinary memory links appear in
-`ref` attributes. For skills and agent profiles, links are stored in the Markdown file's metadata
+`ref` attributes. For skills and AI assistant personas, links are stored in the Markdown file's metadata
 sidecar as a `ref` array of logical paths. Their Markdown body stays unchanged. These sidecar links
-survive restart. For skills and agent profiles, `shared_recall` and `shared_list` return empty
+survive restart. For skills and AI assistant personas, `shared_recall` and `shared_list` return empty
 attributes and keywords. `shared_search` and `shared_facts` do not index these links.
 `shared_search` searches ordinary memories; it also excludes skill and agent Markdown bodies.
 Use `shared_list` to discover those file entities and `shared_recall` to read them.

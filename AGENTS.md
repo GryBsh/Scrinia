@@ -4,7 +4,7 @@ Licensed under BSD-3-Clause. Copyright (c) 2026 Nick Daniels.
 
 This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It describes what scrinia is, how the codebase is structured, what patterns to follow, and common pitfalls to avoid.
 
-**If scrinia is available as an MCP server in your session, call `guide()` once and commit its content to your project's agent file.** The guide covers ephemeral memories, topic organization, agent-directed chunking strategies, keywords, review conditions, skills, and session recall. Use scrinia's memory tool proactively to persist knowledge as you work — that is what it is for.
+**If scrinia is available as an MCP server in your session, call `guide()` once and record its usage guidance in the project's instruction file (for example, `AGENTS.md`). This filesystem document is distinct from the `/agent/` memory namespace.** The guide covers ephemeral memories, topic organization, agent-directed chunking strategies, keywords, review conditions, skills, and session recall. Use scrinia's memory tool proactively to persist knowledge as you work — that is what it is for.
 
 ## What scrinia Does
 
@@ -67,7 +67,7 @@ Eleven workspace tools are exposed — `guide()`, one per memory operation, and 
 
 | Tool | Description |
 |------|-------------|
-| `guide()` | Returns the embedded usage guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session and commit its content to your project's agent file. |
+| `guide()` | Returns the embedded usage guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session and record usage guidance in the project's instruction file, such as `AGENTS.md`; this does not mean storing it under `/agent/`. |
 | `remember` | Persist a memory at a path. `content` is a string array (one chunk per element); `attributes` are typed facets that link/filter; `keywords` are search terms. |
 | `recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
 | `search` | Find memories by keyword or phrase; supports `pathPrefix` and `attributeFilter`. |
@@ -84,7 +84,7 @@ Skill paths are routed transparently through `recall` and `remember`:
 - `recall({ path: '/skill/' })` — list available skills.
 - `remember({ path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
 
-`restore` resumes context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
+`restore` resumes context — the AI assistant's persona, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
 
 ## Core Abstractions
 
@@ -149,7 +149,7 @@ Memory paths are free-form. A small set has first-class behavior:
 | Path | Purpose |
 |------|---------|
 | `/skill/...` | Reusable specialist prompts. Stored at `.scrinia/skills/{name}.md` with sidecar metadata. Built-in skills are embedded in the binary; user overrides on disk take precedence. |
-| `/agent/...` | Agent profile and behavioral norms. Stored at `.scrinia/agent/{name}.md` with sidecar metadata. |
+| `/agent/...` | The AI assistant's own persona, role, and behavioral instructions. Stored at `.scrinia/agent/{name}.md` with sidecar metadata. User facts belong in ordinary memory paths, such as `/people/user/travel`. |
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/findings/...` | Audit, review, and QA findings. |
 | `/learn/...` | Retrospectives and durable lessons. |

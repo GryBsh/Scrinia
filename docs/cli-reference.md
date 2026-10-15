@@ -316,7 +316,7 @@ Omit `--batch-size` to use the configured value. Reuse the returned opaque conti
 
 ### scri restore
 
-Restore saved agent context: the agent profile, patterns, today's session log, and available skills.
+Restore saved agent context: the AI assistant's persona, patterns, today's session log, and available skills.
 
 ```bash
 scri restore [--workspace-root <path>] [--hook [--client codex|claude|opencode|copilot]] [--json]
