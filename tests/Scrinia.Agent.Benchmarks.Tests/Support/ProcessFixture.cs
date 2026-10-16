@@ -10,7 +10,7 @@ internal static class ProcessFixture
     public static async Task<int> Main(string[] args)
     {
         if (args is ["--unix-path-proof"]) return UnixPathProof.Run();
-        if (args.Length < 3 || args[0] != "--mcp-fixture" || args[1] is not ("hang" or "invalid" or "exit-after-guide")) return 2;
+        if (args.Length < 3 || args[0] != "--mcp-fixture" || args[1] is not ("hang" or "invalid" or "exit-after-guide" or "exit-on-eof" or "stall-on-eof")) return 2;
         var marker = Path.GetFullPath(args[2]);
         var directory = Path.GetDirectoryName(marker)!;
         // TEMP is deliberately replaced in the child environment. Validate the owned fixture
@@ -20,7 +20,7 @@ internal static class ProcessFixture
         using var self = Process.GetCurrentProcess();
         File.WriteAllText(marker, self.Id.ToString(CultureInfo.InvariantCulture));
         if (args[1] == "invalid") { Console.WriteLine("invalid MCP handshake"); return 1; }
-        if (args[1] == "exit-after-guide")
+        if (args[1] is "exit-after-guide" or "exit-on-eof" or "stall-on-eof")
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             while (await Console.In.ReadLineAsync(timeout.Token) is { } line)
@@ -45,12 +45,16 @@ internal static class ProcessFixture
                 };
                 await Console.Out.WriteLineAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request["id"]!.DeepClone(), ["result"] = result }.ToJsonString());
                 await Console.Out.FlushAsync();
-                if (method == "tools/call")
+                if (method == "tools/call" && args[1] == "exit-after-guide")
                 {
                     while (!File.Exists(marker + ".exit")) await Task.Delay(10, timeout.Token);
                     return 0;
                 }
             }
+            File.WriteAllText(marker + ".eof", "EOF received");
+            await Console.Error.WriteLineAsync("fixture shutdown tail");
+            await Console.Error.FlushAsync();
+            if (args[1] == "stall-on-eof") await Task.Delay(TimeSpan.FromSeconds(60));
             return 0;
         }
         await Task.Delay(TimeSpan.FromSeconds(60));

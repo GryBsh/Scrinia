@@ -12,6 +12,30 @@ public sealed class ProcessEnvironmentTestsGroup;
 [Collection("Process environment")]
 public sealed class ScriniaMcpSessionTests
 {
+    [Theory]
+    [InlineData("exit-on-eof")]
+    [InlineData("stall-on-eof")]
+    public async Task Disposal_signals_eof_drains_stderr_and_reaps_the_owned_process(string mode)
+    {
+        using var temp = new ScratchDirectory();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        string marker = Path.Combine(temp.Root, "shutdown-fixture.txt");
+        string host = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+        var settings = Payload() with { Executable = host, PrefixArguments = [typeof(ProcessFixture).Assembly.Location, "--mcp-fixture", mode, marker] };
+        var paths = new AttemptWorkspace().Create(Path.Combine(temp.Root, "run"), 1, 1, settings);
+        await using var events = new CapturingEvents();
+        var session = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token);
+        Assert.Contains("fixture guide", await Call(session, "guide", [], timeout.Token));
+        var watch = Stopwatch.StartNew();
+        await session.DisposeAsync();
+        Assert.True(File.Exists(marker + ".eof"), "Shutdown must close stdin before waiting for the process.");
+        AssertProcessEnded(int.Parse(File.ReadAllText(marker), System.Globalization.CultureInfo.InvariantCulture));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(mode == "exit-on-eof" ? 5 : 20),
+            $"Shutdown took {watch.Elapsed}.");
+        Assert.Contains(events.Items, e => e.Kind == "stderr" && e.Data.GetString() == "fixture shutdown tail");
+        await session.DisposeAsync(); // Repeated disposal must remain harmless.
+    }
+
     [Fact]
     public async Task Process_exit_after_tool_reply_cannot_be_accepted_as_a_successful_episode()
     {

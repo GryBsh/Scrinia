@@ -8,6 +8,7 @@ namespace Scrinia.Agent.Benchmarks;
 public sealed class ScriniaMcpSession : IAsyncDisposable
 {
     private readonly McpClient _client;
+    private readonly OwnedMcpProcess _process;
     private readonly Diagnostics _diagnostics;
     private readonly IRunEvents _events;
     private readonly object _lifetime = new();
@@ -22,9 +23,9 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
     internal int? CompletedProcessId { get; private set; }
     internal Task<ClientCompletionDetails> Completion => _client.Completion;
 
-    private ScriniaMcpSession(McpClient client, IReadOnlyList<McpClientTool> tools, Diagnostics diagnostics, IRunEvents events)
+    private ScriniaMcpSession(McpClient client, OwnedMcpProcess process, IReadOnlyList<McpClientTool> tools, Diagnostics diagnostics, IRunEvents events)
     {
-        _client = client; Tools = tools; CatalogHash = ToolCatalog.ComputeHash(tools);
+        _client = client; _process = process; Tools = tools; CatalogHash = ToolCatalog.ComputeHash(tools);
         _diagnostics = diagnostics; _events = events;
         _failure = CancellationTokenSource.CreateLinkedTokenSource(diagnostics.FailureToken);
         _completionMonitor = MonitorCompletionAsync();
@@ -37,20 +38,12 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
         PathSafety.RequireNoLinks(settings.Executable);
         var diagnostics = new Diagnostics(events);
         McpClient? client = null;
+        OwnedMcpProcess? process = null;
         try
         {
             using var startup = CancellationTokenSource.CreateLinkedTokenSource(ct, diagnostics.FailureToken);
-            var transport = new StdioClientTransport(new StdioClientTransportOptions
-            {
-                Command = settings.Executable,
-                Arguments = [.. settings.PrefixArguments, "serve", "--no-auto-setup", "--workspace-root", paths.Workspace],
-                WorkingDirectory = paths.Workspace,
-                InheritEnvironmentVariables = false,
-                EnvironmentVariables = new AttemptWorkspace().CreateEnvironment(paths),
-                ShutdownTimeout = TimeSpan.FromSeconds(10),
-                StandardErrorLines = diagnostics.Accept
-            });
-            client = await McpClient.CreateAsync(transport, cancellationToken: startup.Token);
+            process = OwnedMcpProcess.Start(settings, paths, diagnostics.Accept);
+            client = await McpClient.CreateAsync(process.Transport, cancellationToken: startup.Token);
             var tools = await client.ListToolsAsync(cancellationToken: startup.Token);
             if (client.ServerInfo.Name != "scri" || !tools.Any(t => t.Name == "guide"))
                 throw new InvalidDataException("Expected the Scrinia workspace MCP server.");
@@ -69,12 +62,20 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
                     JsonSerializer.Serialize(w, tool.ProtocolTool, RecordJsonContext.Default.Tool);
                 w.WriteEndArray();
             }), ct);
-            return new ScriniaMcpSession(client, tools.ToArray(), diagnostics, events);
+            return new ScriniaMcpSession(client, process, tools.ToArray(), diagnostics, events);
         }
         catch
         {
-            try { if (client is not null) await client.DisposeAsync(); }
-            finally { await diagnostics.DisposeAsync(); }
+            try { if (process is not null) await process.StopAsync(); }
+            finally
+            {
+                try { if (client is not null) await client.DisposeAsync(); }
+                finally
+                {
+                    process?.Dispose();
+                    await diagnostics.DisposeAsync();
+                }
+            }
             throw;
         }
     }
@@ -95,7 +96,7 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
         await _diagnostics.CheckAsync();
         lock (_lifetime)
         {
-            if (_prematureExit || (!_disposed && _client.Completion.IsCompleted))
+            if (_prematureExit || (!_disposed && (_client.Completion.IsCompleted || _process.HasExited)))
                 throw new BenchmarkFailureException(BenchmarkFailureCode.MCP_DISCONNECTED, "Scrinia exited before the episode completed.");
         }
     }
@@ -105,19 +106,20 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
         lock (_lifetime)
         {
             if (_disposed) return;
-            _prematureExit |= _client.Completion.IsCompleted;
+            _prematureExit |= _client.Completion.IsCompleted || _process.HasExited;
             _disposed = true;
         }
         try
         {
-            await _client.DisposeAsync();
-            var completion = await _client.Completion;
-            if (completion is StdioClientCompletionDetails stdio) CompletedProcessId = stdio.ProcessId;
+            try { await _process.StopAsync(); }
+            finally { await _client.DisposeAsync(); }
+            await _client.Completion;
+            CompletedProcessId = _process.Id;
         }
         finally
         {
             try { await _completionMonitor; await _diagnostics.DisposeAsync(); }
-            finally { _failure.Dispose(); }
+            finally { _process.Dispose(); _failure.Dispose(); }
         }
         await _events.WriteAsync("mcp", "disconnected", JsonSerializer.SerializeToElement(
             CompletedProcessId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable", ConfigurationJsonContext.Default.String), CancellationToken.None);
