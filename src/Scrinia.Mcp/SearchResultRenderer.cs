@@ -12,6 +12,7 @@ namespace Scrinia.Mcp;
 internal static class SearchResultRenderer
 {
     private const int MaxDescriptionChars = 1500;
+    private const int MaxContextDescriptionChars = 3000;
     private const int MaxAnchorsPerResult = 7;
 
     /// <summary>
@@ -100,7 +101,8 @@ internal static class SearchResultRenderer
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendDatesLine(sb, er.Item.Entry.CreatedAt, er.Item.Entry.UpdatedAt);
                     AppendAttributesLine(sb, er.Item.Entry.Attributes);
-                    AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview));
+                    AppendDescription(sb, er.ContextPreview ?? AttributeReaders.PreviewText(er.Item.Entry.ContentPreview),
+                        er.ContextPreview is null ? MaxDescriptionChars : MaxContextDescriptionChars);
                     AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes));
                     break;
                 }
@@ -118,8 +120,9 @@ internal static class SearchResultRenderer
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendDatesLine(sb, cr.ParentItem.Entry.CreatedAt, cr.ParentItem.Entry.UpdatedAt);
                     AppendAttributesLine(sb, cr.ParentItem.Entry.Attributes);
-                    AppendDescription(sb, cr.Chunk.ContentPreview
-                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview));
+                    AppendDescription(sb, cr.ContextPreview ?? cr.Chunk.ContentPreview
+                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
+                        cr.ContextPreview is null ? MaxDescriptionChars : MaxContextDescriptionChars);
                     AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Attributes));
                     break;
                 }
@@ -168,15 +171,15 @@ internal static class SearchResultRenderer
         }
     }
 
-    private static void AppendDescription(System.Text.StringBuilder sb, string? description)
+    private static void AppendDescription(System.Text.StringBuilder sb, string? description, int maxChars = MaxDescriptionChars)
     {
         if (string.IsNullOrWhiteSpace(description)) return;
 
         string text = description;
         bool truncated = false;
-        if (text.Length > MaxDescriptionChars)
+        if (text.Length > maxChars)
         {
-            text = text[..MaxDescriptionChars];
+            text = text[..maxChars];
             truncated = true;
         }
 

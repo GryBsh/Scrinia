@@ -38,9 +38,9 @@ public sealed partial class SharedServer
             return SharedMemoryOperations.Search(snapshot, request).Select(result => result switch
             {
                 EntryResult entry => new SearchHit(snapshot.Identity.BaseName, entry.Item.Entry.Address.Value,
-                    SharedHitKind.Entry, null, entry.Score, entry.Item.Entry.ContentPreview ?? "", entry.Item.Entry.Attributes ?? []),
+                    SharedHitKind.Entry, null, entry.Score, entry.ContextPreview ?? entry.Item.Entry.ContentPreview ?? "", entry.Item.Entry.Attributes ?? []),
                 ChunkEntryResult chunk => new SearchHit(snapshot.Identity.BaseName, chunk.ParentItem.Entry.Address.Value,
-                    SharedHitKind.Chunk, chunk.Chunk.ChunkIndex, chunk.Score, chunk.Chunk.ContentPreview ?? "", chunk.ParentItem.Entry.Attributes ?? []),
+                    SharedHitKind.Chunk, chunk.Chunk.ChunkIndex, chunk.Score, chunk.ContextPreview ?? chunk.Chunk.ContentPreview ?? "", chunk.ParentItem.Entry.Attributes ?? []),
                 _ => null
             }).Where(hit => hit is not null).Cast<object>().ToArray();
         }, results =>
