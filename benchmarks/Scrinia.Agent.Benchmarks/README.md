@@ -51,7 +51,7 @@ Completed correct/incorrect cases are skipped. A durably saved answer resumes wi
 | `episodeSeconds` | Deadline for each episode; case execution also bounds process startup/cleanup. |
 | `caseSeconds` | Deadline spanning learning, answering, grading, and retries in one attempt. |
 
-Cases and historical sessions run sequentially. HTTP 408, 429, 500, 502, 503, and 504 can receive bounded retries; hidden provider SDK retries are disabled. Ordinary tool error results return to the agent. A lost or uncertain tool completion stops the attempt. Transcript content is never silently shortened to fit a model.
+Cases and historical sessions run sequentially. HTTP 408, 429, 500, 502, 503, and 504, connection/DNS failures, lost responses, and SDK network timeouts can receive bounded retries. Waits increase from 5 to 10, 20, and 40 seconds, subject to `maxModelAttempts` (1-5), the episode request ceiling, and the existing deadlines. Hidden provider SDK retries are disabled. Authentication, certificate, and malformed-response errors are not retried. Retry evidence records the attempt and scheduled wait; failed requests retain unknown usage. Ordinary tool error results return to the agent. A lost or uncertain tool completion stops the attempt. Transcript content is never silently shortened to fit a model.
 
 These are request, token-output, and time ceilings, not a dollar budget. Long transcripts can consume substantial input tokens. Reports include failed attempts and every resume preflight, with learning, answering, and judging usage separated. Missing provider usage stays `null`/unknown, including a request whose response was lost. A grading-only retry receives a new bounded allowance and contributes additional cost.
 
@@ -77,7 +77,7 @@ Accuracy is correct/graded. Coverage is graded/selected. End-to-end success is c
 | `2` | Invalid inputs or incompatible preflight. No scored case was started by that invocation. |
 | `130` | Cancelled by the caller. |
 
-Failure records distinguish phase deadlines, exhausted requests, provider failures, incomplete responses, MCP disconnection, uncertain tool completion, persistence failure, identity drift, and grading failure. Persistence or identity failures stop the run; ordinary case failures allow independent later cases to continue. Cases never reached remain pending.
+Failure records distinguish phase deadlines, exhausted requests, provider failures, incomplete responses, MCP disconnection, uncertain tool completion, persistence failure, identity drift, and grading failure. During case execution, exhausted endpoint recovery records `PROVIDER_UNAVAILABLE` and stops the run with exit code 1, including when an episode or case deadline interrupts recovery. Preflight failures return exit code 2 before scored cases start. Restore endpoint access and use `--resume`; the runner does not automatically restart. A saved answer remains eligible for grading-only recovery. User cancellation still returns 130. Persistence or identity failures also stop the run; ordinary case failures allow independent later cases to continue. Cases never reached remain pending.
 
 ## Offline verification
 

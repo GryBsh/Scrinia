@@ -102,6 +102,11 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
                     var outcome = await runner.RunAsync(item, i + 1, (old?.Attempt ?? 0) + 1, config, journal, root, ct);
                     await stdout.WriteLineAsync($"Case {i + 1}/{dataset.Cases.Count}: {outcome.State}");
                     if (outcome.State == CaseState.Cancelled) break;
+                    if (outcome.FailureCode == nameof(BenchmarkFailureCode.PROVIDER_UNAVAILABLE))
+                    {
+                        await stderr.WriteLineAsync("PROVIDER_UNAVAILABLE: endpoint recovery reached a retry or time limit; run stopped. Restore endpoint access, then rerun with --resume DIRECTORY using the output directory for this run.");
+                        break;
+                    }
                 }
             }
             catch (Exception failure) { runFailure = failure; throw; }

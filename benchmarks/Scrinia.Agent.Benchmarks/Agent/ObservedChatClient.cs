@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace Scrinia.Agent.Benchmarks;
 
 public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings, RunLimits limits,
-    IRunEvents events, string phase, string? expectedModelId = null) : DelegatingChatClient(inner)
+    IRunEvents events, string phase, string? expectedModelId = null, TimeProvider? timeProvider = null) : DelegatingChatClient(inner)
 {
     private bool _observedIdentity;
     private readonly EpisodeBudget _budget = new(limits.MaxModelTurnsPerEpisode);
@@ -29,78 +29,101 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
         actual.TopK = settings.TopK;
         actual.RawRepresentationFactory = settings.TopK is { } topK
             ? _ => ModelClientFactory.CreateSamplingOptions(topK) : null;
-        for (int attempt = 1; ; attempt++)
+        bool recovering = false;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            _budget.BeforeModelRequest();
-            await events.WriteAsync(phase, "model-request", ChatEvidence.Build(w =>
+            for (int attempt = 1; ; attempt++)
             {
-                w.WriteNumber("request", ModelRequests + 1);
-                w.WriteNumber("attempt", attempt);
-                w.WriteString("model", settings.Model);
-                w.WriteNumber("temperature", settings.Temperature);
-                if (settings.TopP is { } topP) w.WriteNumber("topP", topP);
-                if (settings.TopK is { } topK) w.WriteNumber("topK", topK);
-                w.WriteNumber("maxOutputTokens", settings.MaxOutputTokens);
-                w.WriteString("instructions", actual.Instructions);
-                w.WritePropertyName("messages");
-                ChatEvidence.WriteMessages(w, history);
-            }), cancellationToken);
-            ModelRequests++;
-            long started = Stopwatch.GetTimestamp();
-            ChatResponse response;
-            try { response = await base.GetResponseAsync(history, actual, cancellationToken); }
-            catch (Exception error)
-            {
-                // A failed request has no authoritative usage; do not invent zero cost.
-                _inputTokens = null;
-                _outputTokens = null;
-                int? status = error switch
+                cancellationToken.ThrowIfCancellationRequested();
+                _budget.BeforeModelRequest();
+                await events.WriteAsync(phase, "model-request", ChatEvidence.Build(w =>
                 {
-                    ClientResultException result => result.Status,
-                    HttpRequestException http when http.StatusCode is not null => (int)http.StatusCode,
-                    _ => null
-                };
-                bool retry = status is 408 or 429 or 500 or 502 or 503 or 504 && attempt < limits.MaxModelAttempts;
-                await events.WriteAsync(phase, "model-error", ChatEvidence.Build(w =>
+                    w.WriteNumber("request", ModelRequests + 1);
+                    w.WriteNumber("attempt", attempt);
+                    w.WriteString("model", settings.Model);
+                    w.WriteNumber("temperature", settings.Temperature);
+                    if (settings.TopP is { } topP) w.WriteNumber("topP", topP);
+                    if (settings.TopK is { } topK) w.WriteNumber("topK", topK);
+                    w.WriteNumber("maxOutputTokens", settings.MaxOutputTokens);
+                    w.WriteString("instructions", actual.Instructions);
+                    w.WritePropertyName("messages");
+                    ChatEvidence.WriteMessages(w, history);
+                }), cancellationToken);
+                ModelRequests++;
+                long started = Stopwatch.GetTimestamp();
+                ChatResponse response;
+                try
+                {
+                    response = await base.GetResponseAsync(history, actual, cancellationToken);
+                    recovering = false;
+                }
+                catch (Exception error)
+                {
+                    // A failed request has no authoritative usage; do not invent zero cost.
+                    _inputTokens = null;
+                    _outputTokens = null;
+                    int? status = error switch
+                    {
+                        ClientResultException result => result.Status,
+                        HttpRequestException http when http.StatusCode is not null => (int)http.StatusCode,
+                        _ => null
+                    };
+                    bool transient = ModelRequestRecovery.IsTransient(error, cancellationToken);
+                    bool retry = transient && attempt < limits.MaxModelAttempts && ModelRequests < limits.MaxModelTurnsPerEpisode;
+                    var delay = retry ? ModelRequestRecovery.Delay(attempt) : TimeSpan.Zero;
+                    await events.WriteAsync(phase, "model-error", ChatEvidence.Build(w =>
+                    {
+                        w.WriteNumber("request", ModelRequests);
+                        w.WriteString("errorType", error.GetType().Name);
+                        if (status is { } code) w.WriteNumber("status", code);
+                        w.WriteBoolean("retry", retry);
+                        w.WriteBoolean("transient", transient);
+                        w.WriteNumber("attempt", attempt);
+                        w.WriteNumber("retryDelayMs", delay.TotalMilliseconds);
+                        w.WriteNumber("durationMs", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    }), CancellationToken.None);
+                    recovering |= transient;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (transient && !retry)
+                        throw new BenchmarkFailureException(BenchmarkFailureCode.PROVIDER_UNAVAILABLE,
+                            "Model endpoint recovery exhausted its request allowance.", error);
+                    if (!retry) throw;
+                    await Task.Delay(delay, timeProvider ?? TimeProvider.System, cancellationToken);
+                    continue;
+                }
+                _inputTokens = AddUsage(_inputTokens, response.Usage?.InputTokenCount);
+                _outputTokens = AddUsage(_outputTokens, response.Usage?.OutputTokenCount);
+                string identity = response.ModelId ?? "unavailable";
+                await events.WriteAsync(phase, "model-response", ChatEvidence.Build(w =>
                 {
                     w.WriteNumber("request", ModelRequests);
-                    w.WriteString("errorType", error.GetType().Name);
-                    if (status is { } code) w.WriteNumber("status", code);
-                    w.WriteBoolean("retry", retry);
+                    w.WriteString("reportedModel", response.ModelId);
+                    w.WriteString("finishReason", response.FinishReason?.Value);
                     w.WriteNumber("durationMs", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-                }), CancellationToken.None);
-                if (!retry) throw;
-                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(2000, 200 * attempt)), cancellationToken);
-                continue;
+                    w.WritePropertyName("usage");
+                    JsonSerializer.Serialize(w, new UsageTotals(response.Usage?.InputTokenCount, response.Usage?.OutputTokenCount), RecordJsonContext.Default.UsageTotals);
+                    w.WritePropertyName("messages");
+                    ChatEvidence.WriteMessages(w, response.Messages);
+                }), cancellationToken);
+                if ((expectedModelId is not null && identity != expectedModelId) ||
+                    (_observedIdentity && identity != (ReportedModelId ?? "unavailable")))
+                    throw new BenchmarkFailureException(BenchmarkFailureCode.MODEL_DRIFT, "Reported model identity changed before tool dispatch.");
+                ReportedModelId = response.ModelId;
+                _observedIdentity = true;
+                if (response.FinishReason != ChatFinishReason.Stop && response.FinishReason != ChatFinishReason.ToolCalls)
+                    throw new InvalidDataException("Model response did not finish normally; no tool calls were dispatched.");
+                if (response.Messages.Count == 0 || response.Messages.SelectMany(m => m.Contents).Any(c => c is FunctionCallContent f &&
+                    (string.IsNullOrWhiteSpace(f.CallId) || string.IsNullOrWhiteSpace(f.Name))))
+                    throw new InvalidDataException("Model response is malformed.");
+                // Always send full in-process history, never a provider-managed conversation handle.
+                response.ConversationId = null;
+                return response;
             }
-            _inputTokens = AddUsage(_inputTokens, response.Usage?.InputTokenCount);
-            _outputTokens = AddUsage(_outputTokens, response.Usage?.OutputTokenCount);
-            string identity = response.ModelId ?? "unavailable";
-            await events.WriteAsync(phase, "model-response", ChatEvidence.Build(w =>
-            {
-                w.WriteNumber("request", ModelRequests);
-                w.WriteString("reportedModel", response.ModelId);
-                w.WriteString("finishReason", response.FinishReason?.Value);
-                w.WriteNumber("durationMs", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-                w.WritePropertyName("usage");
-                JsonSerializer.Serialize(w, new UsageTotals(response.Usage?.InputTokenCount, response.Usage?.OutputTokenCount), RecordJsonContext.Default.UsageTotals);
-                w.WritePropertyName("messages");
-                ChatEvidence.WriteMessages(w, response.Messages);
-            }), cancellationToken);
-            if ((expectedModelId is not null && identity != expectedModelId) ||
-                (_observedIdentity && identity != (ReportedModelId ?? "unavailable")))
-                throw new BenchmarkFailureException(BenchmarkFailureCode.MODEL_DRIFT, "Reported model identity changed before tool dispatch.");
-            ReportedModelId = response.ModelId;
-            _observedIdentity = true;
-            if (response.FinishReason != ChatFinishReason.Stop && response.FinishReason != ChatFinishReason.ToolCalls)
-                throw new InvalidDataException("Model response did not finish normally; no tool calls were dispatched.");
-            if (response.Messages.Count == 0 || response.Messages.SelectMany(m => m.Contents).Any(c => c is FunctionCallContent f &&
-                (string.IsNullOrWhiteSpace(f.CallId) || string.IsNullOrWhiteSpace(f.Name))))
-                throw new InvalidDataException("Model response is malformed.");
-            // Always send full in-process history, never a provider-managed conversation handle.
-            response.ConversationId = null;
-            return response;
+        }
+        catch (OperationCanceledException error) when (recovering)
+        {
+            // The caller distinguishes its cancellation from a deadline during endpoint recovery.
+            throw new ProviderRecoveryInterruptedException(error);
         }
     }
 

@@ -59,6 +59,7 @@ public sealed class CaseRunner(IAgentEpisode episode, IAnswerGrader grader)
             string code = error switch
             {
                 OperationCanceledException when ct.IsCancellationRequested => "CANCELLED",
+                ProviderRecoveryInterruptedException => "PROVIDER_UNAVAILABLE",
                 OperationCanceledException when deadline.IsCancellationRequested => "CASE_DEADLINE",
                 OperationCanceledException => "EPISODE_DEADLINE",
                 BenchmarkFailureException typed => typed.Code.ToString(),
@@ -123,7 +124,7 @@ internal sealed class RequiredEvents(IRunEvents inner) : IRunEvents
 }
 public enum BenchmarkFailureCode
 {
-    INPUT_INVALID, PREFLIGHT_FAILED, EPISODE_DEADLINE, CASE_DEADLINE, PROVIDER_FAILED,
+    INPUT_INVALID, PREFLIGHT_FAILED, EPISODE_DEADLINE, CASE_DEADLINE, PROVIDER_FAILED, PROVIDER_UNAVAILABLE,
     RESPONSE_TRUNCATED, MCP_DISCONNECTED, TOOL_COMPLETION_UNCERTAIN, JOURNAL_FAILED, CATALOG_DRIFT, MODEL_DRIFT
 }
 public sealed class BenchmarkFailureException(BenchmarkFailureCode code, string message, Exception? inner = null) : Exception(message, inner)

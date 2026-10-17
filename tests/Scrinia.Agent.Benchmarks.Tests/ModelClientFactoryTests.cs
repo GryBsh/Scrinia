@@ -107,6 +107,81 @@ public sealed class ModelClientFactoryTests
         finally { Environment.SetEnvironmentVariable(variable, null); }
     }
 
+    [Fact]
+    public async Task Sdk_wrapped_connection_failure_is_retried_by_observed_client()
+    {
+        var variable = "BENCH_TEST_" + Guid.NewGuid().ToString("N");
+        Environment.SetEnvironmentVariable(variable, "offline-placeholder");
+        try
+        {
+            using var handler = new RecoveringHandler();
+            using var http = new HttpClient(handler);
+            var settings = ObservedChatClientTests.Settings with { ApiKeyEnvironmentVariable = variable };
+            await using var events = new CapturingEvents();
+            using var observed = new ObservedChatClient(ModelClientFactory.Create(settings, http), settings,
+                ObservedChatClientTests.Limits, events, "learn", timeProvider: new ImmediateTimeProvider());
+            Assert.Equal("done", (await observed.GetResponseAsync([new(ChatRole.User, "request")])).Text);
+            Assert.Equal(2, handler.Requests);
+            Assert.Equal(2, observed.ModelRequests);
+        }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Sdk_response_body_disconnect_recovers_or_stops_on_exhaustion(bool exhaust)
+    {
+        var variable = "BENCH_TEST_" + Guid.NewGuid().ToString("N");
+        Environment.SetEnvironmentVariable(variable, "offline-placeholder");
+        try
+        {
+            using var handler = new RecoveringHandler(bodyDisconnect: true, alwaysFail: exhaust);
+            using var http = new HttpClient(handler);
+            var settings = ObservedChatClientTests.Settings with { ApiKeyEnvironmentVariable = variable };
+            await using var events = new CapturingEvents();
+            using var observed = new ObservedChatClient(ModelClientFactory.Create(settings, http), settings,
+                ObservedChatClientTests.Limits, events, "learn", timeProvider: new ImmediateTimeProvider());
+            if (exhaust)
+            {
+                var failure = await Assert.ThrowsAsync<BenchmarkFailureException>(() => observed.GetResponseAsync([new(ChatRole.User, "request")]));
+                Assert.Equal(BenchmarkFailureCode.PROVIDER_UNAVAILABLE, failure.Code);
+            }
+            else Assert.Equal("done", (await observed.GetResponseAsync([new(ChatRole.User, "request")])).Text);
+            Assert.Equal(2, handler.Requests);
+            Assert.Equal(2, observed.ModelRequests);
+        }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+    }
+
+    private sealed class DisconnectedBody : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new HttpIOException(HttpRequestError.ResponseEnded, "offline body disconnect"));
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            Task.FromException<int>(new HttpIOException(HttpRequestError.ResponseEnded, "offline body disconnect"));
+        public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken) =>
+            Task.FromException(new HttpIOException(HttpRequestError.ResponseEnded, "offline body disconnect"));
+    }
+
+    private sealed class RecoveringHandler(bool bodyDisconnect = false, bool alwaysFail = false) : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (++Requests == 1 || alwaysFail)
+            {
+                if (bodyDisconnect) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new DisconnectedBody()) });
+                throw new HttpRequestException(HttpRequestError.ConnectionError, "offline socket");
+            }
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"id":"offline","object":"chat.completion","created":1,"model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}""",
+                    System.Text.Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
     private sealed class RejectingHandler : HttpMessageHandler
     {
         public int Requests { get; private set; }

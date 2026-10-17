@@ -29,6 +29,8 @@ public sealed class CaseRunnerTests(WorkspaceCatalogFixture fixture)
     [InlineData("provider", CaseState.ExecutionFailed, "PROVIDER_FAILED")]
     [InlineData("deadline", CaseState.ExecutionFailed, "EPISODE_DEADLINE")]
     [InlineData("cancel", CaseState.Cancelled, "CANCELLED")]
+    [InlineData("outage-deadline", CaseState.ExecutionFailed, "PROVIDER_UNAVAILABLE")]
+    [InlineData("outage-cancel", CaseState.Cancelled, "CANCELLED")]
     public async Task Episode_failures_preserve_typed_outcomes(string mode, CaseState state, string code)
     {
         using var temp = new ScratchDirectory();
@@ -38,6 +40,17 @@ public sealed class CaseRunnerTests(WorkspaceCatalogFixture fixture)
         using var cancel = new CancellationTokenSource();
         var episode = new RecordingEpisode([]) { Behavior = async (_, _, ct) =>
         {
+            if (mode.StartsWith("outage-", StringComparison.Ordinal))
+            {
+                var fake = new ScriptedChatClient(new HttpRequestException("offline", null, System.Net.HttpStatusCode.ServiceUnavailable));
+                await using var events = new CapturingEvents();
+                using var observed = new ObservedChatClient(fake, config.Agent, config.Limits with { MaxModelAttempts = 5 }, events, "learn");
+                using var networkDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                if (mode == "outage-deadline") networkDeadline.CancelAfter(TimeSpan.FromMilliseconds(100));
+                if (mode == "outage-cancel") cancel.CancelAfter(TimeSpan.FromMilliseconds(100));
+                await observed.GetResponseAsync([new(Microsoft.Extensions.AI.ChatRole.User, "input")], cancellationToken: networkDeadline.Token);
+                throw new InvalidOperationException("unreachable");
+            }
             if (mode == "provider") throw new HttpRequestException("private provider message");
             if (mode == "cancel") cancel.Cancel();
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
