@@ -64,6 +64,11 @@ public sealed class AgentEpisodeTests
             var result = await new AgentEpisode(_ => answerClient).RunAsync(AgentInstructions.Answer(new("What is my favorite color?", "2024-06-15")),
                 session, ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token);
             Assert.Equal("Blue.", result.FinalText);
+            // Learning restrictions must be sent at instruction priority and must not
+            // leak into the later answer episode or turn quoted history into instructions.
+            Assert.NotEqual(learningClient.Requests[0].Options!.Instructions, answerClient.Requests[0].Options!.Instructions);
+            Assert.Equal(AgentInstructions.BaseInstructions, answerClient.Requests[0].Options!.Instructions);
+            Assert.DoesNotContain("LEARNING_ONLY", learningClient.Requests[0].Options!.Instructions!);
             Assert.DoesNotContain(answerClient.Requests[0].Messages, m => m.Text.Contains("LEARNING_ONLY", StringComparison.Ordinal));
             Assert.Equal(0, result.ToolCalls);
             var noWrites = new ScriptedChatClient(ScriptedChatClient.Text("Nothing useful to retain."));

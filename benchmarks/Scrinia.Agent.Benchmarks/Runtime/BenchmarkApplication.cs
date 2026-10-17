@@ -149,7 +149,7 @@ public sealed class BenchmarkApplication(Func<ModelSettings, IChatClient>? creat
             ["payload"] = RunFingerprint.HashTree(config.Scrinia.PayloadDirectory),
             ["seed"] = config.Scrinia.HomeSeedDirectory is { } seed ? RunFingerprint.HashTree(seed) : "none",
             ["host"] = FileHash(config.Scrinia.Executable),
-            ["agentInstructions"] = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(AgentInstructions.BaseInstructions))),
+            ["agentInstructions"] = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(AgentInstructions.ForPhase(EpisodePhase.Learn) + "\n\n" + AgentInstructions.ForPhase(EpisodePhase.Answer)))),
             ["rubric"] = LongMemEvalRubric.ContentHash
         };
         // Fingerprint deployed assemblies, including the actual SDK implementation and prompt builders.

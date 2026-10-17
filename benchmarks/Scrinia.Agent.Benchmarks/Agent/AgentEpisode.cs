@@ -33,7 +33,7 @@ public sealed class AgentEpisode(Func<ModelSettings, IChatClient> createClient, 
             UseProvidedChatClientAsIs = true,
             ChatOptions = new()
             {
-                Instructions = AgentInstructions.BaseInstructions,
+                Instructions = AgentInstructions.ForPhase(input.Phase),
                 Tools = session.Tools.Select(t => (AITool)new ObservedTool(t, observation)).ToList()
             }
         });
