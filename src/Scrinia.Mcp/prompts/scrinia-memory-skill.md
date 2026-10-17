@@ -30,6 +30,10 @@ list({ scopes?, mode? })                   — browse
 restore()                                  — resume after context loss
 ```
 
+## Preserve the details
+
+Past events can be worth remembering even when they do not describe an ongoing preference or convention. When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers, and distinguish earlier facts from later corrections. Compress wording without dropping these details; do not infer missing values. Before finishing, check that the facts selected for retention appear in successful memory writes, and add any omitted details.
+
 ## Conventions
 
 - **Paths** are hierarchical and auto-tagged for search (`/api/auth-flow` → `[api, auth, flow]`).

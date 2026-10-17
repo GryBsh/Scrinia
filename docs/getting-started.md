@@ -206,6 +206,8 @@ Workspace tools are grouped by purpose:
 
 `remember` creates a missing memory or appends every supplied chunk to an existing one. Send only new information. To replace a memory, first recall it, prepare the complete replacement, then pass `replace: true`. This also applies to `shared_remember`. The separate MCP `append` and `shared_append` tools have been removed; integrations should use `remember` or `shared_remember` with a content array. The CLI retains `scri store` for replacement and `scri append` for addition.
 
+Remember past events as well as ongoing preferences and project decisions. When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers, and distinguish earlier facts from later corrections. Compress wording without dropping these details; do not infer missing values. Before finishing, check that the facts selected for retention appear in successful memory writes, and add any omitted details.
+
 `guide` is standalone — call it once per session. Skill paths (`/skill/...`) are routed through `remember` (create/override) and `recall` (load/list), not a separate tool.
 
 ### Reserved Paths

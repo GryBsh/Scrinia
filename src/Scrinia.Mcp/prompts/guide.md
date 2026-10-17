@@ -22,6 +22,12 @@ A project instruction file such as `AGENTS.md` is a separate filesystem document
 
 Use `remember` to add information: it creates a missing memory or appends every supplied chunk, preserving prior content. Send only new information; do not repeat the existing memory. Set `replace: true` only with the complete intended replacement. Prefer a separate topic path for an unrelated fact.
 
+### What to retain
+
+Remember past events as well as ongoing preferences, decisions, fixes, and conventions. A fact can be worth recalling even when it does not describe a lasting habit.
+
+When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers, and distinguish earlier facts from later corrections. Compress wording without dropping these details; do not infer missing values. Before finishing, check that the facts selected for retention appear in successful memory writes, and add any omitted details.
+
 ### Chunks
 
 A memory's `content` is an **array of chunks**, each stored and retrieved independently. Split a memory along its semantically distinct parts — like the sections of a document — not by size:
@@ -75,7 +81,7 @@ remember({ path: '/findings/SEC-001',
   keywords: ['open redirect', 'login next param'] })
 ```
 
-Use it when you learn something durable — a decision, fix, or convention the next agent should not have to rediscover.
+Use it for information worth recalling later, including past events, preferences, decisions, fixes, and conventions. Keep the explicit details attached to the facts you choose to remember.
 
 ### recall — read a memory
 

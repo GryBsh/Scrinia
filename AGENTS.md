@@ -85,6 +85,10 @@ Skill paths are routed transparently through `recall` and `remember`:
 
 `restore` resumes context — the AI assistant's persona, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
 
+## Memory content
+
+Remember past events as well as ongoing preferences, decisions, fixes, and conventions. When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers, and distinguish earlier facts from later corrections. Compress wording without dropping these details; do not infer missing values. Before finishing, check that the facts selected for retention appear in successful memory writes, and add any omitted details.
+
 ## Core Abstractions
 
 ### Phase 2 configuration and tracking boundary
