@@ -42,10 +42,10 @@ public interface IMemoryStore : IPluginStore
     Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default);
 
     /// <summary>
-    /// Appends <paramref name="write"/>'s single chunk and returns a <see cref="Task{TResult}"/>
+    /// Appends all of <paramref name="write"/>'s chunks atomically and returns a <see cref="Task{TResult}"/>
     /// containing an <see cref="AppendStoreResult"/> for the durable outcome. For an existing memory,
     /// the result contains the entry derived from the full post-append content; for a missing target,
-    /// the operation creates a single-chunk memory with the same semantics as <see cref="StoreAsync"/>.
+    /// the operation creates a memory from all supplied chunks with the same semantics as <see cref="StoreAsync"/>.
     ///
     /// <para>Same contract as <see cref="StoreAsync"/> — the store derives — plus everything the
     /// memory already carries that an append must not destroy: its curated keywords, its drift
@@ -60,11 +60,7 @@ public interface IMemoryStore : IPluginStore
     /// result and append-specific exception carries an operation correlation ID. Existing-memory
     /// archive and cleanup failures never silently discard retained journal evidence.</para>
     /// </summary>
-    /// <exception cref="ArgumentException">Thrown when <c>write.Content</c> does not hold exactly
-    /// one element. The derivation pipeline can express only one appended chunk — it reads the last
-    /// element for the appended chunk's attributes and builds one chunk entry for it — so a
-    /// multi-element append would silently lose every chunk between the first and the last. It is
-    /// refused rather than merged.</exception>
+    /// <exception cref="ArgumentException">Thrown when the payload has no chunks or contains invalid content.</exception>
     Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default);
 
     /// <summary>Reads a logical memory address.</summary>

@@ -9,17 +9,17 @@ public class McpToolSurfaceTests
 {
     private static readonly string[] ExpectedToolNames =
     [
-        "append", "compact", "facts", "forget", "guide", "link",
+        "compact", "facts", "forget", "guide", "link",
         "list", "recall", "remember", "restore", "search"
     ];
 
     [Fact]
-    public void ScriniaMcpTools_ExposesExactly11Tools()
+    public void ScriniaMcpTools_ExposesExactly10Tools()
     {
         var tools = typeof(ScriniaMcpTools).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null)
             .ToArray();
-        Assert.Equal(11, tools.Length);
+        Assert.Equal(10, tools.Length);
     }
 
     [Fact]
@@ -45,7 +45,7 @@ public class McpToolSurfaceTests
     }
 
     [Fact]
-    public void WithToolsRegistersExactly11()
+    public void WithToolsRegistersExactly10()
     {
         var toolNames = typeof(ScriniaMcpTools).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null)

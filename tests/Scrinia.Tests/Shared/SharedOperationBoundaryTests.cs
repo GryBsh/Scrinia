@@ -411,7 +411,7 @@ public sealed class SharedOperationBoundaryTests
         await fixture.Tools.Remember("team", "/note", ["before"]);
         var runtime = fixture.Factory.Open(new SharedBaseEntry { Name = "team", Root = fixture.BaseRoot });
         runtime.Store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
-        string result = await fixture.Tools.Remember("team", "/note", ["after"]);
+        string result = await fixture.Tools.Remember("team", "/note", ["after"], replace: true);
         result.Should().Contain("DURABLE_WRITE_FAILED").And.Contain("mutation: none");
         (await fixture.Tools.Recall("team", "/note")).Should().Contain("before");
     }

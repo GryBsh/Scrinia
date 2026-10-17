@@ -61,7 +61,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     internal async Task<McpResponse> AppendAgentAsync(
-        string subject, string[]? content, CancellationToken cancellationToken)
+        string subject, string[]? content, CancellationToken cancellationToken, bool createIfMissing = false)
     {
         if (content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
@@ -82,7 +82,9 @@ public sealed partial class ScriniaMcpTools
                         current.Meta, filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
                     RawFileEntityContent<AgentFileMeta> raw = await LoadRawAgentAsync(store, subject,
                         current.Body.Existed ? DecodeFileEntityBody(current.Body.Bytes) : null, existing, ct)
-                        ?? throw new FileNotFoundException($"Agent '{subject}' not found.");
+                        ?? (createIfMissing
+                            ? new RawFileEntityContent<AgentFileMeta>("", existing, FileEntityContentSource.Disk)
+                            : throw new FileNotFoundException($"Agent '{subject}' not found."));
                     promoted = raw.Source == FileEntityContentSource.PromotedAgent;
                     string now = DateTimeOffset.UtcNow.ToString("o");
                     AgentFileMeta metadata = raw.Metadata is { } prior
@@ -92,7 +94,7 @@ public sealed partial class ScriniaMcpTools
                             Unknown = prior.Unknown is { } unknown ? new Dictionary<string, JsonElement>(unknown) : null
                         }
                         : new AgentFileMeta(now, now);
-                    string updated = raw.Body + "\n" + string.Join("\n", content);
+                    string updated = (raw.Body.Length == 0 ? "" : raw.Body + "\n") + string.Join("\n", content);
                     byte[] body = Encoding.UTF8.GetBytes(updated);
                     byte[] meta = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
                         metadata, ScriniaMcpJsonContext.Default.AgentFileMeta));

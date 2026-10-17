@@ -113,10 +113,10 @@ public sealed class SharedDurableMatrixTests
 
         (await tools.MemoryRecall($"/skill/{skillName}"))
             .Should().Contain("original instructions");
-        (await tools.MemoryRemember($"/skill/{skillName}", ["rewritten instructions"]))
+        (await tools.MemoryRemember($"/skill/{skillName}", ["rewritten instructions"], replace: true))
             .Should().NotContain("status: error");
 
-        File.ReadAllText(filePath).Should().Contain("rewritten instructions");
+        File.ReadAllText(filePath).Should().Contain("rewritten instructions").And.NotContain("original instructions");
         File.ReadAllText(sidecarPath).Should().Contain("\"updatedAt\"");
     }
 
@@ -134,7 +134,7 @@ public sealed class SharedDurableMatrixTests
         string sidecarPath = Path.ChangeExtension(filePath, ".meta.json");
         File.WriteAllText(sidecarPath, "{}");
 
-        (await tools.MemoryRemember("/agent/task6-agent", ["rewritten configuration"]))
+        (await tools.MemoryRemember("/agent/task6-agent", ["rewritten configuration"], replace: true))
             .Should().NotContain("status: error");
 
         File.ReadAllText(filePath).Should().Be("rewritten configuration");

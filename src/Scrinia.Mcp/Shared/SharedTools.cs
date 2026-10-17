@@ -4,7 +4,7 @@ using ModelContextProtocol.Server;
 namespace Scrinia.Mcp.SharedContracts;
 
 /// <summary>
-/// The eleven prefixed shared-memory MCP tools. This surface is prompt-isolated and process-free:
+/// The ten prefixed shared-memory MCP tools. This surface is prompt-isolated and process-free:
 /// every input is an operation argument (query, base, path, manifest, …) and none of them is a
 /// prompt, a correlation identifier, or a session identifier (§7.3). No handler branches on, or
 /// forwards, the initiating prompt text, and the shared surface never launches a process — its sole
@@ -29,10 +29,9 @@ public sealed class SharedTools
     public Task<string> Recall(string @base, string path, int? chunk = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Recall(@base, path, chunk, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_facts"), Description("Query facts from one shared base.")]
     public Task<string> Facts(string @base, string op, string? entity = null, string[]? entities = null, string? key = null, int limit = 50, string[]? excludeTopics = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Facts(@base, op, entity, entities, key, limit, excludeTopics, cancellationToken).ToYaml());
-    [McpServerTool(Name = "shared_remember"), Description("Store persistent content in one shared base.")]
-    public Task<string> Remember(string @base, string path, string[] content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "remember", content, attributes, keywords, null, null, 0, cancellationToken).ToYaml());
-    [McpServerTool(Name = "shared_append"), Description("Append persistent content in one shared base.")]
-    public Task<string> Append(string @base, string path, string content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "append", [content], attributes, keywords, null, null, 0, cancellationToken).ToYaml());
+    [McpServerTool(Name = "shared_remember"), Description("Add chunks to a memory in one shared base, creating it if missing. Preserves existing content unless replace is explicitly true.")]
+    public Task<string> Remember(string @base, string path, string[] content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, [Description("Set true only to replace the entire memory; false appends the supplied chunks.")] bool replace = false, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, replace ? "remember" : "append", content, attributes, keywords, null, null, 0, cancellationToken).ToYaml());
+    internal Task<string> Append(string @base, string path, string content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "append", [content], attributes, keywords, null, null, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_forget"), Description("Forget one persistent entry from a shared base.")]
     public Task<string> Forget(string @base, string path, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "forget", null, null, null, null, null, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_compact"), Description("Compact one persistent entry in a shared base.")]

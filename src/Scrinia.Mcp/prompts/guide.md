@@ -20,7 +20,7 @@ Reserve `/agent/...` for the **AI assistant's own persona, role, and behavioral 
 
 A project instruction file such as `AGENTS.md` is a separate filesystem document. Recording Scrinia usage there does not mean storing the guide or conversation facts under `/agent/...`.
 
-Use `append` to add information to an existing memory. `remember` replaces the content at an existing path; use it only when the supplied content is the complete intended replacement. Prefer a separate topic path when adding an unrelated fact.
+Use `remember` to add information: it creates a missing memory or appends every supplied chunk, preserving prior content. Send only new information; do not repeat the existing memory. Set `replace: true` only with the complete intended replacement. Prefer a separate topic path for an unrelated fact.
 
 ### Chunks
 
@@ -66,7 +66,7 @@ Attributes build a graph linking memories that share a **key and value** — not
 
 ### remember — store a memory
 
-`remember({ path, content, attributes?, keywords? })` — `content` is a string array, one chunk per element.
+`remember({ path, content, attributes?, keywords?, replace? })` — `content` is a string array, one chunk per element.
 
 ```
 remember({ path: '/findings/SEC-001',
@@ -94,10 +94,6 @@ Use it before non-trivial work; skip it when the request is self-contained.
 ### list — browse memories
 
 `list({ mode?, scopes?, offset?, limit?, excludeTopics? })` — `mode` is `summary` (default), `full` (a paginated table), or `drift` (a code-reference drift check). Stale and review-flagged memories are marked here.
-
-### append — add to a memory
-
-`append({ path, content, attributes?, keywords? })` — `content` is a single string added as one new chunk (creating the memory if needed). Supplied attributes merge into the existing ones.
 
 ### forget — delete a memory
 
@@ -210,14 +206,14 @@ Skills are specialist prompts you load when you hit a domain you were not optimi
 ```
 recall({ path: '/skill/qa' })                          — load a skill
 recall({ path: '/skill/' })                            — list skills
-remember({ path: '/skill/my-helper', content: [...] }) — create or override
+remember({ path: '/skill/my-helper', content: [...], replace: true }) — create or override
 ```
 
 Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `evolutionary`, `self-reflector`. Built-ins are embedded in Scrinia. Project overrides live at `.scrinia/skills/{name}.md` and take precedence. To compare an override with the current built-in before merging, use `recall({ path: '/skill/{name}', withBuiltin: true })`.
 
 ### Sessions
 
-Keep a running log: `append({ path: '/sessions/2026-07-16', content: '...' })`.
+Keep a running log: `remember({ path: '/sessions/2026-07-16', content: ['...'] })`.
 
 ### Recovery
 

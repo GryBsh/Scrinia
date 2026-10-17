@@ -24,9 +24,8 @@ is the single source of truth for project knowledge — decisions, conventions, 
 ```
 guide()                                           — full primer; call at session start
 search({ query })                          — find what you know
-remember({ path, content: [...] })         — store (each array element = one chunk)
+remember({ path, content: [...] })         — add chunks (creates a missing memory)
 recall({ path })                           — read it back
-append({ path, content })                  — add a chunk
 list({ scopes?, mode? })                   — browse
 restore()                                  — resume after context loss
 ```
@@ -42,3 +41,5 @@ restore()                                  — resume after context loss
 - **`.scrinia/` changes are part of your commits.**
 
 Call `guide()` for the full primer — chunks, skills, review markers, and recovery details.
+
+`remember` appends by default, preserving earlier content. Send only new chunks. Use `replace: true` only with the complete intended replacement.

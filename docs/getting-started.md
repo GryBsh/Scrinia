@@ -173,7 +173,7 @@ Model2Vec model when it is missing. If you configure an HTTP embedding provider 
 provider, that provider may use its own model and model-download process. If the built-in model
 is not available, Scrinia still starts and search falls back to BM25.
 
-Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `forget`, `compact`, `link`, `restore`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 
 ## Memory Naming
 
@@ -194,15 +194,17 @@ the canonical `~subject` spelling. The CLI does not support either spelling.
 
 ## MCP Tools Overview
 
-`scri serve` exposes eleven workspace tools, each with its own schema. The separate
-`scri shared serve` exposes eleven disjoint `shared_*` tools for enabled shared bases.
+`scri serve` exposes ten workspace tools, each with its own schema. The separate
+`scri shared serve` exposes ten disjoint `shared_*` tools for enabled shared bases.
 Workspace tools are grouped by purpose:
 
 | Group | Tools | Purpose |
 |------|---------|---------|
 | Lifecycle | `guide`, `restore` | Session playbook + context restore |
-| Memory | `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link` | Store, read, find, and maintain memories |
+| Memory | `remember`, `recall`, `search`, `list`, `forget`, `compact`, `link` | Store, read, find, and maintain memories |
 | Facts | `facts` | Aggregate/relational entity queries (`entities`, `profile`, `intersect`) |
+
+`remember` creates a missing memory or appends every supplied chunk to an existing one. Send only new information. To replace a memory, first recall it, prepare the complete replacement, then pass `replace: true`. This also applies to `shared_remember`. The separate MCP `append` and `shared_append` tools have been removed; integrations should use `remember` or `shared_remember` with a content array. The CLI retains `scri store` for replacement and `scri append` for addition.
 
 `guide` is standalone — call it once per session. Skill paths (`/skill/...`) are routed through `remember` (create/override) and `recall` (load/list), not a separate tool.
 
@@ -248,7 +250,7 @@ The following ship with scrinia and load via `recall({ path: '/skill/{name}' })`
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
 | `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
-Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [...] })` creates a project-specific override on disk.
+Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [...], replace: true })` creates a project-specific override on disk.
 
 ## Workspace Tracking and Shared Bases
 

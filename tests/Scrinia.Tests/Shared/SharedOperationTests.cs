@@ -7,14 +7,14 @@ namespace Scrinia.Tests.Shared;
 public sealed class SharedOperationTests
 {
     [Fact]
-    public async Task All_eleven_tools_dispatch_and_mutations_are_readable_after_restart()
+    public async Task All_ten_tools_dispatch_and_mutations_are_readable_after_restart()
     {
         using var fixture = new SharedOperationFixture();
         SharedTools tools = fixture.Tools;
         (await tools.Bases()).Should().Contain("availability: available");
         (await tools.Remember("team", "/patterns/alpha", ["First durable chunk", "Second chunk"],
             new() { ["person"] = ["alice"] }, ["durable"])).Should().Contain("mutation: applied");
-        (await tools.Append("team", "/patterns/alpha", "Third chunk")).Should().Contain("mutation: applied");
+        (await tools.Remember("team", "/patterns/alpha", ["Third chunk"])).Should().Contain("mutation: applied");
         (await tools.Recall("team", "/patterns/alpha", 3)).Should().Contain("Third chunk");
         (await tools.Search("durable")).Should().Contain("path: /patterns/alpha");
         (await tools.List()).Should().Contain("total: 1");

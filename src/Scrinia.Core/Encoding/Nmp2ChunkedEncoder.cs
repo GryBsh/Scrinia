@@ -74,13 +74,18 @@ public static class Nmp2ChunkedEncoder
 
     internal static string AppendChunk(string existingArtifact, string newChunkText,
         out string[] verifiedChunks, out long verifiedBytes)
+        => AppendChunks(existingArtifact, [newChunkText], out verifiedChunks, out verifiedBytes);
+
+    internal static string AppendChunks(string existingArtifact, IReadOnlyList<string> newChunks,
+        out string[] verifiedChunks, out long verifiedBytes)
     {
         ArgumentException.ThrowIfNullOrEmpty(existingArtifact);
+        if (newChunks.Count == 0) throw new ArgumentException("At least one chunk is required.", nameof(newChunks));
         (verifiedChunks, verifiedBytes) = DecodeAllChunksVerified(existingArtifact, out Nmp2Header metadata, out Nmp2Scan scan);
 
         // Multi-chunk → surgical append: copy existing chunk sections verbatim
         int oldCount = metadata.ChunkCount;
-        int newCount = oldCount + 1;
+        int newCount = checked(oldCount + newChunks.Count);
         if (newCount > Nmp2Strategy.MaxChunkCount)
             throw new InvalidDataException("NMP/2 appended chunk count exceeds its limit.");
 
@@ -91,14 +96,14 @@ public static class Nmp2ChunkedEncoder
         uint existingCrc = metadata.Crc32;
         int existingBytes = metadata.OriginalBytes;
 
-        byte[] newChunkUtf8 = System.Text.Encoding.UTF8.GetBytes(newChunkText);
-        if ((long)existingBytes + newChunkUtf8.Length > Nmp2Strategy.MaxDecodedBytes)
+        byte[][] encodedChunks = newChunks.Select(System.Text.Encoding.UTF8.GetBytes).ToArray();
+        long appendedBytes = encodedChunks.Sum(chunk => (long)chunk.Length);
+        if ((long)existingBytes + appendedBytes > Nmp2Strategy.MaxDecodedBytes)
             throw new InvalidDataException("NMP/2 appended decoded size exceeds its limit.");
-        uint newChunkCrc = Crc32.HashToUInt32(newChunkUtf8);
-
-        // Incremental CRC: combine existing CRC with new chunk CRC
-        int totalBytes = existingBytes + newChunkUtf8.Length;
-        uint crc = Crc32Combine(existingCrc, newChunkCrc, newChunkUtf8.Length);
+        int totalBytes = checked(existingBytes + (int)appendedBytes);
+        uint crc = existingCrc;
+        foreach (byte[] chunk in encodedChunks)
+            crc = Crc32Combine(crc, Crc32.HashToUInt32(chunk), chunk.Length);
 
         // Build new artifact: new header + existing chunk sections verbatim + new chunk compressed
         var sb = new StringBuilder();
@@ -117,8 +122,9 @@ public static class Nmp2ChunkedEncoder
             sb.Append(existingArtifact, section.Start, section.Length);
         }
 
-        // Compress and append the new chunk
-        AppendCompressedChunk(sb, newChunkUtf8, newCount);
+        // Preserve each incoming chunk boundary within one publication.
+        for (int index = 0; index < encodedChunks.Length; index++)
+            AppendCompressedChunk(sb, encodedChunks[index], oldCount + index + 1);
 
         sb.Append("NMP/END");
         return sb.ToString();

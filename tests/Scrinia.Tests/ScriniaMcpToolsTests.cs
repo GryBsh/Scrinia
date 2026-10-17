@@ -23,7 +23,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await Tools().MemoryRemember("/scanner-caller", ["first", "second"]);
+        await Tools().MemoryRemember("/scanner-caller", ["first", "second"], replace: true);
         await File.WriteAllTextAsync(store.ArtifactPath("scanner-caller"), malformed);
         byte[] body = File.ReadAllBytes(store.ArtifactPath("scanner-caller"));
         byte[] sidecar = File.ReadAllBytes(store.MetaPath("scanner-caller"));

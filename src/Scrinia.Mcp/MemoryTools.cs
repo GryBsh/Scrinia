@@ -207,7 +207,8 @@ public sealed partial class ScriniaMcpTools
     /// consolidation. The facade and CLI policies are pinned behaviourally by the test suite.</para>
     /// </summary>
     [McpServerTool(Name = "remember"), Description(
-        "Persist a memory at a path. Store facts about people, their preferences, and past events under ordinary " +
+        "Add chunks to a memory at a path, creating it if missing. Otherwise, append every supplied chunk and preserve existing content. " +
+        "Set replace: true only for an intentional complete replacement. Store facts about people, their preferences, and past events under ordinary " +
         "paths such as /people/user/travel. Reserve /agent/ for the AI assistant's own persona and behavior, " +
         "not the human user's profile. Content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
@@ -234,7 +235,7 @@ public sealed partial class ScriniaMcpTools
                      "extension, like 'Dockerfile' or 'app.py', does not qualify) becomes a 'file' " +
                      "attribute, hashed as this memory's drift baseline; a '[[wiki-link]]' or '~ephemeral' " +
                      "reference becomes a 'ref' attribute; and a capitalized proper-noun phrase becomes a " +
-                     "'mention' attribute. So a pasted build log or diff still contributes every path in it " +
+                     "'mention' attribute on creation or explicit replacement. Appending preserves existing mentions. So a pasted build log or diff still contributes every path in it " +
                      "as a 'file' attribute unless you wrap it in a properly closed fenced code block — do " +
                      "that when you want sample content excluded from drift tracking, wiki-links, and " +
                       "mentions.")] string[]? content,
@@ -260,6 +261,7 @@ public sealed partial class ScriniaMcpTools
                      "plain keyword. This is the preferred way to attach a person/place/org/thing/topic/file/" +
                      "ref/review facet (see attributes for what each means); any other key works too since " +
                      "every element here was typed on purpose. A plain keyword (no colon) stays a keyword.")] string[]? keywords = null,
+        [Description("False (default) adds the supplied chunks while preserving existing content. Set true only to replace the entire memory with the supplied content.")] bool replace = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -272,14 +274,6 @@ public sealed partial class ScriniaMcpTools
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
 
-        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
-            ReservedPathOperation.Write, parsedPath,
-            new ReservedPathRequest(content, null, false, false), cancellationToken);
-        if (reservedResponse is not null)
-        {
-            return reservedResponse.ToYaml();
-        }
-
         if (content is null || content.Length == 0)
             return ResponseBuilder.Error(
                 "remember requires 'content' (a non-empty string array).",
@@ -287,19 +281,32 @@ public sealed partial class ScriniaMcpTools
                 "remember({ path: '...', content: ['chunk 1', 'chunk 2'] })").ToYaml();
         foreach (var element in content)
         {
-            if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
+            if (element is null)
+                return ResponseBuilder.Error("content elements must not be null.", ErrorCodes.InvalidParameter,
+                    "Supply a string for each content element.").ToYaml();
+            if (System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
                 return ResponseBuilder.Error(
                     $"content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.",
                     ErrorCodes.InvalidParameter,
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
+        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+            replace ? ReservedPathOperation.Write : ReservedPathOperation.Append, parsedPath,
+            new ReservedPathRequest(content, null, false, false, CreateIfMissing: !replace), cancellationToken);
+        if (reservedResponse is not null)
+        {
+            return reservedResponse.ToYaml();
+        }
+
         McpResponse response;
         try
         {
-            response = await Remember(content, parsedPath,
-                keywords: keywords, attributes: attributes,
-                actionLabel: "remembered", cancellationToken: cancellationToken);
+            response = replace
+                ? await Remember(content, parsedPath, keywords: keywords, attributes: attributes,
+                    actionLabel: "remembered", cancellationToken: cancellationToken)
+                : (await AppendChunks(content, parsedPath, keywords: keywords, attributes: attributes,
+                    cancellationToken: cancellationToken)).WithAction("remembered");
         }
         catch (Scrinia.Core.Bundles.BundleImportException ex)
         {
@@ -629,14 +636,7 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
-    [McpServerTool(Name = "append"), Description(
-        "Append a new chunk to an existing memory (or create it if missing). Preserves the memory's " +
-        "existing retrieval metadata and merges in any new attributes (multi-valued keys union) and " +
-        "keywords (deduplicated) — same 'key:value' routing as remember: a keywords entry shaped " +
-        "'key:value' becomes an attribute instead of a keyword, and the eight recommended keys route " +
-        "the same way from inline content prose. Example: append({ path: '/sessions/2026-05-11', " +
-        "content: 'session note', attributes: { topic: ['standup'] } }).")]
-    public async Task<string> MemoryAppend(
+    internal async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string? path,
         [Description("Text content for the new chunk. Every attribute route below follows one rule: none " +
                      "of them read inside a properly closed fenced code block (```), but all of them read " +

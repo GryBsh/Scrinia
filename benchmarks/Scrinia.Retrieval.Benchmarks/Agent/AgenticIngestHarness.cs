@@ -227,7 +227,7 @@ public sealed class AgenticIngestHarness
         TryGetAttributes(root, "attributes", out var attributes);
         TryGetStringArray(root, "keywords", out string[]? keywords);
 
-        string result = await tools.MemoryRemember(path, content, attributes, keywords, ct);
+        string result = await tools.MemoryRemember(path, content, attributes, keywords, replace: root.TryGetProperty("replace", out var replace) && replace.ValueKind == JsonValueKind.True, cancellationToken: ct);
         return (result, false);
     }
 
@@ -242,7 +242,7 @@ public sealed class AgenticIngestHarness
         TryGetAttributes(root, "attributes", out var attributes);
         TryGetStringArray(root, "keywords", out string[]? keywords);
 
-        string result = await tools.MemoryAppend(path, content, attributes, keywords, ct);
+        string result = await tools.MemoryRemember(path, [content], attributes, keywords, cancellationToken: ct);
         return (result, false);
     }
 

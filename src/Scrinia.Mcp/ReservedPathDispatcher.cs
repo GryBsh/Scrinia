@@ -29,7 +29,8 @@ internal sealed record ReservedPathRequest(
     string[]? Content,
     string? InlineArtifact,
     bool WithBuiltin,
-    bool Overwrite);
+    bool Overwrite,
+    bool CreateIfMissing = false);
 
 internal sealed class ReservedPathOperationException : InvalidOperationException
 {
@@ -142,7 +143,7 @@ internal sealed class ReservedPathDispatcher
             case ReservedPathOperation.Write:
                 return await _tools.WriteAgentAsync(subject, request.Content, cancellationToken);
             case ReservedPathOperation.Append:
-                return await _tools.AppendAgentAsync(subject, request.Content, cancellationToken);
+                return await _tools.AppendAgentAsync(subject, request.Content, cancellationToken, request.CreateIfMissing);
             case ReservedPathOperation.Delete:
                 return await _tools.DeleteAgentAsync(subject, cancellationToken);
             default:
@@ -169,7 +170,7 @@ internal sealed class ReservedPathDispatcher
         if (request.Content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
 
-        return await ScriniaMcpTools.AppendSkillAsync(subject, request.Content, cancellationToken);
+        return await ScriniaMcpTools.AppendSkillAsync(subject, request.Content, cancellationToken, request.CreateIfMissing);
     }
 
     private static McpResponse Forbidden(ReservedPathOperation operation, ReservedPathKind kind) =>

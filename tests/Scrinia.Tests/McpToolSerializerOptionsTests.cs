@@ -10,7 +10,7 @@ namespace Scrinia.Tests;
 
 public sealed class McpToolSerializerOptionsTests
 {
-    // The MCP tool surface (remember/search/append) exposes Dictionary<string,string[]> params
+    // The MCP tool surface (remember/search) exposes Dictionary<string,string[]> params
     // (attributes / attributeFilter). The trimmed single-file `scri serve` publish has NO reflection
     // metadata, so the MCP server marshals tool arguments via source generation only. If that type isn't
     // source-gen resolvable, tool construction throws NotSupportedException at server startup — the
@@ -36,7 +36,7 @@ public sealed class McpToolSerializerOptionsTests
     {
         // This explicit resolver has no reflection fallback, matching the extracted trimmed host.
         var options = new JsonSerializerOptions { TypeInfoResolver = ScriniaMcpJsonContext.Default };
-        string[] expected = ["Append", "Remember", "Search"];
+        string[] expected = ["Remember", "Search"];
         var methods = typeof(SharedTools).GetMethods().Where(method => method.GetParameters()
             .Any(parameter => parameter.ParameterType == typeof(Dictionary<string, string[]>))).ToArray();
         Assert.Equal(expected, methods.Select(method => method.Name).Order(StringComparer.Ordinal));

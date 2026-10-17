@@ -219,7 +219,7 @@ internal sealed class ReleaseLifecycle
         [
             ("shared_bases", "{}", false),
             ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/one\",\"content\":[\"shared first chunk\",\"second chunk\"],\"attributes\":{\"project\":[\"validation\"]}}", false),
-            ("shared_append", "{\"base\":\"team\",\"path\":\"/validation/one\",\"content\":\"third chunk\"}", false),
+            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/one\",\"content\":[\"third chunk\"]}", false),
             ("shared_recall", "{\"base\":\"team\",\"path\":\"/validation/one\",\"chunk\":2}", false),
             ("shared_search", "{\"query\":\"shared\",\"base\":\"team\",\"attributeFilter\":{\"project\":[\"validation\"]}}", false),
             ("shared_list", "{\"base\":\"team\",\"mode\":\"full\"}", false),

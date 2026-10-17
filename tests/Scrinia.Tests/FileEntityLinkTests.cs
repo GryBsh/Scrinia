@@ -56,7 +56,7 @@ public sealed class FileEntityLinkTests : IDisposable
         References(path).Should().BeEquivalentTo("/notes/one", "/notes/two");
 
         await _tools.MemoryAppend(path, "appended");
-        await _tools.MemoryRemember(path, ["replacement body"]);
+        await _tools.MemoryRemember(path, ["replacement body"], replace: true);
         References(path).Should().BeEquivalentTo("/notes/one", "/notes/two");
         using var saved = JsonDocument.Parse(File.ReadAllText(metaPath));
         saved.RootElement.GetProperty("extension").GetString().Should().Be("preserve me");

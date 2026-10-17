@@ -1138,7 +1138,7 @@ public sealed partial class ScriniaMcpTools
     /// <paramref name="anchors"/> into it — appended content can introduce new concepts users will
     /// query for, and the metadata `remember` set must not be silently discarded on append.
     /// </summary>
-    internal async Task<McpResponse> Append(
+    internal Task<McpResponse> Append(
         [Description("The text content to append.")] string? content,
         [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] MemoryAddress name,
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
@@ -1151,7 +1151,15 @@ public sealed partial class ScriniaMcpTools
                      "an anchor is for.")] string[]? anchors = null,
          IReadOnlyDictionary<string, string[]>? attributes = null,
          CancellationToken cancellationToken = default)
+        => AppendChunks([content], name, description, tags, keywords, anchors, attributes, cancellationToken);
+
+    internal async Task<McpResponse> AppendChunks(
+        string?[] chunks, MemoryAddress name, string? description = null,
+        string[]? tags = null, string[]? keywords = null, string[]? anchors = null,
+        IReadOnlyDictionary<string, string[]>? attributes = null,
+        CancellationToken cancellationToken = default)
     {
+        string content = string.Join("\n", chunks);
         string appendOperationId = Guid.NewGuid().ToString("N");
         name = MemoryAddress.Parse(MemoryNaming.CanonicalizeEphemeralAlias(name.ToString()));
         var store = CurrentStore;
@@ -1186,7 +1194,7 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = MemoryWrite.Create(name, scope, [content],
+            write = MemoryWrite.Create(name, scope, chunks,
                 WriteAttributesAsBytes(WriteAttributes(attributes, tags, anchors)
                     ?? new Dictionary<string, string[]>()), keywords ?? [], isAppend: true,
                 description: description);
@@ -1351,9 +1359,9 @@ public sealed partial class ScriniaMcpTools
             await FireEventSinkAsync(sink => wasCreated
                 ? sink.OnStoredAsync(address, write.RawContent, store, cancellationToken)
                 : sink is IOperationAwareMemoryEventSink operationAware
-                    ? operationAware.OnAppendedAsync(address, write.RawContent[0], store,
+                    ? operationAware.OnAppendedAsync(address, content, store,
                         appendResult.OperationId, cancellationToken)
-                    : sink.OnAppendedAsync(address, write.RawContent[0], store, cancellationToken));
+                    : sink.OnAppendedAsync(address, content, store, cancellationToken));
 
             if (operationHook is not null)
                 await operationHook.OnAfterAppendAsync(new AfterAppendContext
@@ -1362,7 +1370,7 @@ public sealed partial class ScriniaMcpTools
                     Address = address,
                     ChunkCount = entry.ChunkCount,
                     OriginalBytes = entry.OriginalBytes,
-                    Content = write.RawContent[0]
+                    Content = content
                 }, cancellationToken);
 
             Exception? afterEventFailure = FileMemoryStore.InjectAppendFault(
@@ -1391,14 +1399,15 @@ public sealed partial class ScriniaMcpTools
             };
         }
 
+        string addedChunks = chunks.Length == 1 ? $"chunk {entry.ChunkCount}" : $"{chunks.Length} chunks";
         var response = appendResult.Outcome == AppendStoreOutcome.SuccessWithWarning
             ? ResponseBuilder.SuccessWithWarning(wasCreated
                 ? $"Created {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)})."
-                : $"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
+                : $"Appended {addedChunks} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
                 .WithFileChanges().WithAction(wasCreated ? "created" : "appended")
             : wasCreated
             ? StoredResponse(entry, qualifiedName, ephemeral, "created")
-            : ResponseBuilder.Success($"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
+            : ResponseBuilder.Success($"Appended {addedChunks} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
                 .WithFileChanges().WithAction("appended");
         response = response.WithOperationId(appendResult.OperationId).WithPersistedIdentity(qualifiedName);
         var responseInfo = new List<string>();

@@ -347,6 +347,33 @@ public sealed partial class ScriniaMcpTools
         return Path.GetDirectoryName(Path.GetFullPath(filePath))!;
     }
 
+    private static string BuildCustomSkillPrompt(string? instructions, string? tools)
+    {
+        string toolSection = "";
+        if (!string.IsNullOrWhiteSpace(tools))
+        {
+            var toolList = tools
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => $"- {t}: use as needed");
+            toolSection =
+                "## Tools Available (if Scrinia MCP is active)\n" +
+                string.Join("\n", toolList) + "\n\n";
+        }
+
+        string instructionsSection = string.IsNullOrWhiteSpace(instructions)
+            ? "(no custom instructions provided)"
+            : instructions;
+
+        return
+            "## Role: Custom Specialist\n" +
+            toolSection +
+            "## Instructions\n" +
+            $"{instructionsSection}\n\n" +
+            "## Fallback Instructions (if Scrinia MCP is not available)\n" +
+            "Organize findings in markdown. Use standard file operations to persist results.\n";
+    }
+
+    /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
     internal static async Task<McpResponse> SkillCreate(
         [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string name,
@@ -391,28 +418,7 @@ public sealed partial class ScriniaMcpTools
 
             default:
                 role = "custom";
-                string toolSection = "";
-                if (!string.IsNullOrWhiteSpace(tools))
-                {
-                    var toolList = tools
-                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Select(t => $"- {t}: use as needed");
-                    toolSection =
-                        "## Tools Available (if Scrinia MCP is active)\n" +
-                        string.Join("\n", toolList) + "\n\n";
-                }
-
-                string instructionsSection = string.IsNullOrWhiteSpace(instructions)
-                    ? "(no custom instructions provided)"
-                    : instructions;
-
-                promptContent =
-                    "## Role: Custom Specialist\n" +
-                    toolSection +
-                    "## Instructions\n" +
-                    $"{instructionsSection}\n\n" +
-                    "## Fallback Instructions (if Scrinia MCP is not available)\n" +
-                    "Organize findings in markdown. Use standard file operations to persist results.\n";
+                promptContent = BuildCustomSkillPrompt(instructions, tools);
                 break;
         }
 
@@ -482,7 +488,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     internal static async Task<McpResponse> AppendSkillAsync(
-        string name, string[] content, CancellationToken cancellationToken)
+        string name, string[] content, CancellationToken cancellationToken, bool createIfMissing = false)
     {
         var store = CurrentStore;
         if (!PathRouter.TryToFileEntityPath("skill", name, store.WorkspaceRoot, out string filePath))
@@ -498,11 +504,12 @@ public sealed partial class ScriniaMcpTools
                     ct.ThrowIfCancellationRequested();
                     SkillFileMeta? existing = ReadSidecarSnapshotOrRefuse(
                         current.Meta, filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
-                    RawFileEntityContent<SkillFileMeta> raw = LoadRawSkill(name,
-                        current.Body.Existed ? DecodeFileEntityBody(current.Body.Bytes) : null, existing)
-                        ?? throw new FileNotFoundException($"Skill '{name}' not found.");
+                    RawFileEntityContent<SkillFileMeta>? raw = LoadRawSkill(name,
+                        current.Body.Existed ? DecodeFileEntityBody(current.Body.Bytes) : null, existing);
+                    if (raw is null && !createIfMissing)
+                        throw new FileNotFoundException($"Skill '{name}' not found.");
                     string now = DateTimeOffset.UtcNow.ToString("o");
-                    SkillFileMeta metadata = raw.Metadata is { } prior
+                    SkillFileMeta metadata = (raw?.Metadata ?? existing) is { } prior
                         ? prior with
                         {
                             UpdatedAt = now,
@@ -511,8 +518,10 @@ public sealed partial class ScriniaMcpTools
                         : new SkillFileMeta(
                             BuiltInSkills.TryGetValue(name, out string? builtIn)
                                 ? Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(builtIn))) : null,
-                            null, null, null, now, now);
-                    string updated = raw.Body + "\n\n" + string.Join("\n\n", content);
+                            raw is null ? "custom" : null, null, raw is null ? "custom" : null, now, now);
+                    string updated = raw is null
+                        ? BuildCustomSkillPrompt(string.Join("\n\n", content), null)
+                        : raw.Body + "\n\n" + string.Join("\n\n", content);
                     byte[] body = Encoding.UTF8.GetBytes(updated);
                     byte[] meta = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
                         metadata, ScriniaMcpJsonContext.Default.SkillFileMeta));

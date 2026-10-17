@@ -51,8 +51,8 @@ scri serve [--workspace-root <path>] [--no-auto-setup]
 
 Reads and writes `.scrinia/`. On first launch, it downloads the built-in `m2v-MiniLM-L6-v2` model (~22MB) unless `--no-auto-setup` is set. Progress uses stderr; download failure leaves the server running with BM25-only search until `scri setup` succeeds.
 
-The CLI has two local stdio server surfaces: `scri serve` exposes eleven workspace tools and
-`scri shared serve` exposes eleven disjoint `shared_*` tools for enabled shared bases. There is no
+The CLI has two local stdio server surfaces: `scri serve` exposes ten workspace tools and
+`scri shared serve` exposes ten disjoint `shared_*` tools for enabled shared bases. There is no
 remote, HTTP, API-key, or `--store` mode. Share memories through source control and resolve conflicts
 manually. `serve` never installs an embeddings release bundle.
 

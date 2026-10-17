@@ -46,8 +46,10 @@ public class RememberWriteMetadataTests
         }
     }
 
-    [Fact]
-    public async Task Remember_HandsTheAgentsOwnMetadataToTheStore()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Remember_HandsTheAgentsOwnMetadataToTheStore(bool replace)
     {
         using var scope = new TestHelpers.StoreScope();
         var recording = new RecordingStore();
@@ -57,20 +59,22 @@ public class RememberWriteMetadataTests
             path: "/findings/note",
             content: ["a body with portcullis in it"],
             attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] },
-            keywords: ["portcullis"]);
+            keywords: ["portcullis"], replace: replace);
 
-        recording.LastStore.Should().NotBeNull(because: "precondition: the write ran");
+        var write = replace ? recording.LastStore : recording.LastAppend;
+
+        write.Should().NotBeNull(because: "precondition: the write ran");
 
         // The agent's own map crosses, unmodified.
-        recording.LastStore!.Attributes.Should().ContainKey("person");
-        recording.LastStore.Attributes!["person"].Should().Contain("maria");
+        write!.Attributes.Should().ContainKey("person");
+        write.Attributes!["person"].Should().Contain("maria");
 
         // D-01, and the reason MemoryWrite has the shape it has: what crosses is the caller's RAW
         // keyword list, never one the tool merged with auto-extracted terms. "portcullis" appears
         // in the content, so a tool that merged first would hand back a list containing every
         // auto-extracted term as well — and the store would then classify each of them as
         // agent-supplied and seed it at +5 instead of +2.
-        recording.LastStore.Keywords.Should().BeEquivalentTo(["portcullis"],
+        write.Keywords.Should().BeEquivalentTo(["portcullis"],
             because: "a derived list handed back in as input is the defect this write surface " +
                      "exists to make unexpressible");
     }

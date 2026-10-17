@@ -62,10 +62,10 @@ so that every shared abstraction lives in Core and the executable owns only host
   `scri shared serve` resolves the Core services and owns command/transport startup; the local
   `ScriniaMcpTools` registration and local store path remain unchanged.
 
-`scri shared serve` starts only with at least one enabled base and exposes exactly eleven prefixed
+`scri shared serve` starts only with at least one enabled base and exposes exactly ten prefixed
 tools: `shared_bases`, `shared_search`, `shared_list`, `shared_recall`, `shared_facts`,
-`shared_remember`, `shared_append`, `shared_forget`, `shared_compact`, `shared_link`, and
-`shared_refresh`. Local `scri serve` exposes eleven workspace tools — the two surfaces register
+`shared_remember`, `shared_forget`, `shared_compact`, `shared_link`, and
+`shared_refresh`. Local `scri serve` exposes ten workspace tools — the two surfaces register
 disjoint tool sets, and no scalar base name appears before canonical-name syntax and enabled-membership
 validation. The shared surface is prompt-isolated and process-free: no shared input carries a prompt,
 correlation, or session field, and no shared handler launches a process (Git guidance is print-only).

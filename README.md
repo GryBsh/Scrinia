@@ -228,17 +228,16 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-Eleven workspace tools are available via `scri serve`. The separate `scri shared serve` surface
-exposes eleven `shared_*` tools for enabled shared bases; see [CLI Reference](docs/cli-reference.md).
+Ten workspace tools are available via `scri serve`. The separate `scri shared serve` surface
+exposes ten `shared_*` tools for enabled shared bases; see [CLI Reference](docs/cli-reference.md).
 
 | Tool | Description |
 |---|---|
 | `guide` | Returns the embedded agent guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session. |
-| `remember` | Persist a memory at a path. `content` is a string array — each element is one chunk. |
+| `remember` | Add chunks to a memory, creating it when missing. Set `replace: true` for a complete replacement. `content` is a string array — each element is one chunk. |
 | `recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
 | `search` | Find memories by keyword or phrase. |
 | `list` | List stored memories (`summary` / `full` / `drift` modes). |
-| `append` | Append a chunk to an existing memory (or create it). |
 | `forget` | Delete a memory by path. |
 | `compact` | Merge a multi-chunk memory; archives the original (except an ephemeral, or one with no prior index entry). |
 | `link` | Bidirectional link between two memories. |

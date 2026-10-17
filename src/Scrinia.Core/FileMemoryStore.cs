@@ -2894,19 +2894,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             throw new AppendStoreException(AppendStoreErrorCode.Internal, operationId,
                 "Append admission found a missing live artifact after the transaction lock was acquired.");
 
-        string appended = write.RawContent[0];
-        string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended,
+        string newArtifact = Nmp2ChunkedEncoder.AppendChunks(existingArtifact, write.RawContent,
             out string[] verifiedChunks, out long verifiedBytes);
-
-        // The pipeline derives over the memory's FULL post-append content with the appended chunk
-        // last (D-22 reads only that last element for attributes and the new chunk entry).
-        int priorChunks = verifiedChunks.Length;
-        string[] fullContent = new string[priorChunks + 1];
-        verifiedChunks.CopyTo(fullContent, 0);
-        fullContent[priorChunks] = appended;
+        string[] fullContent = [.. verifiedChunks, .. write.RawContent];
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
-        long originalBytes = verifiedBytes + System.Text.Encoding.UTF8.GetByteCount(appended);
+        long originalBytes = verifiedBytes + write.RawContent.Sum(chunk => (long)System.Text.Encoding.UTF8.GetByteCount(chunk));
 
         // Everything the memory already carries that an append must not destroy. A server-side REST
         // append used to lose the curated keywords (D-12) and the drift baseline (D-21) outright.
@@ -2923,7 +2916,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         var derived = MemoryDerivation.ForAppend(
             fullContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()), write.Keywords.ToArray(), existing,
-            fileHasher: HashWorkspaceFile);
+            fileHasher: HashWorkspaceFile, appendedChunkCount: write.RawContent.Length);
 
         if (ephemeral)
         {

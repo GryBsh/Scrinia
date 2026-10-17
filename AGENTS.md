@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes eleven workspace MCP tools — `guide()`, one per memory operation, and the `facts` entity-query tool — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
+scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes ten workspace MCP tools — `guide()`, one per memory operation, and the `facts` entity-query tool — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
 
 ## Project Layout
 
@@ -58,21 +58,20 @@ scrinia/
 
 ## MCP Tools and server mode
 
-`scri serve` exposes eleven workspace tools over local stdio and reads and writes the local
-`.scrinia/` workspace. `scri shared serve` exposes eleven disjoint `shared_*` tools for enabled bases. The repository has no HTTP/REST server, server project,
+`scri serve` exposes ten workspace tools over local stdio and reads and writes the local
+`.scrinia/` workspace. `scri shared serve` exposes ten disjoint `shared_*` tools for enabled bases. The repository has no HTTP/REST server, server project,
 server test project, web UI, Aspire AppHost, or remote CLI mode. The removed `--remote`,
 `--api-key`, and `--store` options must not be added to new CLI guidance.
 
-Eleven workspace tools are exposed — `guide()`, one per memory operation, and `facts`:
+Ten workspace tools are exposed — `guide()`, one per memory operation, and `facts`:
 
 | Tool | Description |
 |------|-------------|
 | `guide()` | Returns the embedded usage guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session and record usage guidance in the project's instruction file, such as `AGENTS.md`; this does not mean storing it under `/agent/`. |
-| `remember` | Persist a memory at a path. `content` is a string array (one chunk per element); `attributes` are typed facets that link/filter; `keywords` are search terms. |
+| `remember` | Add chunks to a memory, creating it when missing. Set `replace: true` for a complete replacement. `content` is a string array (one chunk per element); `attributes` are typed facets that link/filter; `keywords` are search terms. |
 | `recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
 | `search` | Find memories by keyword or phrase; supports `pathPrefix` and `attributeFilter`. |
 | `list` | List stored memories (`summary` / `full` / `drift` modes). |
-| `append` | Append a chunk to an existing memory (or create it). |
 | `forget` | Delete a memory by path. |
 | `compact` | Merge a multi-chunk memory; archives the original (except an ephemeral, or one with no prior index entry). |
 | `link` | Bidirectional link between two memories. |
@@ -82,7 +81,7 @@ Eleven workspace tools are exposed — `guide()`, one per memory operation, and 
 Skill paths are routed transparently through `recall` and `remember`:
 - `recall({ path: '/skill/qa' })` — load a skill prompt (built-in or override).
 - `recall({ path: '/skill/' })` — list available skills.
-- `remember({ path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
+- `remember({ path: '/skill/{name}', content: [...], replace: true })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
 
 `restore` resumes context — the AI assistant's persona, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
 

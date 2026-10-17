@@ -184,9 +184,30 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         finally { MemoryStoreContext.Current = null; }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Replay_remember_honors_explicit_replacement(bool replace)
+    {
+        Directory.CreateDirectory(_dir);
+        using var store = new FileMemoryStore(_dir);
+        MemoryStoreContext.Current = store;
+        try
+        {
+            var calls = new List<EpisodeToolCall>
+            {
+                new("remember", "{\"path\":\"/facts/move\",\"content\":[\"five hours\"]}"),
+                new("remember", "{\"path\":\"/facts/move\",\"content\":[\"train commute\"],\"replace\":" + (replace ? "true" : "false") + "}")
+            };
+            await AgenticIngestHarness.ReplayAsync(calls, CancellationToken.None);
+            string recalled = await new ScriniaMcpTools().MemoryRecall("/facts/move");
+            recalled.Should().Contain("train commute");
+            recalled.Contains("five hours", StringComparison.Ordinal).Should().Be(!replace);
+        }
+        finally { MemoryStoreContext.Current = null; }
+    }
+
     [Fact]
-    public async Task PromptVersion_IsV3_AfterBareToolNameRename() =>
-        // Bumped v2 -> v3 when the bench tool surface was renamed from the stale memory_* names
-        // to the real MCP bare names, invalidating cached episodes whose ToolNames used memory_*.
-        AgenticIngestPrompts.PromptVersion.Should().Be("v3");
+    public void PromptVersion_IsV4_AfterRememberBecameAppendByDefault() =>
+        AgenticIngestPrompts.PromptVersion.Should().Be("v4");
 }

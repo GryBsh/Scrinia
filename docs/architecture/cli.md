@@ -101,12 +101,12 @@ options for trimmed publishing. They access the store via `MemoryStoreContext.Cu
 set during workspace initialization. Server instructions are supplied through
 `ScriniaPrimer.McpInstructions`; the registration does not assert a separate server version.
 
-Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
+Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `forget`, `compact`, `link`, `restore`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
 
 ## Shared Server Mode
 
 `scri shared serve` hosts the isolated shared-memory MCP server over the same stdio transport. It
-registers exactly the eleven `shared_*` tools through `WithTools<SharedTools>` and fails before the
+registers exactly the ten `shared_*` tools through `WithTools<SharedTools>` and fails before the
 transport starts when no base is enabled (`NO_SHARED_BASES_ENABLED`). The executable owns only the
 host adapter; every shared abstraction lives in Core and is consumed through Core interfaces.
 

@@ -27,7 +27,7 @@ namespace Scrinia.Core.Models;
 /// <param name="Scope">The resolved scope (<c>"local"</c>, <c>"local:topic"</c>). Ignored for an
 /// ephemeral <paramref name="Name"/>.</param>
 /// <param name="Content">The chunks to write. One element per independently retrievable chunk;
-/// an append writes exactly one.</param>
+/// append preserves each supplied chunk.</param>
 /// <param name="Description">A curated description. Becomes the preview, winning over the auto
 /// snippet.</param>
 /// <param name="Attributes">Explicit caller-supplied attributes. Tags, anchors and review
@@ -260,8 +260,6 @@ public sealed record MemoryWrite
             return Error("attributes_null", "Attributes must not be null.", "attributes");
         if (keywords is null)
             return Error("keywords_null", "Keywords must not be null.", "keywords");
-        if (isAppend && content.Count != 1)
-            return Error("append_requires_one_chunk", "An append must contain exactly one chunk.", "content", 1, content.Count);
         if (content.Count > options.MaxChunks)
             return Error("too_many_chunks", "Content contains too many chunks.", "content", options.MaxChunks, content.Count);
 

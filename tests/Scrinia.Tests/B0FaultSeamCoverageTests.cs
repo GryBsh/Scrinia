@@ -83,7 +83,7 @@ public class B0FaultSeamCoverageTests
         // through the B0 seam; the remember commit boundary surfaces it as a durable-write failure.
         store.FailOnceAt(WholeMemoryFaultPoint.LiveArtifactWrite);
 
-        string responseYaml = await tools.MemoryRemember("/b1/remember-op", ["new content"]);
+        string responseYaml = await tools.MemoryRemember("/b1/remember-op", ["new content"], replace: true);
         McpResponseAssert parsed = ResponseParser.Parse(responseYaml);
 
         Assert.Equal("error", parsed.Status);
