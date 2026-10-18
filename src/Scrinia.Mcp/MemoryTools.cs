@@ -211,7 +211,7 @@ public sealed partial class ScriniaMcpTools
         "Set replace: true only for an intentional complete replacement. Store facts about people, their preferences, and past events under ordinary " +
         "paths such as /people/user/travel. Reserve /agent/ for the AI assistant's own persona and behavior, " +
         "not the human user's profile. Preserve explicitly stated details of the facts you store, including dates, durations, " +
-        "quantities, units, and qualifiers; do not infer missing values. Content is an array — each element becomes one independently " +
+        "quantities, and units. Keep qualifiers attached to their facts, preserving distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true; do not infer missing values or event relationships. Separate existing facts from goals to change them; retain a short source quotation when a paraphrase could change the meaning. Content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
         "a searcher would use. A keywords entry shaped 'key:value' (e.g. 'person:maria') is routed " +

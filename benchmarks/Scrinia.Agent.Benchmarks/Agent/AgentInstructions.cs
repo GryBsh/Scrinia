@@ -16,11 +16,17 @@ public static class AgentInstructions
           "Use the memory tools to retain relevant facts, events, preferences, and supplied source material faithfully. " +
           "Past events matter even when they do not describe a lasting preference or habit. " +
           "For each fact or event you choose to store, preserve its explicitly stated people, dates, durations, quantities, " +
-          "reasons, and outcomes. Keep units and qualifiers, and distinguish earlier facts from later corrections. " +
-          "Compress wording without dropping these details; do not infer missing values. " +
+          "reasons, and outcomes. Keep units and qualifiers attached to the facts they modify. " +
+          "Preserve distinctions such as another event versus the same event, planned versus completed, " +
+          "and still true versus no longer true. Keep earlier facts and later corrections distinct; " +
+          "do not infer that separate events conflict or refer to the same occurrence. " +
+          "Compress wording without changing these relationships or inferring missing values. " +
+          "Separate what is already true from what someone plans or hopes to change. " +
+          "Preserve the wording that connects them (such as already, another, still, or hoping to improve); " +
+          "when paraphrasing could change that meaning, include the short source clause verbatim alongside the summary. " +
           "Do not invent new source material or draft the deliverables requested in the transcript. " +
-          "Before finishing, compare the facts you selected with the content actually sent in successful memory writes " +
-          "and add any omitted details. Identifying a fact in your reasoning or final response does not store it. " +
+          "Before finishing, compare the selected source facts with the content actually sent in successful memory writes " +
+          "including their qualifiers and relationships, and add any omitted details. Identifying a fact in your reasoning or final response does not store it. " +
           "Once those facts and their details are stored, stop. Your final response must be a brief acknowledgement of learning, " +
           "not an answer to a historical request or a reproduction of the transcript."
         : BaseInstructions;
