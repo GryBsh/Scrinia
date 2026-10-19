@@ -1,5 +1,7 @@
 # Scrinia.Retrieval.Benchmarks
 
+For LongMemEval agent learning and answering through real Scrinia MCP tools, use the new [agent benchmark runner](../Scrinia.Agent.Benchmarks/README.md). This retrieval runner remains available for historical comparisons and the other datasets while the replacement is proven.
+
 Retrieval-quality benchmark harness for Scrinia. Runs Scrinia's BM25 + MiniLM embeddings against academic retrieval benchmarks (ConvoMem, LongMemEval, LoCoMo, MemBench) and reports R@5 / R@10 / R@50 / NDCG@10 with per-category breakdowns.
 
 This is **not** a microbenchmark — for `BenchmarkDotNet` perf measurements see `tests/Scrinia.Benchmarks/`.

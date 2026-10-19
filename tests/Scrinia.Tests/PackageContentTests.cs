@@ -13,8 +13,8 @@ namespace Scrinia.Tests;
 // GlobalWorkspaceConfigCollection: both snapshots shell `dotnet pack` on the shared
 // src/Scrinia project (shared bin/obj state). GlobalToolInstallTests packs the same
 // project with -p:Version overrides; a concurrent version-stamped pack between the two
-// snapshots skews the content-derived .psmdcp entry name, so these packs must serialize
-// with that collection rather than run in a private parallel collection.
+// snapshots can skew assembly or package metadata, so these packs must serialize with
+// that collection. The pinned SDK generates a fresh GUID for the OPC core-properties part.
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class PackageContentTests
 {
@@ -109,10 +109,12 @@ public sealed class PackageContentTests
 
         PackagePathNormalizer.Normalize(@"tools\net10.0\any\scri.dll")
             .Should().Be("tools/net10.0/any/scri.dll");
-        Snapshot.EntryFingerprints.Keys.Should().BeEquivalentTo(other.EntryFingerprints.Keys);
-        foreach (string path in Snapshot.EntryFingerprints.Keys)
+        IReadOnlyDictionary<string, PackageEntryFingerprint> firstEntries = PackageContractEntries.Normalize(Snapshot.EntryFingerprints);
+        IReadOnlyDictionary<string, PackageEntryFingerprint> secondEntries = PackageContractEntries.Normalize(other.EntryFingerprints);
+        firstEntries.Keys.Should().BeEquivalentTo(secondEntries.Keys);
+        foreach (string path in firstEntries.Keys)
         {
-            Snapshot.EntryFingerprints[path].Should().BeEquivalentTo(other.EntryFingerprints[path],
+            firstEntries[path].Should().BeEquivalentTo(secondEntries[path],
                 because: $"contract entry {path} must be identical across fresh packs");
         }
 
@@ -378,6 +380,173 @@ internal sealed record PackageEntryFingerprint(long Size, string Sha256, byte[] 
 {
     public static PackageEntryFingerprint Create(byte[] content) =>
         new(content.LongLength, Convert.ToHexString(SHA256.HashData(content)), content);
+}
+
+internal static class PackageContractEntries
+{
+    private const string CorePrefix = "package/services/metadata/core-properties/";
+    private const string CanonicalCorePath = CorePrefix + "contract.psmdcp";
+    private const string CoreRelation = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
+    private const string ManifestRelation = "http://schemas.microsoft.com/packaging/2010/07/manifest";
+
+    public static IReadOnlyDictionary<string, PackageEntryFingerprint> Normalize(
+        IReadOnlyDictionary<string, PackageEntryFingerprint> entries)
+    {
+        string[] corePaths = entries.Keys.Where(path => path.EndsWith(".psmdcp", StringComparison.Ordinal)).ToArray();
+        if (corePaths.Length != 1 || !System.Text.RegularExpressions.Regex.IsMatch(corePaths[0],
+            "^package/services/metadata/core-properties/[0-9a-f]{32}\\.psmdcp$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+            throw new InvalidDataException("Expected exactly one GUID-named OPC core-properties part.");
+        if (!entries.TryGetValue("_rels/.rels", out PackageEntryFingerprint? relationshipEntry))
+            throw new InvalidDataException("The OPC root relationships part is missing.");
+
+        string relationships;
+        XDocument document;
+        try
+        {
+            relationships = new UTF8Encoding(false, true).GetString(relationshipEntry.Content);
+            using var reader = System.Xml.XmlReader.Create(new StringReader(relationships), new System.Xml.XmlReaderSettings
+            {
+                DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+                XmlResolver = null,
+            });
+            document = XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+        }
+        catch (Exception exception) when (exception is System.Xml.XmlException or DecoderFallbackException)
+        {
+            throw new InvalidDataException("The OPC root relationships part is malformed.", exception);
+        }
+        XNamespace relationshipNamespace = "http://schemas.openxmlformats.org/package/2006/relationships";
+        XElement? root = document.Root;
+        XElement[] children = root?.Elements().ToArray() ?? [];
+        if (root?.Name != relationshipNamespace + "Relationships" || children.Length != 2 ||
+            children.Any(element => element.Name != relationshipNamespace + "Relationship"))
+            throw new InvalidDataException("Expected only the manifest and core-properties OPC relationships.");
+        XElement[] coreRelationships = children.Where(element => (string?)element.Attribute("Type") == CoreRelation).ToArray();
+        XElement[] manifestRelationships = children.Where(element => (string?)element.Attribute("Type") == ManifestRelation).ToArray();
+        if (coreRelationships.Length != 1 || manifestRelationships.Length != 1 || !entries.ContainsKey("scrinia.nuspec"))
+            throw new InvalidDataException("The OPC relationships must identify one existing manifest and one core-properties part.");
+        string coreTarget = '/' + corePaths[0];
+        ValidateRelationship(coreRelationships[0], coreTarget);
+        ValidateRelationship(manifestRelationships[0], "/scrinia.nuspec");
+
+        // Preserve every other byte, including XML whitespace/declaration and core-properties content.
+        // Only the validated SDK-generated target and its path-derived Id vary across fresh packs.
+        relationships = ReplaceOneAttribute(relationships, "Target", coreTarget, '/' + CanonicalCorePath);
+        relationships = ReplaceOneAttribute(relationships, "Id", RelationshipId(coreTarget), RelationshipId('/' + CanonicalCorePath));
+        Dictionary<string, PackageEntryFingerprint> normalized = new(entries, StringComparer.Ordinal);
+        normalized.Remove(corePaths[0]);
+        normalized.Add(CanonicalCorePath, entries[corePaths[0]]);
+        normalized["_rels/.rels"] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes(relationships));
+        return normalized;
+    }
+
+    private static void ValidateRelationship(XElement relationship, string target)
+    {
+        if (relationship.Attributes().Count() != 3 || relationship.HasElements ||
+            (string?)relationship.Attribute("Target") != target ||
+            (string?)relationship.Attribute("Id") != RelationshipId(target))
+            throw new InvalidDataException("An OPC relationship has an external, wrong or dangling target, or a mismatched derived Id.");
+    }
+
+    private static string ReplaceOneAttribute(string xml, string name, string original, string replacement)
+    {
+        string token = name + "=\"" + original + "\"";
+        int index = xml.IndexOf(token, StringComparison.Ordinal);
+        if (index < 0 || index != xml.LastIndexOf(token, StringComparison.Ordinal))
+            throw new InvalidDataException("The validated generated OPC attribute must have one unambiguous encoded occurrence.");
+        return xml[..index] + name + "=\"" + replacement + "\"" + xml[(index + token.Length)..];
+    }
+
+    private static string RelationshipId(string target) =>
+        "R" + Convert.ToHexString(SHA512.HashData(Encoding.UTF8.GetBytes(target)))[..16];
+}
+
+public sealed class PackageContractComparisonTests
+{
+    private const string CorePrefix = "package/services/metadata/core-properties/";
+    private const string FirstGuid = "0123456789abcdef0123456789abcdef";
+    private const string SecondGuid = "fedcba9876543210fedcba9876543210";
+    private const string CoreRelation = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
+
+    [Fact]
+    public void OnlyValidatedGeneratedOpcIdentityVariesAcrossEquivalentContracts()
+    {
+        Dictionary<string, PackageEntryFingerprint> first = Fixture(FirstGuid);
+        Dictionary<string, PackageEntryFingerprint> second = Fixture(SecondGuid);
+        PackageContractEntries.Normalize(first).Should().BeEquivalentTo(PackageContractEntries.Normalize(second));
+        first.Keys.Should().Contain(CorePrefix + FirstGuid + ".psmdcp", "raw artifact identity must remain intact");
+        second.Keys.Should().Contain(CorePrefix + SecondGuid + ".psmdcp");
+    }
+
+    [Theory]
+    [InlineData("malformed-part")]
+    [InlineData("duplicate-part")]
+    [InlineData("dangling-core-target")]
+    [InlineData("wrong-core-id")]
+    [InlineData("duplicate-core-relationship")]
+    [InlineData("wrong-manifest-target")]
+    [InlineData("external-target")]
+    [InlineData("malformed-xml")]
+    public void InvalidOpcMetadataCannotBeCanonicalized(string corruption)
+    {
+        Dictionary<string, PackageEntryFingerprint> entries = Fixture(FirstGuid);
+        string corePath = CorePrefix + FirstGuid + ".psmdcp";
+        string relationships = Encoding.UTF8.GetString(entries["_rels/.rels"].Content);
+        switch (corruption)
+        {
+            case "malformed-part":
+                entries.Add(CorePrefix + "not-a-guid.psmdcp", entries[corePath]);
+                entries.Remove(corePath);
+                break;
+            case "duplicate-part": entries.Add(CorePrefix + SecondGuid + ".psmdcp", entries[corePath]); break;
+            case "dangling-core-target": relationships = relationships.Replace(FirstGuid, SecondGuid, StringComparison.Ordinal); break;
+            case "wrong-core-id": relationships = relationships.Replace(RelationshipId('/' + corePath), "R0000000000000000", StringComparison.Ordinal); break;
+            case "duplicate-core-relationship":
+                XElement relationship = XDocument.Parse(relationships).Root!.Elements().Single(element => (string?)element.Attribute("Type") == CoreRelation);
+                relationships = relationships.Replace("</Relationships>", relationship + "</Relationships>", StringComparison.Ordinal);
+                break;
+            case "wrong-manifest-target": relationships = relationships.Replace("/scrinia.nuspec", "/missing.nuspec", StringComparison.Ordinal); break;
+            case "external-target": relationships = relationships.Replace("Type=\"" + CoreRelation + "\"", "TargetMode=\"External\" Type=\"" + CoreRelation + "\"", StringComparison.Ordinal); break;
+            case "malformed-xml": relationships = "<broken>"; break;
+            default: throw new InvalidOperationException(corruption);
+        }
+        entries["_rels/.rels"] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes(relationships));
+        Action normalize = () => PackageContractEntries.Normalize(entries);
+        normalize.Should().Throw<InvalidDataException>();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PayloadAndCorePropertiesContentChangesRemainDetectable(bool coreProperties)
+    {
+        Dictionary<string, PackageEntryFingerprint> original = Fixture(FirstGuid);
+        Dictionary<string, PackageEntryFingerprint> changed = Fixture(FirstGuid);
+        string path = coreProperties ? CorePrefix + FirstGuid + ".psmdcp" : "tools/net10.0/any/scri.dll";
+        changed[path] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes("changed contract content"));
+        PackageEntryFingerprint before = PackageContractEntries.Normalize(original).Single(pair =>
+            coreProperties ? pair.Key.EndsWith(".psmdcp", StringComparison.Ordinal) : pair.Key == path).Value;
+        PackageEntryFingerprint after = PackageContractEntries.Normalize(changed).Single(pair =>
+            coreProperties ? pair.Key.EndsWith(".psmdcp", StringComparison.Ordinal) : pair.Key == path).Value;
+        before.Sha256.Should().NotBe(after.Sha256);
+        before.Content.Should().NotEqual(after.Content);
+    }
+
+    private static Dictionary<string, PackageEntryFingerprint> Fixture(string guid)
+    {
+        string corePath = CorePrefix + guid + ".psmdcp";
+        string relationships = $"<?xml version=\"1.0\" encoding=\"utf-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Type=\"http://schemas.microsoft.com/packaging/2010/07/manifest\" Target=\"/scrinia.nuspec\" Id=\"{RelationshipId("/scrinia.nuspec")}\" /><Relationship Type=\"{CoreRelation}\" Target=\"/{corePath}\" Id=\"{RelationshipId('/' + corePath)}\" /></Relationships>";
+        return new(StringComparer.Ordinal)
+        {
+            [corePath] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes("<coreProperties>same metadata</coreProperties>")),
+            ["_rels/.rels"] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes(relationships)),
+            ["scrinia.nuspec"] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes("<package>same nuspec</package>")),
+            ["tools/net10.0/any/scri.dll"] = PackageEntryFingerprint.Create(Encoding.UTF8.GetBytes("same managed payload")),
+        };
+    }
+
+    private static string RelationshipId(string target) =>
+        "R" + Convert.ToHexString(SHA512.HashData(Encoding.UTF8.GetBytes(target)))[..16];
 }
 
 internal sealed record PackageMetadata(

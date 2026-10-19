@@ -51,7 +51,10 @@ scri serve [--workspace-root <path>] [--no-auto-setup]
 
 Reads and writes `.scrinia/`. On first launch, it downloads the built-in `m2v-MiniLM-L6-v2` model (~22MB) unless `--no-auto-setup` is set. Progress uses stderr; download failure leaves the server running with BM25-only search until `scri setup` succeeds.
 
-The CLI has two local stdio server surfaces: `scri serve` for workspace memories and `scri shared serve` for enabled shared bases. There is no remote, HTTP, API-key, or `--store` mode. Share memories through source control and resolve conflicts manually.
+The CLI has two local stdio server surfaces: `scri serve` exposes ten workspace tools and
+`scri shared serve` exposes ten disjoint `shared_*` tools for enabled shared bases. There is no
+remote, HTTP, API-key, or `--store` mode. Share memories through source control and resolve conflicts
+manually. `serve` never installs an embeddings release bundle.
 
 ### scri shared serve
 
@@ -313,7 +316,7 @@ Omit `--batch-size` to use the configured value. Reuse the returned opaque conti
 
 ### scri restore
 
-Restore saved agent context: the agent profile, patterns, today's session log, and available skills.
+Restore saved agent context: the AI assistant's persona, patterns, today's session log, and available skills.
 
 ```bash
 scri restore [--workspace-root <path>] [--hook [--client codex|claude|opencode|copilot]] [--json]
@@ -412,12 +415,13 @@ want to enrich memories do so client-side and pass `attributes` (including
 
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] \
-    [--hooks] [--uninstall-hooks] [--project]
+    [--hooks] [--uninstall-hooks] [--project] [--embeddings-source <directory>]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
+| `--embeddings-source` | Adjacent manifest, if present | Directory containing `embeddings-bundle.json` and its runtime payload. Cannot be combined with hook management. |
 | `--hooks` | `false` | Install SessionStart + UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
@@ -428,6 +432,26 @@ setup clears any prior Ollama-derived embedding config keys
 Voyage / Azure / Google embedding configurations are preserved.
 
 `scri serve` downloads the built-in model on first launch unless `--no-auto-setup` is set. Run `setup` for Ollama, hooks, or explicit download timing.
+
+Extract the embeddings release archive. From the extracted directory, run `./scri setup` on
+Linux/macOS or `.\scri.exe setup` in PowerShell on Windows.
+With a NuGet-installed host, use `scri setup --embeddings-source <extracted-release-directory>`.
+Setup verifies and copies the bundle into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`, preserving source files, and selects
+the plugin name/version in workspace configuration. Windows/Linux use Vulkan; macOS uses CPU/Metal.
+Checksums establish content consistency, not publisher identity.
+
+Success confirms installation, configuration, and path selection, not plugin initialization or
+inference. `InstalledConfigurationFailed` and `InstalledModelPreparationFailed` retain the installed
+payload. Correct the reported settings, I/O, or download issue and retry the printed command; other
+failed outcomes may leave an uncertain destination. Conflicting plugin selections or provider
+environment overrides must be resolved first. Migration of legacy assets stored beside the
+executable is a separate step.
+See [complete installation and retry guidance](installation.md#embeddings-plugin-installation).
+
+Local preparation downloads missing Model2Vec files to `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`
+and, with the plugin selected, `SCRINIA_HOME/models/all-MiniLM-L6-v2-Q8_0.gguf`. These downloads
+require network access. Optional HTTP providers use their configured endpoint.
 
 #### Hook installer (`--hooks`)
 
@@ -889,7 +913,7 @@ Memory paths are free-form, but a small set of namespaces have first-class behav
 | Path | Purpose |
 |------|---------|
 | `/skill/...` | Reusable specialist prompts (built-in or override). Routed through `recall` (load/list) and `remember` (create/override) to disk under `.scrinia/skills/`. |
-| `/agent/...` | Agent profile and behavioral norms (`.scrinia/agent/{name}.md` with sidecar metadata). |
+| `/agent/...` | AI assistant persona and behavioral instructions (`.scrinia/agent/{name}.md` with sidecar metadata). Store user facts in ordinary memory paths such as `/people/user/travel`. |
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date. |
 | `/checkpoint/...` | State snapshots. |

@@ -51,6 +51,7 @@ public class EmbeddingsPluginCliTests
         try
         {
             using var homeScope = new EnvironmentVariableScope("SCRINIA_HOME", home);
+            var elapsed = Stopwatch.StartNew();
             using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "dotnet",
@@ -65,6 +66,7 @@ public class EmbeddingsPluginCliTests
             Task<string> stderr = process!.StandardError.ReadToEndAsync();
             Task<string> stdout = process.StandardOutput.ReadToEndAsync();
             process.StandardInput.Close();
+            TimeSpan stdinClosedAt = elapsed.Elapsed;
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
@@ -72,9 +74,19 @@ public class EmbeddingsPluginCliTests
             }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
-                process.Kill(entireProcessTree: true);
+                TimeSpan timedOutAt = elapsed.Elapsed;
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
                 await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-                throw new TimeoutException("The child plugin did not exit after stdio closed.");
+                string capturedStderr = await stderr.WaitAsync(TimeSpan.FromSeconds(5));
+                string capturedStdout = await stdout.WaitAsync(TimeSpan.FromSeconds(5));
+                throw new TimeoutException(
+                    $"The child plugin did not exit after stdio closed. " +
+                    $"Elapsed since launch: {timedOutAt.TotalSeconds:F3}s; " +
+                    $"elapsed since stdin closed: {(timedOutAt - stdinClosedAt).TotalSeconds:F3}s. " +
+                    $"Child assembly: '{_cliAssembly}'. " +
+                    $"stdout: {capturedStdout}\n" +
+                    $"stderr: {capturedStderr}");
             }
 
             process.ExitCode.Should().Be(0, "the child plugin must exit cleanly after stdio closes");

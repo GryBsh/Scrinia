@@ -20,9 +20,9 @@ public class StorePurityInvariantTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await Tools().MemoryRemember(path: "/skill/qa", content: ["skill body"]);
-        await Tools().MemoryRemember(path: "/agent/profile", content: ["agent body"]);
-        await Tools().MemoryRemember(path: "/findings/note", content: ["ordinary memory"]);
+        await Tools().MemoryRemember(path: "/skill/qa", content: ["skill body"], description: "skill body");
+        await Tools().MemoryRemember(path: "/agent/profile", content: ["agent body"], description: "agent body");
+        await Tools().MemoryRemember(path: "/findings/note", content: ["ordinary memory"], description: "ordinary memory");
 
         string memories = store.GetStoreDirForScope("local");
         Directory.EnumerateFiles(memories, "*.md", SearchOption.AllDirectories)
@@ -118,7 +118,7 @@ public class StorePurityInvariantTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await Tools().MemoryRemember(path: "/skill/qa", content: ["skill body"]);
+        await Tools().MemoryRemember(path: "/skill/qa", content: ["skill body"], description: "skill body");
 
         string authoritative = Path.Combine(
             PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot), "qa.md");

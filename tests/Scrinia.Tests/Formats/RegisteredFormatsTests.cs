@@ -238,7 +238,7 @@ public class RegisteredFormatsTests
         using var scope = new TestHelpers.StoreScope();
 
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/skill/versioned-probe", ["Review carefully."]);
+        await tools.MemoryRemember("/skill/versioned-probe", ["Review carefully."], description: "Review carefully.");
 
         string metaPath = Path.Combine(
             scope.WorkspaceDir, ".scrinia", "skills", "versioned-probe.meta.json");
@@ -246,7 +246,7 @@ public class RegisteredFormatsTests
         obj["futureThing"] = JsonValue.Create(42);
         File.WriteAllText(metaPath, obj.ToJsonString());
 
-        await tools.MemoryRemember("/skill/versioned-probe", ["Review even more carefully."]);
+        await tools.MemoryRemember("/skill/versioned-probe", ["Review even more carefully."], description: "Review even more carefully.");
 
         File.ReadAllText(metaPath).Should().Contain("futureThing",
             "a rewrite must carry forward fields this build has no member for");
@@ -257,7 +257,7 @@ public class RegisteredFormatsTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/agent/profile", ["you are helpful"]);
+        await tools.MemoryRemember("/agent/profile", ["you are helpful"], description: "you are helpful");
 
         string metaPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.meta.json");
         var seededSidecar = JsonNode.Parse(File.ReadAllText(metaPath))!.AsObject();
@@ -265,7 +265,7 @@ public class RegisteredFormatsTests
         seededSidecar["futureThing"] = JsonValue.Create(42);
         File.WriteAllText(metaPath, seededSidecar.ToJsonString());
 
-        await tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
+        await tools.MemoryRemember("/agent/profile", ["you are rewritten"], description: "you are rewritten");
 
         _ = new FileMemoryStore(scope.WorkspaceDir);
         var rewrittenSidecar = JsonDocument.Parse(File.ReadAllBytes(metaPath)).RootElement;
@@ -287,7 +287,7 @@ public class RegisteredFormatsTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/skill/newer-probe", ["Review carefully."]);
+        await tools.MemoryRemember("/skill/newer-probe", ["Review carefully."], description: "Review carefully.");
 
         StampVersion(
             Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "newer-probe.meta.json"),
@@ -301,7 +301,7 @@ public class RegisteredFormatsTests
         int versionsBefore = Directory.Exists(versionsDir)
             ? Directory.GetFiles(versionsDir).Length : 0;
 
-        Func<Task> act = () => tools.MemoryRemember("/skill/newer-probe", ["Rewritten."]);
+        Func<Task> act = () => tools.MemoryRemember("/skill/newer-probe", ["Rewritten."], description: "Rewritten.");
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
 
@@ -327,7 +327,7 @@ public class RegisteredFormatsTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/agent/profile", ["you are helpful"]);
+        await tools.MemoryRemember("/agent/profile", ["you are helpful"], description: "you are helpful");
 
         StampVersion(
             Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "profile.meta.json"),
@@ -341,7 +341,7 @@ public class RegisteredFormatsTests
         int versionsBefore = Directory.Exists(agentVersions)
             ? Directory.GetFiles(agentVersions).Length : 0;
 
-        Func<Task> act = () => tools.MemoryRemember("/agent/profile", ["you are rewritten"]);
+        Func<Task> act = () => tools.MemoryRemember("/agent/profile", ["you are rewritten"], description: "you are rewritten");
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
 
@@ -360,13 +360,13 @@ public class RegisteredFormatsTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/skill/durable-control", ["original control instructions"]);
-        await tools.MemoryRemember("/skill/durable-control", ["replacement control instructions"]);
+        await tools.MemoryRemember("/skill/durable-control", ["original control instructions"], description: "original control instructions");
+        await tools.MemoryRemember("/skill/durable-control", ["replacement control instructions"], description: "replacement control instructions");
         string controlPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "durable-control.md");
         File.Exists(controlPath).Should().BeTrue();
         File.Exists(Path.ChangeExtension(controlPath, ".meta.json")).Should().BeTrue();
 
-        await tools.MemoryRemember("/skill/durable-probe", ["original instructions"]);
+        await tools.MemoryRemember("/skill/durable-probe", ["original instructions"], description: "original instructions");
 
         string skillPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills", "durable-probe.md");
         string sidecarPath = Path.ChangeExtension(skillPath, ".meta.json");
@@ -381,7 +381,7 @@ public class RegisteredFormatsTests
         try
         {
             var response = ResponseParser.Parse(
-                await tools.MemoryRemember("/skill/durable-probe", ["failed sidecar replacement"]));
+                await tools.MemoryRemember("/skill/durable-probe", ["failed sidecar replacement"], description: "failed sidecar replacement"));
 
             response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
         }
@@ -402,13 +402,13 @@ public class RegisteredFormatsTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/agent/durable-control", ["original control agent"]);
-        await tools.MemoryRemember("/agent/durable-control", ["replacement control agent"]);
+        await tools.MemoryRemember("/agent/durable-control", ["original control agent"], description: "original control agent");
+        await tools.MemoryRemember("/agent/durable-control", ["replacement control agent"], description: "replacement control agent");
         string controlPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "durable-control.md");
         File.Exists(controlPath).Should().BeTrue();
         File.Exists(Path.ChangeExtension(controlPath, ".meta.json")).Should().BeTrue();
 
-        await tools.MemoryRemember("/agent/durable-probe", ["original agent"]);
+        await tools.MemoryRemember("/agent/durable-probe", ["original agent"], description: "original agent");
 
         string agentPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent", "durable-probe.md");
         string sidecarPath = Path.ChangeExtension(agentPath, ".meta.json");
@@ -423,7 +423,7 @@ public class RegisteredFormatsTests
         try
         {
             var response = ResponseParser.Parse(
-                await tools.MemoryRemember("/agent/durable-probe", ["failed sidecar replacement"]));
+                await tools.MemoryRemember("/agent/durable-probe", ["failed sidecar replacement"], description: "failed sidecar replacement"));
 
             response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
         }

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Scrinia.LongMemEvalV2.Worker.Tests</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <ProjectReference Include="../../benchmarks/Scrinia.LongMemEvalV2.Worker/Scrinia.LongMemEvalV2.Worker.csproj" />
+    <ProjectReference Include="../../src/Scrinia/Scrinia.csproj" ReferenceOutputAssembly="false" />
+    <Using Include="Xunit" />
+    <None Include="../../benchmarks/longmemeval-v2/tests/fixtures/protocol-learn.json" Link="protocol-learn.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../benchmarks/longmemeval-v2/tests/fixtures/protocol-retrieve.json" Link="protocol-retrieve.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CopyCurrentScriniaPayload" AfterTargets="Build">
+    <ItemGroup>
+      <_ScriniaPayload Include="$(MSBuildProjectDirectory)/../../src/Scrinia/bin/$(Configuration)/net10.0/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ScriniaPayload)" DestinationFiles="@(_ScriniaPayload->'$(OutDir)scrinia-payload/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

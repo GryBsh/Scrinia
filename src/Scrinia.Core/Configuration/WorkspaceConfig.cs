@@ -47,6 +47,23 @@ public sealed class WorkspaceConfig : IWorkspaceConfig
     public static void SetValue(string workspaceRoot, string key, string value) =>
         Mutate(workspaceRoot, values => values[key] = value);
 
+    internal static void SetValues(string workspaceRoot, IReadOnlyDictionary<string, string> updates)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(workspaceRoot);
+        ArgumentNullException.ThrowIfNull(updates);
+        KeyValuePair<string, string>[] entries = updates.ToArray();
+        foreach ((string key, string value) in entries)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(key);
+            ArgumentNullException.ThrowIfNull(value);
+        }
+        Mutate(workspaceRoot, values =>
+        {
+            foreach ((string key, string value) in entries)
+                values[key] = value;
+        });
+    }
+
     public static bool UnsetValue(string workspaceRoot, string key)
     {
         bool removed = false;

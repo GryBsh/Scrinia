@@ -29,7 +29,9 @@ internal sealed record ReservedPathRequest(
     string[]? Content,
     string? InlineArtifact,
     bool WithBuiltin,
-    bool Overwrite);
+    bool Overwrite,
+    bool CreateIfMissing = false,
+    string? Description = null);
 
 internal sealed class ReservedPathOperationException : InvalidOperationException
 {
@@ -140,9 +142,9 @@ internal sealed class ReservedPathDispatcher
             case ReservedPathOperation.Search:
                 return _tools.ListAgents();
             case ReservedPathOperation.Write:
-                return await _tools.WriteAgentAsync(subject, request.Content, cancellationToken);
+                return await _tools.WriteAgentAsync(subject, request.Content, cancellationToken, request.Description);
             case ReservedPathOperation.Append:
-                return await _tools.AppendAgentAsync(subject, request.Content, cancellationToken);
+                return await _tools.AppendAgentAsync(subject, request.Content, cancellationToken, request.CreateIfMissing, request.Description);
             case ReservedPathOperation.Delete:
                 return await _tools.DeleteAgentAsync(subject, cancellationToken);
             default:
@@ -158,7 +160,7 @@ internal sealed class ReservedPathDispatcher
         if (request.Content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path write requires non-empty content.", ErrorCodes.InvalidParameter);
 
-        return await ScriniaMcpTools.SkillCreate(subject, "custom", string.Join("\n\n", request.Content), null, cancellationToken);
+        return await ScriniaMcpTools.SkillCreate(subject, "custom", string.Join("\n\n", request.Content), null, request.Description, cancellationToken);
     }
 
     private static async Task<McpResponse> AppendSkillAsync(
@@ -169,7 +171,7 @@ internal sealed class ReservedPathDispatcher
         if (request.Content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
 
-        return await ScriniaMcpTools.AppendSkillAsync(subject, request.Content, cancellationToken);
+        return await ScriniaMcpTools.AppendSkillAsync(subject, request.Content, cancellationToken, request.CreateIfMissing, request.Description);
     }
 
     private static McpResponse Forbidden(ReservedPathOperation operation, ReservedPathKind kind) =>

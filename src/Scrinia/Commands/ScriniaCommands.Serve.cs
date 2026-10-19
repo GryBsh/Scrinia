@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text.Json;
 using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
@@ -62,7 +63,17 @@ public partial class ScriniaCommands
         // `instructions` field is read as guidance by tools-only CLIs (Codex/Copilot); prompts and
         // resources surface on clients that support them (Claude Code, Gemini, OpenCode).
         builder.Services
-            .AddMcpServer(options => options.ServerInstructions = ScriniaPrimer.McpInstructions)
+            .AddMcpServer(options =>
+            {
+                options.ServerInstructions = ScriniaPrimer.McpInstructions;
+                options.ServerInfo = new()
+                {
+                    Name = "scri",
+                    Version = typeof(ScriniaCommands).Assembly
+                        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                        ?.InformationalVersion.Split('+')[0] ?? "unknown",
+                };
+            })
             .WithStdioServerTransport()
             // Pass tool serializer options that source-gen the Dictionary<string,string[]> attribute params;
             // the trimmed single-file publish has no reflection fallback, so WithTools<>() would otherwise

@@ -8,6 +8,49 @@ namespace Scrinia.Tests;
 
 public sealed class AppendTransactionTests
 {
+    [Theory]
+    [MemberData(nameof(Nmp2BodyScannerTests.MalformedBodies), MemberType = typeof(Nmp2BodyScannerTests))]
+    public async Task AppendAsync_MalformedPredecessorLeavesArtifactIndexAndSidecarUnchanged(string malformed)
+    {
+        using var workspace = new TempWorkspace();
+        await workspace.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["first", "second"]));
+        await File.WriteAllTextAsync(workspace.Store.ArtifactPath("target"), malformed);
+        Dictionary<string, byte[]> before = Directory.EnumerateFiles(workspace.Store.GetStoreDirForScope("local"), "*", SearchOption.AllDirectories)
+            .Where(path => path.EndsWith(".json", StringComparison.Ordinal) || path.EndsWith(".nmp2", StringComparison.Ordinal))
+            .ToDictionary(path => path, File.ReadAllBytes);
+        ArtifactEntry[] indexBefore = workspace.Store.LoadIndex().ToArray();
+
+        AppendStoreException failure = await Assert.ThrowsAsync<AppendStoreException>(() => workspace.Store.AppendAsync(
+            MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new"])));
+        Assert.Equal(AppendStoreErrorCode.Internal, failure.Code);
+        Assert.IsType<InvalidDataException>(failure.InnerException);
+        foreach (var (path, bytes) in before) Assert.Equal(bytes, File.ReadAllBytes(path));
+        Assert.Equal(indexBefore, workspace.Store.LoadIndex());
+        Assert.Null(workspace.Store.LastPreparedAppendTransactionForTest);
+        Assert.False(Directory.Exists(Path.Combine(workspace.Store.GetStoreDirForScope("local"), "versions")));
+    }
+
+    [Fact]
+    public async Task AppendAsync_CorruptedPayloadLeavesAllLiveBytesUnchanged()
+    {
+        using var workspace = new TempWorkspace();
+        await workspace.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["first", "second"]));
+        string artifact = await File.ReadAllTextAsync(workspace.Store.ArtifactPath("target"));
+        string old = Scrinia.Core.Encoding.Nmp2Strategy.ExtractRawChunkSections(artifact, 2)[1];
+        string replacement = Scrinia.Core.Encoding.Nmp2Strategy.ExtractRawChunkSections(
+            Scrinia.Core.Encoding.Nmp2ChunkedEncoder.EncodeChunks(["first", "change"]), 2)[1];
+        await File.WriteAllTextAsync(workspace.Store.ArtifactPath("target"), artifact.Replace(old, replacement, StringComparison.Ordinal));
+        byte[] bodyBefore = File.ReadAllBytes(workspace.Store.ArtifactPath("target"));
+        byte[] metaBefore = File.ReadAllBytes(workspace.Store.MetaPath("target"));
+        AppendStoreException failure = await Assert.ThrowsAsync<AppendStoreException>(() => workspace.Store.AppendAsync(
+            MemoryWrite.Create(MemoryAddress.Parse("/target"), "local", ["new"])));
+        Assert.Equal(AppendStoreErrorCode.Internal, failure.Code);
+        Assert.Contains("CRC32", Assert.IsType<InvalidDataException>(failure.InnerException).Message);
+        Assert.Equal(bodyBefore, File.ReadAllBytes(workspace.Store.ArtifactPath("target")));
+        Assert.Equal(metaBefore, File.ReadAllBytes(workspace.Store.MetaPath("target")));
+        Assert.Null(workspace.Store.LastPreparedAppendTransactionForTest);
+    }
+
     [Fact]
     public void RawMemberSnapshot_CopiesBytesAndReportsStableHash()
     {

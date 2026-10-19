@@ -1,164 +1,124 @@
-name: Release
-
+name: Publish validated release
 on:
-  release:
-    types: [published]
-
+  workflow_dispatch:
+    inputs:
+      validation-run-id:
+        description: Successful exact validation run ID (direct dispatch or CI push caller)
+        required: true
+        type: string
+      revision:
+        description: Validated commit (40 lowercase hexadecimal characters)
+        required: true
+        type: string
+      version:
+        description: Stable release version
+        required: true
+        default: '0.6.0'
+        type: string
 permissions:
-  contents: write
-
+  contents: read
+  actions: read
+concurrency:
+  group: publish-scrinia-0.6.0
+  cancel-in-progress: false
+env:
+  DOTNET_NOLOGO: 'true'
+  MSBUILDDISABLENODEREUSE: '1'
+  RELEASE_REVISION: ${{ inputs.revision }}
+  VALIDATION_RUN_ID: ${{ inputs.validation-run-id }}
+  RELEASE_VERSION: ${{ inputs.version }}
 jobs:
-  test:
+  preflight:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      validator-sha256: ${{ steps.validator.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
-          include-prerelease: true
-      - run: dotnet restore
-      - run: dotnet build --no-restore -c Release
-      - name: Test (Scrinia.Tests)
-        run: dotnet test tests/Scrinia.Tests/ --no-build -c Release
-      - name: Test (Scrinia.Plugin.Embeddings.Tests)
-        run: dotnet test tests/Scrinia.Plugin.Embeddings.Tests/ --no-build -c Release
-      - name: Test (Scrinia.Retrieval.Benchmarks.Tests)
-        run: dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests/ --no-build -c Release
-
-  build-release:
-    needs: test
-    strategy:
-      matrix:
-        include:
-          - rid: win-x64
-            os: windows-latest
-            extension: .exe
-          - rid: linux-x64
-            os: ubuntu-latest
-            extension: ''
-          - rid: osx-arm64
-            os: macos-latest
-            extension: ''
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+          dotnet-version: '10.0.203'
+      - name: Prepare isolated nonshipping publication validator
+        id: validator
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_REVISION -cnotmatch '\A[0-9a-f]{40}\z' -or $env:VALIDATION_RUN_ID -cnotmatch '\A[1-9][0-9]*\z' -or $env:RELEASE_VERSION -cne '0.6.0') { throw 'Exact stable release identity required' }
+          if ((git rev-parse HEAD).Trim() -cne $env:RELEASE_REVISION -or (dotnet --version).Trim() -cne '10.0.203') { throw 'Preflight checkout or SDK differs' }
+          dotnet build tools/Scrinia.ReleaseTools/Scrinia.ReleaseTools.csproj -c Release -p:PublicationOnly=true --artifacts-path "$env:RUNNER_TEMP/validator-build" --output "$env:RUNNER_TEMP/validator"
+          if ($LASTEXITCODE -ne 0) { throw 'Publication validator build failed' }
+          Compress-Archive -Path "$env:RUNNER_TEMP/validator/*" -DestinationPath "$env:RUNNER_TEMP/publication-validator.zip"
+          "sha256=$((Get-FileHash "$env:RUNNER_TEMP/publication-validator.zip" -Algorithm SHA256).Hash.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - uses: actions/download-artifact@v4
         with:
-          dotnet-version: '10.0.x'
-          include-prerelease: true
-
-      # The checked-in scripts and manifest are the release contract.
-      - name: Publish release trees (Windows)
-        if: runner.os == 'Windows'
+          name: validated-release-${{ inputs.validation-run-id }}-${{ inputs.revision }}
+          run-id: ${{ inputs.validation-run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/validated-release
+      - name: Read-only run, tag and artifact eligibility
         shell: pwsh
-        run: |
-          ./publish.ps1 -OutputDir publish -Platform ${{ matrix.rid }}
-          ./publish.ps1 -OutputDir publish-embeddings -Platform ${{ matrix.rid }} -WithEmbeddings
-      - name: Publish release trees (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          ./publish.sh publish --platform=${{ matrix.rid }}
-          ./publish.sh publish-embeddings --platform=${{ matrix.rid }} --with-embeddings
-
-      - name: Archive and validate release trees (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path publish/scri${{ matrix.extension }} -DestinationPath scri-${{ matrix.rid }}.zip
-          Compress-Archive -Path publish-embeddings/scri${{ matrix.extension }},publish-embeddings/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
-          $plain = Join-Path $env:RUNNER_TEMP 'scri-release-plain'
-          $withEmbeddings = Join-Path $env:RUNNER_TEMP 'scri-release-embeddings'
-          Expand-Archive -Path scri-${{ matrix.rid }}.zip -DestinationPath $plain -Force
-          Expand-Archive -Path scri-${{ matrix.rid }}-embeddings.zip -DestinationPath $withEmbeddings -Force
-           if (-not (Test-Path (Join-Path $plain 'scri${{ matrix.extension }}'))) { throw 'CLI is missing from the plain archive' }
-           if (-not (Test-Path (Join-Path $withEmbeddings 'plugins/scri-plugin-embeddings/scri-plugin-embeddings${{ matrix.extension }}'))) { throw 'Nested embeddings executable is missing from the archive' }
-           $nativeNames = if ('${{ matrix.rid }}' -like 'win-*') { @('mtmd.dll','llama.dll','ggml.dll','ggml-vulkan.dll','ggml-base.dll') } else { @('libmtmd.so','libllama.so','libggml.so','libggml-vulkan.so','libggml-base.so') }
-           foreach ($nativeName in $nativeNames) {
-             $archivePath = Join-Path $withEmbeddings "plugins/scri-plugin-embeddings/$nativeName"
-             if (-not (Test-Path $archivePath -PathType Leaf)) { throw "Expected Vulkan native is missing from the archive: $nativeName" }
-             $sourcePackage = if ('${{ matrix.rid }}' -like 'win-*') { 'llamasharp.backend.vulkan.windows' } else { 'llamasharp.backend.vulkan.linux' }
-             $sourcePath = Join-Path $HOME ".nuget/packages/$sourcePackage/0.25.0/runtimes/${{ matrix.rid }}/native/vulkan/$nativeName"
-             if (-not (Test-Path $sourcePath -PathType Leaf)) { throw "Expected Vulkan package native is missing: $sourcePath" }
-             if ((Get-FileHash $archivePath -Algorithm SHA256).Hash -cne (Get-FileHash $sourcePath -Algorithm SHA256).Hash) { throw "Archive Vulkan native differs from its package source: $nativeName" }
-           }
-
-      - name: Archive and validate release trees (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.extension }}
-          tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish-embeddings scri${{ matrix.extension }} plugins
-          plain_contents="$(tar -tzf scri-${{ matrix.rid }}.tar.gz)"
-          embeddings_contents="$(tar -tzf scri-${{ matrix.rid }}-embeddings.tar.gz)"
-          [[ "$plain_contents" == *"scri${{ matrix.extension }}"* ]]
-           [[ "$embeddings_contents" == *"plugins/scri-plugin-embeddings/scri-plugin-embeddings${{ matrix.extension }}"* ]]
-           if [[ "${{ matrix.rid }}" == "linux-x64" ]]; then
-             native_names=("libmtmd.so" "libllama.so" "libggml.so" "libggml-vulkan.so" "libggml-base.so")
-             for native_name in "${native_names[@]}"; do
-               archive_path="plugins/scri-plugin-embeddings/$native_name"
-               [[ "$embeddings_contents" == *"$archive_path"* ]] || { echo "Missing Vulkan native from archive: $archive_path" >&2; exit 1; }
-               source_path="$HOME/.nuget/packages/llamasharp.backend.vulkan.linux/0.25.0/runtimes/${{ matrix.rid }}/native/vulkan/$native_name"
-               [[ -f "$source_path" ]] || { echo "Missing Vulkan package native: $source_path" >&2; exit 1; }
-               archive_hash="$(tar -xOzf "scri-${{ matrix.rid }}-embeddings.tar.gz" "$archive_path" | sha256sum | cut -d' ' -f1)"
-               source_hash="$(sha256sum "$source_path" | cut -d' ' -f1)"
-               [[ "$archive_hash" == "$source_hash" ]] || { echo "Archive Vulkan native differs from its package source: $native_name" >&2; exit 1; }
-             done
-           elif [[ "${{ matrix.rid }}" == "osx-arm64" ]]; then
-             cpu_native_names=("ggml-metal.metal" "libggml-base.dylib" "libggml-blas.dylib" "libggml-cpu.dylib" "libggml-metal.dylib" "libggml.dylib" "libllama.dylib" "libmtmd.dylib")
-              for native_name in "${cpu_native_names[@]}"; do
-                archive_path="plugins/scri-plugin-embeddings/$native_name"
-                [[ "$embeddings_contents" == *"$archive_path"* ]] || { echo "Missing macOS CPU native from archive: $archive_path" >&2; exit 1; }
-              done
-              mapfile -t actual_native_names < <(
-                printf '%s\n' "$embeddings_contents" |
-                  awk -F/ 'NF == 3 && $1 == "plugins" && $2 == "scri-plugin-embeddings" && $3 != "" { print $3 }' |
-                  sort
-              )
-              mapfile -t approved_native_names < <(printf '%s\n' "${cpu_native_names[@]}" | sort)
-              if printf '%s\n' "${actual_native_names[@]}" | grep -Eiq '.*vulkan.*\.dylib$|.*vulkan.*\.so$|.*vulkan.*\.dll$|.*vulkan.*\.a$|.*vulkan.*\.metal$'; then
-                echo "macOS archive must not contain Vulkan-named native artifacts" >&2
-                exit 1
-              fi
-              [[ "${actual_native_names[*]}" == "${approved_native_names[*]}" ]] || {
-                echo "macOS archive native payload differs from the approved CPU fallback set" >&2
-                printf 'Actual: %s\nApproved: %s\n' "${actual_native_names[*]}" "${approved_native_names[*]}" >&2
-                exit 1
-              }
-           fi
-
-      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          if [[ "${{ matrix.rid }}" == "win-x64" ]]; then
-            gh release upload "${{ github.event.release.tag_name }}" "scri-${{ matrix.rid }}.zip" "scri-${{ matrix.rid }}-embeddings.zip" --clobber
-          else
-            gh release upload "${{ github.event.release.tag_name }}" "scri-${{ matrix.rid }}.tar.gz" "scri-${{ matrix.rid }}-embeddings.tar.gz" --clobber
-          fi
-
-  publish-tool:
-    needs: test
+          ./scripts/release/Publish-ValidatedRelease.ps1 -ValidationRunId $env:VALIDATION_RUN_ID -Revision $env:RELEASE_REVISION -Version $env:RELEASE_VERSION -ArtifactRoot "$env:RUNNER_TEMP/validated-release/artifacts" -ProgressPath "$env:RUNNER_TEMP/preflight-progress.json" -ValidatorPath "$env:RUNNER_TEMP/validator/Scrinia.ReleaseTools.dll" -ValidateOnly
+      - uses: actions/upload-artifact@v4
+        with:
+          name: publication-validator-${{ github.run_id }}
+          path: ${{ runner.temp }}/publication-validator.zip
+          if-no-files-found: error
+  publish:
+    needs: preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Configure reviewers and owner attestations manually in the release environment.
+    # Missing public package metadata never grants publishing authority.
+    environment: release
+    permissions:
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
-          include-prerelease: true
-      - run: dotnet restore
-      # The local release-tree job above produces per-RID single-file trees; this job produces the
-      # one immutable NuGet global tool (`scri`). The pack is a DotnetTool whose single command is
-      # `scri` — no Vulkan, no Merge, no mutable asset.
-      - name: Pack the scri global tool (Release)
-        run: dotnet pack src/Scrinia/Scrinia.csproj -c Release -o "${{ github.event.release.tag_name }}"
-      - name: Push the .nupkg to NuGet
+          dotnet-version: '10.0.203'
+      - uses: actions/download-artifact@v4
+        with:
+          name: publication-validator-${{ github.run_id }}
+          path: ${{ runner.temp }}/validator-transfer
+      - name: Verify transferred publication validator
+        shell: pwsh
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          VALIDATOR_SHA256: ${{ needs.preflight.outputs.validator-sha256 }}
         run: |
-          nupkg="$(ls "${{ github.event.release.tag_name }}"/scrinia.*.nupkg)"
-          dotnet nuget push "$nupkg" \
-            --source https://www.nuget.org/v3/index.json \
-            --api-key "$NUGET_API_KEY" \
-            --skip-duplicate
+          if ((git rev-parse HEAD).Trim() -cne $env:RELEASE_REVISION -or (dotnet --version).Trim() -cne '10.0.203') { throw 'Publication checkout or SDK differs' }
+          $archive = "$env:RUNNER_TEMP/validator-transfer/publication-validator.zip"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:VALIDATOR_SHA256) { throw 'Transferred validator bytes differ' }
+          Expand-Archive -LiteralPath $archive -DestinationPath "$env:RUNNER_TEMP/validator"
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-release-${{ inputs.validation-run-id }}-${{ inputs.revision }}
+          run-id: ${{ inputs.validation-run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/validated-release
+      - name: Reconcile and publish exact validated bytes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          SCRINIA_NUGET_OWNER: ${{ vars.SCRINIA_NUGET_OWNER }}
+          SCRINIA_NUGET_OWNERSHIP_CONFIRMED: ${{ vars.SCRINIA_NUGET_OWNERSHIP_CONFIRMED }}
+          SCRINIA_PUBLICATION_APPROVED: 'true'
+        run: |
+          ./scripts/release/Publish-ValidatedRelease.ps1 -ValidationRunId $env:VALIDATION_RUN_ID -Revision $env:RELEASE_REVISION -Version $env:RELEASE_VERSION -ArtifactRoot "$env:RUNNER_TEMP/validated-release/artifacts" -ProgressPath "$env:RUNNER_TEMP/publication-evidence/progress.json" -ValidatorPath "$env:RUNNER_TEMP/validator/Scrinia.ReleaseTools.dll"
+      - name: Retain publication progress even after a partial outcome
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: publication-progress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication-evidence
+          if-no-files-found: warn

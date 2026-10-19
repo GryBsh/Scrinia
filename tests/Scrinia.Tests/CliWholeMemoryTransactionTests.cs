@@ -10,11 +10,61 @@ namespace Scrinia.Tests;
 public sealed class CliWholeMemoryTransactionTests
 {
     [Fact]
+    public async Task ImportMalformedBodyReturnsInvalidBundleAndExitOneWithoutPublishingTopics()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundle = Path.Combine(scope.WorkspaceDir, "scanner-malformed.scrinia-bundle");
+        BundleRoundTripTotalityTests.WriteMalformedScannerBundle(bundle,
+            Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("plain") + "\ntrailing");
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Import(bundle, workspaceRoot: scope.WorkspaceDir, overwrite: true, json: true);
+            Assert.Equal(1, exit);
+            CliImportOutput envelope = JsonSerializer.Deserialize(output.ToString(), CliJsonContext.Default.CliImportOutput)!;
+            Assert.Equal(ErrorCodes.InvalidBundle, envelope.ErrorCode);
+            Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-good"));
+            Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-bad"));
+        }
+        finally { Console.SetOut(prior); }
+    }
+
+    [Fact]
+    public async Task AppendMalformedStoredBodyUsesInternalEnvelopeAndExitOneWithoutMutation()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await new ScriniaMcpTools().MemoryRemember("/cli/scanner", ["first", "second"], description: "first");
+        string path = store.ArtifactPath("scanner", "local:cli");
+        string malformed = (await File.ReadAllTextAsync(path)).Replace("##PAD:0", "##PAD:0\n##PAD:0", StringComparison.Ordinal);
+        await File.WriteAllTextAsync(path, malformed);
+        byte[] body = File.ReadAllBytes(path);
+        byte[] sidecar = File.ReadAllBytes(store.MetaPath("scanner", "local:cli"));
+        string input = Path.Combine(scope.WorkspaceDir, "new.md");
+        await File.WriteAllTextAsync(input, "new");
+        using var output = new StringWriter();
+        TextWriter prior = Console.Out;
+        try
+        {
+            Console.SetOut(output);
+            int exit = await new ScriniaCommands().Append("/cli/scanner", input, workspaceRoot: scope.WorkspaceDir, json: true);
+            Assert.Equal(1, exit);
+            CliErrorOutput envelope = JsonSerializer.Deserialize(output.ToString(), CliJsonContext.Default.CliErrorOutput)!;
+            Assert.Equal(ErrorCodes.Internal, envelope.Code);
+            Assert.Equal(body, File.ReadAllBytes(path));
+            Assert.Equal(sidecar, File.ReadAllBytes(store.MetaPath("scanner", "local:cli")));
+        }
+        finally { Console.SetOut(prior); }
+    }
+
+    [Fact]
     public async Task CompactRecoveryJsonUsesTheSharedHandlerEnvelopeAndWarningExitPolicy()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember("/cli/transaction", ["old one", "old two"]);
+        await new ScriniaMcpTools().MemoryRemember("/cli/transaction", ["old one", "old two"], description: "old one");
         store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
 
         using var output = new StringWriter();
@@ -73,8 +123,9 @@ public sealed class CliWholeMemoryTransactionTests
     public async Task CompactLockTimeoutUsesDurableErrorEnvelopeAndExitOne()
     {
         using var scope = new TestHelpers.StoreScope();
+        using var provider = EmbeddingsHost.OverrideEmbeddingProviderForTest(null);
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember("/cli/locked", ["one", "two"]);
+        await new ScriniaMcpTools().MemoryRemember("/cli/locked", ["one", "two"], description: "one");
         using FileLock held = FileLock.AcquireExclusive(
             Path.Combine(store.GetStoreDirForScope("local:cli"), ".lock"));
 
@@ -104,7 +155,7 @@ public sealed class CliWholeMemoryTransactionTests
         var store = (FileMemoryStore)TestHelpers.Store;
         string input = Path.Combine(scope.WorkspaceDir, "input.md");
         await File.WriteAllTextAsync(input, "new content");
-        await new ScriniaMcpTools().MemoryRemember("/cli/store", ["old content"]);
+        await new ScriniaMcpTools().MemoryRemember("/cli/store", ["old content"], description: "old content");
         store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
 
         using var output = new StringWriter();
@@ -134,7 +185,7 @@ public sealed class CliWholeMemoryTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember("/cli/warning", ["old one", "old two"]);
+        await new ScriniaMcpTools().MemoryRemember("/cli/warning", ["old one", "old two"], description: "old one");
         store.FailOnceAt(WholeMemoryFaultPoint.ArchiveCleanup);
 
         using var output = new StringWriter();

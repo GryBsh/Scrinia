@@ -1246,7 +1246,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                         // Acquire the scope read handle for the entire asynchronous byte read.
                         string directory = GetStoreDirUnderLease(scope);
                         if (!Directory.Exists(directory)) return await read().ConfigureAwait(false);
-                        using var scopeRead = FileLock.AcquireShared(GetLockPath(scope), ImportLockTimeout, ct);
+                        // Ordinary scope reads use the same bounded wait as the synchronous barrier.
+                        using var scopeRead = FileLock.AcquireShared(GetLockPath(scope), TimeSpan.FromSeconds(5), ct);
                         if (lease.MatchesVerifiedScopeSnapshot(scope, () => CaptureScopeSnapshotFingerprint(scope)))
                             return await read().ConfigureAwait(false);
                         RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, directory, cancellationToken: ct);
@@ -2562,9 +2563,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
     private async Task<ArtifactEntry> StorePersistentAsync(
         MemoryWrite write, CancellationToken cancellationToken,
-        Action<WholeMemoryResult>? transactionResult = null)
+        Action<WholeMemoryResult>? transactionResult = null, WorkspaceLease? admittedLease = null)
     {
-        using WorkspaceLease lease = EnterWorkspaceMutation(ct: cancellationToken);
+        using WorkspaceLease? ownedLease = admittedLease is null ? EnterWorkspaceMutation(ct: cancellationToken) : null;
+        WorkspaceLease lease = admittedLease ?? ownedLease!;
+        lease.AssertValid(_workspaceRoot);
         PrecomputedStore pre = PrecomputeForStore(write, isEphemeral: false);
         var (scope, subject) = ResolveAddress(write.Address);
         EnsureMaterialized(scope);
@@ -2730,7 +2733,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     }
 
     /// <inheritdoc/>
-    public async Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+    public Task<AppendStoreResult> AppendAsync(MemoryWrite write, CancellationToken ct = default) =>
+        AppendAdmittedAsync(write, null, ct);
+
+    private async Task<AppendStoreResult> AppendAdmittedAsync(MemoryWrite write, WorkspaceLease? admittedLease, CancellationToken ct)
     {
         string operationId = Guid.NewGuid().ToString("N");
         try
@@ -2768,7 +2774,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                 return await AppendAsyncCore(null, write, operationId, startedAt, ct);
             }
 
-            using WorkspaceLease lease = EnterWorkspaceMutation(ct: ct);
+            using WorkspaceLease? ownedLease = admittedLease is null ? EnterWorkspaceMutation(ct: ct) : null;
+            WorkspaceLease lease = admittedLease ?? ownedLease!;
+            lease.AssertValid(_workspaceRoot);
             var resolved = ResolveAddress(write.Address);
             string scope = resolved.Scope;
             EnsureMaterialized(scope);
@@ -2887,35 +2895,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             throw new AppendStoreException(AppendStoreErrorCode.Internal, operationId,
                 "Append admission found a missing live artifact after the transaction lock was acquired.");
 
-        string appended = write.RawContent[0];
-        string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended);
-
-        // The pipeline derives over the memory's FULL post-append content with the appended chunk
-        // last (D-22 reads only that last element for attributes and the new chunk entry).
-        int priorChunks = Nmp2ChunkedEncoder.GetChunkCount(existingArtifact);
-        string[] fullContent = new string[priorChunks + 1];
-        if (priorChunks > 0)
-        {
-            if (Nmp2Strategy.IsMultiChunk(existingArtifact))
-            {
-                int count = Nmp2Strategy.ParseChunkCount(existingArtifact);
-                var sections = Nmp2Strategy.ExtractRawChunkSections(existingArtifact, count);
-                for (int i = 0; i < sections.Count && i < priorChunks; i++)
-                {
-                    byte[] bytes = Nmp2Strategy.DecodeChunkSectionFrom(sections[i], Nmp2Strategy.MaxDecodedBytes);
-                    fullContent[i] = System.Text.Encoding.UTF8.GetString(bytes);
-                }
-            }
-            else
-            {
-                // Single-chunk artifact: no ##CHUNK: marker exists, so keep the original decode path.
-                fullContent[0] = Nmp2ChunkedEncoder.DecodeChunk(existingArtifact, 1);
-            }
-        }
-        fullContent[priorChunks] = appended;
+        string newArtifact = Nmp2ChunkedEncoder.AppendChunks(existingArtifact, write.RawContent,
+            out string[] verifiedChunks, out long verifiedBytes);
+        string[] fullContent = [.. verifiedChunks, .. write.RawContent];
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
-        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(fullContent));
+        long originalBytes = verifiedBytes + write.RawContent.Sum(chunk => (long)System.Text.Encoding.UTF8.GetByteCount(chunk));
 
         // Everything the memory already carries that an append must not destroy. A server-side REST
         // append used to lose the curated keywords (D-12) and the drift baseline (D-21) outright.
@@ -2932,7 +2917,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         var derived = MemoryDerivation.ForAppend(
             fullContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()), write.Keywords.ToArray(), existing,
-            fileHasher: HashWorkspaceFile);
+            fileHasher: HashWorkspaceFile, appendedChunkCount: write.RawContent.Length);
 
         if (ephemeral)
         {

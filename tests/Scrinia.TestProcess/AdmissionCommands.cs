@@ -8,6 +8,8 @@ internal static class AdmissionCommands
 {
     internal static async Task<int> RunAsync(string[] args)
     {
+        if (args.Length == 5 && args[0] is "install" or "install-hold")
+            return await RunInstallerAsync(args).ConfigureAwait(false);
         if (args.Length != 2) return 1;
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         if (args[0] is "config" or "config-save" or "tracking" or "add")
@@ -47,6 +49,34 @@ internal static class AdmissionCommands
         await TestProcessProtocol.WriteEventAsync("completed").ConfigureAwait(false);
         return 0;
     }
+    private static async Task<int> RunInstallerAsync(string[] args)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        FileLock.DefaultLogger = new ContentionLogger();
+        await TestProcessProtocol.WriteEventAsync("ready").ConfigureAwait(false);
+        await TestProcessProtocol.WaitForContinueAsync(deadline.Token).ConfigureAwait(false);
+        bool paused = false;
+        try
+        {
+            Scrinia.Commands.EmbeddingsBundleInstaller.FailureInjector = (phase, _) =>
+            {
+                if (args[0] == "install-hold" && !paused && phase == Scrinia.Commands.EmbeddingsInstallPhase.BeforeCopy)
+                {
+                    paused = true;
+                    TestProcessProtocol.WriteEventAsync("copying").GetAwaiter().GetResult();
+                    TestProcessProtocol.WaitForContinueAsync(deadline.Token).GetAwaiter().GetResult();
+                }
+                return null;
+            };
+            var result = Scrinia.Commands.EmbeddingsBundleInstaller.Install(args[1], args[2], args[3], args[4], deadline.Token);
+            if (result.Status != Scrinia.Commands.EmbeddingsInstallStatus.Success)
+                throw new IOException(result.Message);
+            await TestProcessProtocol.WriteEventAsync(result.AlreadyInstalled ? "identical" : "installed").ConfigureAwait(false);
+            return 0;
+        }
+        finally { Scrinia.Commands.EmbeddingsBundleInstaller.FailureInjector = null; }
+    }
+
     private static async Task<int> RunConfigurationAsync(string operation, string root, CancellationToken ct)
     {
         FileLock.DefaultLogger = new ContentionLogger();
@@ -97,7 +127,8 @@ internal static class AdmissionCommands
         {
             if (eventId.Id != 1) return;
             string message = formatter(state, exception);
-            string name = message.Contains(".bundle-restore.lock", StringComparison.Ordinal)
+            string name = message.Contains(".scri-plugin-embeddings.install.lock", StringComparison.Ordinal)
+                ? "waiting-install" : message.Contains(".bundle-restore.lock", StringComparison.Ordinal)
                 ? "waiting-workspace" : "waiting-config";
             TestProcessProtocol.WriteEventAsync(name).GetAwaiter().GetResult();
         }

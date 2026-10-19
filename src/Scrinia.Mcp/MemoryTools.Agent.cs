@@ -10,7 +10,7 @@ namespace Scrinia.Mcp;
 public sealed partial class ScriniaMcpTools
 {
     internal async Task<McpResponse> WriteAgentAsync(
-        string subject, string[]? content, CancellationToken cancellationToken)
+        string subject, string[]? content, CancellationToken cancellationToken, string? description = null)
     {
         if (!FileEntityName.IsValid(subject))
             return ResponseBuilder.Error(
@@ -38,6 +38,7 @@ public sealed partial class ScriniaMcpTools
             now,
             existingMeta?.SchemaVersion)
         {
+            Description = description ?? existingMeta?.Description,
             Unknown = existingMeta?.Unknown is { } unknown
                 ? new Dictionary<string, JsonElement>(unknown)
                 : null
@@ -61,7 +62,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     internal async Task<McpResponse> AppendAgentAsync(
-        string subject, string[]? content, CancellationToken cancellationToken)
+        string subject, string[]? content, CancellationToken cancellationToken, bool createIfMissing = false, string? description = null)
     {
         if (content is not { Length: > 0 })
             return ResponseBuilder.Error("A reserved-path append requires non-empty content.", ErrorCodes.InvalidParameter);
@@ -82,17 +83,20 @@ public sealed partial class ScriniaMcpTools
                         current.Meta, filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
                     RawFileEntityContent<AgentFileMeta> raw = await LoadRawAgentAsync(store, subject,
                         current.Body.Existed ? DecodeFileEntityBody(current.Body.Bytes) : null, existing, ct)
-                        ?? throw new FileNotFoundException($"Agent '{subject}' not found.");
+                        ?? (createIfMissing
+                            ? new RawFileEntityContent<AgentFileMeta>("", existing, FileEntityContentSource.Disk)
+                            : throw new FileNotFoundException($"Agent '{subject}' not found."));
                     promoted = raw.Source == FileEntityContentSource.PromotedAgent;
                     string now = DateTimeOffset.UtcNow.ToString("o");
                     AgentFileMeta metadata = raw.Metadata is { } prior
                         ? prior with
                         {
                             UpdatedAt = now,
+                            Description = description ?? prior.Description,
                             Unknown = prior.Unknown is { } unknown ? new Dictionary<string, JsonElement>(unknown) : null
                         }
-                        : new AgentFileMeta(now, now);
-                    string updated = raw.Body + "\n" + string.Join("\n", content);
+                        : new AgentFileMeta(now, now) { Description = description };
+                    string updated = (raw.Body.Length == 0 ? "" : raw.Body + "\n") + string.Join("\n", content);
                     byte[] body = Encoding.UTF8.GetBytes(updated);
                     byte[] meta = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
                         metadata, ScriniaMcpJsonContext.Default.AgentFileMeta));
@@ -115,7 +119,7 @@ public sealed partial class ScriniaMcpTools
         catch (FileNotFoundException exception)
         {
             return ResponseBuilder.Error(exception.Message, ErrorCodes.NotFound,
-                "remember({ path: '/agent/profile', content: [...] })");
+                "remember({ path: '/agent/profile', description: 'Assistant role and behavior.', content: [...] })");
         }
         catch (WholeMemoryTransactionException exception)
         {
@@ -148,7 +152,7 @@ public sealed partial class ScriniaMcpTools
 
             return ResponseBuilder.Error(
                 $"Agent '{subject}' not found.", ErrorCodes.NotFound,
-                "remember({ path: '/agent/profile', content: [...] })");
+                "remember({ path: '/agent/profile', description: 'Assistant role and behavior.', content: [...] })");
         }
 
         RawFileEntityContent<AgentFileMeta>? raw = await LoadRawAgentAsync(store, subject,
@@ -173,7 +177,12 @@ public sealed partial class ScriniaMcpTools
             : [];
         string content = names.Length == 0
             ? "No agents available."
-            : "Available agents:\n\n" + string.Join('\n', names.Select(name => $"- /agent/{name}"));
+            : "Available agents:\n\n" + string.Join('\n', names.Select(name =>
+            {
+                string? description = ReadSidecarMeta(Path.Combine(agentDir, name + ".md"),
+                    ScriniaMcpJsonContext.Default.AgentFileMeta)?.Description;
+                return $"- /agent/{name}" + FileEntityDescriptionSuffix(description);
+            }));
         return ResponseBuilder.Success(content).WithAction("listed");
     }
 

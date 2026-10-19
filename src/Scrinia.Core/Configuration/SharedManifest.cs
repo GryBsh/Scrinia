@@ -29,6 +29,7 @@ public static class SharedManifest
         foreach (string raw in changedAuthoritativePaths)
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
+            if (Path.IsPathFullyQualified(raw) || raw.EndsWith('/') || raw.EndsWith('\\') || raw.Any(char.IsControl)) continue;
 
             string storeRelative = raw.Replace('\\', '/').Trim('/');
             if (storeRelative.Length == 0) continue;
@@ -40,6 +41,11 @@ public static class SharedManifest
             string classifyForm = storeRelative.StartsWith(StorePrefix, StringComparison.Ordinal)
                 ? storeRelative[StorePrefix.Length..]
                 : storeRelative;
+            if (classifyForm.Split('/').Any(part => part is "" or "." or "..") || classifyForm.Contains(':')) continue;
+            if (!SharedBaseRuntime.IsAuthoritative(classifyForm)) continue;
+            if (!classifyForm.EndsWith(".nmp2", StringComparison.Ordinal) &&
+                !classifyForm.EndsWith(".md", StringComparison.Ordinal) &&
+                !classifyForm.EndsWith(".meta.json", StringComparison.Ordinal)) continue;
             if (classifyForm.Length == 0 || SharedClassifier.IsExcludedFromFingerprint(classifyForm)) continue; // derived, not authoritative
 
             string rootRelative = StorePrefix + classifyForm;

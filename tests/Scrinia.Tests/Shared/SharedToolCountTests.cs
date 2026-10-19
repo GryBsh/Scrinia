@@ -11,12 +11,12 @@ public sealed class SharedToolCountTests
     private static readonly string[] ExpectedNames =
     [
         "shared_bases", "shared_search", "shared_list", "shared_recall", "shared_facts",
-        "shared_remember", "shared_append", "shared_forget", "shared_compact", "shared_link",
+        "shared_remember", "shared_forget", "shared_compact", "shared_link",
         "shared_refresh"
     ];
 
     [Fact]
-    public void Registers_exactly_eleven_prefixed_methods_and_no_forbidden_methods()
+    public void Registers_exactly_ten_prefixed_methods_and_no_forbidden_methods()
     {
         var methods = typeof(SharedTools).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
         var toolNames = methods

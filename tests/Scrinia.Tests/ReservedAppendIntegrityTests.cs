@@ -21,7 +21,7 @@ public sealed class ReservedAppendIntegrityTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
         string address = $"/{kind}/long-body";
-        await tools.MemoryRemember(address, [new string('x', 9000) + "TAIL"]);
+        await tools.MemoryRemember(address, [new string('x', 9000) + "TAIL"], description: "TAIL");
         string path = Path.Combine(PathRouter.ToFileEntityDir(kind, scope.WorkspaceDir), "long-body.md");
         string before = File.ReadAllText(path);
         var result = ResponseParser.Parse(await tools.MemoryAppend(address, "APPENDED"));
@@ -76,7 +76,7 @@ public sealed class ReservedAppendIntegrityTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember($"/{kind}/metadata", ["body"]);
+        await tools.MemoryRemember($"/{kind}/metadata", ["body"], description: "body");
         string path = Path.Combine(PathRouter.ToFileEntityDir(kind, scope.WorkspaceDir), "metadata.md");
         string metaPath = Path.ChangeExtension(path, ".meta.json");
         string prior = """{"createdAt":"2026-01-01","updatedAt":"old","v":1,"basedOn":"curated-hash","role":"curated-role","capabilities":["curated-tool"],"scaffold":"reviewer","future":{"nested":42}}""";
@@ -99,7 +99,7 @@ public sealed class ReservedAppendIntegrityTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember($"/{kind}/future", ["body"]);
+        await tools.MemoryRemember($"/{kind}/future", ["body"], description: "body");
         string path = Path.Combine(PathRouter.ToFileEntityDir(kind, scope.WorkspaceDir), "future.md");
         string before = File.ReadAllText(path);
         string metaPath = Path.ChangeExtension(path, ".meta.json");
@@ -430,7 +430,7 @@ public sealed class ReservedAppendIntegrityTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
         string address = $"/{kind}/concurrent";
-        await tools.MemoryRemember(address, [new string('x', 9000) + "ORIGINAL-TAIL"]);
+        await tools.MemoryRemember(address, [new string('x', 9000) + "ORIGINAL-TAIL"], description: "ORIGINAL-TAIL");
         string path = Path.Combine(PathRouter.ToFileEntityDir(kind, scope.WorkspaceDir), "concurrent.md");
         string original = File.ReadAllText(path);
         var firstPublishing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -492,7 +492,7 @@ public sealed class ReservedAppendIntegrityTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/agent/preparation", ["ORIGINAL-TAIL"]);
+        await tools.MemoryRemember("/agent/preparation", ["ORIGINAL-TAIL"], description: "ORIGINAL-TAIL");
         string body = Path.Combine(PathRouter.ToFileEntityDir("agent", scope.WorkspaceDir), "preparation.md");
         var target = new FileEntityTarget("agent", "preparation", body,
             Path.ChangeExtension(body, ".meta.json"), Path.Combine(Path.GetDirectoryName(body)!, "versions"));
@@ -551,7 +551,7 @@ public sealed class ReservedAppendIntegrityTests
     public async Task TransformRefusesRetargetingBeforePublication(string member)
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().MemoryRemember("/agent/target", ["original"]);
+        await new ScriniaMcpTools().MemoryRemember("/agent/target", ["original"], description: "original");
         string body = Path.Combine(PathRouter.ToFileEntityDir("agent", scope.WorkspaceDir), "target.md");
         var target = new FileEntityTarget("agent", "target", body,
             Path.ChangeExtension(body, ".meta.json"), Path.Combine(Path.GetDirectoryName(body)!, "versions"));
@@ -594,7 +594,7 @@ public sealed class ReservedAppendIntegrityTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
         string address = $"/{kind}/warning";
-        await tools.MemoryRemember(address, ["original"]);
+        await tools.MemoryRemember(address, ["original"], description: "original");
         B0FaultSeam.FailOnceAt(B0FaultSeam.FaultPhase.FileEntityEvidenceCleanup, FileEntityFaultPoint.EvidenceCleanup.ToString());
         try
         {

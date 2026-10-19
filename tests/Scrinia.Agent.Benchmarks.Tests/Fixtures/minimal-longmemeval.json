@@ -1,0 +1,15 @@
+[
+  {
+    "question_id": "sample_abs", "question_type": "single-session-assistant",
+    "question": "What is my confirmation code?", "question_date": "2024/06/15 (Sat) 09:00",
+    "answer": "REFERENCE_ONLY", "answer_session_ids": [],
+    "haystack_session_ids": ["answer_evidence", "background_17"],
+    "haystack_dates": ["2024/06/14 (Fri) 08:00", "2024/06/13 (Thu) 08:00"],
+    "haystack_sessions": [
+      [{"role": "user", "content": "Please book the train.", "has_answer": true},
+       {"role": "assistant", "content": "The booking service is unavailable."}],
+      [{"role": "user", "content": "I prefer the morning train."},
+       {"role": "assistant", "content": "I can check the timetable."}]
+    ]
+  }
+]

@@ -52,7 +52,7 @@ public class SearchParameterShapeTests
         using var scope = new TestHelpers.StoreScope();
         // Store into a comma-named topic, then select it by name. Under the old comma-string
         // encoding the filter split this into two scopes ("odd" and "name") that match nothing.
-        await Tools().MemoryRemember(path: "/odd,name/probe", content: ["findable"]);
+        await Tools().MemoryRemember(path: "/odd,name/probe", content: ["findable"], description: "findable");
 
         var response = ResponseParser.Parse(
             await Tools().MemorySearch(query: "findable", scopes: ["odd,name"]));
@@ -69,7 +69,7 @@ public class SearchParameterShapeTests
     public async Task Search_EmptyScopesAndExcludeTopics_BehaveIdenticallyToNull()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "/findings/alpha", content: ["alpha probe content"]);
+        await Tools().MemoryRemember(path: "/findings/alpha", content: ["alpha probe content"], description: "alpha probe content");
 
         var withEmpty = ResponseParser.Parse(
             await Tools().MemorySearch(query: "alpha", scopes: [], excludeTopics: []));
@@ -87,7 +87,7 @@ public class SearchParameterShapeTests
     public async Task List_EmptyScopesAndExcludeTopics_BehaveIdenticallyToNull()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "/findings/beta", content: ["beta probe content"]);
+        await Tools().MemoryRemember(path: "/findings/beta", content: ["beta probe content"], description: "beta probe content");
 
         var withEmpty = ResponseParser.Parse(
             await Tools().MemoryList(scopes: [], mode: "full", excludeTopics: []));
@@ -109,7 +109,7 @@ public class SearchParameterShapeTests
     public async Task Search_ScopesContainingOnlyANullElement_NeverErrors()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "/findings/gamma", content: ["gamma probe content"]);
+        await Tools().MemoryRemember(path: "/findings/gamma", content: ["gamma probe content"], description: "gamma probe content");
 
         var response = ResponseParser.Parse(
             await Tools().MemorySearch(query: "gamma", scopes: new string[] { null! }));
@@ -126,7 +126,7 @@ public class SearchParameterShapeTests
     public async Task List_ScopesWithARealEntryAndANullElement_NeverErrors()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "/findings/delta", content: ["delta probe content"]);
+        await Tools().MemoryRemember(path: "/findings/delta", content: ["delta probe content"], description: "delta probe content");
 
         var response = ResponseParser.Parse(
             await Tools().MemoryList(scopes: new string[] { "local", null! }, mode: "full"));

@@ -87,6 +87,8 @@ public sealed class SharedNoAdapterTests : IDisposable
             string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "scrinia-task10-root-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(path);
             Directory.CreateDirectory(System.IO.Path.Combine(path, ".scrinia"));
+            Directory.CreateDirectory(System.IO.Path.Combine(path, ".git"));
+            File.WriteAllText(System.IO.Path.Combine(path, ".scrinia", ".gitignore"), ManagedIgnoreBlock.ProjectGit);
             return new ValidRoot { FullPath = path };
         }
 

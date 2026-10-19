@@ -17,7 +17,7 @@ public sealed class SharedFreshnessTests
         using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
         File.WriteAllText(first, "two");
 
-        SharedMutationPreflight result = runtime.RevalidateBeforeMutation("/note", null);
+        SharedMutationPreflight result = runtime.RevalidateBeforeMutation(fixture.NotePath, null);
 
         result.IsSafe.Should().BeFalse();
         result.ErrorCode.Should().Be("SHARED_BASE_STALE");
@@ -33,7 +33,7 @@ public sealed class SharedFreshnessTests
         File.WriteAllText(target, "inside");
         File.CreateSymbolicLink(linked, target);
 
-        SharedMutationPreflight result = runtime.RevalidateBeforeMutation("/note", null);
+        SharedMutationPreflight result = runtime.RevalidateBeforeMutation(fixture.NotePath, null);
 
         result.IsSafe.Should().BeFalse();
         result.ErrorCode.Should().Be("SHARED_BASE_UNSAFE_PATH");
@@ -50,7 +50,7 @@ public sealed class SharedFreshnessTests
 
         File.WriteAllText(Path.Combine(fixture.Root, ".scrinia", controlFile), "changed control");
 
-        runtime.RevalidateBeforeMutation("/note", null).IsSafe.Should().BeTrue();
+        runtime.RevalidateBeforeMutation(fixture.NotePath, null).IsSafe.Should().BeTrue();
         runtime.Snapshot.Generation.Should().Be(generation);
     }
 
@@ -67,7 +67,7 @@ public sealed class SharedFreshnessTests
         commit.PreviousGeneration.Should().Be(oldGeneration);
         commit.Snapshot.Generation.Should().NotBe(oldGeneration);
         commit.Snapshot.Fingerprint.Should().Be(commit.Snapshot.Generation);
-        runtime.RevalidateBeforeMutation("/note", null).IsSafe.Should().BeTrue();
+        runtime.RevalidateBeforeMutation(fixture.NotePath, null).IsSafe.Should().BeTrue();
     }
 
     [Fact]
@@ -96,13 +96,13 @@ public sealed class SharedFreshnessTests
     {
         using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
         using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
-        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = "/note" };
+        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = fixture.NotePath };
 
         SharedMutationCommit commit = runtime.CommitMutation(plan, () => throw new IOException("durable write failed"));
 
         commit.Mutation.Should().Be(SharedMutationCertainty.Unknown);
         runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Stale);
-        runtime.RevalidateBeforeMutation("/note", null).ErrorCode.Should().Be("SHARED_BASE_STALE");
+        runtime.RevalidateBeforeMutation(fixture.NotePath, null).ErrorCode.Should().Be("SHARED_BASE_STALE");
     }
 
     [Fact]
@@ -110,13 +110,21 @@ public sealed class SharedFreshnessTests
     {
         using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
         using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
-        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = "/note" };
+        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = fixture.NotePath };
 
-        SharedMutationCommit commit = runtime.CommitMutation(plan, () => Directory.Delete(Path.Combine(fixture.Root, ".scrinia"), recursive: true));
+        bool callbackCompleted = false;
+        SharedMutationCommit commit = runtime.CommitMutation(plan, () =>
+        {
+            string target = Path.Combine(fixture.Root, ".scrinia", "target.txt");
+            File.WriteAllText(target, "written");
+            File.CreateSymbolicLink(Path.Combine(fixture.Root, ".scrinia", "linked.txt"), target);
+            callbackCompleted = true;
+        });
 
+        callbackCompleted.Should().BeTrue("the callback must succeed before topology validation fails");
         commit.Mutation.Should().Be(SharedMutationCertainty.Unknown);
         runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Unavailable);
-        runtime.RevalidateBeforeMutation("/note", null).IsSafe.Should().BeFalse();
+        runtime.RevalidateBeforeMutation(fixture.NotePath, null).IsSafe.Should().BeFalse();
     }
 
     [Fact]
@@ -124,7 +132,7 @@ public sealed class SharedFreshnessTests
     {
         using RuntimeFixture fixture = RuntimeFixture.Create("alpha");
         using SharedBaseRuntime runtime = new SharedBaseRuntimeFactory().Open(fixture.Entry);
-        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = "/note" };
+        var plan = new SharedMutationPlan { Identity = runtime.Snapshot.Identity, CanonicalPath = fixture.NotePath };
 
         SharedMutationCommit commit = runtime.CommitMutation(plan, () =>
         {
@@ -134,7 +142,7 @@ public sealed class SharedFreshnessTests
 
         commit.Mutation.Should().Be(SharedMutationCertainty.Unknown);
         runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Stale);
-        runtime.RevalidateBeforeMutation("/note", null).ErrorCode.Should().Be("SHARED_BASE_STALE");
+        runtime.RevalidateBeforeMutation(fixture.NotePath, null).ErrorCode.Should().Be("SHARED_BASE_STALE");
     }
 
     [Fact]
@@ -146,7 +154,7 @@ public sealed class SharedFreshnessTests
         var plan = new SharedMutationPlan
         {
             Identity = runtime.Snapshot.Identity,
-            CanonicalPath = "/note",
+            CanonicalPath = fixture.NotePath,
             AuthoritativeFiles = changed,
         };
 
@@ -160,6 +168,7 @@ public sealed class SharedFreshnessTests
     private sealed class RuntimeFixture : IDisposable
     {
         public required string Root { get; init; }
+        public string NotePath => Path.Combine(Root, ".scrinia", "note.nmp2");
         public required SharedBaseEntry Entry { get; init; }
         public static RuntimeFixture Create(string name)
         {

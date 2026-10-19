@@ -6,25 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          include-prerelease: true
-      - run: dotnet restore
-      - run: dotnet build --no-restore -c Release
-      - name: Test (Scrinia.Tests)
-        run: dotnet test tests/Scrinia.Tests/ --no-build -c Release
-      - name: Test (Scrinia.Merge.Tests)
-        run: dotnet test tests/Scrinia.Merge.Tests/ --no-build -c Release
-      # Model2Vec/Vulkan embedding-provider tests use [SkippableFact] and skip
-      # (not fail) when the model download is unavailable, so this is safe
-      # to run unconditionally in CI even without network access to the model host.
-      - name: Test (Scrinia.Plugin.Embeddings.Tests)
-        run: dotnet test tests/Scrinia.Plugin.Embeddings.Tests/ --no-build -c Release
-      - name: Test (Scrinia.Retrieval.Benchmarks.Tests)
-        run: dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests/ --no-build -c Release
+  release-validation:
+    name: release-validation
+    uses: ./.github/workflows/release-validation.yml
+    with:
+      revision: ${{ github.sha }}

@@ -32,7 +32,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         try
         {
             var remember = new ToolCallRequest("c1", "remember",
-                """{"path":"/findings/lisbon","content":["Booked Lisbon.\nref: d1"]}""");
+                """{"path":"/findings/lisbon","description":"Stored facts for this test.","content":["Booked Lisbon.\nref: d1"]}""");
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [remember], "tool_calls"),
                 new ToolTurnResult("done", [], "stop"));
@@ -114,11 +114,11 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         MemoryStoreContext.Current = new FileMemoryStore(_dir);
         try
         {
-            string structuredResponse = await new ScriniaMcpTools().MemoryRemember(path, ["content"]);
+            string structuredResponse = await new ScriniaMcpTools().MemoryRemember(path, ["content"], description: "content");
             structuredResponse.Should().Contain($"errorCode: {expectedErrorCode}");
 
             var bad = new ToolCallRequest("c1", "remember",
-                $"{{\"path\":\"{path}\",\"content\":[\"content\"]}}");
+                $"{{\"path\":\"{path}\",\"description\":\"Stored facts for this test.\",\"content\":[\"content\"]}}");
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [bad], "tool_calls"),
                 new ToolTurnResult("done", [], "stop"));
@@ -142,7 +142,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         {
             var calls = new List<EpisodeToolCall>
             {
-                new("remember", """{"path":"/f/x","content":["hello world\nref: d1"]}"""),
+                new("remember", """{"path":"/f/x","description":"Stored facts for this test.","content":["hello world\nref: d1"]}"""),
             };
             await AgenticIngestHarness.ReplayAsync(calls, CancellationToken.None);
             ((FileMemoryStore)MemoryStoreContext.Current).SearchAll(new SearchQuery("hello") { Limit = 10 })
@@ -160,9 +160,9 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         try
         {
             var remember = new ToolCallRequest("c1", "remember",
-                """{"path":"/findings/x","content":["FIRST-FACT about Lisbon.\nref: D1:1"]}""");
+                """{"path":"/findings/x","description":"Stored facts for this test.","content":["FIRST-FACT about Lisbon.\nref: D1:1"]}""");
             var append = new ToolCallRequest("c2", "append",
-                """{"path":"/findings/x","content":"SECOND-FACT about the flight.\nref: D1:2"}""");
+                """{"path":"/findings/x","description":"Stored facts for this test.","content":"SECOND-FACT about the flight.\nref: D1:2"}""");
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [remember], "tool_calls"),
                 new ToolTurnResult(null, [append], "tool_calls"),
@@ -184,9 +184,30 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         finally { MemoryStoreContext.Current = null; }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Replay_remember_honors_explicit_replacement(bool replace)
+    {
+        Directory.CreateDirectory(_dir);
+        using var store = new FileMemoryStore(_dir);
+        MemoryStoreContext.Current = store;
+        try
+        {
+            var calls = new List<EpisodeToolCall>
+            {
+                new("remember", "{\"path\":\"/facts/move\",\"description\":\"Stored facts for this test.\",\"content\":[\"five hours\"]}"),
+                new("remember", "{\"path\":\"/facts/move\",\"description\":\"Stored facts for this test.\",\"content\":[\"train commute\"],\"replace\":" + (replace ? "true" : "false") + "}")
+            };
+            await AgenticIngestHarness.ReplayAsync(calls, CancellationToken.None);
+            string recalled = await new ScriniaMcpTools().MemoryRecall("/facts/move");
+            recalled.Should().Contain("train commute");
+            recalled.Contains("five hours", StringComparison.Ordinal).Should().Be(!replace);
+        }
+        finally { MemoryStoreContext.Current = null; }
+    }
+
     [Fact]
-    public async Task PromptVersion_IsV3_AfterBareToolNameRename() =>
-        // Bumped v2 -> v3 when the bench tool surface was renamed from the stale memory_* names
-        // to the real MCP bare names, invalidating cached episodes whose ToolNames used memory_*.
-        AgenticIngestPrompts.PromptVersion.Should().Be("v3");
+    public void PromptVersion_IsV5_AfterRememberRequiresDescription() =>
+        AgenticIngestPrompts.PromptVersion.Should().Be("v5");
 }

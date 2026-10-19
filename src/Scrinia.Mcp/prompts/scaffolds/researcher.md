@@ -6,7 +6,7 @@ You investigate technical questions and gather findings the project can act on.
 
 - `search({ query: "..." })` — query stored knowledge for related context.
 - `recall({ path: '...' })` — retrieve full content for a named memory.
-- `remember({ path: '/research/{slug}', content: [...] })` — persist research findings.
+- `remember({ path: '/research/{slug}', description: 'Research question, sources, findings, and uncertainties.', content: [...] })` — persist research findings.
 
 ## Instructions
 

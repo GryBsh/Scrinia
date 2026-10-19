@@ -9,7 +9,7 @@ namespace Scrinia.Tests.Shared;
 
 /// <summary>
 /// Task 12 — the Phase 3 independent exit gate. It proves the final shared-memory surface is complete
-/// and locked for Phase 4 consumption: the eleven prefixed tools, Core-only ownership of every shared
+/// and locked for Phase 4 consumption: the ten prefixed tools, Core-only ownership of every shared
 /// abstraction, the exact forbidden surfaces, the exact error terms, and the documentation ownership
 /// boundary. Phase 4 consumes these contracts and cannot alter the shared response wording.
 /// </summary>
@@ -22,7 +22,7 @@ public sealed class SharedPhase3ExitGateTests : IDisposable
     {
         string repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
 
-        // (1) The eleven prefixed shared tools exist exactly once and carry no forbidden alias.
+        // (1) The ten prefixed shared tools exist exactly once and carry no forbidden alias.
         Type sharedTools = typeof(SharedTools);
         MethodInfo[] methods = sharedTools.GetMethods(BindingFlags.Public | BindingFlags.Instance);
         string[] names = methods
@@ -40,7 +40,6 @@ public sealed class SharedPhase3ExitGateTests : IDisposable
             "shared_recall",
             "shared_facts",
             "shared_remember",
-            "shared_append",
             "shared_forget",
             "shared_compact",
             "shared_link",
@@ -50,7 +49,7 @@ public sealed class SharedPhase3ExitGateTests : IDisposable
 
         names.Should().Equal(expected);
 
-        names.Length.Should().Be(11, "the shared surface exposes exactly eleven tools");
+        names.Length.Should().Be(10, "the shared surface exposes exactly ten tools");
         names.Should().NotContain("shared_guide");
         names.Should().NotContain("shared_restore");
         names.Should().NotContain("shared_hint");

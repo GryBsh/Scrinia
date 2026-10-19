@@ -3,4 +3,4 @@ error: "Memory '/findings/does-not-exist' not found — nothing was written."
 errorCode: NOT_FOUND
 actionNeeded:
   - list() to see available memories
-  - "remember({ path: '/findings/does-not-exist', content: [...] }) to create it, then link it"
+  - "remember({ path: '/findings/does-not-exist', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it, then link it"

@@ -74,6 +74,8 @@ public static class BackgroundWork
     }
 
     internal static Action? BeforeFinalQuiescenceForTests { get; set; }
+    internal static Action<Task<bool>>? BeforeDeferredWorkReleaseForTests { get; set; }
+    internal static Action<bool>? DrainGateWaitObservedForTests { get; set; }
 
     /// <summary>Number of work items currently outstanding. Diagnostics and tests only.</summary>
     public static int InFlightCount => Volatile.Read(ref _inFlight);
@@ -134,56 +136,86 @@ public static class BackgroundWork
     public static Task<bool> DrainAsync(TimeSpan timeout)
     {
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = Task.Run(() => CompleteDrainAsync(timeout, completion));
+        // A hook installed for a later invocation must not intercept this drain's finalization.
+        var beforeDeferredRelease = BeforeDeferredWorkReleaseForTests;
+        var drainGateWaitObserved = DrainGateWaitObservedForTests;
+        _ = Task.Run(() => CompleteDrainAsync(timeout, completion, beforeDeferredRelease, drainGateWaitObserved));
         return completion.Task;
     }
 
     private static async Task CompleteDrainAsync(
         TimeSpan timeout,
-        TaskCompletionSource<bool> completion)
+        TaskCompletionSource<bool> completion,
+        Action<Task<bool>>? beforeDeferredRelease,
+        Action<bool>? drainGateWaitObserved)
     {
-        bool drained;
         try
         {
-            drained = await DrainCoreAsync(timeout).ConfigureAwait(false);
-            ReleaseDeferredWork();
+            await WaitForDrainAdmissionAsync(drainGateWaitObserved).ConfigureAwait(false);
+            bool drained = await DrainCoreAsync(timeout).ConfigureAwait(false);
+            // Completion is the public boundary. Deferred work may become eligible afterwards,
+            // even before an asynchronously scheduled caller continuation resumes.
             completion.TrySetResult(drained);
         }
         catch (Exception ex)
         {
             completion.TrySetException(ex);
         }
+        finally
+        {
+            try
+            {
+                beforeDeferredRelease?.Invoke(completion.Task);
+            }
+            finally
+            {
+                try
+                {
+                    ReleaseDeferredWork();
+                }
+                finally
+                {
+                    // Another drain must observe deferred replay before taking its snapshot.
+                    DrainGate.Release();
+                }
+            }
+        }
     }
 
     private static async Task<bool> DrainCoreAsync(TimeSpan timeout)
     {
-        await DrainGate.WaitAsync().ConfigureAwait(false);
+        var scheduled = new HashSet<Registration>();
+        var completed = new HashSet<Registration>();
+        if (await WaitForEmptyAsync(timeout, scheduled, completed).ConfigureAwait(false))
+            return true;
+
+        CancellationTokenSource expired;
+        lock (Gate)
+        {
+            _finalizing = false;
+            expired = _shutdown;
+            // Hand subsequent work a live token — a drain must not poison later writes.
+            // Swapping under the lock means Fire never reads a source we are about to dispose.
+            _shutdown = new CancellationTokenSource();
+        }
+
+        await expired.CancelAsync().ConfigureAwait(false);
+        await WaitForEmptyAsync(TimeSpan.FromSeconds(2), scheduled, completed).ConfigureAwait(false);
+        // Keep the retired source alive until process exit. An admitted item can still be
+        // holding its token after the grace period, and disposing it would corrupt that work.
+        return false;
+    }
+
+    private static async Task WaitForDrainAdmissionAsync(Action<bool>? drainGateWaitObserved)
+    {
+        Task admission = DrainGate.WaitAsync();
         try
         {
-            var scheduled = new HashSet<Registration>();
-            var completed = new HashSet<Registration>();
-            if (await WaitForEmptyAsync(timeout, scheduled, completed).ConfigureAwait(false))
-                return true;
-
-            CancellationTokenSource expired;
-            lock (Gate)
-            {
-                _finalizing = false;
-                expired = _shutdown;
-                // Hand subsequent work a live token — a drain must not poison later writes.
-                // Swapping under the lock means Fire never reads a source we are about to dispose.
-                _shutdown = new CancellationTokenSource();
-            }
-
-            await expired.CancelAsync().ConfigureAwait(false);
-            await WaitForEmptyAsync(TimeSpan.FromSeconds(2), scheduled, completed).ConfigureAwait(false);
-            // Keep the retired source alive until process exit. An admitted item can still be
-            // holding its token after the grace period, and disposing it would corrupt that work.
-            return false;
+            drainGateWaitObserved?.Invoke(admission.IsCompleted);
         }
         finally
         {
-            DrainGate.Release();
+            await admission.ConfigureAwait(false);
         }
     }
 

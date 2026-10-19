@@ -12,6 +12,17 @@ public sealed class DerivedClassifierEquivalenceTests
     [InlineData("versions/old.nmp", "ArchivedCopies")]
     [InlineData("facts.json", "EntityFacts")]
     [InlineData(".restore-journal.json", "RestoreJournal")]
+    [InlineData("memories/topic/versions/old.nmp2", "ArchivedCopies")]
+    [InlineData("memories/topic/.lock", "RootLockTree")]
+    [InlineData("memories/topic/.restore-journal.json", "RestoreJournal")]
+    [InlineData("memories/topic/.multi-memory-transaction.json", "RestoreJournal")]
+    [InlineData("skills/versions/old.md", "ArchivedCopies")]
+    [InlineData("agent/versions/old.md", "ArchivedCopies")]
+    [InlineData("skills/.lock", "RootLockTree")]
+    [InlineData("agent/.lock", "RootLockTree")]
+    [InlineData("skills/.file-entity-qa.recovery", "RestoreJournal")]
+    [InlineData("agent/.file-entity-profile.recovery", "RestoreJournal")]
+    [InlineData(".bundle-restore-journal.json", "RestoreJournal")]
     [InlineData("cache.tmp", "TemporaryTree")]
     [InlineData("cache.tmp/child.bin", "TemporaryTree")]
     [InlineData("topic/cache.tmp", "TemporaryTree")]
@@ -48,6 +59,17 @@ public sealed class DerivedClassifierEquivalenceTests
                 DerivedPathClass.ExportBundles,
                 DerivedPathClass.ArchivedCopies,
                 DerivedPathClass.EntityFacts,
+                DerivedPathClass.RestoreJournal,
+                DerivedPathClass.ArchivedCopies,
+                DerivedPathClass.RootLockTree,
+                DerivedPathClass.RestoreJournal,
+                DerivedPathClass.RestoreJournal,
+                DerivedPathClass.ArchivedCopies,
+                DerivedPathClass.ArchivedCopies,
+                DerivedPathClass.RootLockTree,
+                DerivedPathClass.RootLockTree,
+                DerivedPathClass.RestoreJournal,
+                DerivedPathClass.RestoreJournal,
                 DerivedPathClass.RestoreJournal,
                 DerivedPathClass.TemporaryTree,
                 DerivedPathClass.RootLockTree);

@@ -32,10 +32,11 @@ Install the immutable `scri` global tool from NuGet:
 dotnet tool install --global scrinia
 ```
 
-This installs the `scri` command onto your global tool path. Verify with `scri --version`. All
-mutable data — configuration, models, plugins, and plugin state — lives below
-[`SCRINIA_HOME`](installation.md#where-data-lives); the installed package directory is immutable and
-is never written at runtime.
+This installs the `scri` command onto your global tool path. Verify with `scri --version`.
+The per-user registry, models, installed plugin payloads, and plugin state live below
+[`SCRINIA_HOME`](installation.md#where-data-lives). Workspace configuration, memories, and derived
+vectors/facts live in `<workspace-root>/.scrinia/`; the installed package directory is immutable
+and is never written at runtime.
 
 For local development, build from source instead:
 
@@ -55,7 +56,7 @@ dotnet build
 .\publish.ps1 -OutputDir ./dist -Platform win-x64
 ```
 
-Produces a single-file `scri.exe` on Windows and `scri` on Linux/macOS (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
+Produces a self-contained `scri.exe` on Windows and `scri` on Linux/macOS (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`. For Linux and macOS, keep the archive's build-matched `libSystem.Native.so` or `libSystem.Native.dylib` beside `scri` when deploying it. Both plain and embeddings archives require this host companion for filesystem classification. The managed NuGet tool uses the installed .NET runtime and does not include this archive companion.
 
 When `scri serve` starts, it automatically downloads the built-in Model2Vec embedding model (`m2v-MiniLM-L6-v2`, approximately 50 MB total including supporting files) on first startup unless you pass `--no-auto-setup`. The model is
 stored in `SCRINIA_HOME/models/m2v-MiniLM-L6-v2/`; if it is unavailable, semantic search falls back
@@ -73,6 +74,19 @@ For optional Vulkan GPU acceleration:
 ```powershell
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
+
+To install an embeddings release archive, extract it. From the extracted directory, run
+`./scri setup` on Linux/macOS or `.\scri.exe setup` in PowerShell on Windows. With the NuGet tool,
+use `scri setup --embeddings-source <extracted-release-directory>`.
+Setup copies the verified payload to `SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`
+and selects it in workspace configuration, preserving the extracted files. Checksums detect changed
+contents, not publisher identity. macOS uses CPU/Metal. See
+[installation and retries](installation.md#embeddings-plugin-installation).
+
+Setup success confirms installation, configuration, and path selection; plugin loading and inference
+occur when the server starts. Model2Vec/GGUF downloads require network access. `serve` never installs
+a release bundle. Stop older server and CLI writers before upgrading and preserve a complete
+workspace backup, including recovery journals.
 
 ## Model2Vec
 
@@ -159,7 +173,7 @@ Model2Vec model when it is missing. If you configure an HTTP embedding provider 
 provider, that provider may use its own model and model-download process. If the built-in model
 is not available, Scrinia still starts and search falls back to BM25.
 
-Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `forget`, `compact`, `link`, `restore`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 
 ## Memory Naming
 
@@ -180,13 +194,19 @@ the canonical `~subject` spelling. The CLI does not support either spelling.
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes one tool per operation, each with its own schema. Grouped by purpose:
+`scri serve` exposes ten workspace tools, each with its own schema. The separate
+`scri shared serve` exposes ten disjoint `shared_*` tools for enabled shared bases.
+Workspace tools are grouped by purpose:
 
 | Group | Tools | Purpose |
 |------|---------|---------|
 | Lifecycle | `guide`, `restore` | Session playbook + context restore |
-| Memory | `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link` | Store, read, find, and maintain memories |
+| Memory | `remember`, `recall`, `search`, `list`, `forget`, `compact`, `link` | Store, read, find, and maintain memories |
 | Facts | `facts` | Aggregate/relational entity queries (`entities`, `profile`, `intersect`) |
+
+`remember` creates a missing memory or appends every supplied chunk to an existing one. Send only new information. To replace a memory, first recall it, prepare the complete replacement, then pass `replace: true`. This also applies to `shared_remember`. The separate MCP `append` and `shared_append` tools have been removed; integrations should use `remember` or `shared_remember` with a content array. The CLI retains `scri store` for replacement and `scri append` for addition.
+
+Remember past events as well as ongoing preferences and project decisions. When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers attached to the facts they modify. Preserve distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true. Keep earlier facts and later corrections distinct; do not infer that separate events conflict or refer to the same occurrence. Compress wording without changing these relationships or inferring missing values. Separate what is already true from what someone plans or hopes to change. Preserve the wording that connects them (such as already, another, still, or hoping to improve); when paraphrasing could change that meaning, include the short source clause verbatim alongside the summary. Before finishing, compare the selected source facts with successful memory writes, including their qualifiers and relationships, and add any omitted details.
 
 `guide` is standalone — call it once per session. Skill paths (`/skill/...`) are routed through `remember` (create/override) and `recall` (load/list), not a separate tool.
 
@@ -197,14 +217,14 @@ A small set of paths have first-class behavior; everything else is plain memory 
 | Path | Purpose |
 |------|---------|
 | `/skill/...` | Reusable specialist prompts (built-in or override). Stored at `.scrinia/skills/{name}.md`. |
-| `/agent/...` | Agent profile and behavioral norms. |
+| `/agent/...` | AI assistant persona and behavioral instructions; user facts belong in ordinary memory paths such as `/people/user/travel`. |
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
 | `/checkpoint/...` | State snapshots. |
 | `/temp/...` | Ephemeral — an alias for `~subject`; both spell the same memory. |
 
 Reserved paths are not ordinary memories. Skills are loaded or overridden through `/skill/...`,
-and agent profiles use `/agent/...`; unsupported operations fail explicitly rather than falling
+and AI assistant personas use `/agent/...`; unsupported operations fail explicitly rather than falling
 through to the memory store.
 
 ### Search and embeddings migration
@@ -232,7 +252,7 @@ The following ship with scrinia and load via `recall({ path: '/skill/{name}' })`
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
 | `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
-Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [...] })` creates a project-specific override on disk.
+Built-in skills are evolvable — `remember({ path: '/skill/{name}', description: 'Specialist instructions and when to use them.', content: [...], replace: true })` creates a project-specific override on disk.
 
 ## Workspace Tracking and Shared Bases
 

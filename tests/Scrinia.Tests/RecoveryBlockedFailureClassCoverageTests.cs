@@ -159,8 +159,9 @@ public sealed class RecoveryBlockedFailureClassCoverageTests
         string bundlePath = Path.Combine(workspaceRoot, "recovery-blocked.scrinia-bundle");
         using var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write);
         using var zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create);
-        var entry = new ArtifactEntry("note", "file://bundle", 0, 1, DateTimeOffset.UtcNow);
-        BundleFormatService.WriteTopic(zip, TestHelpers.Store, "notes", [entry], [(entry.Name, "NMP/2 bundle")]);
+        string artifact = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("bundle");
+        var entry = new ArtifactEntry("note", "file://bundle", 6, 1, DateTimeOffset.UtcNow);
+        BundleFormatService.WriteTopic(zip, TestHelpers.Store, "notes", [entry], [(entry.Name, artifact)]);
         BundleFormatService.WriteManifest(zip, ["notes"], totalEntries: 1, fileEntities: null);
         return bundlePath;
     }

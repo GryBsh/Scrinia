@@ -4,7 +4,12 @@ namespace Scrinia.Core.Search;
 
 // ── Result types ────────────────────────────────────────────────────────────
 
-public abstract record SearchResult(double Score);
+public abstract record SearchResult(double Score)
+{
+    /// <summary>Bounded previews of matching sibling chunks, when a single preview
+    /// could hide updates. Null preserves the ordinary entry or chunk preview.</summary>
+    public string? ContextPreview { get; init; }
+}
 
 public sealed record EntryResult(
     ScopedArtifact Item,

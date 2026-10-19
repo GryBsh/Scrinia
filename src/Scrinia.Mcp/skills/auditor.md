@@ -45,7 +45,7 @@ Common false positives — verify before flagging:
 
 Use sequenced IDs grouped by category. Count entries under `/findings/` to determine the next available ID.
 
-- Security: `SEC-NNN` → `remember({ path: "/findings/SEC-001", content: ["..."], keywords: ["security", "high"] })`
+- Security: `SEC-NNN` → `remember({ path: "/findings/SEC-001", description: "Security finding, affected code, reproduction, and remediation.", content: ["..."], keywords: ["security", "high"] })`
 - Code quality: `QAL-NNN` → `/findings/QAL-001`
 - Documentation: `DOC-NNN` → `/findings/DOC-001`
 

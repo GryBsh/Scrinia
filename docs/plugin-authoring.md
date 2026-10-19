@@ -24,8 +24,21 @@ libraries live only at the mandatory hierarchy `SCRINIA_HOME/plugins/<plugin>/<v
 any mutable plugin state lives at `SCRINIA_HOME/plugins/<plugin>/<version>/<rid>/state/`. The `scri`
 host discovers the plugin executable only through this hierarchy — there is no flat
 `plugins/<plugin>` fallback and nothing is written into the immutable package directory at runtime.
-Install it into `SCRINIA_HOME` with your plugin's own packaging (for the optional Vulkan plugin:
-`dotnet tool install --global --add-source <local-feed> scri-plugin-embeddings`).
+For the shipped embeddings plugin, extract the embeddings release archive. From the extracted
+directory, run `./scri setup` on Linux/macOS or `.\scri.exe setup` in PowerShell on Windows, or run
+`scri setup --embeddings-source <extracted-release-directory>` with the NuGet-installed host.
+The source must contain `embeddings-bundle.json` and the exact
+`plugins/scri-plugin-embeddings/0.6.0/<rid>/` tree. Setup verifies and copies the payload into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`, preserving the extracted files.
+A checksum detects changed contents, not publisher identity. Windows/Linux use Vulkan; macOS
+uses CPU/Metal. See [installation outcomes and retries](installation.md#embeddings-plugin-installation).
+
+The shipped bundle contract is version 1 with a 64 KiB manifest, at most 32 file records,
+512 MiB per file, and 1 GiB total payload. It requires the fixed plugin name, exact host version,
+current supported RID, and exact payload files. It is not a general plugin installer.
+Setup success confirms installation/configuration/path selection, not initialization or inference;
+`serve` does not implicitly install a bundle. Migration of legacy assets stored beside the
+executable is a separate step.
 
 ## Embeddings plugin tools
 

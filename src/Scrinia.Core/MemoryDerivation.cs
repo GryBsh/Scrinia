@@ -179,7 +179,8 @@ public static partial class MemoryDerivation
         IReadOnlyDictionary<string, string[]>? attributes = null,
         string[]? keywords = null,
         ExistingMetadata? existing = null,
-        Func<string, string?>? fileHasher = null)
+        Func<string, string?>? fileHasher = null,
+        int appendedChunkCount = 1)
     {
         ArgumentNullException.ThrowIfNull(fullContent);
         if (fullContent.Length == 0)
@@ -187,7 +188,9 @@ public static partial class MemoryDerivation
 
         // Concat, matching the decoded artifact this used to be handed as a single string.
         string joined = string.Concat(fullContent);
-        string appended = fullContent[^1];
+        if (appendedChunkCount < 1 || appendedChunkCount > fullContent.Length)
+            throw new ArgumentOutOfRangeException(nameof(appendedChunkCount));
+        string[] appended = fullContent[^appendedChunkCount..];
 
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
 
@@ -227,9 +230,16 @@ public static partial class MemoryDerivation
         // attributes are already on the entry. Mention spans are deliberately not re-extracted on
         // append; neither pre-collapse append path did, and doing so would grow the mention set on
         // every append of ordinary prose.
-        var incoming = KnownAttributes.Merge(
-            KnownAttributes.Merge(routedNewAttributes, AttributeExtractor.Extract(appended)),
-            AttributeExtractor.ExtractRefAttributes(appended));
+        var incoming = routedNewAttributes;
+        foreach (string chunk in appended)
+        {
+            var chunkAttributes = KnownAttributes.Merge(
+                AttributeExtractor.Extract(chunk), AttributeExtractor.ExtractRefAttributes(chunk));
+            var merged = KnownAttributes.Merge(incoming, chunkAttributes);
+            UnionCarriedKey(merged, incoming, chunkAttributes, KnownAttributes.TagKey);
+            UnionCarriedKey(merged, incoming, chunkAttributes, KnownAttributes.AnchorKey);
+            incoming = merged;
+        }
         // D-18: explicit caller attributes win over what the entry already holds.
         incoming = KnownAttributes.Merge(incoming, KnownAttributes.Normalize(attributes));
 
@@ -304,11 +314,9 @@ public static partial class MemoryDerivation
         // uses, so the empty-preview guard and the keyword boost cannot drift from it again. Its
         // index is the post-append chunk count, contiguous with ComputeChunkEntries' 1-based
         // numbering over the earlier chunks.
-        var newChunkEntry = TextAnalysis.ComputeChunkEntries([appended])[0]
-            with { ChunkIndex = fullContent.Length };
-        ChunkEntry[] chunkEntries = existing?.ChunkEntries is not null
-            ? [.. existing.ChunkEntries, newChunkEntry]
-            : [newChunkEntry];
+        var newChunkEntries = TextAnalysis.ComputeChunkEntries(appended)
+            .Select((entry, index) => entry with { ChunkIndex = fullContent.Length - appendedChunkCount + index + 1 });
+        ChunkEntry[] chunkEntries = [.. existing?.ChunkEntries ?? [], .. newChunkEntries];
 
         // D-20: a new description wins; else the existing preview survives — regenerating from
         // content would silently drop a curated description on every append.

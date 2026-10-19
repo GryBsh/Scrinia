@@ -7,11 +7,52 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Unit tests for <see cref="Nmp2ChunkedEncoder"/> — the chunk-addressable NMP/2 encoder.
 ///
-/// Single-chunk: input ≤ 20 000 chars → standard NMP/2 artifact, no ##CHUNK: markers.
-/// Multi-chunk: input > 20 000 chars → header contains "C:{k}", body has ##CHUNK:N sections.
+/// Single-element content uses standard NMP/2 without ##CHUNK: markers.
+/// Multiple content elements use C:{k} and independently compressed ##CHUNK:N sections.
 /// </summary>
 public sealed class Nmp2ChunkedEncoderTests
 {
+    [Fact]
+    public void SingleIndependentChunkReadDoesNotVerifyWholeHeaderCrc()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("single");
+        int crcStart = artifact.IndexOf("CRC32:", StringComparison.Ordinal) + 6;
+        string changed = artifact[..crcStart] + "00000000" + artifact[(crcStart + 8)..];
+        Assert.Equal("single", Nmp2ChunkedEncoder.DecodeChunk(changed, 1));
+        Assert.Throws<InvalidDataException>(() => Nmp2Strategy.Instance.Decode(changed));
+    }
+
+    [Fact]
+    public void AppendVerifiesThePredecessorsCrcBeforeCombining()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
+        int crcStart = artifact.IndexOf("CRC32:", StringComparison.Ordinal) + 6;
+        string tampered = artifact[..crcStart] + "00000000" + artifact[(crcStart + 8)..];
+        Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.AppendChunk(tampered, "new"));
+    }
+
+    [Fact]
+    public void IndependentChunkReadDoesNotVerifyUnrelatedChunkBytes()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]);
+        string replacement = Nmp2Strategy.ExtractRawChunkSections(Nmp2ChunkedEncoder.EncodeChunks(["first", "change"]), 2)[1];
+        string old = Nmp2Strategy.ExtractRawChunkSections(artifact, 2)[1];
+        string tampered = artifact.Replace(old, replacement, StringComparison.Ordinal);
+        Assert.Equal("first", Nmp2ChunkedEncoder.DecodeChunk(tampered, 1));
+        Assert.Contains("CRC32", Assert.Throws<InvalidDataException>(() => Nmp2Strategy.Instance.Decode(tampered)).Message);
+        Assert.Contains("CRC32", Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.DecodeAllChunksVerified(tampered)).Message);
+        Assert.Contains("CRC32", Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.AppendChunk(tampered, "new")).Message);
+    }
+
+    [Fact]
+    public void EmptyAppendPreservesValidEmptyPredecessor()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("");
+        string appended = Nmp2ChunkedEncoder.AppendChunk(artifact, "");
+        Assert.Equal(2, Nmp2ChunkedEncoder.GetChunkCount(appended));
+        Assert.Empty(Nmp2Strategy.Instance.Decode(appended));
+    }
+
     // ── Test data helpers ─────────────────────────────────────────────────────
 
     private static string SmallInput() => TestHelpers.Facts.Fact1;
@@ -395,6 +436,33 @@ public sealed class Nmp2ChunkedEncoderTests
 
         decodedChunks.Should().Equal("Hello, world!");
         totalBytes.Should().Be(Encoding.UTF8.GetByteCount("Hello, world!"));
+    }
+
+    [Theory]
+    [InlineData("NMP/2 0B CRC32:352441C2 BR+B64 C:2")]
+    [InlineData("NMP/2 3B CRC32:00000000 BR+B64 C:2")]
+    [InlineData("NMP/2 3B CRC32:NOTHEX!! BR+B64 C:2")]
+    [InlineData("NMP/2 3B BR+B64 C:2")]
+    [InlineData("NMP/2 3B CRC32:352441C2 BR+B64 C:0")]
+    [InlineData("NMP/2 3B CRC32:352441C2 BR+B64 C:100001")]
+    public void DecodeAllChunksVerified_TamperedHeaderFails(string header)
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["a", "bc"]);
+        artifact = header + artifact[artifact.IndexOf('\n')..];
+
+        Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact));
+    }
+
+    [Fact]
+    public void DecodeAllChunksVerified_EmptyChunksStillVerifyZeroLengthAndCrc()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["", ""]);
+        var (chunks, totalBytes) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
+        chunks.Should().Equal("", "");
+        totalBytes.Should().Be(0);
+
+        string changed = artifact.Replace("CRC32:00000000", "CRC32:00000001", StringComparison.Ordinal);
+        Assert.Throws<InvalidDataException>(() => Nmp2ChunkedEncoder.DecodeAllChunksVerified(changed));
     }
 
     /// <summary>

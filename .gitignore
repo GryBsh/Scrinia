@@ -49,6 +49,7 @@ docs/reports
 # source-controlled.
 /benchmarks/Scrinia.Retrieval.Benchmarks/cache/
 /benchmarks/Scrinia.Retrieval.Benchmarks/results/
+/benchmarks/Scrinia.Agent.Benchmarks/runs/
 
 # Downloaded ML model caches used by retrieval benchmarks (large binaries, not source)
 benchmarks/Scrinia.Retrieval.Benchmarks/tools/kompress/model-cache/
@@ -83,4 +84,3 @@ docker-compose.yml
 .scrinia-conflicts-*/
 .scrinia-migration.lock
 # --- end scrinia ---
-

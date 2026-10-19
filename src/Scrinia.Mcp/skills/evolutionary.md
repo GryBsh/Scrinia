@@ -19,14 +19,14 @@ changed since the memory was written. For each:
 
 - Read the memory and the current state of the referenced files.
 - If still accurate: re-link to refresh the hash.
-- If outdated: rewrite via `remember({ path: "...", content: [...] })`.
+- If outdated: rewrite via `remember({ path: "...", description: "Current guidance, prior decisions, and reasons for the update.", content: [...], replace: true })`.
 - If superseded: `forget({ path: "..." })`.
 
 `search` broadly across topics. Check the `review` attribute (a date and/or a condition) — it flags entries the author wanted re-checked.
 
 ### 2. Detect skill drift
 
-Load each skill via `recall({ path: '/skill/{name}' })`. Compare the methodology against what the team has actually been doing (recent session logs, retrospectives, commits). If a skill's approach was contradicted or improved in practice, update via `remember({ path: '/skill/{name}', content: [...] })`.
+Load each skill via `recall({ path: '/skill/{name}' })`. Compare the methodology against what the team has actually been doing (recent session logs, retrospectives, commits). If a skill's approach was contradicted or improved in practice, update via `remember({ path: '/skill/{name}', description: 'Current guidance, prior decisions, and reasons for the update.', content: [...], replace: true })`.
 
 If the skill listing shows `[stale base]` for any built-in override, the embedded version has been updated upstream. Use:
 

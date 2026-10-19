@@ -1,5 +1,5 @@
 using System.IO.Compression;
-using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -29,59 +29,129 @@ public partial class ScriniaCommands
     /// <param name="hooks">Install SessionStart and UserPromptSubmit hooks.</param>
     /// <param name="uninstallHooks">Remove Scrinia-managed hooks and exit.</param>
     /// <param name="project">With hook options, target workspace config instead of user-global config.</param>
-    public async Task<int> Setup(
+    /// <param name="embeddingsSource">Directory containing embeddings-bundle.json and its runtime payload.</param>
+    public Task<int> Setup(
         string? workspaceRoot = null,
         bool noOllama = false,
         bool hooks = false,
         bool uninstallHooks = false,
         bool project = false,
+        string? embeddingsSource = null,
+        CancellationToken cancellationToken = default)
+        => SetupCoreAsync(workspaceRoot, noOllama, hooks, uninstallHooks, project, embeddingsSource,
+            AppContext.BaseDirectory,
+            typeof(ScriniaCommands).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion,
+            EmbeddingsRuntimeIdentity.CurrentRid, cancellationToken: cancellationToken);
+
+    internal async Task<int> SetupCoreAsync(string? workspaceRoot, bool noOllama, bool hooks,
+        bool uninstallHooks, bool project, string? embeddingsSource, string executableDirectory,
+        string hostVersion, string rid,
+        Func<CancellationToken, Task>? prepareModels = null,
+        Func<CancellationToken, Task<bool>>? probeOllama = null,
         CancellationToken cancellationToken = default)
     {
-        WorkspaceSetup.Configure(workspaceRoot);
-        OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
-
-        // Hook-management flags short-circuit the model-download flow — they're standalone
-        // operations users typically run after the regular setup is complete.
-        if (uninstallHooks)
+        string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
+        if (embeddingsSource is not null && (hooks || uninstallHooks))
         {
-            return await UninstallHooksFlowAsync(project);
+            Console.Error.WriteLine("[scrinia:error] --embeddings-source cannot be combined with --hooks or --uninstall-hooks. Run setup and hook management separately.");
+            return 1;
         }
-        if (hooks)
+        string? source = null;
+        EmbeddingsInstallResult? installed = null;
+        string version = hostVersion.Split('+')[0];
+        if (!hooks && !uninstallHooks)
         {
-            return await InstallHooksFlowAsync(project);
+            try
+            {
+                source = EmbeddingsBundleSetup.ResolveEmbeddingsSource(embeddingsSource, executableDirectory);
+                if (source is not null)
+                {
+                    _ = EmbeddingsBundleValidator.Validate(source, hostVersion, rid, cancellationToken);
+                    var conflict = EmbeddingsBundleSetup.ValidateEmbeddingsSelection(version, root);
+                    if (conflict is not null) return EmbeddingsBundleSetup.ReportFailure(conflict, source, root);
+                    installed = EmbeddingsBundleSetup.InstallAndConfigure(source, UserHome.Resolve(), root, version, rid, cancellationToken);
+                    if (installed.Status != EmbeddingsInstallStatus.Success)
+                        return EmbeddingsBundleSetup.ReportFailure(installed, source, root);
+                }
+            }
+            catch (EmbeddingsBundleException error)
+            { return EmbeddingsBundleSetup.ReportFailure(new(error.Status, null, error.Message), source ?? embeddingsSource ?? executableDirectory, root); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+            { return EmbeddingsBundleSetup.ReportFailure(new(EmbeddingsInstallStatus.InvalidBundle, null, error.Message), source ?? embeddingsSource ?? executableDirectory, root); }
         }
-
-        string exeDir = AppContext.BaseDirectory;
-
-        // One-time, best-effort migration of the executable-relative legacy models/plugins trees
-        // into SCRINIA_HOME. The immutable global-tool package directory (AppContext.BaseDirectory)
-        // is the legacy source and is never written at runtime; all destinations live under the
-        // Phase 2-resolved home. Runs before the model downloads below so freshly migrated assets
-        // are the ones setup and startup then consume.
-        MigrateLegacyAssets(exeDir, UserHome.Resolve());
-
-        // ── Step 0: Ollama auto-detect (offers to wire embeddings + completion through Ollama
-        //           if it's already running, skipping the local-model downloads below). ──
-        bool ollamaConfigured = !noOllama && await TryConfigureOllamaAsync(cancellationToken);
-        if (ollamaConfigured)
+        bool preparingModels = false;
+        try
         {
-            // Reindex any existing vectors against the new Ollama provider signature.
-            await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
+            WorkspaceSetup.Configure(workspaceRoot);
+            OrphanStoreReporter.WarnOnOrphanStores(WorkspaceSetup.Root);
+            if (installed is not null)
+            {
+                var conflict = EmbeddingsBundleSetup.ValidateEmbeddingsSelection(version);
+                string? selected = EmbeddingsHost.ResolveEmbeddingsPluginExe();
+                string expected = Path.Combine(installed.Destination!, OperatingSystem.IsWindows() ? "scri-plugin-embeddings.exe" : "scri-plugin-embeddings");
+                if (conflict is not null || !string.Equals(selected, expected, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                    return EmbeddingsBundleSetup.ReportFailure(installed with
+                    {
+                        Status = EmbeddingsInstallStatus.InstalledConfigurationFailed,
+                        Message = "The installed embeddings payload could not be selected. Check the effective plugin configuration and retry.",
+                    }, source!, root);
+                Console.Error.WriteLine($"[scrinia] Embeddings plugin {version} ({rid}) installed at {installed.Destination}; selected in workspace configuration.");
+            }
 
+            // Hook management remains a standalone operation, before model preparation.
+            if (uninstallHooks) return await UninstallHooksFlowAsync(project);
+            if (hooks) return await InstallHooksFlowAsync(project);
+
+            // Genuine legacy trees migrate independently of immutable bundle installation.
+            MigrateLegacyAssets(executableDirectory, UserHome.Resolve());
+
+            bool ollamaConfigured = !noOllama && await (probeOllama ?? TryConfigureOllamaAsync)(cancellationToken);
+            if (ollamaConfigured)
+            {
+                if (installed is not null && !string.Equals(WorkspaceSetup.GetConfigValue("Scrinia:Embeddings:Provider"), "ollama", StringComparison.OrdinalIgnoreCase))
+                    throw new ScriniaConfigurationException("The effective embeddings provider does not select the configured Ollama provider. Check Scrinia:Embeddings:Provider and its environment overrides.");
+                await EmbeddingsHost.LoadPluginsAsync(WorkspaceSetup.Root, cancellationToken);
+                AnsiConsole.WriteLine();
+                if (installed is not null)
+                    Console.Error.WriteLine("[scrinia] Setup complete: embeddings plugin installed and Ollama configured. Local model downloads skipped. Run scri config to inspect or adjust settings.");
+                else
+                    AnsiConsole.MarkupLine(
+                        "[green]Setup complete via Ollama.[/] Skipping local-model downloads. " +
+                        "Run [cyan]scri config[/] to inspect or adjust settings.");
+                return 0;
+            }
+
+            // Clear stale Ollama settings when the local provider was chosen.
+            ClearStaleOllamaConfig(WorkspaceSetup.Root);
+            preparingModels = true;
+            await (prepareModels ?? PrepareLocalModelsAsync)(cancellationToken);
+            preparingModels = false;
+
+            WorkspaceConfig.SetValue(WorkspaceSetup.Root, "Scrinia:Embeddings:Provider", "model2vec");
+            if (installed is not null && !string.Equals(WorkspaceSetup.GetConfigValue("Scrinia:Embeddings:Provider"), "model2vec", StringComparison.OrdinalIgnoreCase))
+                throw new ScriniaConfigurationException("The effective embeddings provider would bypass the selected plugin. Check Scrinia:Embeddings:Provider and its environment overrides.");
             AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine(
-                "[green]Setup complete via Ollama.[/] Skipping local-model downloads. " +
-                "Run [cyan]scri config[/] to inspect or adjust settings.");
+            AnsiConsole.WriteLine(PrintMergeRemovedHint(WorkspaceSetup.Root));
+            if (installed is not null)
+                Console.Error.WriteLine("[scrinia] Setup complete: embeddings plugin selected and local models prepared.");
             return 0;
         }
+        catch (Exception error) when (installed is not null &&
+            error is IOException or UnauthorizedAccessException or ScriniaConfigurationException or
+                ModelDownloadException or HttpRequestException or OperationCanceledException)
+        {
+            return EmbeddingsBundleSetup.ReportFailure(installed with
+            {
+                Status = preparingModels ? EmbeddingsInstallStatus.InstalledModelPreparationFailed : EmbeddingsInstallStatus.InstalledConfigurationFailed,
+                Message = preparingModels
+                    ? "The embeddings payload is installed, but local model preparation failed: " + error.Message
+                    : "The embeddings payload is installed, but workspace or provider configuration failed: " + error.Message,
+            }, source!, root);
+        }
+    }
 
-        // Ollama path was declined / unreachable / explicitly skipped — clear any stale
-        // Ollama-derived keys from a prior run so the user doesn't end up with a config
-        // pointing at a service they're no longer using. Without this, switching off
-        // Ollama leaves Provider=ollama in place and startup tries it every time before
-        // falling back, which surfaces as confusing "Ollama unreachable" warnings.
-        ClearStaleOllamaConfig(WorkspaceSetup.Root);
-
+    private static async Task PrepareLocalModelsAsync(CancellationToken cancellationToken)
+    {
         // ── Step 1: Built-in Model2Vec model (always) ──
         AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
 
@@ -137,23 +207,6 @@ public partial class ScriniaCommands
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[dim]Vulkan plugin not installed — skipping GPU model download.[/]");
         }
-
-        // Explicitly record the embeddings provider that setup just configured. The
-        // runtime defaults to model2vec when no value is set, but writing it explicitly
-        // means re-running setup after declining a previously-configured Ollama doesn't
-        // leave the user wondering which provider is active. Plugin presence still
-        // takes precedence at runtime (LoadPluginsAsync handles that branch).
-        WorkspaceConfig.SetValue(
-            WorkspaceSetup.Root,
-            "Scrinia:Embeddings:Provider",
-            "model2vec");
-
-        // Merge drivers are retired (see the merge-retirement plan). Print the manual cleanup and
-        // legacy driver-unset guidance without ever launching Git — the agent runs these commands.
-        AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine(PrintMergeRemovedHint(WorkspaceSetup.Root));
-
-        return 0;
     }
 
     /// <summary>
@@ -193,6 +246,22 @@ public partial class ScriniaCommands
         {
             // Unresolvable root — nothing safe to migrate and startup is already preserved.
             LogMigrationWarning($"cannot canonicalize home/legacy root — {ex.Message}");
+            return;
+        }
+
+        // Version directories belong to immutable bundles. A bundle-only package is not a
+        // legacy migration and must neither move its files nor create a migration marker.
+        string legacyPluginName = WorkspaceSetup.GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+        string? legacyPlugin = IsSafePathSegment(legacyPluginName)
+            ? Path.Combine(canonicalLegacy, "plugins", legacyPluginName) : null;
+        try
+        {
+            if (!Directory.Exists(Path.Combine(canonicalLegacy, "models")) &&
+                (legacyPlugin is null || !Directory.Exists(legacyPlugin) || !LegacyPluginEntries(legacyPlugin).Any())) return;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LogMigrationWarning($"cannot inspect legacy assets — {ex.Message}");
             return;
         }
 
@@ -279,7 +348,7 @@ public partial class ScriniaCommands
             return false;
         }
 
-        string rid = RuntimeInformation.RuntimeIdentifier;
+        string rid = EmbeddingsRuntimeIdentity.CurrentRid;
         string destination = Path.Combine(homeRoot, "plugins", pluginName, version, rid);
         if (!PathContainment.IsWithin(homeRoot, destination))
             return false;
@@ -287,9 +356,22 @@ public partial class ScriniaCommands
         string legacyPlugin = Path.Combine(legacyPlugins, pluginName);
         if (!Directory.Exists(legacyPlugin)) return false;
 
-        MoveTreePreservingExisting(legacyPlugin, destination);
+        foreach (string entry in LegacyPluginEntries(legacyPlugin))
+        {
+            string target = Path.Combine(destination, Path.GetFileName(entry));
+            if (Directory.Exists(entry)) MoveTreePreservingExisting(entry, target);
+            else
+            {
+                Directory.CreateDirectory(destination);
+                if (!File.Exists(target)) File.Move(entry, target);
+            }
+        }
         return true;
     }
+
+    private static IEnumerable<string> LegacyPluginEntries(string directory) =>
+        Directory.EnumerateFileSystemEntries(directory).Where(entry =>
+            !Directory.Exists(entry) || !Version.TryParse(Path.GetFileName(entry), out _));
 
     /// <summary>
     /// Recursively moves every file and subdirectory from <paramref name="source"/> into

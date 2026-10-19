@@ -1,0 +1,209 @@
+name: Exact release validation
+on:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Candidate commit SHA (40 lowercase hexadecimal characters)
+        required: true
+        type: string
+permissions:
+  contents: read
+env:
+  DOTNET_NOLOGO: 'true'
+  MSBUILDDISABLENODEREUSE: '1'
+  RELEASE_REVISION: ${{ inputs.revision }}
+jobs:
+  build-check:
+    name: build-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      package-sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.203'
+      - name: Exact SHA and SDK provenance
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_REVISION -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Exact SHA required' }
+          New-Item -ItemType Directory "$env:RUNNER_TEMP/build-evidence" | Out-Null
+          $sha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $sha -cne $env:RELEASE_REVISION) { throw 'Checkout SHA mismatch' }
+          git rev-parse HEAD | Set-Content "$env:RUNNER_TEMP/build-evidence/commit.txt"
+          dotnet --info *> "$env:RUNNER_TEMP/build-evidence/dotnet-info.log"
+          if ($LASTEXITCODE -ne 0) { throw 'SDK provenance failed' }
+          if ((dotnet --version).Trim() -cne '10.0.203') { throw 'SDK mismatch' }
+      - name: Fresh nonincremental Release build
+        shell: pwsh
+        run: |
+          dotnet build Scrinia.sln -c Release --no-incremental *> "$env:RUNNER_TEMP/build-evidence/build.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/build-evidence/build.log"; throw 'Release build failed' }
+      - name: Default solution suite including package lifecycle tests
+        shell: pwsh
+        run: |
+          dotnet test Scrinia.sln -c Release --no-build --logger trx --results-directory "$env:RUNNER_TEMP/build-evidence/default-suite" *> "$env:RUNNER_TEMP/build-evidence/test.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/build-evidence/test.log"; throw 'Default suite failed' }
+      - name: Exact release contracts
+        shell: pwsh
+        run: |
+          ./scripts/release/Check-ReleaseContracts.ps1 -Root . -Configuration Release *> "$env:RUNNER_TEMP/build-evidence/contracts.log"
+      - name: XML documentation build diagnostics (emission coverage is unconfigured)
+        shell: pwsh
+        run: |
+          dotnet build Scrinia.sln -c Release -warnaserror:CS1591 *> "$env:RUNNER_TEMP/build-evidence/xml-doc.log"
+          if ($LASTEXITCODE -ne 0) { throw 'XML diagnostic build failed' }
+      - name: Pack the one managed candidate
+        id: package
+        shell: pwsh
+        run: |
+          dotnet pack src/Scrinia/Scrinia.csproj -c Release --output "$env:RUNNER_TEMP/managed-candidate" *> "$env:RUNNER_TEMP/build-evidence/pack.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate pack failed' }
+          $sha = (Get-FileHash "$env:RUNNER_TEMP/managed-candidate/scrinia.0.6.0.nupkg" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$sha" >> $env:GITHUB_OUTPUT
+          $sha | Set-Content "$env:RUNNER_TEMP/build-evidence/package-sha256.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-evidence-${{ github.run_id }}-${{ inputs.revision }}
+          path: ${{ runner.temp }}/build-evidence
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: managed-candidate-${{ github.run_id }}-${{ inputs.revision }}
+          path: ${{ runner.temp }}/managed-candidate/scrinia.0.6.0.nupkg
+          if-no-files-found: error
+  native:
+    name: native (${{ matrix.rid }})
+    needs: build-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          # Standard ARM64 label; actual process identity is asserted before execution.
+          - os: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.203'
+      - uses: actions/download-artifact@v4
+        with:
+          name: managed-candidate-${{ github.run_id }}-${{ inputs.revision }}
+          path: ${{ runner.temp }}/managed-candidate
+      - name: Linux NativeAOT and OS loader prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update > "$RUNNER_TEMP/loader-prerequisites.log" 2>&1
+          sudo apt-get install -y clang zlib1g-dev libvulkan1 libgomp1 >> "$RUNNER_TEMP/loader-prerequisites.log" 2>&1
+      - name: Windows Vulkan loader prerequisite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP/VulkanSDK-1.4.304.1-Installer.exe"
+          Invoke-WebRequest 'https://sdk.lunarg.com/sdk/download/1.4.304.1/windows/VulkanSDK-1.4.304.1-Installer.exe' -OutFile $installer
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'LunarG') { throw 'Vulkan installer signature rejected' }
+          $signature | Format-List * | Out-File "$env:RUNNER_TEMP/loader-prerequisites.log"
+          $process = Start-Process -FilePath $installer -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install' -WindowStyle Hidden -PassThru -Wait
+          "Installer exit: $($process.ExitCode)" >> "$env:RUNNER_TEMP/loader-prerequisites.log"
+          if ($process.ExitCode -ne 0) { throw 'Vulkan loader installation failed' }
+      - name: Canonical native temporary directory
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          printf 'TMPDIR=%s/\n' "$(pwd -P)" >> "$GITHUB_ENV"
+      - name: Publish, extract, verify and exercise exact candidate
+        shell: pwsh
+        run: |
+          ./scripts/release/Validate-Release.ps1 -Revision $env:RELEASE_REVISION -Rid '${{ matrix.rid }}' -Output "$env:RUNNER_TEMP/release-lane" -CandidatePackage "$env:RUNNER_TEMP/managed-candidate/scrinia.0.6.0.nupkg" -CandidatePackageSha256 '${{ needs.build-check.outputs.package-sha256 }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-lane-${{ matrix.rid }}-${{ github.run_id }}-${{ inputs.revision }}
+          path: |
+            ${{ runner.temp }}/release-lane
+            ${{ runner.temp }}/loader-prerequisites.log
+          if-no-files-found: error
+  aggregate:
+    name: aggregate
+    needs: [build-check, native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.203'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-lane-*
+          path: ${{ runner.temp }}/lanes
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-evidence-${{ github.run_id }}-${{ inputs.revision }}
+          path: ${{ runner.temp }}/validated-release/evidence/build
+      - name: Aggregate successful lanes and verify immutable bytes again
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          if ($sha -cne $env:RELEASE_REVISION -or (dotnet --version).Trim() -cne '10.0.203') { throw 'Aggregate checkout or SDK mismatch' }
+          $output = "$env:RUNNER_TEMP/validated-release"
+          $artifacts = "$output/artifacts"
+          New-Item -ItemType Directory $artifacts | Out-Null
+          $records = @(); $rids = @()
+          foreach ($laneDir in Get-ChildItem "$env:RUNNER_TEMP/lanes" -Directory) {
+            $lane = "$($laneDir.FullName)/release-lane"
+            $manifest = Get-Content "$lane/lane-artifacts.json" -Raw | ConvertFrom-Json
+            $identity = Get-Content "$lane/evidence/lane.json" -Raw | ConvertFrom-Json
+            if (!(Test-Path "$lane/evidence/complete.txt")) { throw "Required completion evidence is missing for lane '$($laneDir.Name)'; this lane cannot be verified." }
+            if ($manifest.version -ne 1 -or $manifest.commit -cne $sha -or $manifest.packageVersion -cne '0.6.0' -or $manifest.runId -cne '${{ github.run_id }}' -or $manifest.sdkVersion -cne '10.0.203' -or $identity.sdkVersion -cne '10.0.203' -or $identity.resolvedRid -cne $manifest.rid) { throw "Lane '$($laneDir.Name)' identity does not match the requested commit, package version, SDK, run or RID." }
+            if ($manifest.artifacts.Count -ne 3 -or $manifest.rid -cin @($rids)) { throw 'Duplicate or malformed lane' }
+            $rids += $manifest.rid
+            foreach ($record in $manifest.artifacts) {
+              if ($record.name -match '[/\\:]|^\.$|^\.\.$') { throw 'Unsafe lane artifact name' }
+              $file = "$lane/artifacts/$($record.name)"
+              if ((Get-Item -LiteralPath $file).Length -ne $record.length -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $record.sha256) { throw 'Lane artifact bytes changed' }
+              if ($record.kind -ceq 'nuget') {
+                if ($record.sha256 -cne '${{ needs.build-check.outputs.package-sha256 }}') { throw 'Lane did not test the authoritative managed package' }
+                if (@($records | Where-Object kind -CEQ 'nuget').Count -ne 0) { continue }
+              }
+              Copy-Item -LiteralPath $file -Destination $artifacts
+              $records += $record
+            }
+            Copy-Item -LiteralPath "$lane/evidence" -Destination "$output/evidence/$($manifest.rid)" -Recurse
+            $prerequisites = Join-Path $laneDir.FullName 'loader-prerequisites.log'
+            if (Test-Path -LiteralPath $prerequisites) { Copy-Item -LiteralPath $prerequisites -Destination "$output/evidence/$($manifest.rid)/loader-prerequisites.log" }
+          }
+          if ($rids.Count -ne 3 -or @(Compare-Object @('win-x64','linux-x64','osx-arm64') $rids -CaseSensitive).Count -ne 0) { throw 'Required native lane set differs' }
+          @{ version=1; commit=$sha; packageVersion='0.6.0'; runId='${{ github.run_id }}'; sdkVersion='10.0.203'; artifacts=$records } | ConvertTo-Json -Depth 5 | Set-Content "$artifacts/release-artifacts.json" -Encoding utf8NoBOM
+          @{ commit=$sha; sdkVersion='10.0.203'; lanes=@('evidence/win-x64','evidence/linux-x64','evidence/osx-arm64'); build='evidence/build' } | ConvertTo-Json | Set-Content "$output/evidence-index.json" -Encoding utf8NoBOM
+          dotnet run --project tools/Scrinia.ReleaseTools -c Release -- verify-artifacts --manifest "$artifacts/release-artifacts.json" --root $artifacts --sha $sha --version '0.6.0' *> "$output/evidence/aggregate-verification.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Aggregate artifact verification failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-release-${{ github.run_id }}-${{ inputs.revision }}
+          path: ${{ runner.temp }}/validated-release
+          if-no-files-found: error

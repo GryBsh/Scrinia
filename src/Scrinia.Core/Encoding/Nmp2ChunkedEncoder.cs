@@ -65,40 +65,45 @@ public static class Nmp2ChunkedEncoder
     /// <list type="bullet">
     /// <item>Single-chunk artifact → promotes to 2-chunk multi-chunk format.</item>
     /// <item>Multi-chunk artifact → appends a new chunk section, rewrites header.
-    ///   CRC32 is computed incrementally via <see cref="Crc32Combine"/> — existing chunks
-    ///   are NOT decoded, making this O(new chunk size) instead of O(total artifact size).</item>
+    ///   Existing bytes are fully verified before CRC32 is combined via <see cref="Crc32Combine"/>.
+    ///   Existing encoded sections are preserved; only the new chunk is compressed.</item>
     /// </list>
     /// </summary>
-    public static string AppendChunk(string existingArtifact, string newChunkText)
+    public static string AppendChunk(string existingArtifact, string newChunkText) =>
+        AppendChunk(existingArtifact, newChunkText, out _, out _);
+
+    internal static string AppendChunk(string existingArtifact, string newChunkText,
+        out string[] verifiedChunks, out long verifiedBytes)
+        => AppendChunks(existingArtifact, [newChunkText], out verifiedChunks, out verifiedBytes);
+
+    internal static string AppendChunks(string existingArtifact, IReadOnlyList<string> newChunks,
+        out string[] verifiedChunks, out long verifiedBytes)
     {
         ArgumentException.ThrowIfNullOrEmpty(existingArtifact);
-
-        if (!Nmp2Strategy.IsMultiChunk(existingArtifact))
-        {
-            // Single-chunk → decode existing, promote to 2-chunk
-            byte[] decoded = Nmp2Strategy.Instance.Decode(existingArtifact);
-            string existingText = System.Text.Encoding.UTF8.GetString(decoded);
-            return EncodeMultiChunkFromParts([existingText, newChunkText]);
-        }
+        if (newChunks.Count == 0) throw new ArgumentException("At least one chunk is required.", nameof(newChunks));
+        (verifiedChunks, verifiedBytes) = DecodeAllChunksVerified(existingArtifact, out Nmp2Header metadata, out Nmp2Scan scan);
 
         // Multi-chunk → surgical append: copy existing chunk sections verbatim
-        int oldCount = Nmp2Strategy.ParseChunkCount(existingArtifact);
-        int newCount = oldCount + 1;
+        int oldCount = metadata.ChunkCount;
+        int newCount = checked(oldCount + newChunks.Count);
+        if (newCount > Nmp2Strategy.MaxChunkCount)
+            throw new InvalidDataException("NMP/2 appended chunk count exceeds its limit.");
 
         // Extract existing chunk sections (the raw encoded lines between ##CHUNK:N and ##PAD:N inclusive)
-        var existingChunkSections = Nmp2Strategy.ExtractRawChunkSections(existingArtifact, oldCount);
+        var existingChunkSections = scan.Sections;
 
-        // Parse existing header for CRC and byte count — no need to decode existing chunks
-        var metadata = Nmp2Strategy.Instance.ParseHeader(existingArtifact);
-        uint existingCrc = metadata.Crc32 ?? 0;
+        // Header metadata is trusted only after verifying all predecessor bytes above.
+        uint existingCrc = metadata.Crc32;
         int existingBytes = metadata.OriginalBytes;
 
-        byte[] newChunkUtf8 = System.Text.Encoding.UTF8.GetBytes(newChunkText);
-        uint newChunkCrc = Crc32.HashToUInt32(newChunkUtf8);
-
-        // Incremental CRC: combine existing CRC with new chunk CRC
-        int totalBytes = existingBytes + newChunkUtf8.Length;
-        uint crc = Crc32Combine(existingCrc, newChunkCrc, newChunkUtf8.Length);
+        byte[][] encodedChunks = newChunks.Select(System.Text.Encoding.UTF8.GetBytes).ToArray();
+        long appendedBytes = encodedChunks.Sum(chunk => (long)chunk.Length);
+        if ((long)existingBytes + appendedBytes > Nmp2Strategy.MaxDecodedBytes)
+            throw new InvalidDataException("NMP/2 appended decoded size exceeds its limit.");
+        int totalBytes = checked(existingBytes + (int)appendedBytes);
+        uint crc = existingCrc;
+        foreach (byte[] chunk in encodedChunks)
+            crc = Crc32Combine(crc, Crc32.HashToUInt32(chunk), chunk.Length);
 
         // Build new artifact: new header + existing chunk sections verbatim + new chunk compressed
         var sb = new StringBuilder();
@@ -111,13 +116,15 @@ public static class Nmp2ChunkedEncoder
         sb.Append('\n');
 
         // Copy existing chunk sections verbatim
-        foreach (string section in existingChunkSections)
+        foreach (Nmp2Section section in existingChunkSections)
         {
-            sb.Append(section);
+            if (!metadata.HasChunkMarker) sb.Append("##CHUNK:1\n");
+            sb.Append(existingArtifact, section.Start, section.Length);
         }
 
-        // Compress and append the new chunk
-        AppendCompressedChunk(sb, newChunkUtf8, newCount);
+        // Preserve each incoming chunk boundary within one publication.
+        for (int index = 0; index < encodedChunks.Length; index++)
+            AppendCompressedChunk(sb, encodedChunks[index], oldCount + index + 1);
 
         sb.Append("NMP/END");
         return sb.ToString();
@@ -253,6 +260,8 @@ public static class Nmp2ChunkedEncoder
 
     /// <summary>
     /// Decodes and returns the text of one chunk (1-based).
+    /// Validates body structure and the selected chunk's decode bound. Whole-memory length
+    /// and CRC32 verification belongs to full reads, including append predecessor reads.
     /// Throws <see cref="ArgumentOutOfRangeException"/> if <paramref name="chunkIndex"/>
     /// is outside [1, ChunkCount].
     /// </summary>
@@ -263,17 +272,7 @@ public static class Nmp2ChunkedEncoder
             throw new ArgumentOutOfRangeException(nameof(chunkIndex),
                 $"chunkIndex {chunkIndex} is out of range [1, {count}].");
 
-        byte[] bytes;
-        if (!Nmp2Strategy.IsMultiChunk(artifact))
-        {
-            // Single-chunk: decode the entire artifact (chunkIndex must be 1, already validated)
-            bytes = Nmp2Strategy.Instance.Decode(artifact);
-        }
-        else
-        {
-            bytes = Nmp2Strategy.DecodeChunkSection(artifact, chunkIndex);
-        }
-
+        byte[] bytes = Nmp2Strategy.DecodeChunkSection(artifact, chunkIndex);
         return System.Text.Encoding.UTF8.GetString(bytes);
     }
 
@@ -293,38 +292,17 @@ public static class Nmp2ChunkedEncoder
     /// </summary>
     /// <exception cref="InvalidDataException">The header's declared length or CRC32 does not
     /// match the concatenated decoded bytes.</exception>
-    internal static (string[] Chunks, long TotalBytes) DecodeAllChunksVerified(string artifact)
-    {
-        if (!Nmp2Strategy.IsMultiChunk(artifact))
-        {
-            // Single-chunk: there is no ##CHUNK: marker to decode a section against, so
-            // Nmp2Strategy.Decode is already the one-and-only decompression pass, integrity
-            // check included.
-            byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
-            return ([System.Text.Encoding.UTF8.GetString(decoded)], decoded.LongLength);
-        }
+    internal static (string[] Chunks, long TotalBytes) DecodeAllChunksVerified(string artifact) =>
+        DecodeAllChunksVerified(artifact, out _, out _);
 
-        int count = Nmp2Strategy.ParseChunkCount(artifact);
-        // Same guard Nmp2Strategy.DecodeCore runs before any chunk work — prevents trivial DoS
-        // via a tiny artifact that declares millions of chunks. Missing here, this method would
-        // do genuine unbounded O(count) work (a `new byte[count][]` allocation and a decode loop)
-        // before the MaxDecodedBytes budget below ever gets a chance to fire, on an artifact
-        // Decode() rejects in O(1).
-        if (count < 1 || count > Nmp2Strategy.MaxChunkCount)
-            throw new InvalidDataException(
-                $"NMP/2 artifact declares {count} chunks; must be 1..{Nmp2Strategy.MaxChunkCount}.");
-        long maxBytes = Nmp2Strategy.MaxDecodedBytes;
-        var sections = Nmp2Strategy.ExtractRawChunkSections(artifact, count);
-        var chunkBytes = new byte[count][];
-        long total = 0;
-        for (int i = 0; i < sections.Count; i++)
-        {
-            chunkBytes[i] = Nmp2Strategy.DecodeChunkSectionFrom(sections[i], maxBytes - total);
-            total += chunkBytes[i].Length;
-            if (total > maxBytes)
-                throw new InvalidDataException(
-                    $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i + 1}).");
-        }
+    private static (string[] Chunks, long TotalBytes) DecodeAllChunksVerified(string artifact,
+        out Nmp2Header header, out Nmp2Scan scan)
+    {
+        header = Nmp2Header.Parse(artifact);
+        scan = Nmp2BodyScanner.Scan(artifact, header);
+        byte[][] chunkBytes = Nmp2Strategy.DecodeSections(artifact, header, scan);
+        int count = chunkBytes.Length;
+        long total = chunkBytes.Sum(chunk => (long)chunk.Length);
 
         byte[] all = new byte[total];
         int offset = 0;

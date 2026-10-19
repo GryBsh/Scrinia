@@ -23,11 +23,11 @@ public sealed class SharedNoPromptCorrelationTests
     [Fact]
     public void Shared_responses_are_independent_of_initiating_prompt_or_correlation()
     {
-        // The eleven shared tools exist and every public shared handler is a shared tool.
+        // The ten shared tools exist and every public shared handler is a shared tool.
         var methods = typeof(SharedTools)
             .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .ToArray();
-        methods.Should().HaveCount(11);
+        methods.Should().HaveCount(10);
         methods.All(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null).Should().BeTrue();
 
         // No shared input parameter transports a prompt, correlation, or session identifier.

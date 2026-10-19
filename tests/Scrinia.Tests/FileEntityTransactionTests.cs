@@ -15,12 +15,12 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/skill/task6", content: ["old instructions"]);
+        await tools.MemoryRemember(path: "/skill/task6", content: ["old instructions"], description: "old instructions");
         string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         string oldMeta = File.ReadAllText(meta);
 
-        await tools.MemoryRemember(path: "/skill/task6", content: ["new instructions"]);
+        await tools.MemoryRemember(path: "/skill/task6", content: ["new instructions"], description: "new instructions");
 
         File.ReadAllText(body).Should().Contain("new instructions");
         Directory.GetFiles(Path.Combine(Path.GetDirectoryName(body)!, "versions"))
@@ -38,12 +38,12 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/agent/profile", content: ["old profile"]);
+        await tools.MemoryRemember(path: "/agent/profile", content: ["old profile"], description: "old profile");
         string body = Path.Combine(PathRouter.ToFileEntityDir("agent", TestHelpers.Store.WorkspaceRoot), "profile.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         File.WriteAllText(meta, "{\"createdAt\":\"2026-01-01T00:00:00Z\",\"futureField\":42}");
 
-        await tools.MemoryRemember(path: "/agent/profile", content: ["new profile"]);
+        await tools.MemoryRemember(path: "/agent/profile", content: ["new profile"], description: "new profile");
 
         string rewritten = File.ReadAllText(meta);
         rewritten.Should().Contain("futureField");
@@ -57,12 +57,12 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/skill/task6-newer", content: ["old instructions"]);
+        await tools.MemoryRemember(path: "/skill/task6-newer", content: ["old instructions"], description: "old instructions");
         string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6-newer.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         File.WriteAllText(meta, "{\"v\":999}");
 
-        Func<Task> act = () => tools.MemoryRemember(path: "/skill/task6-newer", content: ["new instructions"]);
+        Func<Task> act = () => tools.MemoryRemember(path: "/skill/task6-newer", content: ["new instructions"], description: "new instructions");
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
         File.ReadAllText(body).Should().Contain("old instructions");
@@ -74,13 +74,13 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/skill/task6-malformed", content: ["old instructions"]);
+        await tools.MemoryRemember(path: "/skill/task6-malformed", content: ["old instructions"], description: "old instructions");
         string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6-malformed.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         File.WriteAllText(meta, "not-json");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
 
-        Func<Task> act = () => tools.MemoryRemember(path: "/skill/task6-malformed", content: ["new instructions"]);
+        Func<Task> act = () => tools.MemoryRemember(path: "/skill/task6-malformed", content: ["new instructions"], description: "new instructions");
 
         await act.Should().ThrowAsync<DurableWriteException>();
         File.ReadAllText(body).Should().Contain("old instructions");
@@ -93,13 +93,13 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/agent/task6-malformed", content: ["old profile"]);
+        await tools.MemoryRemember(path: "/agent/task6-malformed", content: ["old profile"], description: "old profile");
         string body = Path.Combine(PathRouter.ToFileEntityDir("agent", TestHelpers.Store.WorkspaceRoot), "task6-malformed.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         File.WriteAllText(meta, "not-json");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
 
-        Func<Task> act = () => tools.MemoryRemember(path: "/agent/task6-malformed", content: ["new profile"]);
+        Func<Task> act = () => tools.MemoryRemember(path: "/agent/task6-malformed", content: ["new profile"], description: "new profile");
 
         await act.Should().ThrowAsync<DurableWriteException>();
         File.ReadAllText(body).Should().Be("old profile");
@@ -112,13 +112,13 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/agent/task6-newer", content: ["old profile"]);
+        await tools.MemoryRemember(path: "/agent/task6-newer", content: ["old profile"], description: "old profile");
         string body = Path.Combine(PathRouter.ToFileEntityDir("agent", TestHelpers.Store.WorkspaceRoot), "task6-newer.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         File.WriteAllText(meta, "{\"v\":999}");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
 
-        Func<Task> act = () => tools.MemoryRemember(path: "/agent/task6-newer", content: ["new profile"]);
+        Func<Task> act = () => tools.MemoryRemember(path: "/agent/task6-newer", content: ["new profile"], description: "new profile");
 
         await act.Should().ThrowAsync<ScopeReadOnlyException>();
         File.ReadAllText(body).Should().Be("old profile");
@@ -131,7 +131,7 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/skill/qa", content: ["project override"]);
+        await tools.MemoryRemember(path: "/skill/qa", content: ["project override"], description: "project override");
         string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "qa.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
 
@@ -159,7 +159,7 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/skill/task6-delete-failure", content: ["preserve me"]);
+        await tools.MemoryRemember(path: "/skill/task6-delete-failure", content: ["preserve me"], description: "preserve me");
         string body = Path.Combine(PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot), "task6-delete-failure.md");
         string meta = Path.ChangeExtension(body, ".meta.json");
         string versions = Path.Combine(Path.GetDirectoryName(body)!, "versions");
@@ -190,14 +190,14 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "/agent/failure", content: ["old profile"]);
+        await tools.MemoryRemember(path: "/agent/failure", content: ["old profile"], description: "old profile");
         DurableFile.FailureInjector = static (phase, _) =>
             phase == DurableWritePhase.BeforeMove ? new IOException("injected") : null;
 
         try
         {
             var response = ResponseParser.Parse(
-                await tools.MemoryRemember(path: "/agent/failure", content: ["new profile"]));
+                await tools.MemoryRemember(path: "/agent/failure", content: ["new profile"], description: "new profile"));
 
             response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
             response.Status.Should().NotBe("success");
@@ -589,7 +589,7 @@ public sealed class FileEntityTransactionTests
         var tools = new ScriniaMcpTools();
         string path = $"/{entityKind}/{name}";
 
-        Func<Task> act = () => tools.MemoryRemember(path, ["content"]);
+        Func<Task> act = () => tools.MemoryRemember(path, ["content"], description: "content");
 
         await act.Should().ThrowAsync<FileLockTimeoutException>();
     }
@@ -599,7 +599,7 @@ public sealed class FileEntityTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/skill/locked-forget", ["content"]);
+        await tools.MemoryRemember("/skill/locked-forget", ["content"], description: "content");
 
         string skillsDirectory = PathRouter.ToFileEntityDir("skill", TestHelpers.Store.WorkspaceRoot);
         using FileLock held = FileLock.AcquireExclusive(Path.Combine(skillsDirectory, ".lock"));

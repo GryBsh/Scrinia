@@ -49,6 +49,30 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Scrinia.Tests" />
+    <InternalsVisibleTo Include="Scrinia.TestProcess" />
+    <InternalsVisibleTo Include="Scrinia.ReleaseTools" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\release\embeddings-payloads.json" LogicalName="Scrinia.EmbeddingsPayloadPolicy.json" />
+  </ItemGroup>
+
+  <!-- The SDK marks System.Native DropFromSingleFile, but our Unix regular-file
+       guard calls its normalized PAL shim. Retain the asset from this exact build. -->
+  <Target Name="PreserveUnixRuntimeShim" AfterTargets="Publish"
+          Condition="'$(SelfContained)' == 'true' and '$(PublishSingleFile)' == 'true' and ('$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'osx-arm64')">
+    <PropertyGroup>
+      <_ScriniaUnixShimName Condition="'$(RuntimeIdentifier)' == 'linux-x64'">libSystem.Native.so</_ScriniaUnixShimName>
+      <_ScriniaUnixShimName Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">libSystem.Native.dylib</_ScriniaUnixShimName>
+    </PropertyGroup>
+    <ItemGroup>
+      <_ScriniaUnixRuntimeShim Include="@(RuntimePackAsset)"
+          Condition="'%(RuntimePackAsset.DestinationSubPath)' == '$(_ScriniaUnixShimName)' and '%(RuntimePackAsset.AssetType)' == 'native' and '%(RuntimePackAsset.RuntimeIdentifier)' == '$(RuntimeIdentifier)' and '%(RuntimePackAsset.NuGetPackageId)' == 'Microsoft.NETCore.App.Runtime.$(RuntimeIdentifier)' and '%(RuntimePackAsset.NuGetPackageVersion)' != ''" />
+    </ItemGroup>
+    <Error Condition="'@(_ScriniaUnixRuntimeShim->Count())' != '1'"
+           Text="Expected one build-resolved $(_ScriniaUnixShimName) runtime asset for $(RuntimeIdentifier)." />
+    <Error Condition="!$([System.IO.File]::Exists('%(_ScriniaUnixRuntimeShim.Identity)'))"
+           Text="Resolved Unix runtime shim is missing or is not a file: %(_ScriniaUnixRuntimeShim.Identity)." />
+    <Copy SourceFiles="@(_ScriniaUnixRuntimeShim)" DestinationFiles="@(_ScriniaUnixRuntimeShim->'$(PublishDir)$(_ScriniaUnixShimName)')" />
+  </Target>
 </Project>

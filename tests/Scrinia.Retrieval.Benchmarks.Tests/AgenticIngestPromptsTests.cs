@@ -35,6 +35,9 @@ public sealed class AgenticIngestPromptsTests
     {
         var tools = AgenticIngestPrompts.Tools();
         tools.Select(t => t.Name).Should().Contain(ExpectedRememberSearch);
+        tools.Select(t => t.Name).Should().NotContain("append");
+        using var remember = System.Text.Json.JsonDocument.Parse(tools.Single(t => t.Name == "remember").JsonSchemaParameters);
+        remember.RootElement.GetProperty("properties").GetProperty("replace").GetProperty("default").GetBoolean().Should().BeFalse();
         foreach (var t in tools)
         {
             var act = () => System.Text.Json.JsonDocument.Parse(t.JsonSchemaParameters);

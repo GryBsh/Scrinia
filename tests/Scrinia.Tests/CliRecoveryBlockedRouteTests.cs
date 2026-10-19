@@ -159,7 +159,7 @@ public sealed class CliRecoveryBlockedRouteTests
     public async Task Append_ReplayIoRecoveryWithoutDiscoveryBlock_PreservesTypedReason()
     {
         using var scope = new TestHelpers.StoreScope();
-        await new ScriniaMcpTools().MemoryRemember("/notes/note", ["existing content"]);
+        await new ScriniaMcpTools().MemoryRemember("/notes/note", ["existing content"], description: "existing content");
         string contentPath = Path.Combine(scope.WorkspaceDir, "append-content.txt");
         await File.WriteAllTextAsync(contentPath, "new content");
         FileMemoryStore.AppendFaultInjector = (point, _, _) =>

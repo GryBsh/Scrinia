@@ -410,16 +410,16 @@ public class FileMemoryStoreWriteSurfaceTests
     }
 
     [Fact]
-    public async Task AppendAsync_RefusesMoreThanOneChunk()
+    public async Task AppendAsync_PreservesEveryIncomingChunk()
     {
         using var tmp = new TempWorkspace();
-        await tmp.Store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith('/') || "target".StartsWith('~') ? "target" : "/" + "target"), "local", ["the body"]));
-
-        var refuse = async () => await tmp.Store.AppendAsync(
-            MemoryWrite.Create(MemoryAddress.Parse("target".StartsWith('/') || "target".StartsWith('~') ? "target" : "/" + "target"), "local", ["one", "two"]));
-
-        await refuse.Should().ThrowAsync<ArgumentException>(
-            because: "an append adds exactly one chunk, and silently merging two would lose the second's entry");
+        var address = MemoryAddress.Parse("/target");
+        await tmp.Store.StoreAsync(MemoryWrite.Create(address, "local", ["the body"]));
+        var result = await tmp.Store.AppendAsync(MemoryWrite.Create(address, "local", ["one", "two"]));
+        result.Entry!.ChunkCount.Should().Be(3);
+        var artifact = await tmp.Store.ReadArtifactAsync(address);
+        Scrinia.Core.Encoding.Nmp2ChunkedEncoder.DecodeChunk(artifact!, 2).Should().Be("one");
+        Scrinia.Core.Encoding.Nmp2ChunkedEncoder.DecodeChunk(artifact!, 3).Should().Be("two");
     }
 
     [Fact]

@@ -17,6 +17,37 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class ScriniaMcpToolsTests
 {
+    [Theory]
+    [MemberData(nameof(Nmp2BodyScannerTests.MalformedBodies), MemberType = typeof(Nmp2BodyScannerTests))]
+    public async Task Append_MalformedStoredBodyReturnsInternalAndPreservesLiveMembers(string malformed)
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await Tools().MemoryRemember("/scanner-caller", ["first", "second"], description: "first", replace: true);
+        await File.WriteAllTextAsync(store.ArtifactPath("scanner-caller"), malformed);
+        byte[] body = File.ReadAllBytes(store.ArtifactPath("scanner-caller"));
+        byte[] sidecar = File.ReadAllBytes(store.MetaPath("scanner-caller"));
+        var response = ResponseParser.Parse(await Tools().MemoryAppend("/scanner-caller", "new"));
+        Assert.Equal(ErrorCodes.Internal, response.ErrorCode);
+        Assert.False(string.IsNullOrEmpty(response.OperationId));
+        Assert.Equal(body, File.ReadAllBytes(store.ArtifactPath("scanner-caller")));
+        Assert.Equal(sidecar, File.ReadAllBytes(store.MetaPath("scanner-caller")));
+        Assert.Null(store.LastPreparedAppendTransactionForTest);
+    }
+
+    [Fact]
+    public async Task ImportMalformedBodyReturnsInvalidBundleWithoutPublishingValidEarlierTopic()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string bundle = Path.Combine(scope.WorkspaceDir, "malformed.scrinia-bundle");
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]) + "\ntrailing";
+        BundleRoundTripTotalityTests.WriteMalformedScannerBundle(bundle, artifact);
+        McpResponse response = await Tools().Import(bundle, overwrite: true);
+        Assert.Equal(ErrorCodes.InvalidBundle, response.ErrorCode);
+        Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-good"));
+        Assert.Empty(TestHelpers.Store.LoadIndex("local:scanner-bad"));
+    }
+
     private static ScriniaMcpTools Tools() => new();
 
     [Fact]
@@ -26,7 +57,7 @@ public sealed class ScriniaMcpToolsTests
 
         MemoryAddress address = MemoryAddress.Parse("/topic/item");
         TestHelpers.Store.ResolveAddress(address).Should().Be(("local:topic", "item"));
-        await Tools().MemoryRemember("/topic/item", ["body"]);
+        await Tools().MemoryRemember("/topic/item", ["body"], description: "body");
 
         var topicEntries = MemoryStoreContext.Current!.LoadIndex("local:topic");
         var localEntries = MemoryStoreContext.Current.LoadIndex("local");
@@ -77,7 +108,7 @@ public sealed class ScriniaMcpToolsTests
 
         string yaml = route switch
         {
-            "remember" => await new ScriniaMcpTools().MemoryRemember(longName, ["body"]),
+            "remember" => await new ScriniaMcpTools().MemoryRemember(longName, ["body"], description: "body"),
             "append" => await new ScriniaMcpTools().MemoryAppend(longName, "body"),
             "compact" => await new ScriniaMcpTools().MemoryCompact(longName),
             _ => throw new InvalidOperationException(route),
@@ -493,7 +524,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().MemoryRemember(
             path: "/findings/acme",
-            content: ["Acme renewed."],
+            content: ["Acme renewed."], description: "Acme renewed.",
             attributes: new Dictionary<string, string[]> { ["org"] = ["acme"], ["topic"] = ["renewal"] },
             keywords: ["renewed", "annual contract"]);
 
@@ -508,7 +539,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task MemoryAppend_Attributes_MergeIntoFields()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "/sessions/s1", content: ["first"],
+        await Tools().MemoryRemember(path: "/sessions/s1", content: ["first"], description: "first",
             attributes: new Dictionary<string, string[]> { ["person"] = ["alice"] });
         await Tools().MemoryAppend(path: "/sessions/s1", content: "second",
             attributes: new Dictionary<string, string[]> { ["person"] = ["bob"], ["topic"] = ["standup"] });
@@ -2281,7 +2312,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Fact1;
 
         string storeResult = await Tools().MemoryRemember(
-            path: "remember-test", content: [original]);
+            path: "remember-test", content: [original], description: "Test memory.");
 
         var parsed = ResponseParser.Parse(storeResult);
         parsed.Status.Should().Be("success",
@@ -2299,7 +2330,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
 
         string result = await Tools().MemoryRemember(
-            path: "remember-action-test", content: ["test content"]);
+            path: "remember-action-test", content: ["test content"], description: "test content");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
@@ -2346,7 +2377,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope(createStoreDir: false);
 
-        await Tools().MemoryRemember(path: "/skill/my-helper", content: ["skill instructions here"]);
+        await Tools().MemoryRemember(path: "/skill/my-helper", content: ["skill instructions here"], description: "skill instructions here");
 
         string gitignorePath = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
         File.Exists(gitignorePath).Should().BeTrue(
@@ -2359,7 +2390,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope(createStoreDir: false);
 
-        await Tools().MemoryRemember(path: "/agent/my-agent", content: ["agent config content"]);
+        await Tools().MemoryRemember(path: "/agent/my-agent", content: ["agent config content"], description: "agent config content");
 
         string gitignorePath = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
         File.Exists(gitignorePath).Should().BeTrue(
@@ -2456,13 +2487,13 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
 
         // empty path AND empty content array — trips the validator inside the tool.
-        string result = await Tools().MemoryRemember(path: "", content: []);
+        string result = await Tools().MemoryRemember(path: "", content: [], description: "Test memory.");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("error");
         parsed.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
         parsed.ActionNeeded.Should().NotBeEmpty();
-        parsed.ActionNeeded[0].Should().Contain("remember({ path: '/findings/example', content: [...] })",
+        parsed.ActionNeeded[0].Should().Contain("remember({ path: '/findings/example', description: 'Subjects and kinds of evidence stored here.', content: [...] })",
             because: "the recovery hint should be a concrete tool call template");
         parsed.ActionNeeded[0].Should().NotContain("memory_remember");
     }
@@ -2508,7 +2539,7 @@ public sealed class ScriniaMcpToolsTests
         // Soft-warn: store still succeeds, but the response carries an info hint.
         string result = await Tools().MemoryRemember(
             path: "/pattern/auth-retry",
-            content: ["use exponential backoff with jitter"]);
+            content: ["use exponential backoff with jitter"], description: "use exponential backoff with jitter");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
@@ -2524,7 +2555,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().MemoryRemember(
             path: "/Findings/SEC-001",
-            content: ["api key leaked in logs"]);
+            content: ["api key leaked in logs"], description: "api key leaked in logs");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
@@ -2539,7 +2570,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().MemoryRemember(
             path: "/patterns/retry-backoff",
-            content: ["use exponential backoff"]);
+            content: ["use exponential backoff"], description: "use exponential backoff");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
@@ -2555,7 +2586,7 @@ public sealed class ScriniaMcpToolsTests
         // /api/ is not a reserved prefix and not similar to any — must be silent.
         string result = await Tools().MemoryRemember(
             path: "/api/auth-flow",
-            content: ["oauth callback handler"]);
+            content: ["oauth callback handler"], description: "oauth callback handler");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
@@ -2592,7 +2623,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task Search_SurfacesAttributesWhenPresent()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "surfaced", content: ["auth token refresh flow"],
+        await Tools().MemoryRemember(path: "surfaced", content: ["auth token refresh flow"], description: "auth token refresh flow",
             attributes: new Dictionary<string, string[]> { ["topic"] = ["security"], ["org"] = ["acme"] });
 
         string result = await Tools().MemorySearch(query: "auth token");
@@ -2696,9 +2727,9 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().MemoryRemember(path: "/findings/auth-refactor",
-            content: ["oauth callback handler in findings"]);
+            content: ["oauth callback handler in findings"], description: "oauth callback handler in findings");
         await Tools().MemoryRemember(path: "/learn/oauth-pkce",
-            content: ["oauth callback handler in learn"]);
+            content: ["oauth callback handler in learn"], description: "oauth callback handler in learn");
 
         string result = await Tools().MemorySearch(query: "oauth", pathPrefix: "/findings/");
         var parsed = ResponseParser.Parse(result);
@@ -2712,11 +2743,11 @@ public sealed class ScriniaMcpToolsTests
     public async Task Search_AttributeFilter_RequiresKeyAndValue()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "attr-hit", content: ["security refactor entry"],
+        await Tools().MemoryRemember(path: "attr-hit", content: ["security refactor entry"], description: "security refactor entry",
             attributes: new Dictionary<string, string[]> { ["topic"] = ["security", "refactor"] });
-        await Tools().MemoryRemember(path: "attr-miss", content: ["security entry only"],
+        await Tools().MemoryRemember(path: "attr-miss", content: ["security entry only"], description: "security entry only",
             attributes: new Dictionary<string, string[]> { ["topic"] = ["other"] });
-        await Tools().MemoryRemember(path: "attr-nokey", content: ["security entry no topic"]);
+        await Tools().MemoryRemember(path: "attr-nokey", content: ["security entry no topic"], description: "security entry no topic");
 
         string result = await Tools().MemorySearch(query: "entry",
             attributeFilter: new Dictionary<string, string[]> { ["topic"] = ["security"] });
@@ -2733,9 +2764,9 @@ public sealed class ScriniaMcpToolsTests
     public async Task Search_AttributeFilter_KeyOnly_MatchesAnyValue()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "haskey", content: ["entry one"],
+        await Tools().MemoryRemember(path: "haskey", content: ["entry one"], description: "entry one",
             attributes: new Dictionary<string, string[]> { ["review"] = ["2026-08-01"] });
-        await Tools().MemoryRemember(path: "nokey", content: ["entry two"]);
+        await Tools().MemoryRemember(path: "nokey", content: ["entry two"], description: "entry two");
 
         string result = await Tools().MemorySearch(query: "entry",
             attributeFilter: new Dictionary<string, string[]> { ["review"] = [] });
@@ -2750,7 +2781,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task Search_AttributeFilter_KeyMatchIsCaseInsensitive()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "attr-case", content: ["entry body"],
+        await Tools().MemoryRemember(path: "attr-case", content: ["entry body"], description: "entry body",
             attributes: new Dictionary<string, string[]> { ["topic"] = ["security"] });
 
         string result = await Tools().MemorySearch(query: "entry",

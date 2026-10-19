@@ -52,7 +52,7 @@ public sealed class BundleAdmissionTests
                     case "delete": await writer.DeleteAsync(address, deadline.Token); break;
                     case "read": await writer.ReadArtifactAsync(address, deadline.Token); break;
                     case "skill": case "agent":
-                        await new ScriniaMcpTools().MemoryRemember("/" + operation + "/concurrent", ["new"], cancellationToken: deadline.Token);
+                        await new ScriniaMcpTools().MemoryRemember("/" + operation + "/concurrent", ["new"], description: "new", cancellationToken: deadline.Token);
                         break;
                 }
             });

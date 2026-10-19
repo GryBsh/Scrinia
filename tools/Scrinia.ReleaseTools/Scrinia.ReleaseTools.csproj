@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(PublicationOnly)' == 'true'">
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputPath>bin/publication/$(Configuration)/</OutputPath>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PublicationOnly)' != 'true'">
+    <ProjectReference Include="../../src/Scrinia/Scrinia.csproj" />
+    <Compile Remove="PublicationProgram.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(PublicationOnly)' == 'true'">
+    <Compile Include="PublicationProgram.cs;PublicationCommands.cs;PublicationProgress.cs;ReleaseArtifactManifest.cs" />
+  </ItemGroup>
+</Project>

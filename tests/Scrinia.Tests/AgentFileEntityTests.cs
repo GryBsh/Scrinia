@@ -28,7 +28,7 @@ public class AgentFileEntityTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
+        await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"], description: "you are helpful");
 
         string expected = Path.Combine(
             PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot), "profile.md");
@@ -43,7 +43,7 @@ public class AgentFileEntityTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
+        await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"], description: "you are helpful");
         string result = await Tools().MemoryRecall(path: "/agent/profile");
 
         result.Should().Contain("you are helpful");
@@ -128,7 +128,7 @@ public class AgentFileEntityTests
             MemoryStoreContext.Current = importStore;
             try
             {
-                await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
+                await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"], description: "you are helpful");
             }
             finally
             {

@@ -93,6 +93,17 @@ prefers the plugin's whole-memory `index` tool.
 
 ## Plugin protocol
 
+The release payload installs only through explicit `scri setup`, with an adjacent manifest or
+`--embeddings-source <extracted-release-directory>`. Setup copies verified bytes into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`, preserves extracted source files, and
+selects the workspace plugin name/version. A checksum establishes consistency, not publisher
+identity. Windows/Linux use Vulkan; macOS uses CPU/Metal. `serve` never installs a bundle.
+
+Setup success confirms installation/configuration/path selection, not native loading or inference.
+Later configuration or model failures retain the installation; retry after correcting the reported
+problem. Model2Vec and GGUF downloads use the network and live below `SCRINIA_HOME/models`;
+optional HTTP providers use their configured endpoint. See [installation](../installation.md#embeddings-plugin-installation).
+
 The optional executable exposes `index`, `search`, `upsert` (compatibility), `remove`, and `status`
 through MCP stdio. `index` is the preferred operation because it preserves Core's element/window
 layout and atomic replacement semantics. The host owns retries at the process boundary. See

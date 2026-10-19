@@ -63,6 +63,13 @@ public sealed class SetupMergeRetirementTests
         string unsafeRoot = @"C:\repo\%USERPROFILE%\data";
         string hint = ScriniaCommands.PrintMergeRemovedHint(unsafeRoot);
 
+        if (!OperatingSystem.IsWindows())
+        {
+            hint.Should().Contain($"git -C {PlatformQuoting.Posix(unsafeRoot)} config --local --unset-all merge.scrinia-meta.driver");
+            hint.Should().NotContain("<workspace-root>");
+            return;
+        }
+
         // Runnable-safe roots still render verbatim / quoted, so the placeholder only wins on a
         // genuinely unsafe root.
         string safeRoot = @"C:\my repo\team";
@@ -124,6 +131,14 @@ public sealed class SetupMergeRetirementTests
         SetupType.GetMethod("PrintMergeRemovedHint",
             BindingFlags.NonPublic | BindingFlags.Static)
             .Should().NotBeNull("PrintMergeRemovedHint must exist as a setup helper.");
+    }
+
+    [Fact]
+    public void SetupBundleOptionUsesOnlyTheLocalDirectorySurface()
+    {
+        var parameters = SetupType.GetMethod("Setup")!.GetParameters();
+        parameters.Should().Contain(p => p.Name == "embeddingsSource" && p.ParameterType == typeof(string));
+        parameters.Should().NotContain(p => p.Name == "remote" || p.Name == "apiKey" || p.Name == "store");
     }
 
     // ---- Scrinia never launches Git anywhere in src/ or tests/ ----

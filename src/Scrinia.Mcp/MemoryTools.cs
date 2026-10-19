@@ -112,7 +112,8 @@ public sealed partial class ScriniaMcpTools
     [McpServerTool(Name = "guide"), Description(
         "Required reading — call at session start. Returns the agent guide AND auto-restores " +
         "workspace context (available skills, recent sessions, patterns) so you have everything " +
-        "needed for the session in one tool call. Then commit content to your project's agent file.")]
+        "needed for the session in one tool call. If maintaining project instructions, record Scrinia usage " +
+        "in a file such as AGENTS.md. That instruction file is distinct from the /agent/ persona namespace.")]
     public async Task<string> Guide(CancellationToken cancellationToken = default)
     {
         string guideContent = EmbeddedPrompts.LoadGuide()
@@ -206,16 +207,21 @@ public sealed partial class ScriniaMcpTools
     /// consolidation. The facade and CLI policies are pinned behaviourally by the test suite.</para>
     /// </summary>
     [McpServerTool(Name = "remember"), Description(
-        "Persist a memory at a path. content is an array — each element becomes one independently " +
+        "Add chunks to a memory at a path, creating it if missing. Otherwise, append every supplied chunk and preserve existing content. " +
+        "Every call requires a description of the whole resulting memory; keep detailed evidence in content. Set replace: true only for an intentional complete replacement. Store facts about people, their preferences, and past events under ordinary " +
+        "paths such as /people/user/travel. Reserve /agent/ for the AI assistant's own persona and behavior, " +
+        "not the human user's profile. Preserve explicitly stated details of the facts you store, including dates, durations, " +
+        "quantities, and units. Keep qualifiers attached to their facts, preserving distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true; do not infer missing values or event relationships. Separate existing facts from goals to change them; retain a short source quotation when a paraphrase could change the meaning. Content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
         "a searcher would use. A keywords entry shaped 'key:value' (e.g. 'person:maria') is routed " +
         "into attributes instead of kept as a keyword — see the keywords and content parameter " +
-        "descriptions for the exact rule. Example: remember({ path: '/findings/SEC-001', " +
+        "descriptions for the exact rule. Example: remember({ path: '/findings/SEC-001', description: 'Security finding, affected code, and proposed fix.', " +
         "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string? path,
+        [Description("Ordinary memory path (e.g. '/people/user/travel', '/preferences/food', '/findings/SEC-001'). " +
+                     "/agent/ is reserved for the AI assistant's persona, not facts about the user.")] string? path,
         [Description("Content array — each element becomes one independently retrievable chunk. Everything " +
                      "below follows one rule: extraction reads all of the text except inside a properly " +
                      "closed fenced code block (```) — YAML frontmatter and inline `code` spans are read as " +
@@ -230,10 +236,11 @@ public sealed partial class ScriniaMcpTools
                      "extension, like 'Dockerfile' or 'app.py', does not qualify) becomes a 'file' " +
                      "attribute, hashed as this memory's drift baseline; a '[[wiki-link]]' or '~ephemeral' " +
                      "reference becomes a 'ref' attribute; and a capitalized proper-noun phrase becomes a " +
-                     "'mention' attribute. So a pasted build log or diff still contributes every path in it " +
+                     "'mention' attribute on creation or explicit replacement. Appending preserves existing mentions. So a pasted build log or diff still contributes every path in it " +
                      "as a 'file' attribute unless you wrap it in a properly closed fenced code block — do " +
                      "that when you want sample content excluded from drift tracking, wiki-links, and " +
                       "mentions.")] string[]? content,
+        [Description("Required retrieval description of the whole resulting memory: subjects, events, and kinds of detail it contains. This replaces the previous description on append as well as replacement. Recall existing content if needed to describe its full scope; keep factual evidence in content.")] string description,
         [Description("Optional typed attributes — a map of key to values. Combines with what content and " +
                      "keywords derive: person/place/org/thing/topic/file/ref (and the auto-derived 'mention') " +
                      "union with the derived value; every other key — including review, anchor, and tag — is " +
@@ -256,46 +263,56 @@ public sealed partial class ScriniaMcpTools
                      "plain keyword. This is the preferred way to attach a person/place/org/thing/topic/file/" +
                      "ref/review facet (see attributes for what each means); any other key works too since " +
                      "every element here was typed on purpose. A plain keyword (no colon) stays a keyword.")] string[]? keywords = null,
+        [Description("False (default) adds the supplied chunks while preserving existing content. Set true only to replace the entire memory with the supplied content.")] bool replace = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(path))
             return ResponseBuilder.Error(
                 "remember requires 'path'.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/findings/example', content: [...] })").ToYaml();
+                "remember({ path: '/findings/example', description: 'Subjects and kinds of evidence stored here.', content: [...] })").ToYaml();
 
         if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
 
-        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
-            ReservedPathOperation.Write, parsedPath,
-            new ReservedPathRequest(content, null, false, false), cancellationToken);
-        if (reservedResponse is not null)
-        {
-            return reservedResponse.ToYaml();
-        }
-
         if (content is null || content.Length == 0)
             return ResponseBuilder.Error(
                 "remember requires 'content' (a non-empty string array).",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '...', content: ['chunk 1', 'chunk 2'] })").ToYaml();
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: ['chunk 1', 'chunk 2'] })").ToYaml();
+        if (string.IsNullOrWhiteSpace(description))
+            return ResponseBuilder.Error(
+                "remember requires a nonblank 'description'.", ErrorCodes.InvalidParameter,
+                "Describe the whole memory's scope; keep the detailed evidence in content.").ToYaml();
         foreach (var element in content)
         {
-            if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
+            if (element is null)
+                return ResponseBuilder.Error("content elements must not be null.", ErrorCodes.InvalidParameter,
+                    "Supply a string for each content element.").ToYaml();
+            if (System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
                 return ResponseBuilder.Error(
                     $"content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.",
                     ErrorCodes.InvalidParameter,
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
+        McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
+            replace ? ReservedPathOperation.Write : ReservedPathOperation.Append, parsedPath,
+            new ReservedPathRequest(content, null, false, false, CreateIfMissing: !replace, Description: description), cancellationToken);
+        if (reservedResponse is not null)
+        {
+            return reservedResponse.ToYaml();
+        }
+
         McpResponse response;
         try
         {
-            response = await Remember(content, parsedPath,
-                keywords: keywords, attributes: attributes,
-                actionLabel: "remembered", cancellationToken: cancellationToken);
+            response = replace
+                ? await Remember(content, parsedPath, description: description, keywords: keywords, attributes: attributes,
+                    actionLabel: "remembered", cancellationToken: cancellationToken)
+                : (await AppendChunks(content, parsedPath, description: description, keywords: keywords, attributes: attributes,
+                    cancellationToken: cancellationToken)).WithAction("remembered");
         }
         catch (Scrinia.Core.Bundles.BundleImportException ex)
         {
@@ -551,7 +568,8 @@ public sealed partial class ScriniaMcpTools
 
     [McpServerTool(Name = "search"), Description(
         "Find memories by keyword or phrase. Returns ranked matches with a content preview and the " +
-        "entry's attributes per hit so you can decide what to recall without a follow-up call. " +
+        "entry's attributes per hit to help choose full recalls. Matches are not an exhaustive inventory; " +
+        "for counts and lists, vary search terms and browse list(mode: full) for missed candidates. " +
         "Example: search({ query: 'oauth flow', pathPrefix: '/findings/', " +
         "attributeFilter: { topic: ['auth'] } }).")]
     public async Task<string> MemorySearch(
@@ -625,14 +643,7 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
-    [McpServerTool(Name = "append"), Description(
-        "Append a new chunk to an existing memory (or create it if missing). Preserves the memory's " +
-        "existing retrieval metadata and merges in any new attributes (multi-valued keys union) and " +
-        "keywords (deduplicated) — same 'key:value' routing as remember: a keywords entry shaped " +
-        "'key:value' becomes an attribute instead of a keyword, and the eight recommended keys route " +
-        "the same way from inline content prose. Example: append({ path: '/sessions/2026-05-11', " +
-        "content: 'session note', attributes: { topic: ['standup'] } }).")]
-    public async Task<string> MemoryAppend(
+    internal async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string? path,
         [Description("Text content for the new chunk. Every attribute route below follows one rule: none " +
                      "of them read inside a properly closed fenced code block (```), but all of them read " +
@@ -868,10 +879,26 @@ public sealed partial class ScriniaMcpTools
         {
             return RecoveryBlockedResponse(ex).ToYaml();
         }
+        catch (DurableWriteException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (ScopeReadOnlyException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (FileLockTimeoutException ex)
+        {
+            return DurableWriteFailureResponse(ex).ToYaml();
+        }
+        catch (ArgumentException ex)
+        {
+            return ResponseBuilder.Error(ex.Message, ErrorCodes.InvalidParameter).ToYaml();
+        }
     }
 
     [McpServerTool(Name = "restore"), Description(
-        "Resume workspace context — agent profile, patterns, today's session log, available skills, " +
+        "Resume workspace context — the AI assistant's persona, patterns, today's session log, available skills, " +
         "unresolved merge conflicts. Usually unnecessary because guide() folds this in at session start; " +
         "call this mid-session to refresh after a long gap.")]
     public async Task<string> MemoryRestore(CancellationToken cancellationToken = default)

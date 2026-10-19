@@ -55,6 +55,13 @@ public interface IEncodingStrategy
 
 `Nmp2Strategy` is the sole implementation.
 
+Header metadata requires a nonnegative decimal byte count, exactly eight hexadecimal CRC32
+characters, the `BR+B64` codec, and an optional positive `C` no greater than 100,000. Header parsing
+enforces metadata grammar and the chunk-count range. Full decoding checks aggregate length/CRC32
+within the unchanged 64 MiB decoded limit. A selected-chunk read validates body structure and that
+chunk's decode bound without establishing whole-memory integrity. Valid empty content and CRLF
+artifacts remain compatible; a format probe is not an integrity check.
+
 ### Nmp2ChunkedEncoder
 
 Public utility for all encoding operations:
@@ -85,7 +92,7 @@ public static class Nmp2ChunkedEncoder
 - Single-chunk → two-chunk: rewrites header with `C:2`, wraps existing content as `##CHUNK:1`, appends new `##CHUNK:2`
 - Multi-chunk → N+1 chunks: appends new chunk section, updates header count and CRC32
 
-CRC32 combination uses GF(2) matrix math (zlib algorithm) to incrementally update the checksum without re-reading existing data. This makes append O(new chunk size) instead of O(total artifact size).
+Append fully decodes and verifies the predecessor's length and CRC32 before combining checksums with GF(2) matrix math (the zlib algorithm). Verification reads all existing bytes; append preserves the exact existing encoded sections and compresses only the new chunk.
 
 ## Data Models
 
@@ -497,6 +504,15 @@ Permission and unrelated I/O errors fail closed. A leftover filename is not proo
 Cold index loads also use scope locks; cache reuse still performs admission and freshness checks.
 All cooperating writers must use this protocol: stop every older writer before upgrading.
 Uncoordinated filesystem editors can still race between a path check and its subsequent open.
+
+Tracking recovery has separate version-1 evidence for exactly `config.json`, `.gitignore`,
+`.gitattributes`, and `merge.config`. Prepared recovery accepts proven member states; ambiguous
+legacy `complete` and unreadable evidence remain blocked for investigation. Preserve the whole
+workspace and journal, never blindly delete evidence. The limits are 16 MiB per member state,
+128 MiB decoded total, 192 MiB serialized journal, and 64 UTF-8 bytes per operation ID.
+Tracking obtains exclusive workspace admission before the configuration lock; configuration-only
+mutations recheck evidence under their lock. Windows lock identities normalize absolute path case,
+changing filenames from older builds, so mixed-version configuration writers must be stopped.
 
 ### Concurrency
 

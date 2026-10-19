@@ -23,7 +23,7 @@ public class SkillPathRoutingTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().MemoryRemember(path: "/skill/temp-helper", content: ["do the thing"]);
+        await Tools().MemoryRemember(path: "/skill/temp-helper", content: ["do the thing"], description: "do the thing");
 
         var before = ResponseParser.Parse(await Tools().MemoryRecall(path: "/skill/temp-helper"));
         before.Status.Should().NotBe("error", "the skill was just written");
@@ -44,7 +44,7 @@ public class SkillPathRoutingTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await Tools().MemoryRemember(path: "/skill/temp-helper", content: ["do the thing"]);
+        await Tools().MemoryRemember(path: "/skill/temp-helper", content: ["do the thing"], description: "do the thing");
         string filePath = Path.Combine(
             PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot), "temp-helper.md");
         File.Exists(filePath).Should().BeTrue("precondition: remember wrote the skill");
@@ -77,7 +77,7 @@ public class SkillPathRoutingTests
         using var scope = new TestHelpers.StoreScope();
         string builtIn = AnyBuiltInSkill();
 
-        await Tools().MemoryRemember(path: $"/skill/{builtIn}", content: ["project-specific override text"]);
+        await Tools().MemoryRemember(path: $"/skill/{builtIn}", content: ["project-specific override text"], description: "project-specific override text");
         var shadowed = ResponseParser.Parse(await Tools().MemoryRecall(path: $"/skill/{builtIn}"));
         shadowed.Content.Should().Contain("project-specific override text",
             "precondition: the disk skill shadows the built-in");
@@ -108,7 +108,7 @@ public class SkillPathRoutingTests
     public async Task Forget_OnTheBareSkillPath_AsksForANameRatherThanDeletingAnything()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember(path: "/skill/keep-me", content: ["instructions"]);
+        await Tools().MemoryRemember(path: "/skill/keep-me", content: ["instructions"], description: "instructions");
 
         var response = ResponseParser.Parse(await Tools().MemoryForget(path: "/skill/"));
 
@@ -126,7 +126,7 @@ public class SkillPathRoutingTests
 
         string yaml = await Tools().MemoryRemember(
             path: "/skill/noted",
-            content: ["instructions"],
+            content: ["instructions"], description: "instructions",
             attributes: new Dictionary<string, string[]> { ["topic"] = ["x"] },
             keywords: ["alpha"]);
         var response = ResponseParser.Parse(yaml);
@@ -142,7 +142,7 @@ public class SkillPathRoutingTests
 
         var response = ResponseParser.Parse(await Tools().MemoryRemember(
             path: "/skill/half-noted",
-            content: ["instructions"],
+            content: ["instructions"], description: "instructions",
             keywords: ["alpha"]));
 
         response.Info.Should().BeEmpty("reserved skill writes do not report ignored general-memory fields");
@@ -154,7 +154,7 @@ public class SkillPathRoutingTests
         using var scope = new TestHelpers.StoreScope();
 
         var response = ResponseParser.Parse(
-            await Tools().MemoryRemember(path: "/skill/quiet", content: ["instructions"]));
+            await Tools().MemoryRemember(path: "/skill/quiet", content: ["instructions"], description: "instructions"));
 
         response.Status.Should().NotBe("error");
         response.Info.Should().BeEmpty(

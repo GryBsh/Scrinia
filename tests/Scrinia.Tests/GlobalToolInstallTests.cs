@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
 using FluentAssertions;
@@ -29,8 +28,6 @@ namespace Scrinia.Tests;
 [Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class GlobalToolInstallTests : IDisposable
 {
-    private static readonly JsonSerializerOptions IndentedJsonOptions = new JsonSerializerOptions { WriteIndented = true };
-
     private const string ScriniaHomeVar = "SCRINIA_HOME";
     private const string ToolPackageId = "scrinia";
     private const string FirstVersion = "0.7.0";
@@ -98,19 +95,6 @@ public sealed class GlobalToolInstallTests : IDisposable
                 Directory.CreateDirectory(directory);
 
             Directory.CreateDirectory(Path.Combine(sharedBase, ".git"));
-            Directory.CreateDirectory(Path.Combine(workspace, ".scrinia"));
-            WriteJson(Path.Combine(home, "config.json"), new
-            {
-                schemaVersion = 1,
-                sharedBases = new Dictionary<string, object>
-                {
-                    ["team"] = new { root = sharedBase }
-                }
-            });
-            WriteJson(Path.Combine(workspace, ".scrinia", "config.json"), new Dictionary<string, string>
-            {
-                ["Scrinia:Shared:Enabled"] = "team"
-            });
 
             ProcessRunner runner = new();
             string dotnet = runner.ResolveExecutable("dotnet")
@@ -210,6 +194,7 @@ public sealed class GlobalToolInstallTests : IDisposable
             "the local serve server must advertise the scri command as its MCP server identity");
 
         // ── handshake scri shared serve (shared MCP server) over stdio ──────────────────────────────
+        await InitializeSharedFixtureAsync(_scriExe, _sharedBase, _workspace, MarkStage);
         MarkStage("shared-serve:first");
         (int sharedExit, string? sharedResponse) = await HandshakeServeAsync(
             [ "shared", "serve", "--workspace-root", _workspace ]);
@@ -279,7 +264,7 @@ public sealed class GlobalToolInstallTests : IDisposable
 
         _stages.Should().ContainInOrder(
             "pack:0.7.0", "pack:0.8.0", "install:0.7.0", "install:asserted", "version:first",
-            "serve:first", "shared-serve:first", "setup", "update", "version:updated",
+            "serve:first", "shared-base:add", "shared:enable", "shared-serve:first", "setup", "update", "version:updated",
             "serve:updated", "shared-serve:updated", "uninstall");
     }
 
@@ -309,16 +294,6 @@ public sealed class GlobalToolInstallTests : IDisposable
             foreach (string dir in new[] { cycleFeed, cycleToolPath, cycleHome, cycleWorkspace, cycleSharedBase })
                 Directory.CreateDirectory(dir);
             Directory.CreateDirectory(Path.Combine(cycleSharedBase, ".git"));
-            Directory.CreateDirectory(Path.Combine(cycleWorkspace, ".scrinia"));
-            WriteJson(Path.Combine(cycleHome, "config.json"), new
-            {
-                schemaVersion = 1,
-                sharedBases = new Dictionary<string, object> { ["team"] = new { root = cycleSharedBase } }
-            });
-            WriteJson(Path.Combine(cycleWorkspace, ".scrinia", "config.json"), new Dictionary<string, string>
-            {
-                ["Scrinia:Shared:Enabled"] = "team"
-            });
 
             lock (FixtureGate)
             {
@@ -337,8 +312,12 @@ public sealed class GlobalToolInstallTests : IDisposable
             Run(cycleExe, ["--version"], null).Stdout.Trim().Should().Be(FirstVersion);
             MarkCycleStage("serve:first");
             (await HandshakeServeAsync(cycleExe, ["serve", "--no-auto-setup", "--workspace-root", cycleWorkspace])).ExitCode.Should().Be(0);
+            await InitializeSharedFixtureAsync(cycleExe, cycleSharedBase, cycleWorkspace, MarkCycleStage);
             MarkCycleStage("shared-serve:first");
-            (await HandshakeServeAsync(cycleExe, ["shared", "serve", "--workspace-root", cycleWorkspace])).ExitCode.Should().Be(0);
+            (int sharedExit, string? sharedResponse) = await HandshakeServeAsync(cycleExe,
+                ["shared", "serve", "--workspace-root", cycleWorkspace]);
+            sharedExit.Should().Be(0);
+            ExtractServerInfo(sharedResponse).Should().Be("scri", "the initialized shared server must reply with its MCP identity");
             AssertPackageTreeUnchanged(CapturePackageTree(cycleToolPath), firstSnapshot,
                 "the first independent cycle must not mutate its complete tool tree");
 
@@ -370,7 +349,7 @@ public sealed class GlobalToolInstallTests : IDisposable
                 Timeout(120)).GetAwaiter().GetResult().ExitCode.Should().Be(0);
             Directory.EnumerateFiles(cycleToolPath, ToolFileName, SearchOption.AllDirectories).Should().BeEmpty();
             stages.Should().ContainInOrder(
-                "pack:0.7.0", "pack:0.8.0", "install:0.7.0", "version:first", "serve:first", "shared-serve:first",
+                "pack:0.7.0", "pack:0.8.0", "install:0.7.0", "version:first", "serve:first", "shared-base:add", "shared:enable", "shared-serve:first",
                 "setup", "update", "version:updated", "serve:updated", "shared-serve:updated", "uninstall");
         }
         catch (Exception ex)
@@ -727,6 +706,47 @@ public sealed class GlobalToolInstallTests : IDisposable
             throw new AggregateException("Timed-out process probe cleanup was incomplete.", failures);
     }
 
+    private static async Task InitializeSharedFixtureAsync(
+        string executable, string sharedBase, string workspace, Action<string> markStage)
+    {
+        (string Stage, string[] Arguments)[] commands =
+        [
+            ("shared-base:add", ["shared", "base", "add", "team", sharedBase]),
+            ("shared:enable", ["shared", "enable", "team"]),
+        ];
+        foreach ((string stage, string[] arguments) in commands)
+        {
+            markStage(stage);
+            var startInfo = new System.Diagnostics.ProcessStartInfo(executable)
+            {
+                WorkingDirectory = workspace,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (string argument in arguments) startInfo.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(startInfo)
+                ?? throw new InvalidOperationException($"Failed to start shared fixture stage {stage}.");
+            Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+            Task<string> stderr = process.StandardError.ReadToEndAsync();
+            try
+            {
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(120));
+            }
+            catch (TimeoutException)
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+                throw;
+            }
+            string output = await stdout.WaitAsync(TimeSpan.FromSeconds(30));
+            string error = await stderr.WaitAsync(TimeSpan.FromSeconds(30));
+            process.ExitCode.Should().Be(0,
+                $"public fixture stage {stage} must initialize the isolated shared policy; STDOUT: {output}; STDERR: {error}");
+        }
+    }
+
     private static ProcessResult Run(string executable, IReadOnlyList<string> arguments, string? stdin)
     {
         ProcessRunner runner = new();
@@ -832,12 +852,6 @@ public sealed class GlobalToolInstallTests : IDisposable
             && serverInfo.TryGetProperty("name", out JsonElement name)
             ? name.GetString()
             : null;
-    }
-
-    private static void WriteJson(string path, object value)
-    {
-        File.WriteAllText(path, JsonSerializer.Serialize(value, IndentedJsonOptions),
-            new UTF8Encoding(false));
     }
 
     private static CancellationToken Timeout(int seconds) =>

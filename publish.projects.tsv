@@ -3,7 +3,7 @@ id	project	condition	profile	output	rids
 #
 # The local publish scripts each emit single-file release trees:
 #   - scri                       -> single-file CLI release tree (output=rid)
-#   - scri-plugin-embeddings     -> optional Vulkan plugin release tree (output=plugin)
+#   - scri-plugin-embeddings     -> optional plugins/scri-plugin-embeddings/<evaluated-version>/<rid>/ payload and root embeddings-bundle.json (output=plugin)
 # The single NuGet global tool is `scri`; the tool package contains no Vulkan (LLamaSharp),
 # no retired merge driver payload, and no mutable asset - those live under SCRINIA_HOME.
 scri	src/Scrinia/Scrinia.csproj	always	trimmed	rid	all

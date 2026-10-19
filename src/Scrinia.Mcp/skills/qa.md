@@ -57,13 +57,13 @@ If the QA pass produced durable lessons (a regression caught, a flaky test ident
 a coverage gap), store them so the next agent benefits:
 
 ```
-remember({ path: "/findings/QA-{slug}", content: ["..."], keywords: ["qa", "..."] })
+remember({ path: "/findings/QA-{slug}", description: "Verification scope, test evidence, defects, and limitations.", content: ["..."], keywords: ["qa", "..."] })
 ```
 
 For full reports the user may want to revisit, store the report itself:
 
 ```
-remember({ path: "/qa/{date-or-feature}", content: ["## QA Report\n{evidence}"] })
+remember({ path: "/qa/{date-or-feature}", description: "Verification scope, test evidence, defects, and limitations.", content: ["## QA Report\n{evidence}"] })
 ```
 
 ## Key rules

@@ -86,7 +86,9 @@ public sealed class SharedDurableMatrixTests
         entries["/good"].Availability.Should().Be(SharedDurableAvailability.ReadWrite);
         entries["/unsupported"].ErrorCode.Should().Be("SHARED_FORMAT_UNSUPPORTED");
         entries["/corrupt"].ErrorCode.Should().Be("SHARED_ENTRY_CORRUPT");
-        entries.Should().NotContainKey("/missing-sidecar");
+        entries["/missing-sidecar"].Availability.Should().Be(SharedDurableAvailability.Unavailable);
+        entries["/missing-sidecar"].ErrorCode.Should().Be("SHARED_ENTRY_CORRUPT");
+        runtime.Snapshot.Memories.Should().NotContain(item => item.Path == "/missing-sidecar");
         entries["/newer"].Availability.Should().Be(SharedDurableAvailability.ReadOnly);
         entries["/skill/skill"].Availability.Should().Be(SharedDurableAvailability.ReadOnly);
         entries["/agent/agent"].Availability.Should().Be(SharedDurableAvailability.ReadWrite);
@@ -102,7 +104,7 @@ public sealed class SharedDurableMatrixTests
         var tools = new ScriniaMcpTools();
         string skillName = EmbeddedPrompts.LoadAllSkills().Keys.OrderBy(k => k, StringComparer.Ordinal).First();
 
-        (await tools.MemoryRemember($"/skill/{skillName}", ["original instructions"]))
+        (await tools.MemoryRemember($"/skill/{skillName}", ["original instructions"], description: "original instructions"))
             .Should().NotContain("status: error");
         string filePath = Path.Combine(
             PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot), skillName + ".md");
@@ -111,10 +113,10 @@ public sealed class SharedDurableMatrixTests
 
         (await tools.MemoryRecall($"/skill/{skillName}"))
             .Should().Contain("original instructions");
-        (await tools.MemoryRemember($"/skill/{skillName}", ["rewritten instructions"]))
+        (await tools.MemoryRemember($"/skill/{skillName}", ["rewritten instructions"], description: "rewritten instructions", replace: true))
             .Should().NotContain("status: error");
 
-        File.ReadAllText(filePath).Should().Contain("rewritten instructions");
+        File.ReadAllText(filePath).Should().Contain("rewritten instructions").And.NotContain("original instructions");
         File.ReadAllText(sidecarPath).Should().Contain("\"updatedAt\"");
     }
 
@@ -125,14 +127,14 @@ public sealed class SharedDurableMatrixTests
         var store = TestHelpers.Store;
         var tools = new ScriniaMcpTools();
 
-        (await tools.MemoryRemember("/agent/task6-agent", ["original configuration"]))
+        (await tools.MemoryRemember("/agent/task6-agent", ["original configuration"], description: "original configuration"))
             .Should().NotContain("status: error");
         string filePath = Path.Combine(
             PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot), "task6-agent.md");
         string sidecarPath = Path.ChangeExtension(filePath, ".meta.json");
         File.WriteAllText(sidecarPath, "{}");
 
-        (await tools.MemoryRemember("/agent/task6-agent", ["rewritten configuration"]))
+        (await tools.MemoryRemember("/agent/task6-agent", ["rewritten configuration"], description: "rewritten configuration", replace: true))
             .Should().NotContain("status: error");
 
         File.ReadAllText(filePath).Should().Be("rewritten configuration");

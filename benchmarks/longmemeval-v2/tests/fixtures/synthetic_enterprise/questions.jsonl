@@ -1,0 +1,2 @@
+{"id": "enterprise-question-1", "domain": "enterprise", "question": "Which invented badge marks manual review?", "image": "screen.png", "answer": "amber", "question_type": "errors-gotchas", "eval_function": "llm_gotchas_checker"}
+{"id": "enterprise-question-2", "domain": "enterprise", "question": "Which invented badge marks manual review?", "image": "screen.png", "answer": "amber", "question_type": "errors-gotchas", "eval_function": "llm_gotchas_checker"}

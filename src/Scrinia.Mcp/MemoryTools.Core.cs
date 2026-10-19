@@ -311,6 +311,7 @@ public sealed partial class ScriniaMcpTools
                 // BuildDerivedEntry closes for the artifact sidecar; same fix.
                 SchemaVersion: existingMeta?.SchemaVersion)
             {
+                Description = string.IsNullOrWhiteSpace(description) ? existingMeta?.Description : description,
                 // COPIED, never aliased -- same rule as ArtifactEntry.Unknown.
                 Unknown = existingMeta?.Unknown is { } u
                     ? new Dictionary<string, System.Text.Json.JsonElement>(u)
@@ -598,7 +599,7 @@ public sealed partial class ScriniaMcpTools
                 $"Memory '{qualifiedName}' not found.",
                 ErrorCodes.NotFound,
                 "list() to see available memories",
-                "remember({ path: '...', content: [...] }) to create it"));
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it"));
 
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, attributes, description, reviewAfter, reviewWhen."));
@@ -616,7 +617,7 @@ public sealed partial class ScriniaMcpTools
                 "metadata-only change. Changing keywords is the usual cause — they are derived " +
                 "from the memory's content, so they can only change through a write that carries it.",
                 ErrorCodes.NotSupported,
-                "remember({ path: '...', content: [...] }) — a full write carries attributes, keywords and description together"));
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) — a full write carries attributes, keywords and description together"));
 
         // An ephemeral write touches no file, so it reports no file changes.
         var success = ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.");
@@ -1138,7 +1139,7 @@ public sealed partial class ScriniaMcpTools
     /// <paramref name="anchors"/> into it — appended content can introduce new concepts users will
     /// query for, and the metadata `remember` set must not be silently discarded on append.
     /// </summary>
-    internal async Task<McpResponse> Append(
+    internal Task<McpResponse> Append(
         [Description("The text content to append.")] string? content,
         [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] MemoryAddress name,
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
@@ -1151,7 +1152,15 @@ public sealed partial class ScriniaMcpTools
                      "an anchor is for.")] string[]? anchors = null,
          IReadOnlyDictionary<string, string[]>? attributes = null,
          CancellationToken cancellationToken = default)
+        => AppendChunks([content], name, description, tags, keywords, anchors, attributes, cancellationToken);
+
+    internal async Task<McpResponse> AppendChunks(
+        string?[] chunks, MemoryAddress name, string? description = null,
+        string[]? tags = null, string[]? keywords = null, string[]? anchors = null,
+        IReadOnlyDictionary<string, string[]>? attributes = null,
+        CancellationToken cancellationToken = default)
     {
+        string content = string.Join("\n", chunks);
         string appendOperationId = Guid.NewGuid().ToString("N");
         name = MemoryAddress.Parse(MemoryNaming.CanonicalizeEphemeralAlias(name.ToString()));
         var store = CurrentStore;
@@ -1186,7 +1195,7 @@ public sealed partial class ScriniaMcpTools
         MemoryWrite write;
         try
         {
-            write = MemoryWrite.Create(name, scope, [content],
+            write = MemoryWrite.Create(name, scope, chunks,
                 WriteAttributesAsBytes(WriteAttributes(attributes, tags, anchors)
                     ?? new Dictionary<string, string[]>()), keywords ?? [], isAppend: true,
                 description: description);
@@ -1351,9 +1360,9 @@ public sealed partial class ScriniaMcpTools
             await FireEventSinkAsync(sink => wasCreated
                 ? sink.OnStoredAsync(address, write.RawContent, store, cancellationToken)
                 : sink is IOperationAwareMemoryEventSink operationAware
-                    ? operationAware.OnAppendedAsync(address, write.RawContent[0], store,
+                    ? operationAware.OnAppendedAsync(address, content, store,
                         appendResult.OperationId, cancellationToken)
-                    : sink.OnAppendedAsync(address, write.RawContent[0], store, cancellationToken));
+                    : sink.OnAppendedAsync(address, content, store, cancellationToken));
 
             if (operationHook is not null)
                 await operationHook.OnAfterAppendAsync(new AfterAppendContext
@@ -1362,7 +1371,7 @@ public sealed partial class ScriniaMcpTools
                     Address = address,
                     ChunkCount = entry.ChunkCount,
                     OriginalBytes = entry.OriginalBytes,
-                    Content = write.RawContent[0]
+                    Content = content
                 }, cancellationToken);
 
             Exception? afterEventFailure = FileMemoryStore.InjectAppendFault(
@@ -1391,14 +1400,15 @@ public sealed partial class ScriniaMcpTools
             };
         }
 
+        string addedChunks = chunks.Length == 1 ? $"chunk {entry.ChunkCount}" : $"{chunks.Length} chunks";
         var response = appendResult.Outcome == AppendStoreOutcome.SuccessWithWarning
             ? ResponseBuilder.SuccessWithWarning(wasCreated
                 ? $"Created {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)})."
-                : $"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
+                : $"Appended {addedChunks} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
                 .WithFileChanges().WithAction(wasCreated ? "created" : "appended")
             : wasCreated
             ? StoredResponse(entry, qualifiedName, ephemeral, "created")
-            : ResponseBuilder.Success($"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
+            : ResponseBuilder.Success($"Appended {addedChunks} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
                 .WithFileChanges().WithAction("appended");
         response = response.WithOperationId(appendResult.OperationId).WithPersistedIdentity(qualifiedName);
         var responseInfo = new List<string>();
@@ -1507,8 +1517,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Create a bidirectional relationship between two memories. Writes a unified
-    /// <c>ref</c> attribute on each side, handed to <see cref="UpdateMeta"/> as an attribute and
-    /// never minted as a <c>ref:{name}</c>-shaped keyword for routing to turn back into one.
+    /// <c>ref</c> attribute on indexed/ephemeral memories or a sidecar reference on file entities.
     /// Refuses without writing anything unless both memories already exist.
     /// <para>Either side may be an ephemeral <c>~name</c> <i>as far as this method is concerned</i>
     /// — but that only reaches a caller whose process is the one holding the ephemeral. It is real
@@ -1538,13 +1547,14 @@ public sealed partial class ScriniaMcpTools
         // An ephemeral side is no longer refused at all: UpdateMeta handles a ~name, in both store
         // modes, so existence is the only thing left for link itself to check.
         var store = CurrentStore;
-        string? missing = !Exists(store, from) ? from.ToString() : !Exists(store, to) ? to.ToString() : null;
+        string? missing = !LinkEndpointExists(store, from, to, cancellationToken) ? from.ToString()
+            : !LinkEndpointExists(store, to, from, cancellationToken) ? to.ToString() : null;
         if (missing is not null)
             return ResponseBuilder.Error(
                 $"Memory '{missing}' not found — nothing was written.",
                 ErrorCodes.NotFound,
                 "list() to see available memories",
-                $"remember({{ path: '{missing}', content: [...] }}) to create it, then link it");
+                $"remember({{ path: '{missing}', description: 'Subjects and kinds of evidence stored here.', content: [...] }}) to create it, then link it");
 
         // Each side's reference is handed over AS AN ATTRIBUTE. It used to be minted as a
         // `ref:{name}` KEYWORD and left to AttributeExtractor.RouteKeywords to turn back into one,
@@ -1558,25 +1568,20 @@ public sealed partial class ScriniaMcpTools
         // same loop with short names left both untouched, which is the whole tell: the growth was
         // the DEGRADATION, not the linking. Writing the attribute directly removes the conversion,
         // so the destination's name length stops mattering at all.
-        McpResponse result1 = await UpdateMeta(
-            from, attributes: ReferenceTo(to), cancellationToken: cancellationToken);
-        McpResponse result2 = await UpdateMeta(
-            to, attributes: ReferenceTo(from), cancellationToken: cancellationToken);
+        McpResponse result1 = await LinkEndpoint(from, to, cancellationToken);
+        if (result1.IsError) return result1;
+        McpResponse result2 = from == to ? result1 : await LinkEndpoint(to, from, cancellationToken);
 
-        if (result1.IsError || result2.IsError)
-        {
-            var firstError = result1.IsError ? result1 : result2;
-            return ResponseBuilder.Error(
-                firstError.Error ?? firstError.Content ?? "Partial link failure",
-                ErrorCodes.Internal,
-                $"Verify both '{from}' and '{to}' exist via recall.")
-                .WithInfo($"partial: {from} -> {to}");
-        }
+        if (result2.IsError)
+            return result2.WithInfo([.. result2.Info ?? [], $"partial: {from} -> {to}"]);
 
         string linkMsg = $"Linked '{from}' <-> '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))
             linkMsg += $" Reason: {reason}";
-        return ResponseBuilder.Success(linkMsg).WithAction("linked");
+        McpResponse response = result1.IsWarning ? result1 with { Content = linkMsg }
+            : result2.IsWarning ? result2 with { Content = linkMsg }
+            : ResponseBuilder.Success(linkMsg);
+        return response.WithAction("linked");
     }
 
     /// <summary>The one-key attribute map naming <paramref name="name"/> as a reference — the shape

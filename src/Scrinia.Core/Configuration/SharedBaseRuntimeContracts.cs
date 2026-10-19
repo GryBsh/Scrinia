@@ -65,6 +65,7 @@ public sealed record SharedBaseSnapshot
     public IReadOnlyList<string> Warnings { get; init; } = [];
     public IReadOnlyList<string> AuthoritativeFiles { get; init; } = [];
     public IReadOnlyList<SharedDurableEntry> Entries { get; init; } = [];
+    internal IReadOnlyList<SharedMemorySnapshot> Memories { get; init; } = [];
 }
 
 public sealed record SharedRefreshValidation(bool Succeeded, SharedBaseSnapshot Snapshot);
@@ -124,12 +125,24 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
     private readonly ReaderWriterLockSlim _generationGate = new(LockRecursionPolicy.NoRecursion);
     private readonly SharedBaseIdentity _identity;
     private SharedBaseSnapshot _snapshot;
+    internal FileMemoryStore Store { get; }
 
     internal SharedBaseRuntime(SharedBaseIdentity identity)
     {
         _identity = identity;
+        Store = FileMemoryStore.CreateShared(identity.RegisteredRoot);
         _snapshot = new SharedBaseSnapshot { Identity = identity };
-        RefreshSnapshot();
+        try
+        {
+            using WorkspaceLease admission = Store.EnterSharedRead();
+            RefreshSnapshot();
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // Core callers may establish identity before a store exists. Missing storage stays
+            // unavailable without materialization; the host separately requires its policy block.
+            _snapshot = _snapshot with { Warnings = [exception.GetType().Name] };
+        }
     }
 
     public string BaseName => _identity.BaseName;
@@ -138,20 +151,26 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
 
     public SharedBaseOperationLease AcquireReadLease()
     {
-        _generationGate.EnterReadLock();
-        return new SharedBaseOperationLease(() => _generationGate.ExitReadLock());
+        WorkspaceLease admission = Store.EnterSharedRead();
+        try { _generationGate.EnterReadLock(); }
+        catch { admission.Dispose(); throw; }
+        return new SharedBaseOperationLease(() => { _generationGate.ExitReadLock(); admission.Dispose(); });
     }
 
     public SharedBaseMutationLease AcquireMutationLease()
     {
-        _generationGate.EnterWriteLock();
-        return new SharedBaseMutationLease(() => _generationGate.ExitWriteLock());
+        WorkspaceLease admission = Store.EnterWorkspaceMutation();
+        try { _generationGate.EnterWriteLock(); }
+        catch { admission.Dispose(); throw; }
+        return new SharedBaseMutationLease(() => { _generationGate.ExitWriteLock(); admission.Dispose(); }, admission);
     }
 
     public SharedBaseRefreshLease AcquireRefreshLease()
     {
-        _generationGate.EnterWriteLock();
-        return new SharedBaseRefreshLease(() => _generationGate.ExitWriteLock());
+        WorkspaceLease admission = Store.EnterSharedRead();
+        try { _generationGate.EnterWriteLock(); }
+        catch { admission.Dispose(); throw; }
+        return new SharedBaseRefreshLease(() => { _generationGate.ExitWriteLock(); admission.Dispose(); });
     }
 
     public SharedMutationPreflight RevalidateBeforeMutation(string? canonicalPath, string? canonicalDestination)
@@ -198,15 +217,20 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         return CommitMutationUnderLease(plan, durableMutation);
     }
 
-    private SharedMutationCommit CommitMutationUnderLease(SharedMutationPlan plan, Action durableMutation)
+    internal SharedMutationCommit CommitMutationUnderLease(SharedMutationPlan plan, Action durableMutation)
     {
         SharedMutationPreflight preflight = RevalidateBeforeMutation(plan.CanonicalPath, plan.CanonicalDestination);
         if (!preflight.IsSafe)
-            return new() { Identity = _identity, Mutation = SharedMutationCertainty.None, Generation = Snapshot.Generation, Manifest = [] };
+            return new() { Identity = _identity, Mutation = SharedMutationCertainty.None, Generation = Snapshot.Generation, Manifest = [], ErrorCode = preflight.ErrorCode };
 
         try
         {
             durableMutation();
+        }
+        catch (SharedOperationException exception) when (exception.Mutation == SharedMutationCertainty.None)
+        {
+            return new() { Identity = _identity, Mutation = SharedMutationCertainty.None, Generation = Snapshot.Generation,
+                ErrorCode = exception.Code };
         }
         catch
         {
@@ -238,6 +262,8 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         string inventoryRoot = Path.Combine(registeredRoot, ".scrinia");
         if (!Directory.Exists(inventoryRoot))
             throw new DirectoryNotFoundException(inventoryRoot);
+        if ((File.GetAttributes(inventoryRoot) & FileAttributes.ReparsePoint) != 0)
+            throw new ArgumentException("The shared store directory cannot be a reparse point.", nameof(registeredRoot));
 
         var files = EnumerateAuthoritativeFiles(inventoryRoot, registeredRoot)
             .OrderBy(item => System.Text.Encoding.UTF8.GetBytes(item.Path), ByteArrayComparer.Instance)
@@ -259,6 +285,19 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             hash.AppendData(content);
         }
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    internal static void ValidateTopology(string registeredRoot)
+    {
+        try
+        {
+            string directory = Path.Combine(registeredRoot, ".scrinia");
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new ArgumentException("The shared store directory cannot be a reparse point.", nameof(registeredRoot));
+            // Enumerate names and attributes only; authoritative bytes are read after workspace admission.
+            _ = EnumerateAuthoritativeFiles(directory, registeredRoot).Count();
+        }
+        catch (ArgumentException) { throw new SharedOperationException("SHARED_BASE_UNSAFE_PATH"); }
     }
 
     private static IEnumerable<(string Path, string FullPath)> EnumerateAuthoritativeFiles(string inventoryRoot, string registeredRoot)
@@ -283,7 +322,16 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
 
                 string relativePath = Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/');
                 if (IsAuthoritative(relativePath))
+                {
+                    // Unix FIFOs and sockets have neither Directory nor ReparsePoint attributes.
+                    // Classify without opening before any snapshot or fingerprint reads bytes.
+                    try { RecoveryFileType.RequireRegularFile(path); }
+                    catch (InvalidDataException exception)
+                    {
+                        throw new ArgumentException("An authoritative shared-base descendant must be a regular file.", nameof(registeredRoot), exception);
+                    }
                     yield return (relativePath, path);
+                }
             }
         }
     }
@@ -301,8 +349,10 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         {
             if (!IsRegisteredRootStillCanonical())
                 throw new ArgumentException("The registered root no longer resolves to the opened root.");
-            DurableScanResult scan = DurableInventory.Scan(_identity.RegisteredRoot);
             string fingerprint = Fingerprint(_identity.RegisteredRoot);
+            DurableScanResult scan = DurableInventory.Scan(_identity.RegisteredRoot);
+            IReadOnlyList<SharedMemorySnapshot> memories = scan.HasConflict ? []
+                : SharedMemoryOperations.Capture(_identity.RegisteredRoot, scan.Entries);
             string inventoryRoot = Path.Combine(_identity.RegisteredRoot, ".scrinia");
             string[] files = Directory.EnumerateFiles(inventoryRoot, "*", SearchOption.AllDirectories)
                 .Select(path => Path.GetRelativePath(inventoryRoot, path).Replace('\\', '/'))
@@ -312,23 +362,24 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
             var snapshot = new SharedBaseSnapshot
             {
                 Identity = _identity,
-                Generation = fingerprint,
+                Generation = scan.HasConflict ? previousSnapshot.Generation : fingerprint,
                 Fingerprint = fingerprint,
                 Availability = scan.HasConflict ? SharedBaseAvailability.Conflicted : SharedBaseAvailability.Available,
                 Warnings = scan.Warnings,
                 AuthoritativeFiles = files,
                 Entries = scan.HasConflict ? [] : scan.Entries,
+                Memories = memories,
             };
             if (rejectNewWarnings && snapshot.Warnings.Except(previousSnapshot.Warnings, StringComparer.Ordinal).Any())
             {
-                snapshot = snapshot with { Availability = SharedBaseAvailability.Stale };
+                snapshot = previousSnapshot with { Availability = SharedBaseAvailability.Stale, Warnings = snapshot.Warnings };
                 Publish(snapshot);
                 return new SharedRefreshValidation(false, snapshot);
             }
             Publish(snapshot);
             return new SharedRefreshValidation(!scan.HasConflict, snapshot);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
         {
             var snapshot = new SharedBaseSnapshot { Identity = _identity, Availability = SharedBaseAvailability.Unavailable, Warnings = [exception.GetType().Name] };
             Publish(snapshot);
@@ -389,7 +440,7 @@ public sealed class SharedBaseRuntime : ISharedBaseRuntime, IDisposable
         Volatile.Write(ref _snapshot, snapshot);
     }
 
-    public void Dispose() => _generationGate.Dispose();
+    public void Dispose() { Store.Dispose(); _generationGate.Dispose(); }
 }
 
 internal sealed record DurableScanResult(
@@ -418,6 +469,13 @@ internal static class DurableInventory
             if (relative.StartsWith("memories/", StringComparison.Ordinal) && relative.EndsWith(".meta.json", StringComparison.Ordinal))
             {
                 InspectMemorySidecar(fullPath, relative, entries, warnings);
+                continue;
+            }
+            if (relative.StartsWith("memories/", StringComparison.Ordinal) && relative.EndsWith(".nmp2", StringComparison.Ordinal) &&
+                !File.Exists(fullPath[..^".nmp2".Length] + ".meta.json"))
+            {
+                string logical = "/" + relative["memories/".Length..^".nmp2".Length];
+                AddUnavailable(entries, warnings, logical, relative, "SHARED_ENTRY_CORRUPT");
                 continue;
             }
             if (relative.StartsWith("skills/", StringComparison.Ordinal) && relative.EndsWith(".md", StringComparison.Ordinal))
@@ -486,8 +544,10 @@ internal static class DurableInventory
             {
                 try
                 {
-                    using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(metadata));
-                    version = ReadInt(document.RootElement, "v");
+                    byte[] data = File.ReadAllBytes(metadata);
+                    version = isSkill
+                        ? JsonSerializer.Deserialize(data, FileEntityJsonContext.Default.SkillFileMeta)?.SchemaVersion
+                        : JsonSerializer.Deserialize(data, FileEntityJsonContext.Default.AgentFileMeta)?.SchemaVersion;
                 }
                 catch (JsonException) { /* malformed file-entity metadata is intentionally absent */ }
             }
@@ -513,6 +573,7 @@ internal static class DurableInventory
 
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(ArtifactEntry))]
+[JsonSerializable(typeof(string[]))]
 internal partial class SharedDurableJsonContext : JsonSerializerContext;
 
 public abstract class SharedBaseLease : IDisposable
@@ -535,7 +596,8 @@ public sealed class SharedBaseOperationLease : SharedBaseLease
 
 public sealed class SharedBaseMutationLease : SharedBaseLease
 {
-    internal SharedBaseMutationLease(Action release) : base(release) { }
+    internal SharedBaseMutationLease(Action release, WorkspaceLease admission) : base(release) { Admission = admission; }
+    internal WorkspaceLease Admission { get; }
 }
 
 public sealed class SharedBaseRefreshLease : SharedBaseLease
@@ -567,6 +629,7 @@ public sealed record SharedMutationCommit
     public SharedMutationCertainty Mutation { get; init; }
     public string? Generation { get; init; }
     public IReadOnlyList<string> Manifest { get; init; } = [];
+    internal string? ErrorCode { get; init; }
 }
 
 public sealed record SharedRefreshCommit

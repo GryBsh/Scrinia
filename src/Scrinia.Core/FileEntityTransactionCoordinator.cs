@@ -30,6 +30,13 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
     public async Task<FileEntityMutationResult> TransformAsync(
         FileEntityTarget target,
         Func<FileEntityCurrentState, CancellationToken, ValueTask<FileEntityMutation>> prepare,
+        CancellationToken cancellationToken = default) =>
+        await TransformUnderAdmissionAsync(target, prepare, null, cancellationToken).ConfigureAwait(false);
+
+    internal async Task<FileEntityMutationResult> TransformUnderAdmissionAsync(
+        FileEntityTarget target,
+        Func<FileEntityCurrentState, CancellationToken, ValueTask<FileEntityMutation>> prepare,
+        WorkspaceLease? admittedLease,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -39,7 +46,10 @@ internal sealed class FileEntityTransactionCoordinator : IFileEntityTransactionC
 
         var admission = new WorkspaceAdmission(_workspaceRoot,
             (lease, ct) => Bundles.BundleRestoreCoordinator.RecoverUnderLease(lease, Bundles.BundleReadLimits.Default, ct));
-        using WorkspaceLease workspaceLease = admission.EnterMutation(TimeSpan.FromMinutes(5), cancellationToken);
+        using WorkspaceLease? ownedLease = admittedLease is null
+            ? admission.EnterMutation(TimeSpan.FromMinutes(5), cancellationToken) : null;
+        WorkspaceLease workspaceLease = admittedLease ?? ownedLease!;
+        workspaceLease.AssertValid(_workspaceRoot);
         string entityDirectory = Path.GetDirectoryName(target.BodyPath)!;
         using var fileLock = FileLock.AcquireExclusive(Path.Combine(entityDirectory, ".lock"),
             TimeSpan.FromSeconds(5), cancellationToken);

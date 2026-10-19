@@ -152,14 +152,14 @@ public sealed class TrackingAdmissionTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
         string path = kind == "ordinary" ? "/note" : "/" + kind + "/note";
-        await tools.MemoryRemember(path, ["before"]);
+        await tools.MemoryRemember(path, ["before"], description: "before");
         await tools.MemoryRecall(path);
         var before = Snapshot(scope.WorkspaceDir);
         File.WriteAllText(JournalPath(scope.WorkspaceDir), "complete\n");
         string result = operation switch
         {
             "read" => await tools.MemoryRecall(path),
-            "write" => await tools.MemoryRemember(path, ["blocked"]),
+            "write" => await tools.MemoryRemember(path, ["blocked"], description: "blocked"),
             "append" => await tools.MemoryAppend(path, "blocked"),
             _ => await tools.MemoryForget(path)
         };
@@ -197,7 +197,7 @@ public sealed class TrackingAdmissionTests
         using var scope = new TestHelpers.StoreScope();
         File.WriteAllText(JournalPath(scope.WorkspaceDir), "complete\n");
         var tools = new ScriniaMcpTools();
-        Assert.DoesNotContain("RECOVERY_BLOCKED", await tools.MemoryRemember("/temp/note", ["scratch"]));
+        Assert.DoesNotContain("RECOVERY_BLOCKED", await tools.MemoryRemember("/temp/note", ["scratch"], description: "scratch"));
         Assert.Contains("scratch", await tools.MemoryRecall("/temp/note"));
         Assert.DoesNotContain("RECOVERY_BLOCKED", await tools.MemoryAppend("/temp/note", "more"));
         IMemoryStore store = TestHelpers.Store;

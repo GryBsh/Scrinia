@@ -1,6 +1,6 @@
 # CLI Architecture
 
-The Scrinia CLI (`scri`) is a .NET 10 executable that serves as both a command-line tool and an MCP server. It's published as a trimmed single-file binary.
+The Scrinia CLI (`scri`) is a .NET 10 executable that serves as both a command-line tool and an MCP server. Self-contained release archives use a trimmed host. On Linux and macOS, the archive's build-matched `libSystem.Native.so` or `libSystem.Native.dylib` must remain beside `scri`; filesystem classification depends on this companion in both plain and embeddings archives. The managed NuGet tool uses the installed .NET runtime and has no archive companion asset.
 
 ## Project Layout
 
@@ -101,12 +101,12 @@ options for trimmed publishing. They access the store via `MemoryStoreContext.Cu
 set during workspace initialization. Server instructions are supplied through
 `ScriniaPrimer.McpInstructions`; the registration does not assert a separate server version.
 
-Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
+Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `forget`, `compact`, `link`, `restore`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
 
 ## Shared Server Mode
 
 `scri shared serve` hosts the isolated shared-memory MCP server over the same stdio transport. It
-registers exactly the eleven `shared_*` tools through `WithTools<SharedTools>` and fails before the
+registers exactly the ten `shared_*` tools through `WithTools<SharedTools>` and fails before the
 transport starts when no base is enabled (`NO_SHARED_BASES_ENABLED`). The executable owns only the
 host adapter; every shared abstraction lives in Core and is consumed through Core interfaces.
 
@@ -128,6 +128,19 @@ Local `scri serve` and shared `scri shared serve` are disjoint: the local surfac
 name sets never intersect, and the local store path and registration are byte-for-byte unchanged.
 
 ## Embeddings Integration
+
+Explicit `setup` accepts an adjacent embeddings manifest or `--embeddings-source`, verifies its
+exact version/RID/payload, copies into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/`, and selects name/version in workspace
+configuration through one locked fresh-read mutation. Source files remain unchanged. Later
+configuration/model failures retain the verified installation and provide a source/workspace retry.
+Success confirms installation, configuration, and path selection, not initialization or inference.
+`serve` never installs a release bundle; legacy executable-relative migration is separate.
+
+Setup and discovery share runtime identity: `win-x64`, `linux-x64`, and `osx-arm64`; exactly
+`ubuntu.24.04-x64` additionally resolves to `linux-x64` only with actual Linux/X64 process and
+positive GNU-libc evidence. Windows/Linux use Vulkan, macOS CPU/Metal. Model2Vec/GGUF first-run
+downloads write below `SCRINIA_HOME/models` and require network access.
 
 ### Provider Selection
 

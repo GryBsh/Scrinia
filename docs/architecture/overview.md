@@ -28,7 +28,7 @@ src/
   Scrinia.Plugin.Abstractions/  published plugin contracts
   Scrinia.Plugin.Embeddings/    Vulkan provider and plugin implementation
   Scrinia.Plugin.Embeddings.Cli/standalone embeddings MCP executable
-tests/                            Core, CLI/MCP, plugin, merge, and benchmark suites
+tests/                            Core, CLI/MCP, plugin, and benchmark suites
 ```
 
 ## Dependency boundaries
@@ -62,10 +62,10 @@ so that every shared abstraction lives in Core and the executable owns only host
   `scri shared serve` resolves the Core services and owns command/transport startup; the local
   `ScriniaMcpTools` registration and local store path remain unchanged.
 
-`scri shared serve` starts only with at least one enabled base and exposes exactly eleven prefixed
+`scri shared serve` starts only with at least one enabled base and exposes exactly ten prefixed
 tools: `shared_bases`, `shared_search`, `shared_list`, `shared_recall`, `shared_facts`,
-`shared_remember`, `shared_append`, `shared_forget`, `shared_compact`, `shared_link`, and
-`shared_refresh`. Local `scri serve` remains unchanged and disjoint — the two surfaces register
+`shared_remember`, `shared_forget`, `shared_compact`, `shared_link`, and
+`shared_refresh`. Local `scri serve` exposes ten workspace tools — the two surfaces register
 disjoint tool sets, and no scalar base name appears before canonical-name syntax and enabled-membership
 validation. The shared surface is prompt-isolated and process-free: no shared input carries a prompt,
 correlation, or session field, and no shared handler launches a process (Git guidance is print-only).
@@ -78,7 +78,14 @@ is the exit gate that Phase 4 reads.
 The CLI reads and writes a local `.scrinia/` workspace. Built-in semantic search uses Model2Vec or
 one of the Core HTTP providers in-process. The optional Vulkan plugin keeps native GPU/model
 dependencies in a child process and communicates through MCP stdio. Workspace sharing is handled by
-Git-backed workspaces use ordinary source-control workflows; Scrinia does not install or run a merge driver.
+ordinary source-control workflows; Scrinia does not install or run a merge driver.
+
+Explicit `setup` verifies and copies an embeddings release bundle into
+`SCRINIA_HOME/plugins/scri-plugin-embeddings/0.6.0/<rid>/` and selects its workspace configuration.
+Extracted source files remain unchanged; installation survives later configuration/model failures.
+`serve` never installs a bundle. Success proves installation/configuration/path selection, not
+native loading or inference. Windows/Linux use Vulkan; macOS uses CPU/Metal. First-run Model2Vec
+and GGUF downloads use the network and write below `SCRINIA_HOME/models`.
 
 ## Core abstractions
 

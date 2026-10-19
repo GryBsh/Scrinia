@@ -22,7 +22,7 @@ public class SkillPathAuthorityTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["review the API"]);
+        await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["review the API"], description: "review the API");
 
         string expected = Path.Combine(
             PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot), "api-reviewer.md");
@@ -37,7 +37,7 @@ public class SkillPathAuthorityTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.Store;
 
-        await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["review the API"]);
+        await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["review the API"], description: "review the API");
 
         string memories = store.GetStoreDirForScope("local");
         Directory.Exists(Path.Combine(memories, "skill")).Should().BeFalse(

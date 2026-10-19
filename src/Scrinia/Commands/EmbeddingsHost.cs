@@ -431,7 +431,7 @@ internal static class EmbeddingsHost
         && !segment.Contains(Path.AltDirectorySeparatorChar)
         && segment != "..";
 
-    private static string CurrentRid() => RuntimeInformation.RuntimeIdentifier;
+    private static string CurrentRid() => EmbeddingsRuntimeIdentity.CurrentRid;
 
     /// <summary>
     /// Selects the version directory to use: the configured version when it is installed, otherwise the

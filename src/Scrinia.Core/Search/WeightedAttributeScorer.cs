@@ -204,6 +204,9 @@ internal sealed class WeightedAttributeScorer
             return bDate.CompareTo(aDate);
         });
 
+        for (int i = 0; i < final.Length; i++)
+            final[i] = final[i] with { ContextPreview = ChunkSearchContext.Create(final[i], queryTerms) };
+
         return final;
     }
 

@@ -53,6 +53,24 @@ public async Task AppendAsync_CreateFailureRemovesOnlyItsPartialMembers(int faul
         (await File.ReadAllBytesAsync(sidecarPath)).Should().Equal(originalSidecar);
     }
 
+    [Fact]
+    public async Task Multi_chunk_append_failure_restores_the_complete_prior_memory()
+    {
+        using var workspace = new TempWorkspace();
+        var address = MemoryAddress.Parse("/batch");
+        await workspace.Store.StoreAsync(MemoryWrite.Create(address, "local", ["original"]));
+        byte[] artifact = await File.ReadAllBytesAsync(workspace.Store.ArtifactPath("batch"));
+        byte[] sidecar = await File.ReadAllBytesAsync(workspace.Store.MetaPath("batch"));
+        workspace.Store.FailPersistentlyAt(AppendFaultPoint.LiveSidecarWrite);
+
+        await FluentActions.Invoking(() => workspace.Store.AppendAsync(
+                MemoryWrite.Create(address, "local", ["first new chunk", "second new chunk"])))
+            .Should().ThrowAsync<Exception>();
+
+        (await File.ReadAllBytesAsync(workspace.Store.ArtifactPath("batch"))).Should().Equal(artifact);
+        (await File.ReadAllBytesAsync(workspace.Store.MetaPath("batch"))).Should().Equal(sidecar);
+    }
+
     private sealed class TempWorkspace : IDisposable
     {
         public TempWorkspace()

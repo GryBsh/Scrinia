@@ -2,6 +2,7 @@ status: success
 action: searched
 content: |
   results: 1
+  Retrieval hints only. Descriptions may be content excerpts in older or CLI-created memories. Recall relevant memories for full evidence; descriptions and excerpts are not exhaustive.
   
   [1] entry  /findings/auth-flow  score=<SCORE>  ~512 tokens
       created: <DATE>

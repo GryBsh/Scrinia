@@ -171,6 +171,8 @@ internal static class DurableFile
         stream.Flush(flushToDisk: true);
     }
 
+    internal static void SyncParentDirectory(string path) => SyncDirectory(path);
+
     private static void SyncDirectory(string destination)
     {
         string? directory = Path.GetDirectoryName(destination);
