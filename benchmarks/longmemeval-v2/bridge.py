@@ -1,7 +1,7 @@
 """Strict protocol and lifetime boundary for one owned V2 worker process."""
 import json
 import os
-from pathlib import Path
+from filesystem import Path, io_path, canonical_path, canonical_paths
 import signal
 import stat
 import subprocess
@@ -9,7 +9,7 @@ import time
 import uuid
 from jsonschema import Draft202012Validator
 
-_SCHEMA = json.loads(Path(__file__).with_name("protocol.schema.json").read_text())
+_SCHEMA = json.loads(io_path(Path(__file__).with_name("protocol.schema.json")).read_text())
 _REQUEST = Draft202012Validator(_SCHEMA)
 _RESULT = Draft202012Validator({"$ref": "#/$defs/result", "$defs": _SCHEMA["$defs"]})
 
@@ -25,20 +25,20 @@ def _json_object(pairs):
     return result
 
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_json_object)
+    return json.loads(io_path(Path(path)).read_text(encoding="utf-8"), object_pairs_hook=_json_object)
 
 def _absolute(value):
-    path = Path(value)
+    path = canonical_path(value)
     if not path.is_absolute():
         raise BridgeError("INVALID_PATH")
     for entry in (path, *path.parents):
         try:
-            attributes = entry.lstat()
+            attributes = io_path(entry).lstat()
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(attributes.st_mode) or getattr(attributes, "st_file_attributes", 0) & 0x400:
             raise BridgeError("INVALID_PATH")
-    return path.resolve()
+    return canonical_path(io_path(path).resolve())
 
 def _inside(root, path):
     if not path.is_relative_to(root):
@@ -216,10 +216,10 @@ class WorkerBridge:
         if cancel_event.is_set():
             raise BridgeError("CANCELLED")
         directory = self.operation_root / uuid.uuid4().hex
-        directory.mkdir(parents=True)
+        io_path(directory).mkdir(parents=True)
         request_path = directory / "request.json"
         result_path = directory / "result.json"
-        request_path.write_text(json.dumps(request, allow_nan=False), encoding="utf-8")
+        io_path(request_path).write_text(json.dumps(request, allow_nan=False), encoding="utf-8")
         process = None
         owned = None
         try:
@@ -260,7 +260,7 @@ class WorkerBridge:
             if process.returncode != 0:
                 raise BridgeError("WORKER_EXIT_FAILED")
             _absolute(str(result_path))
-            if not result_path.is_file() or result_path.stat().st_size > 16 * 1024 * 1024:
+            if not io_path(result_path).is_file() or io_path(result_path).stat().st_size > 16 * 1024 * 1024:
                 raise BridgeError("MISSING_OR_OVERSIZE_RESULT")
             try:
                 result = read_json(result_path)
@@ -270,7 +270,7 @@ class WorkerBridge:
             return result
         except BaseException as exc:
             code = str(exc) if isinstance(exc, BridgeError) else "BRIDGE_FAILED"
-            (directory / "failure.json").write_text(json.dumps({"code": code}), encoding="utf-8")
+            (io_path(directory / "failure.json")).write_text(json.dumps({"code": code}), encoding="utf-8")
             raise
         finally:
             if process is not None:

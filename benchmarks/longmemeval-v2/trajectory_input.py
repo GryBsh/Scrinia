@@ -1,7 +1,7 @@
 """Pinned upstream normalization plus complete source provenance (no model calls)."""
 import hashlib
 import json
-from pathlib import Path
+from filesystem import Path, io_path, canonical_path, canonical_paths
 from urllib.parse import urlsplit
 from bridge import _absolute
 
@@ -15,14 +15,14 @@ def digest(data):
 
 def image_reference(path):
     path = _absolute(str(path))
-    data = path.read_bytes()
+    data = io_path(path).read_bytes()
     if data.startswith(b"\x89PNG\r\n\x1a\n"): media = "image/png"
     elif data.startswith(b"\xff\xd8\xff"): media = "image/jpeg"
     elif data.startswith(b"RIFF") and data[8:12] == b"WEBP": media = "image/webp"
     else: raise ValueError("Unsupported source image.")
     # Decode now: a matching magic header alone is not a usable image.
     from PIL import Image
-    with Image.open(path) as image: image.verify()
+    with Image.open(io_path(path)) as image: image.verify()
     return {"path":str(path), "sha256":digest(data), "mediaType":media, "byteLength":len(data)}
 
 def normalize_trajectory(trajectory: dict, asset_root: Path) -> dict:

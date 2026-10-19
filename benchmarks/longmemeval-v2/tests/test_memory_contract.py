@@ -79,13 +79,13 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(ref["byteLength"], image.stat().st_size)
         self.assertTrue(Path(ref["path"]).is_relative_to(Path(memory.paths["root"])))
         self.assertEqual(len(ref["sha256"]), 64)
-    def test_unimplemented_learning_and_snapshot_hooks_fail_explicitly(self):
+    def test_incomplete_learning_and_missing_snapshot_fail_explicitly(self):
         memory = self.memory()
         with self.assertRaises(ValueError):
             memory.insert({"id": "synthetic"})
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises((ValueError, BridgeError, FileNotFoundError)):
             memory._save_backend(self.root / "save")
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises((ValueError, BridgeError, FileNotFoundError)):
             memory._load_backend(self.root / "save")
     def test_shared_fixture_is_valid_python_protocol(self):
         fixture = json.loads((Path(__file__).parent / "fixtures/protocol-retrieve.json").read_text())

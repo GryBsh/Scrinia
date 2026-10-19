@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
+from filesystem import Path, io_path, canonical_path, canonical_paths
 import shutil
 import uuid
 from bridge import BridgeError, _absolute, read_json
@@ -12,13 +12,13 @@ from bridge import BridgeError, _absolute, read_json
 def file_entries(root):
     root = _absolute(str(root))
     entries = []
-    for path in sorted(root.rglob("*"), key=lambda p:p.relative_to(root).as_posix()):
+    for path in sorted(canonical_paths(io_path(root).rglob("*")), key=lambda p:p.relative_to(root).as_posix()):
         _absolute(str(path))
-        if path.is_file() and path.relative_to(root).as_posix() != ".generation.json":
+        if io_path(path).is_file() and path.relative_to(root).as_posix() != ".generation.json":
             relative = path.relative_to(root).as_posix()
             if "\n" in relative or "\r" in relative: raise BridgeError("INVALID_PATH")
-            entries.append((relative, hashlib.sha256(path.read_bytes()).hexdigest()))
-        elif not path.is_dir() and not path.is_file():
+            entries.append((relative, hashlib.sha256(io_path(path).read_bytes()).hexdigest()))
+        elif not io_path(path).is_dir() and not io_path(path).is_file():
             raise BridgeError("INVALID_PATH")
     return entries
 
@@ -27,26 +27,26 @@ def fingerprint(root):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 def atomic_json(path, value):
-    path = _absolute(str(path)); path.parent.mkdir(parents=True,exist_ok=True)
+    path = _absolute(str(path)); io_path(path.parent).mkdir(parents=True,exist_ok=True)
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
-        with temp.open("x",encoding="utf-8",newline="\n") as stream:
+        with io_path(temp).open("x",encoding="utf-8",newline="\n") as stream:
             json.dump(value, stream, sort_keys=True, ensure_ascii=True, separators=(",",":"))
             stream.flush(); os.fsync(stream.fileno())
-        os.replace(temp,path)
+        os.replace(io_path(temp),io_path(path))
     finally:
-        if temp.exists(): temp.unlink()
+        if io_path(temp).exists(): io_path(temp).unlink()
 
 class SnapshotStore:
     def __init__(self,root,request_factory,*,fault=None):
-        self.root = _absolute(str(root)); self.root.mkdir(parents=True,exist_ok=True)
+        self.root = _absolute(str(root)); io_path(self.root).mkdir(parents=True,exist_ok=True)
         self.request_factory = request_factory
         self.fault = fault or (lambda point:None)
     @contextmanager
     def _lock(self):
         path=self.root/"snapshot.lock"
         _absolute(str(path))
-        with path.open("a+b") as stream:
+        with io_path(path).open("a+b") as stream:
             stream.seek(0); stream.write(b"\0"); stream.flush(); stream.seek(0)
             if os.name=="nt":
                 import msvcrt
@@ -61,7 +61,7 @@ class SnapshotStore:
                 else: fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
     def current(self):
         pointer=self.root/"current.json"; _absolute(str(pointer))
-        if not pointer.exists(): return None
+        if not io_path(pointer).exists(): return None
         value=read_json(pointer)
         if set(value)!={"generation","fingerprint","metadataHash"} or not isinstance(value["generation"],str) or len(value["generation"])!=32 or any(c not in "0123456789abcdef" for c in value["generation"]):
             raise BridgeError("INVALID_SNAPSHOT")
@@ -69,7 +69,7 @@ class SnapshotStore:
         _absolute(str(generation))
         metadata_path=generation/".generation.json"
         _absolute(str(metadata_path))
-        if hashlib.sha256(metadata_path.read_bytes()).hexdigest()!=value["metadataHash"]:
+        if hashlib.sha256(io_path(metadata_path).read_bytes()).hexdigest()!=value["metadataHash"]:
             raise BridgeError("INVALID_SNAPSHOT")
         meta=read_json(metadata_path)
         if (meta["fingerprint"]!=value["fingerprint"] or fingerprint(generation)!=value["fingerprint"]
@@ -97,26 +97,26 @@ class SnapshotStore:
             return entry["receipt"]
         uncertain=self.root/"uncertain"/(hashlib.sha256(ident.encode()).hexdigest()+".json")
         _absolute(str(uncertain))
-        if uncertain.exists(): raise BridgeError("INSERTION_UNCERTAIN")
+        if io_path(uncertain).exists(): raise BridgeError("INSERTION_UNCERTAIN")
         generation=uuid.uuid4().hex
         stage=self.root/"generations"/generation
-        _absolute(str(stage)); stage.parent.mkdir(parents=True,exist_ok=True)
+        _absolute(str(stage)); io_path(stage.parent).mkdir(parents=True,exist_ok=True)
         if previous is None:
-            (stage/"workspace").mkdir(parents=True); (stage/"home").mkdir()
+            (io_path(stage/"workspace")).mkdir(parents=True); (io_path(stage/"home")).mkdir()
         else:
             # Verify before copying; no link-following is accepted.
             file_entries(self.generation_path)
-            shutil.copytree(self.generation_path,stage)
-            (stage/".generation.json").unlink()
+            shutil.copytree(io_path(self.generation_path),io_path(stage))
+            (io_path(stage/".generation.json")).unlink()
         value=copy.deepcopy(trajectory_manifest)
         fragments=value.pop("fragments"); batches=value.pop("batches")
         for state in value["states"]:
             image=state["screenshot"]; source=_absolute(image["path"])
             suffix={"image/png":".png","image/jpeg":".jpg","image/webp":".webp"}[image["mediaType"]]
             target=stage/"sources"/(image["sha256"]+suffix)
-            target.parent.mkdir(parents=True,exist_ok=True)
-            if hashlib.sha256(source.read_bytes()).hexdigest()!=image["sha256"]: raise BridgeError("SOURCE_CHANGED")
-            if not target.exists(): shutil.copyfile(source,target)
+            io_path(target.parent).mkdir(parents=True,exist_ok=True)
+            if hashlib.sha256(io_path(source).read_bytes()).hexdigest()!=image["sha256"]: raise BridgeError("SOURCE_CHANGED")
+            if not io_path(target).exists(): shutil.copyfile(io_path(source),io_path(target))
             image["path"]=str(target)
         # Batches refer to owned copies, never caller paths.
         images={s["screenshot"]["sha256"]:s["screenshot"] for s in value["states"]}
@@ -145,9 +145,9 @@ class SnapshotStore:
             self.fault("before-publication")
             if cancel.is_set(): raise BridgeError("CANCELLED")
             atomic_json(self.root/"current.json",{"generation":generation,"fingerprint":actual,
-                "metadataHash":hashlib.sha256((stage/".generation.json").read_bytes()).hexdigest()})
+                "metadataHash":hashlib.sha256((io_path(stage/".generation.json")).read_bytes()).hexdigest()})
             self.fault("after-publication")
-            uncertain.unlink()
+            io_path(uncertain).unlink()
             return receipt
         except BaseException:
             # Preserve intent and staged state for diagnosis. current.json remains authoritative.

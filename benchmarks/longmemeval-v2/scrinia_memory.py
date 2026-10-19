@@ -3,7 +3,7 @@ import hashlib
 import json
 import shutil
 import time
-from pathlib import Path
+from filesystem import Path, io_path, canonical_path, canonical_paths
 import threading
 import uuid
 from urllib.parse import urlparse
@@ -25,7 +25,7 @@ class ScriniaMemory(Memory):
     memory_type = "scrinia"
 
     def __init__(self, memory_params: dict[str, object]) -> None:
-        allowed = {"run_root", "worker_command", "controller", "trajectories_root_dir", "learning"}
+        allowed = {"run_root", "worker_command", "controller", "trajectories_root_dir", "learning", "method_identity"}
         if not isinstance(memory_params, dict) or set(memory_params) - allowed:
             raise ValueError("Unsupported Scrinia memory parameter.")
         root_value = memory_params.get("run_root")
@@ -53,12 +53,21 @@ class ScriniaMemory(Memory):
         validation["paths"]={**validation["paths"],"workspace":str(Path(self.snapshot_path)/"workspace"),"home":str(Path(self.snapshot_path)/"home")}
         validate_request(validation)
         super().__init__(memory_params)
+        if "method_identity" in memory_params:
+            from portability import method_identity
+            if memory_params["method_identity"] != method_identity(memory_params):
+                raise BridgeError("METHOD_IDENTITY_MISMATCH")
         for name in ("workspace", "home"):
-            Path(self.paths[name]).mkdir(parents=True, exist_ok=False)
+            io_path(Path(self.paths[name])).mkdir(parents=True, exist_ok=False)
         self.bridge = WorkerBridge(command, instance_root / "operations")
         self.cancel_event = threading.Event()
         from snapshots import SnapshotStore
         self.snapshots = SnapshotStore(instance_root / "snapshots", self._learning_request)
+
+    @classmethod
+    def reconcile_loaded_memory_config(cls, saved_config, requested_config):
+        from portability import reconcile
+        return reconcile(saved_config, requested_config)
 
     def configure_runtime(self, **kwargs: object) -> None:
         # The official harness passes reader sampling/trace hints to every backend.
@@ -95,9 +104,9 @@ class ScriniaMemory(Memory):
         executable = _absolute(settings["mcp_executable"])
         assets = _absolute(settings["processor_assets"])
         descriptor = _absolute(settings["tool_catalog_path"])
-        if not executable.is_file() or not descriptor.is_file() or not assets.is_dir():
+        if not io_path(executable).is_file() or not io_path(descriptor).is_file() or not io_path(assets).is_dir():
             raise ValueError("Learning runtime assets are missing.")
-        tools = json.loads(descriptor.read_text(encoding="utf-8"))
+        tools = json.loads(io_path(descriptor).read_text(encoding="utf-8"))
         if not isinstance(tools, list) or {t.get("name") for t in tools}.issuperset({"remember","recall","search","list"}) is False:
             raise ValueError("Learning catalog must contain the required tools.")
         if (not isinstance(settings["mcp_prefix_arguments"], list)
@@ -114,9 +123,12 @@ class ScriniaMemory(Memory):
         counter = ProcessorCounter(assets)
         planned = BatchPlanner(counter,tools,output_tokens=self.configuration["maxOutputTokens"],
             served_context=settings["served_context_tokens"]).prepare(normalized)
-        configuration_hash = digest(canonical({"controller":self.configuration,
-            "learning":self._learning_configuration,
-            "executableHash":digest(executable.read_bytes())}).encode("utf-8"))
+        from portability import method_identity, identity_hash
+        identity = method_identity(self.memory_params)
+        if self.memory_params.get("method_identity", identity) != identity:
+            raise BridgeError("METHOD_IDENTITY_MISMATCH")
+        self.memory_params["method_identity"] = identity
+        configuration_hash = identity_hash(identity)
         self.snapshots.insert(planned,configuration_hash,self.bridge,self.cancel_event)
         self.snapshot_path = str(self.snapshots.generation_path)
 
@@ -125,9 +137,9 @@ class ScriniaMemory(Memory):
                 "http", "https", "data", "file", "ftp"):
             raise ValueError("Question images must be local files.")
         source = _absolute(str(Path(value).absolute()))
-        if not source.is_file():
+        if not io_path(source).is_file():
             raise ValueError("Question image file is missing.")
-        data = source.read_bytes()
+        data = io_path(source).read_bytes()
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
             media, suffix = "image/png", ".png"
         elif data.startswith(b"\xff\xd8\xff"):
@@ -139,12 +151,12 @@ class ScriniaMemory(Memory):
         digest = hashlib.sha256(data).hexdigest()
         target = (Path(self.paths["root"]) if target_root is None else target_root) / "images" / (digest + suffix)
         _absolute(str(target))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            if target.read_bytes() != data:
+        io_path(target.parent).mkdir(parents=True, exist_ok=True)
+        if io_path(target).exists():
+            if io_path(target).read_bytes() != data:
                 raise BridgeError("IMAGE_HASH_MISMATCH")
         else:
-            with target.open("xb") as stream:
+            with io_path(target).open("xb") as stream:
                 stream.write(data)
         return {"path": str(target), "sha256": digest, "mediaType": media, "byteLength": len(data)}
 
@@ -156,14 +168,14 @@ class ScriniaMemory(Memory):
         executable=_absolute(settings["mcp_executable"])
         descriptor=_absolute(settings["tool_catalog_path"])
         arguments=settings["mcp_prefix_arguments"]
-        if not executable.is_file() or not descriptor.is_file() or not isinstance(arguments,list) or not all(isinstance(a,str) for a in arguments):
+        if not io_path(executable).is_file() or not io_path(descriptor).is_file() or not isinstance(arguments,list) or not all(isinstance(a,str) for a in arguments):
             raise ValueError("Retrieval runtime assets are invalid.")
-        tools=json.loads(descriptor.read_text(encoding="utf-8"))
+        tools=json.loads(io_path(descriptor).read_text(encoding="utf-8"))
         if not isinstance(tools,list) or not {"search","list","recall"}.issubset(t.get("name") for t in tools):
             raise ValueError("Retrieval catalog lacks required read tools.")
         instructions=Path(__file__).parents[1]/"Scrinia.LongMemEvalV2.Worker"/"Retrieval"/"retrieval-instructions.txt"
         return {"executable":str(executable),"prefixArguments":arguments,"catalogHash":catalog_hash(tools),
-                "instructionsHash":hashlib.sha256(instructions.read_bytes()).hexdigest()}
+                "instructionsHash":hashlib.sha256(io_path(instructions).read_bytes()).hexdigest()}
 
     def query(self, query: str, query_image: str | None = None) -> list[dict[str, str]]:
         from snapshots import fingerprint, file_entries
@@ -175,23 +187,31 @@ class ScriniaMemory(Memory):
         cancel=QueryCancellation()
         if cancel.is_set():raise BridgeError("CANCELLED")
         if not isinstance(query,str) or not query:raise ValueError("Question must be non-empty text.")
+        if "method_identity" in self.memory_params:
+            from portability import method_identity, identity_hash
+            identity=method_identity(self.memory_params)
+            if identity!=self.memory_params["method_identity"]:
+                raise BridgeError("METHOD_IDENTITY_MISMATCH")
+            committed=self.snapshots.current()
+            if committed is not None and committed["configurationHash"]!=identity_hash(identity):
+                raise BridgeError("METHOD_IDENTITY_MISMATCH")
         runtime=self._retrieval_configuration()
         source=_absolute(self.snapshot_path)
-        if not source.is_dir():raise BridgeError("SNAPSHOT_MISSING")
-        if (self.snapshots.root/"current.json").exists():
+        if not io_path(source).is_dir():raise BridgeError("SNAPSHOT_MISSING")
+        if (io_path(self.snapshots.root/"current.json")).exists():
             self.snapshots.current()
             if source!=self.snapshots.generation_path:raise BridgeError("SNAPSHOT_POINTER_MISMATCH")
         before=fingerprint(source)
         metadata=source/".generation.json"
-        metadata_before=hashlib.sha256(metadata.read_bytes()).hexdigest() if metadata.exists() else None
+        metadata_before=hashlib.sha256(io_path(metadata).read_bytes()).hexdigest() if io_path(metadata).exists() else None
         operation=Path(self.paths["root"])/"queries"/uuid.uuid4().hex
         payload=operation/"snapshot"
-        _absolute(str(payload));operation.mkdir(parents=True)
+        _absolute(str(payload));io_path(operation).mkdir(parents=True)
         copied=False
         try:
             # Preflight every path before copytree; reject links rather than following them.
             file_entries(source)
-            shutil.copytree(source,payload);copied=True
+            shutil.copytree(io_path(source),io_path(payload));copied=True
             if fingerprint(payload)!=before:raise BridgeError("QUERY_COPY_CHANGED")
             image=None if query_image is None else self._own_image(query_image,operation)
             request=self._request("retrieve",snapshotPath=str(payload),expectedFingerprint=before,
@@ -203,8 +223,8 @@ class ScriniaMemory(Memory):
             # Only original catalog images may cross the reader boundary, even if a
             # compromised worker reports another owned path.
             originals={}
-            for catalog in (payload/"catalogs").glob("*.json"):
-                for state in json.loads(catalog.read_text(encoding="utf-8"))["trajectory"]["states"]:
+            for catalog in canonical_paths((io_path(payload/"catalogs")).glob("*.json")):
+                for state in json.loads(io_path(catalog).read_text(encoding="utf-8"))["trajectory"]["states"]:
                     image_ref=state["screenshot"]
                     path=_absolute(str(payload/image_ref["path"]))
                     if not path.is_relative_to(payload):raise BridgeError("INVALID_EVIDENCE_IMAGE")
@@ -215,21 +235,22 @@ class ScriniaMemory(Memory):
                     path=_absolute(item["value"])
                     ref=originals.get(path)
                     if ref is None:raise BridgeError("INVALID_EVIDENCE_IMAGE")
-                    data=path.read_bytes()
+                    data=io_path(path).read_bytes()
                     if len(data)!=ref["byteLength"] or hashlib.sha256(data).hexdigest()!=ref["sha256"]:
                         raise BridgeError("EVIDENCE_IMAGE_CHANGED")
                     target=operation/"evidence"/(ref["sha256"]+path.suffix)
-                    target.parent.mkdir(exist_ok=True)
-                    target.write_bytes(data)
-                    evidence.append({"type":"image","value":str(target)})
+                    io_path(target.parent).mkdir(exist_ok=True)
+                    io_path(target).write_bytes(data)
+                    from filesystem import io_name
+                    evidence.append({"type":"image","value":io_name(target)})
                 else:evidence.append(dict(item))
             return evidence
         finally:
             try:
-                metadata_after=hashlib.sha256(metadata.read_bytes()).hexdigest() if metadata.exists() else None
+                metadata_after=hashlib.sha256(io_path(metadata).read_bytes()).hexdigest() if io_path(metadata).exists() else None
                 if fingerprint(source)!=before or metadata_after!=metadata_before:raise BridgeError("AUTHORITATIVE_SNAPSHOT_CHANGED")
                 copied_metadata=payload/".generation.json"
-                if copied and (hashlib.sha256(copied_metadata.read_bytes()).hexdigest() if copied_metadata.exists() else None)!=metadata_before:
+                if copied and (hashlib.sha256(io_path(copied_metadata).read_bytes()).hexdigest() if io_path(copied_metadata).exists() else None)!=metadata_before:
                     raise BridgeError("QUERY_COPY_CHANGED")
                 if copied and fingerprint(payload)!=before:raise BridgeError("QUERY_COPY_CHANGED")
             finally:
@@ -237,11 +258,13 @@ class ScriniaMemory(Memory):
                 checked=_absolute(str(payload))
                 if not checked.is_relative_to(operation) or not operation.is_relative_to(Path(self.paths["root"])):
                     raise BridgeError("INVALID_PATH")
-                if payload.exists():shutil.rmtree(payload)
+                if io_path(payload).exists():shutil.rmtree(io_path(payload))
                 if cancel.is_set():raise BridgeError("CANCELLED")
 
     def _save_backend(self, output_dir: Path) -> None:
-        raise NotImplementedError("V2 snapshot persistence is not implemented yet.")
+        from portability import save_snapshot
+        save_snapshot(self, output_dir)
 
     def _load_backend(self, input_dir: Path) -> None:
-        raise NotImplementedError("V2 snapshot restoration is not implemented yet.")
+        from portability import load_snapshot
+        load_snapshot(self, input_dir)

@@ -2,14 +2,14 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+from filesystem import Path, io_path, canonical_path, canonical_paths
 from trajectory_input import canonical, digest, PROCESSOR_REVISION
 
 ALLOWED_TOOLS = {"remember", "recall", "search", "list"}
-INSTRUCTIONS = Path(__file__).resolve().parents[1] / "Scrinia.LongMemEvalV2.Worker/Learning/learning-instructions.txt"
+INSTRUCTIONS = canonical_path(io_path(Path(__file__)).resolve()).parents[1] / "Scrinia.LongMemEvalV2.Worker/Learning/learning-instructions.txt"
 
 def instruction_text():
-    return INSTRUCTIONS.read_text(encoding="utf-8").strip()
+    return io_path(INSTRUCTIONS).read_text(encoding="utf-8").strip()
 
 def catalog_hash(tools):
     # Match ToolCatalog's default Utf8JsonWriter escaping, including HTML-sensitive ASCII.
@@ -37,10 +37,10 @@ class ProcessorCounter:
     def __init__(self, assets):
         from transformers import AutoProcessor
         self.assets = Path(assets)
-        lock = json.loads(Path(__file__).with_name("upstream.lock.json").read_text(encoding="utf-8"))
+        lock = json.loads(io_path(Path(__file__).with_name("upstream.lock.json")).read_text(encoding="utf-8"))
         if lock["modelProcessorRevision"] != self.revision: raise ValueError("Processor revision is not pinned.")
         for name, expected in lock["processorFiles"].items():
-            if digest((self.assets/name).read_bytes()) != expected: raise ValueError("Processor assets changed.")
+            if digest((io_path(self.assets/name)).read_bytes()) != expected: raise ValueError("Processor assets changed.")
         self.processor = AutoProcessor.from_pretrained(str(self.assets), local_files_only=True)
     def text_tokens(self,text):
         return len(self.processor.tokenizer.encode(text,add_special_tokens=False))
@@ -53,8 +53,8 @@ class ProcessorCounter:
         opened=[]
         try:
             for image in images:
-                if digest(Path(image["path"]).read_bytes()) != image["sha256"]: raise ValueError("Image changed.")
-                with Image.open(image["path"]) as source: opened.append(source.convert("RGB"))
+                if digest(io_path(Path(image["path"])).read_bytes()) != image["sha256"]: raise ValueError("Image changed.")
+                with Image.open(io_path(image["path"])) as source: opened.append(source.convert("RGB"))
             result=self.processor(text=[serialized],images=opened or None,return_tensors="pt")
             return int(result["input_ids"].shape[-1])
         finally:
