@@ -58,7 +58,7 @@ public sealed class TrajectoryLearner(Func<ModelSettings,IChatClient>? createCli
                     configuration.ApiKeyEnvironmentVariable,(float)configuration.Temperature,configuration.MaxOutputTokens,
                     (float)configuration.TopP,configuration.TopK);
                 var episode = new RuntimeAgentEpisode(m => new LearningBudgetClient(
-                    (createClient ?? ModelClientFactory.Create)(m), batch,request.Learning));
+                    (createClient ?? ModelClientFactory.Create)(m), batch,request.Learning), expectedModelId:configuration.Model);
                 var result = await episode.RunAsync(new RuntimeEpisodeRequest("learn",LearningInstructions.Text,
                     [new ChatMessage(ChatRole.User,content)],LearningInstructions.AllowedTools,
                     EnableResponseRecovery:true,EnableThinking:configuration.Thinking,
@@ -158,6 +158,8 @@ public sealed class TrajectoryLearner(Func<ModelSettings,IChatClient>? createCli
 internal sealed class LearningEvents : IRunEvents
 {
     private readonly StreamWriter _writer;
+    private readonly SemaphoreSlim _gate = new(1,1);
+    private bool _disposed;
     public LearningEvents(string path)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -170,7 +172,28 @@ internal sealed class LearningEvents : IRunEvents
             writer.WriteStartObject();writer.WriteString("phase",phase);writer.WriteString("kind",kind);
             writer.WritePropertyName("data");data.WriteTo(writer);writer.WriteEndObject();
         }
-        await _writer.WriteLineAsync(Encoding.UTF8.GetString(buffer.ToArray()).AsMemory(),ct); await _writer.FlushAsync(ct);
+        await _gate.WaitAsync(ct);
+        try {
+            ObjectDisposedException.ThrowIf(_disposed,this);
+            ct.ThrowIfCancellationRequested();
+            // Once accepted, finish the whole JSON line even if cancellation arrives.
+            // Cancellation is propagated after flush, never as a partial record.
+            await _writer.WriteLineAsync(Encoding.UTF8.GetString(buffer.ToArray()).AsMemory(),CancellationToken.None);
+            await _writer.FlushAsync(CancellationToken.None);
+            ct.ThrowIfCancellationRequested();
+        }
+        finally { _gate.Release(); }
     }
-    public ValueTask DisposeAsync() => _writer.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _gate.WaitAsync();
+        try {
+            if (_disposed) return;
+            _disposed = true;
+            await _writer.DisposeAsync();
+        }
+        finally { _gate.Release(); }
+        // Retain the managed gate so queued/later writers can observe disposal
+        // under the same gate instead of racing SemaphoreSlim.Dispose.
+    }
 }

@@ -158,7 +158,7 @@ public sealed class LearningIntegrationTests
     {
         public string Root {get;} = Path.Combine(Path.GetTempPath(),"scrinia-v2-"+Guid.NewGuid().ToString("N"));
         public void Dispose() {if (Directory.Exists(Root)) Directory.Delete(Root,true);}
-        public async Task<LearnRequest> RequestAsync(bool twoBatches=false)
+        public async Task<LearnRequest> RequestAsync(bool twoBatches=false, bool longData=false)
         {
             var stage=Path.Combine(Root,"generations",Guid.NewGuid().ToString("N"));
             var workspace=Path.Combine(stage,"workspace");var home=Path.Combine(stage,"home");
@@ -168,14 +168,16 @@ public sealed class LearningIntegrationTests
             var imagePath=Path.Combine(stage,"sources","synthetic.png"); File.WriteAllBytes(imagePath,bytes);
             var image=new ImageReference {Path=imagePath,Sha256=SourceCatalog.Hash(bytes),MediaType="image/png",ByteLength=bytes.Length};
             var hash=new string('d',64);var text="2026-03-04 caf\u00e9 \U0001f600";
+            if (longData) text = string.Concat(Enumerable.Repeat(" original source.",600));
             string[] parts=twoBatches ? ["2026-03-04 ","caf\u00e9 \U0001f600"] : [text];
             int offset=0;
             var fragments=parts.Select((part,index)=> {
                 int start=offset;offset+=Encoding.UTF8.GetByteCount(part);
                 return new SourceFragment {SourceId=SourceCatalog.SourceId(hash,0,index),StateIndex=0,FragmentIndex=index,StartByte=start,EndByte=offset,Text=part,TextHash=SourceCatalog.Hash(Encoding.UTF8.GetBytes(part))};
             }).ToArray();
-            var state=new TrajectoryState {StateIndex=0,Step=7,Url="https://synthetic.invalid",Action="click",Thoughts="source thoughts",Text=text,Screenshot=image};
-            var trajectory=new TrajectoryManifest {Id="synthetic",Goal="goal",Outcome=null,StartUrl=state.Url,Actions=["click"],SourceHash=hash,States=[state],OriginalJson="{\"date\":\"2026-03-04\"}"};
+            var metadata = longData ? string.Concat(Enumerable.Repeat("😀\"\\\r\n",2000)) : "";
+            var state=new TrajectoryState {StateIndex=0,Step=7,Url="https://synthetic.invalid/"+(longData?new string('u',10000):""),Action="click"+metadata,Thoughts="source thoughts"+metadata,Text=text,Screenshot=image};
+            var trajectory=new TrajectoryManifest {Id="synthetic",Goal="goal",Outcome=null,StartUrl=state.Url,Actions=["click"],SourceHash=hash,States=[state],OriginalJson=JsonSerializer.Serialize(new {date="2026-03-04",metadata})};
             hash=SourceCatalog.LogicalHash(trajectory);
             trajectory=trajectory with {SourceHash=hash};
             fragments=fragments.Select(f=>f with {SourceId=SourceCatalog.SourceId(hash,f.StateIndex,f.FragmentIndex)}).ToArray();

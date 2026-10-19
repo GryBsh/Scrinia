@@ -29,7 +29,7 @@ public sealed class EvidenceRetriever(Func<ModelSettings,IChatClient>? createCli
             if(session.CatalogHash!=request.Retrieval.CatalogHash)throw new InvalidDataException("RETRIEVAL_CATALOG_MISMATCH");
             var config=request.Configuration;
             var model=new ModelSettings(new Uri(config.Endpoint),config.Model,config.ApiKeyEnvironmentVariable,(float)config.Temperature,config.MaxOutputTokens,(float)config.TopP,config.TopK);
-            var result=await new RuntimeAgentEpisode(createClient??ModelClientFactory.Create).RunAsync(
+            var result=await new RuntimeAgentEpisode(createClient??ModelClientFactory.Create,expectedModelId:request.Configuration.Model).RunAsync(
                 new("retrieve",RetrievalInstructions.Text,[new ChatMessage(ChatRole.User,content)],RetrievalInstructions.AllowedTools,
                     EnableResponseRecovery:true,EnableThinking:config.Thinking,ValidateToolCall:RetrievalInstructions.Guard,ValidateResponse:RetrievalInstructions.GuardResponse),
                 session,model,new(config.MaxModelRequests,config.EpisodeSeconds,config.EpisodeSeconds,config.MaxAttempts),events,ct);

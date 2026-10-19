@@ -5,7 +5,7 @@ import json
 from filesystem import Path, io_path, canonical_path, canonical_paths
 import shutil
 from bridge import BridgeError, _absolute, read_json
-from snapshots import atomic_json, file_entries, fingerprint
+from snapshots import atomic_json, file_entries, fingerprint, validate_history, validate_metadata_history
 
 def identity_hash(identity):
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -50,7 +50,7 @@ def method_identity(params):
     if not io_path(assets).is_dir() or not file_entries(assets):
         raise ValueError("Pinned processor assets are missing.")
     source = Path(__file__).parents[1] / "Scrinia.LongMemEvalV2.Worker"
-    return {"version": 1, "controller": {**_DEFAULT_CONTROLLER, **params.get("controller", {})},
+    return {"version": 2, "controller": {**_DEFAULT_CONTROLLER, **params.get("controller", {})},
             "worker": _command(params["worker_command"]),
             "mcp": _command([settings["mcp_executable"], *settings["mcp_prefix_arguments"]]),
             "catalogHash": catalog_hash(tools), "processorRevision": PROCESSOR_REVISION,
@@ -58,6 +58,9 @@ def method_identity(params):
             "servedContextTokens": settings["served_context_tokens"],
             "learningInstructionsHash": _file(source / "Learning/learning-instructions.txt"),
             "retrievalInstructionsHash": _file(source / "Retrieval/retrieval-instructions.txt"),
+            "storagePolicy": {"version": 1, "maxChunkUtf16": 7900, "sourceRecords": "deterministic-surrogate-safe",
+                              "derivedNotes": "guarded-explicit-chunks", "publicRecallContentChars": 7992},
+            "historyPolicy": {"version": 1, "identity": "ordered-id-logical-source-and-image-hash"},
             "batchPolicy": {"inputTokens": 24576, "fragmentTokens": 4096, "images": 4,
                             "operationOverheadEpisodes": 2}}
 
@@ -67,7 +70,11 @@ def reconcile(saved, requested):
     recorded = saved["memory_params"].get("method_identity")
     if not isinstance(recorded, dict):
         raise ValueError("Saved memory lacks a portable method identity.")
-    effective = copy.deepcopy(saved if requested is None else requested)
+    # Saved configuration is not independent evidence of the requested haystack.
+    if requested is None:
+        raise BridgeError("EXPECTED_HISTORY_REQUIRED")
+    validate_history(requested["memory_params"].get("expected_history"))
+    effective = copy.deepcopy(requested)
     params = effective["memory_params"]
     actual = method_identity(params)
     if actual != recorded or ("method_identity" in params and params["method_identity"] != actual):
@@ -94,9 +101,9 @@ def _assets(snapshot):
 def _validated(memory):
     if memory.cancel_event.is_set():
         raise BridgeError("CANCELLED")
-    if any(canonical_paths((io_path(memory.snapshots.root / "uncertain")).glob("*.json"))):
-        raise BridgeError("INSERTION_UNCERTAIN")
     meta = memory.snapshots.current()
+    if memory.snapshots.reconcile_committed_markers(meta):
+        raise BridgeError("INSERTION_UNCERTAIN")
     if meta is None:
         raise BridgeError("SNAPSHOT_MISSING")
     actual = method_identity(memory.memory_params)
@@ -113,6 +120,10 @@ def _validated(memory):
     return source, meta, actual
 
 def save_snapshot(memory, output):
+    with memory.snapshots._lock():
+        return _save_snapshot(memory, output)
+
+def _save_snapshot(memory, output):
     output = _absolute(str(output))
     source, meta, identity = _validated(memory)
     target = output / "snapshot"
@@ -149,6 +160,9 @@ def load_snapshot(memory, input_dir):
     if _file(source / ".generation.json") != bundle["metadataHash"] or fingerprint(source) != bundle["fingerprint"]:
         raise BridgeError("BUNDLE_FINGERPRINT_MISMATCH")
     meta = read_json(source / ".generation.json")
+    expected = validate_history(memory.memory_params.get("expected_history"))
+    if validate_metadata_history(meta) != expected:
+        raise BridgeError("HISTORY_IDENTITY_MISMATCH")
     if meta["configurationHash"] != identity_hash(actual):
         raise BridgeError("METHOD_IDENTITY_MISMATCH")
     _assets(source)
@@ -170,3 +184,4 @@ def load_snapshot(memory, input_dir):
                 ("generation", "fingerprint", "metadataHash")})
     memory.snapshots.current()
     memory.snapshot_path = str(target)
+    memory._loaded_history = copy.deepcopy(expected)

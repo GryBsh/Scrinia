@@ -73,7 +73,7 @@ public sealed class RetrievalTests
             IList<AIContent> contents=loop
                 ? [new TextReasoningContent(string.Join("\n\n",Enumerable.Repeat("I have identified the relevant facts and should now store them using the available memory tool. Before doing so I will reconsider the same selection once more, although no new information has appeared.",30))),new TextContent("")]
                 : [new FunctionCallContent("partial","recall",null)];
-            return new ChatResponse(new ChatMessage(ChatRole.Assistant,contents)) {FinishReason=ChatFinishReason.Length,Usage=new(){OutputTokenCount=16384}};
+            return new ChatResponse(new ChatMessage(ChatRole.Assistant,contents)) {ModelId="synthetic",FinishReason=ChatFinishReason.Length,Usage=new(){OutputTokenCount=16384}};
         }));
         if(expectedCalls==2)Assert.Empty((await retriever.RetrieveAsync(request,CancellationToken.None)).References);
         else await Assert.ThrowsAsync<InvalidDataException>(()=>retriever.RetrieveAsync(request,CancellationToken.None));
@@ -89,7 +89,7 @@ public sealed class RetrievalTests
         var drift=new EvidenceRetriever(_=>new Client((_,_)=>{calls++;return Text("{\"references\":[]}");}));
         await Assert.ThrowsAsync<InvalidDataException>(()=>drift.RetrieveAsync(request with {Retrieval=request.Retrieval with {CatalogHash=new string('e',64)}},CancellationToken.None));
         Assert.Equal(0,calls);File.Delete(request.Paths.EventLogPath);
-        var mutation=new EvidenceRetriever(_=>new Client((_,_)=>new ChatResponse(new ChatMessage(ChatRole.Assistant,[new FunctionCallContent("mutation","remember",new Dictionary<string,object?> {["path"]="/derived/evil",["content"]="evil"})])) {FinishReason=ChatFinishReason.ToolCalls}));
+        var mutation=new EvidenceRetriever(_=>new Client((_,_)=>new ChatResponse(new ChatMessage(ChatRole.Assistant,[new FunctionCallContent("mutation","remember",new Dictionary<string,object?> {["path"]="/derived/evil",["content"]="evil"})])) {ModelId="synthetic",FinishReason=ChatFinishReason.ToolCalls}));
         await Assert.ThrowsAsync<InvalidDataException>(()=>mutation.RetrieveAsync(request,CancellationToken.None));
         var log=File.ReadAllText(request.Paths.EventLogPath);
         Assert.Contains("model-response",log);
@@ -105,7 +105,7 @@ public sealed class RetrievalTests
         Retrieval=new() {Executable=learn.Learning.Executable,PrefixArguments=learn.Learning.PrefixArguments,
             CatalogHash=learn.Learning.CatalogHash,InstructionsHash=SourceCatalog.Hash(Encoding.UTF8.GetBytes(RetrievalInstructions.Text))}};
     internal static string Selection(LearnRequest learn)=>"{\"references\":[{\"kind\":\"source\",\"sourceId\":\""+learn.Fragments[0].SourceId+"\",\"stateIndex\":0}]}";
-    internal static ChatResponse Text(string value)=>new(new ChatMessage(ChatRole.Assistant,value)){FinishReason=ChatFinishReason.Stop};
+    internal static ChatResponse Text(string value)=>new(new ChatMessage(ChatRole.Assistant,value)){ModelId="synthetic",FinishReason=ChatFinishReason.Stop};
     internal sealed class Client(Func<IEnumerable<ChatMessage>,ChatOptions?,ChatResponse> respond):IChatClient {
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,ChatOptions? options=null,CancellationToken cancellationToken=default)=>Task.FromResult(respond(messages,options));
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,ChatOptions? options=null,CancellationToken cancellationToken=default)=>throw new NotSupportedException();

@@ -80,6 +80,34 @@ def run_artifact_hashes(output):
         "measurements.jsonl", "estimates.json")
     return {name: hashlib.sha256(io_path(Path(output) / name).read_bytes()).hexdigest() for name in names}
 
+def expected_history(haystack_path, trajectories_path, asset_root):
+    from trajectory_input import normalize_trajectory
+    from snapshots import validate_history
+    mapping = json.loads(io_path(Path(haystack_path)).read_text(encoding="utf-8"))
+    if not isinstance(mapping, dict) or not mapping:
+        raise ValueError("EXPECTED_HISTORY_REQUIRED")
+    histories = list(mapping.values())
+    ordered = histories[0]
+    if not isinstance(ordered, list) or not ordered or any(value != ordered for value in histories):
+        raise ValueError("EXPECTED_HISTORY_MUST_BE_SHARED_AND_ORDERED")
+    # The official file accepts either a JSON list or JSONL. Reuse its loader,
+    # without changing its parsing or normalization rules.
+    from evaluation.harness import load_json_list
+    trajectories = load_json_list(io_path(Path(trajectories_path)))
+    by_id = {}
+    for trajectory in trajectories:
+        ident = trajectory.get("id")
+        if not isinstance(ident, str) or not ident or ident in by_id:
+            raise ValueError("INVALID_HISTORY_TRAJECTORY")
+        by_id[ident] = trajectory
+    result = []
+    for ident in ordered:
+        if not isinstance(ident, str) or ident not in by_id:
+            raise ValueError("MISSING_HISTORY_TRAJECTORY")
+        normalized = normalize_trajectory(by_id[ident], Path(asset_root))
+        result.append({"id": normalized["id"], "sourceHash": normalized["sourceHash"]})
+    return validate_history(result)
+
 def run_experiment(upstream_root, config, output_dir, *, frozen_manifest_hash=None):
     config = validate_experiment(config)
     if config["mode"] == "submission" and frozen_manifest_hash is None:
@@ -122,6 +150,9 @@ def run_experiment(upstream_root, config, output_dir, *, frozen_manifest_hash=No
             output_path=Path(io_name(runtime / "questions.json")))
         materialize_runtime_haystack(data_root=Path(io_name(config["data"]["root"])), tier=config["tier"],
             selected_questions=selected, output_path=Path(io_name(runtime / "haystack.json")))
+        if config.get("load_memory_dir"):
+            params["expected_history"] = expected_history(runtime / "haystack.json",
+                Path(config["data"]["root"]) / "trajectories.jsonl", config["data"]["root"])
         (io_path(runtime / "memory_config.json")).write_text(json.dumps(
             {"memory_type": "scrinia", "memory_params": params}, indent=2), encoding="utf-8")
         args = ["evaluation.harness", "--domain", config["domain"],

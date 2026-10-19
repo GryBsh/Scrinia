@@ -13,3 +13,7 @@ Recovery uses verified committed generation receipts, refuses uncertain writes a
 No real V2 examples were used in development fixtures. Record accidental exposures in the frozen exposure log. Source code/data revisions, hardware/deployment evidence and unresolved prerequisites appear in the appended frozen configuration. A source ZIP is passed as the official utility's single code file; organizer acceptance of a multi-file .NET source archive remains unresolved.
 
 The estimates include unsuccessful attempts. Unknown usage/cost is null; fake-provider timings establish no real-model performance or cost.
+
+Storage policy v1 uses 7,900 UTF-16 code units per content chunk. Complete serialized source records and original-trajectory JSON are split deterministically without dividing Unicode scalars; source materialization verifies all chunks through public recall. Derived notes must supply explicit nonblank bounded chunks and source-ID arrays. Raw model arguments remain unchanged. Every controller episode enforces the configured reported model identity from its first response.
+
+Generation metadata v2 records the insertion order as trajectory ID/logical source hash pairs, including screenshot content hashes. Loaded memory requires an independently supplied expected history, derived by the launcher from the requested ordered source haystack; direct load without that binding fails. Relocation preserves valid histories. Unproven intent markers remain blocking; only markers exactly proven committed by the current verified generation are retired under lock.

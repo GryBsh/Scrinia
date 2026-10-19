@@ -69,7 +69,8 @@ class OfficialHarnessTests(unittest.TestCase):
         value = fingerprint(target)
         receipt = {"sourceHash": "b" * 64, "previousSnapshotHash": None,
                    "newSnapshotHash": value, "committedOperationId": "c" * 32}
-        meta = {"version": 1, "configurationHash": identity_hash(identity), "fingerprint": value,
+        meta = {"version": 2, "history": [{"id":"invented","sourceHash":"b"*64}],
+                "configurationHash": identity_hash(identity), "fingerprint": value,
                 "ledger": {"invented": {"sourceHash": "b" * 64, "receipt": receipt}},
                 "receipt": receipt}
         atomic_json(target / ".generation.json", meta)
@@ -324,6 +325,7 @@ class OfficialHarnessTests(unittest.TestCase):
         moved = self.root / "moved"
         shutil.copytree(io_path(saved), io_path(moved))
         params = self.params("relocated")
+        params["expected_history"] = [{"id":"invented","sourceHash":"b"*64}]
         from unittest.mock import patch
         with patch("bridge.WorkerBridge.run", return_value={}):
             loaded = load_memory(moved, {"memory_type": "scrinia", "memory_params": params})
@@ -332,7 +334,7 @@ class OfficialHarnessTests(unittest.TestCase):
         self.assertFalse(any(p.name == "queries" for p in canonical_paths(io_path(saved).rglob("*"))))
         self.assertTrue((io_path(Path(loaded.snapshot_path) / "sources/image.png")).is_file())
         with patch("bridge.WorkerBridge.run", return_value={}):
-            unchanged = load_memory(saved)
+            unchanged = load_memory(saved, {"memory_type":"scrinia","memory_params":params})
         self.assertEqual(unchanged.snapshots.current(), memory.snapshots.current())
         bad = copy.deepcopy(params)
         bad["learning"]["served_context_tokens"] = 70000
@@ -346,6 +348,7 @@ class OfficialHarnessTests(unittest.TestCase):
         for index, changed in enumerate(("worker", "mcp", "processor", "catalog", "controller")):
             with self.subTest(changed=changed):
                 params = self.params("changed-" + str(index))
+                params["expected_history"] = [{"id":"invented","sourceHash":"b"*64}]
                 if changed == "worker":
                     io_path(Path(params["worker_command"][0])).write_bytes(b"changed worker")
                 elif changed == "mcp":
@@ -359,7 +362,7 @@ class OfficialHarnessTests(unittest.TestCase):
                     io_path(path).write_text(json.dumps(tools))
                 else:
                     params["controller"] = {"temperature": 0.2}
-                with self.assertRaises((ValueError, BridgeError, RuntimeError)):
+                with self.assertRaisesRegex(BridgeError, "METHOD_IDENTITY_MISMATCH"):
                     load_memory(io_path(saved), {"memory_type": "scrinia", "memory_params": params})
 
     def test_bundle_refuses_uncertainty_missing_assets_and_fingerprint_changes(self):
@@ -367,8 +370,10 @@ class OfficialHarnessTests(unittest.TestCase):
         saved = self.root / "saved"
         memory.save_memory(io_path(saved))
         (io_path(saved / "snapshot/sources/image.png")).unlink()
-        with self.assertRaises((ValueError, BridgeError, RuntimeError)):
-            load_memory(saved)
+        params = copy.deepcopy(memory.memory_params)
+        params["expected_history"] = [{"id":"invented","sourceHash":"b"*64}]
+        with self.assertRaisesRegex(BridgeError, "BUNDLE_FINGERPRINT_MISMATCH"):
+            load_memory(saved, {"memory_type":"scrinia", "memory_params":params})
         uncertain = memory.snapshots.root / "uncertain/pending.json"
         io_path(uncertain.parent).mkdir()
         io_path(uncertain).write_text("{}")

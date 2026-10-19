@@ -45,7 +45,7 @@ public static class LearningInstructions
             var content = Value(args,"content");
             var attributes = Value(args,"attributes");
             if (content.ValueKind != JsonValueKind.Array || content.GetArrayLength() == 0
-                || content.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(x.GetString()))
+                || content.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(x.GetString()) || x.GetString()!.Length > StorageChunks.MaxCharacters)
                 || attributes.ValueKind != JsonValueKind.Object
                 || !attributes.TryGetProperty("source",out var references) || references.ValueKind != JsonValueKind.Array
                 || references.GetArrayLength() == 0 || references.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String || !sources.Contains(x.GetString()!)))

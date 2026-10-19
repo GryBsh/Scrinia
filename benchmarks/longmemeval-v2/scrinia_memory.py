@@ -18,7 +18,7 @@ class ScriniaMemory(Memory):
     memory_type = "scrinia"
 
     def __init__(self, memory_params: dict[str, object]) -> None:
-        allowed = {"run_root", "worker_command", "controller", "trajectories_root_dir", "learning", "method_identity"}
+        allowed = {"run_root", "worker_command", "controller", "trajectories_root_dir", "learning", "method_identity", "expected_history"}
         if not isinstance(memory_params, dict) or set(memory_params) - allowed:
             raise ValueError("Unsupported Scrinia memory parameter.")
         root_value = memory_params.get("run_root")
@@ -34,6 +34,10 @@ class ScriniaMemory(Memory):
             raise ValueError("Unsupported controller setting.")
         self.configuration = {**_DEFAULT_CONTROLLER, **controller}
         self.learning_params = memory_params.get("learning")
+        self._loaded_history = None
+        if "expected_history" in memory_params:
+            from snapshots import validate_history
+            validate_history(memory_params["expected_history"])
         instance_root = run_root / ("memory-" + uuid.uuid4().hex)
         self.paths = {"root": str(instance_root), "workspace": str(instance_root / "workspace"),
                       "home": str(instance_root / "home"),
@@ -179,6 +183,11 @@ class ScriniaMemory(Memory):
             def is_set(self):return parent.is_set() or time.monotonic()>=deadline
         cancel=QueryCancellation()
         if cancel.is_set():raise BridgeError("CANCELLED")
+        if self._loaded_history is not None:
+            committed = self.snapshots.current()
+            if (committed is None or committed["history"] != self._loaded_history
+                or self.memory_params.get("expected_history") != self._loaded_history):
+                raise BridgeError("HISTORY_IDENTITY_MISMATCH")
         if not isinstance(query,str) or not query:raise ValueError("Question must be non-empty text.")
         if "method_identity" in self.memory_params:
             from portability import method_identity, identity_hash

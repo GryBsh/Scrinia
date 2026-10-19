@@ -37,7 +37,19 @@ public sealed class EvidenceMaterializer(string snapshot)
                 var source=sources[reference.SourceId!];var catalog=source.Catalog;var fragment=source.Fragment;
                 string path=SourceCatalog.SourcePath(catalog.Trajectory.SourceHash,fragment);
                 string record=Learning.SourceSeeder.ContentFor(catalog,fragment);
-                await RequireRecallAsync(session,path,1,1,record,ct);
+                var address=MemoryAddress.Parse(path);
+                var entry=await store.ReadAsync(address,ct);
+                string[] chunks=StorageChunks.Split(record);
+                if(entry is null || entry.ChunkCount!=chunks.Length)throw new InvalidDataException("EVIDENCE_MEMORY_MISSING");
+                string artifact=await store.ReadArtifactAsync(address,ct);
+                var reconstructed=new StringBuilder();
+                for(int chunk=1;chunk<=chunks.Length;chunk++) {
+                    string actual=Nmp2ChunkedEncoder.DecodeChunk(artifact,chunk);
+                    if(actual!=chunks[chunk-1])throw new InvalidDataException("EVIDENCE_SOURCE_CHANGED");
+                    await RequireRecallAsync(session,path,chunk,chunks.Length,actual,ct);
+                    reconstructed.Append(actual);
+                }
+                if(reconstructed.ToString()!=record)throw new InvalidDataException("EVIDENCE_SOURCE_CHANGED");
                 if(SourceCatalog.Hash(Encoding.UTF8.GetBytes(fragment.Text))!=fragment.TextHash)throw new InvalidDataException("EVIDENCE_TEXT_CHANGED");
                 var state=catalog.Trajectory.States[fragment.StateIndex];
                 items.Add(new() {Type="text",Value=$"Original source {fragment.SourceId}; trajectory {catalog.Trajectory.Id}; state {state.StateIndex}; step {state.Step}; URL {state.Url}; UTF-8 bytes [{fragment.StartByte},{fragment.EndByte})\nAction: {state.Action}\nThoughts: {state.Thoughts}\n{fragment.Text}"});

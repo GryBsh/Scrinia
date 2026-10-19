@@ -45,7 +45,7 @@ public sealed class SourceSeeder
         object? response;
         try {
             response = await remember.InvokeAsync(new AIFunctionArguments {
-                ["path"]=path, ["content"]=new[] {content}, ["description"]=description
+                ["path"]=path, ["content"]=StorageChunks.Split(content), ["description"]=description
             },ct);
         } catch (Exception error) when (error is not OperationCanceledException) {
             throw new BenchmarkFailureException(BenchmarkFailureCode.TOOL_COMPLETION_UNCERTAIN,

@@ -70,7 +70,13 @@ public sealed class SnapshotValidator
                     || !path.StartsWith("/derived/"+hash+"/",StringComparison.Ordinal)))
                 throw new InvalidDataException("DERIVED_SOURCE_REFERENCE_INVALID");
             // Decode all data as well; corrupted derived notes cannot be published.
-            _ = Nmp2Strategy.Instance.Decode(await store.ReadArtifactAsync(entry.Address,ct));
+            string artifact = await store.ReadArtifactAsync(entry.Address,ct);
+            for (int chunk = 1; chunk <= entry.ChunkCount; chunk++)
+            {
+                string content = Nmp2ChunkedEncoder.DecodeChunk(artifact,chunk);
+                if (string.IsNullOrWhiteSpace(content) || content.Length > StorageChunks.MaxCharacters)
+                    throw new InvalidDataException("DERIVED_STORAGE_CHUNK_INVALID");
+            }
         }
         // Store reads may perform legacy maintenance; any mutation invalidates this generation.
         if (Fingerprint(snapshot) != expectedFingerprint) throw new InvalidDataException("SNAPSHOT_CHANGED_DURING_VALIDATION");
@@ -79,8 +85,11 @@ public sealed class SnapshotValidator
     {
         var address = MemoryAddress.Parse(path);
         var entry = await store.ReadAsync(address,ct);
-        if (entry is null || entry.ChunkCount != 1) throw new InvalidDataException("SOURCE_MEMORY_MISSING");
-        var text = Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(await store.ReadArtifactAsync(address,ct)));
-        if (text != expected) throw new InvalidDataException("SOURCE_MEMORY_CHANGED");
+        string[] expectedChunks = StorageChunks.Split(expected);
+        if (entry is null || entry.ChunkCount != expectedChunks.Length) throw new InvalidDataException("SOURCE_MEMORY_MISSING");
+        string artifact = await store.ReadArtifactAsync(address,ct);
+        for (int chunk = 1; chunk <= entry.ChunkCount; chunk++)
+            if (Nmp2ChunkedEncoder.DecodeChunk(artifact,chunk) != expectedChunks[chunk-1])
+                throw new InvalidDataException("SOURCE_MEMORY_CHANGED");
     }
 }

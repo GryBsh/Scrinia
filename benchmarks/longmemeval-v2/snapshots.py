@@ -37,6 +37,29 @@ def atomic_json(path, value):
     finally:
         if io_path(temp).exists(): io_path(temp).unlink()
 
+def validate_history(history):
+    if (not isinstance(history, list) or not history
+        or any(not isinstance(item, dict) or set(item) != {"id", "sourceHash"}
+               or not isinstance(item["id"], str) or not item["id"]
+               or not isinstance(item["sourceHash"], str) or len(item["sourceHash"]) != 64
+               or any(c not in "0123456789abcdef" for c in item["sourceHash"]) for item in history)
+        or len({item["id"] for item in history}) != len(history)):
+        raise BridgeError("HISTORY_IDENTITY_REQUIRED")
+    return history
+
+def validate_metadata_history(meta):
+    if meta.get("version") != 2:
+        raise BridgeError("HISTORY_IDENTITY_REQUIRED")
+    history = validate_history(meta.get("history"))
+    ledger = meta.get("ledger")
+    if (not isinstance(ledger, dict) or set(ledger) != {item["id"] for item in history}
+        or any(ledger[item["id"]].get("sourceHash") != item["sourceHash"]
+               or ledger[item["id"]].get("receipt", {}).get("sourceHash") != item["sourceHash"]
+               for item in history)
+        or ledger[history[-1]["id"]].get("receipt") != meta.get("receipt")):
+        raise BridgeError("HISTORY_IDENTITY_MISMATCH")
+    return history
+
 class SnapshotStore:
     def __init__(self,root,request_factory,*,fault=None):
         self.root = _absolute(str(root)); io_path(self.root).mkdir(parents=True,exist_ok=True)
@@ -75,19 +98,49 @@ class SnapshotStore:
         if (meta["fingerprint"]!=value["fingerprint"] or fingerprint(generation)!=value["fingerprint"]
             or meta["receipt"]["newSnapshotHash"]!=value["fingerprint"]):
             raise BridgeError("INVALID_SNAPSHOT")
+        validate_metadata_history(meta)
         return meta
     @property
     def generation_path(self):
         value=read_json(self.root/"current.json")
         self.current()
         return self.root/"generations"/value["generation"]
+    def reconcile_committed_markers(self, meta):
+        """Caller holds _lock. Retire only intent exactly proven by current committed state."""
+        unresolved = []
+        pointer = None if meta is None else read_json(self.root / "current.json")
+        for marker in canonical_paths(io_path(self.root / "uncertain").glob("*.json")):
+            _absolute(str(marker))
+            try:
+                value = read_json(marker)
+                ident = value.get("trajectoryId")
+                entry = None if meta is None else meta["ledger"].get(ident)
+                proven = (set(value) == {"trajectoryId", "sourceHash", "generation", "operationId"}
+                    and isinstance(ident, str)
+                    and marker.name == hashlib.sha256(ident.encode()).hexdigest() + ".json"
+                    and entry is not None and entry["sourceHash"] == value["sourceHash"]
+                    and entry["receipt"] == meta["receipt"]
+                    and entry["receipt"]["committedOperationId"] == value["operationId"]
+                    and entry["receipt"]["newSnapshotHash"] == pointer["fingerprint"]
+                    and value["generation"] == pointer["generation"])
+            except (ValueError, TypeError, KeyError):
+                proven = False
+            if proven:
+                io_path(marker).unlink()
+            else:
+                unresolved.append(marker)
+        return unresolved
+
     def insert(self,trajectory_manifest,configuration_hash,bridge,cancel_event):
         with self._lock():
             return self._insert(trajectory_manifest,configuration_hash,bridge,cancel_event)
     def _insert(self,trajectory_manifest,configuration_hash,bridge,cancel):
         if cancel.is_set(): raise BridgeError("CANCELLED")
         previous=self.current()
+        unresolved = self.reconcile_committed_markers(previous)
         ident=trajectory_manifest["id"]; source_hash=trajectory_manifest["sourceHash"]
+        uncertain=self.root/"uncertain"/(hashlib.sha256(ident.encode()).hexdigest()+".json")
+        if uncertain in unresolved: raise BridgeError("INSERTION_UNCERTAIN")
         ledger={} if previous is None else copy.deepcopy(previous["ledger"])
         if previous is not None and previous["configurationHash"]!=configuration_hash:
             raise BridgeError("CONFIGURATION_CONFLICT")
@@ -139,7 +192,10 @@ class SnapshotStore:
             validation=self.request_factory("validate-snapshot",snapshotPath=str(stage),expectedFingerprint=actual)
             bridge.run("validate-snapshot",validation,cancel)
             ledger[ident]={"sourceHash":source_hash,"receipt":receipt}
-            meta={"version":1,"configurationHash":configuration_hash,"ledger":ledger,"receipt":receipt,"fingerprint":actual}
+            history = [] if previous is None else copy.deepcopy(previous["history"])
+            history.append({"id": ident, "sourceHash": source_hash})
+            meta={"version":2,"configurationHash":configuration_hash,"history":history,
+                  "ledger":ledger,"receipt":receipt,"fingerprint":actual}
             self.fault("persist-result")
             atomic_json(stage/".generation.json",meta)
             self.fault("before-publication")
