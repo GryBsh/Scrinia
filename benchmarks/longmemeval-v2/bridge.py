@@ -57,6 +57,11 @@ def validate_request(request):
     for name in ("snapshotPath", "priorSnapshotPath", "stagingPath"):
         if request.get(name) is not None:
             _inside(root, _absolute(request[name]))
+    if request["operation"]=="retrieve":
+        snapshot=_absolute(request["snapshotPath"])
+        if workspace!=snapshot/"workspace" or home!=snapshot/"home" or _absolute(request["paths"]["eventLogPath"]).is_relative_to(snapshot):
+            raise BridgeError("INVALID_PATH")
+        _absolute(request["retrieval"]["executable"])
     images = ([request.get("questionImage")] if request["operation"] == "retrieve" else
               [s["screenshot"] for s in request.get("trajectory", {}).get("states", [])])
     for image in images:

@@ -31,4 +31,4 @@ public sealed class BenchmarkFailureException(BenchmarkFailureCode code, string 
 public sealed record RuntimeEpisodeRequest(string Phase, string Instructions,
     IReadOnlyList<ChatMessage> Messages, IReadOnlySet<string> AllowedToolNames,
     bool EnableResponseRecovery, bool? EnableThinking,
-    Action<string, AIFunctionArguments>? ValidateToolCall);
+    Action<string, AIFunctionArguments>? ValidateToolCall, Action<ChatResponse>? ValidateResponse = null);

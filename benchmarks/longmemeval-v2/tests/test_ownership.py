@@ -81,7 +81,7 @@ class OwnershipTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeError, "WORKER_EXIT_FAILED"):
             bridge.run("retrieve", request(self.root), event)
         result_path = next((self.root / "operations").glob("*/result.json"))
-        self.assertEqual(json.loads(result_path.read_text())["errorCode"], "UNSUPPORTED_OPERATION")
+        self.assertEqual(json.loads(result_path.read_text())["errorCode"], "OPERATION_FAILED")
 
     def test_dotnet_worker_refuses_result_outside_owned_root(self):
         dll = Path(__file__).resolve().parents[2] / "Scrinia.LongMemEvalV2.Worker/bin/Debug/net10.0/scrinia-lme-v2-worker.dll"
@@ -95,7 +95,7 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertFalse(target.exists())
 
-    def test_dotnet_worker_eof_returns_cancelled_or_unsupported_without_hanging(self):
+    def test_dotnet_worker_eof_returns_cancelled_or_failed_without_hanging(self):
         dll = Path(__file__).resolve().parents[2] / "Scrinia.LongMemEvalV2.Worker/bin/Debug/net10.0/scrinia-lme-v2-worker.dll"
         self.assertTrue(dll.exists(), "Build the protocol test project before running all bridge tests.")
         source, target = self.root / "request.json", self.root / "result.json"
@@ -105,7 +105,7 @@ class OwnershipTests(unittest.TestCase):
                                    text=True, timeout=10, check=False)
         self.assertIn(completed.returncode, (3, 4))
         result = json.loads(target.read_text())
-        self.assertIn(result["errorCode"], ("CANCELLED", "UNSUPPORTED_OPERATION"))
+        self.assertIn(result["errorCode"], ("CANCELLED", "OPERATION_FAILED"))
         self.assertIsNone(result["evidence"])
 
 if __name__ == "__main__":

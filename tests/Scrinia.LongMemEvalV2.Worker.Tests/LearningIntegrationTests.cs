@@ -154,7 +154,7 @@ public sealed class LearningIntegrationTests
             {FinishReason=ChatFinishReason.ToolCalls,ModelId="synthetic"};
     }
 
-    private sealed class LearningFixture : IDisposable
+    internal sealed class LearningFixture : IDisposable
     {
         public string Root {get;} = Path.Combine(Path.GetTempPath(),"scrinia-v2-"+Guid.NewGuid().ToString("N"));
         public void Dispose() {if (Directory.Exists(Root)) Directory.Delete(Root,true);}

@@ -15,7 +15,7 @@ public sealed class RuntimeAgentEpisode(Func<ModelSettings, IChatClient> createC
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, session.FailureToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(limits.EpisodeSeconds));
         string phase = input.Phase;
-        var observed = new ObservedChatClient(createClient(settings), settings, limits, events, phase, expectedModelId, enableResponseRecovery: input.EnableResponseRecovery, enableThinking: input.EnableThinking);
+        var observed = new ObservedChatClient(createClient(settings), settings, limits, events, phase, expectedModelId, enableResponseRecovery: input.EnableResponseRecovery, enableThinking: input.EnableThinking, validateResponse: input.ValidateResponse);
         var observation = new ToolObservation(events, phase, deadline, input.ValidateToolCall);
         // This is the SDK's function loop. Configure its ceiling explicitly so its default
         // 40 iterations cannot silently undercut the benchmark's declared request budget.

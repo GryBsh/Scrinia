@@ -5,6 +5,7 @@ namespace Scrinia.LongMemEvalV2.Worker.Protocol;
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
     PropertyNameCaseInsensitive = false)]
+[JsonSerializable(typeof(Scrinia.LongMemEvalV2.Worker.Evidence.EvidenceSelection))]
 [JsonSerializable(typeof(LearnRequest))]
 [JsonSerializable(typeof(RetrieveRequest))]
 [JsonSerializable(typeof(ValidateSnapshotRequest))]

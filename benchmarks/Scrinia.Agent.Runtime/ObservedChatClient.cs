@@ -8,7 +8,7 @@ namespace Scrinia.Agent.Benchmarks;
 
 public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings, RunLimits limits,
     IRunEvents events, string phase, string? expectedModelId = null, TimeProvider? timeProvider = null,
-    bool? enableResponseRecovery = null, bool? enableThinking = null) : DelegatingChatClient(inner)
+    bool? enableResponseRecovery = null, bool? enableThinking = null, Action<ChatResponse>? validateResponse = null) : DelegatingChatClient(inner)
 {
     // Null retains the legacy V1 observer policy, including its judge behavior.
     // Runtime episodes always supply a policy explicitly, independent of phase names.
@@ -169,6 +169,7 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
                     throw new InvalidDataException("Model response is malformed.");
                 // Always send full in-process history, never a provider-managed conversation handle.
                 response.ConversationId = null;
+                validateResponse?.Invoke(response);
                 return response;
             }
         }

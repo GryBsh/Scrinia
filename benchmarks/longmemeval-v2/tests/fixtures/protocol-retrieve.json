@@ -18,11 +18,18 @@
   },
   "paths": {
     "root": "C:/lme-fixture",
-    "workspace": "C:/lme-fixture/workspace",
-    "home": "C:/lme-fixture/home",
+    "workspace": "C:/lme-fixture/snapshot/workspace",
+    "home": "C:/lme-fixture/snapshot/home",
     "eventLogPath": "C:/lme-fixture/events.jsonl"
   },
   "snapshotPath": "C:/lme-fixture/snapshot",
   "question": "Synthetic question?",
-  "questionImage": null
+  "questionImage": null,
+  "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "retrieval": {
+    "executable": "C:/lme-fixture/scri.exe",
+    "prefixArguments": [],
+    "catalogHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "instructionsHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  }
 }

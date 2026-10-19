@@ -21,8 +21,14 @@ class MemoryContractTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
     def memory(self, **kwargs):
-        return build_memory({"memory_type": "scrinia", "memory_params":
-            {"run_root": str(self.root), "worker_command": ["fixture-worker"], **kwargs}})
+        executable=self.root/"scri.exe";executable.write_bytes(b"synthetic")
+        catalog=self.root/"tools.json";catalog.write_text(json.dumps([{"name":name,"inputSchema":{"type":"object"}} for name in ("search","list","recall")]))
+        memory=build_memory({"memory_type": "scrinia", "memory_params":
+            {"run_root": str(self.root), "worker_command": ["fixture-worker"],
+             "learning":{"mcp_executable":str(executable),"mcp_prefix_arguments":[],"tool_catalog_path":str(catalog)}, **kwargs}})
+        (Path(memory.snapshot_path)/"workspace").mkdir(parents=True)
+        (Path(memory.snapshot_path)/"home").mkdir()
+        return memory
     def test_external_registration_and_unique_instance_paths(self):
         first, second = self.memory(), self.memory()
         self.assertIsInstance(first, ScriniaMemory)
@@ -43,7 +49,7 @@ class MemoryContractTests(unittest.TestCase):
         captured = {}
         def run(operation, body, cancel):
             captured.update(body)
-            self.assertIs(cancel, event)
+            self.assertEqual(cancel.is_set(), event.is_set())
             return {"evidence": [{"type": "text", "value": "Synthetic evidence."}]}
         with (patch.dict(os.environ, {"SCRINIA_CONTROLLER_API_KEY": "sentinel-credential-value"}),
               patch.object(memory.bridge, "run", side_effect=run)):

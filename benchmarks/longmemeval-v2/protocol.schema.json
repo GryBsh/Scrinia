@@ -388,6 +388,13 @@
               "type": "null"
             }
           ]
+        },
+        "expectedFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "retrieval": {
+          "$ref": "#/$defs/retrievalConfiguration"
         }
       },
       "required": [
@@ -398,7 +405,9 @@
         "operation",
         "snapshotPath",
         "question",
-        "questionImage"
+        "questionImage",
+        "expectedFingerprint",
+        "retrieval"
       ]
     },
     "validateSnapshot": {
@@ -719,6 +728,36 @@
         "fragmentTokenLimit",
         "imageLimit",
         "servedContextTokens"
+      ]
+    },
+    "retrievalConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executable": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prefixArguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "catalogHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "instructionsHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "executable",
+        "prefixArguments",
+        "catalogHash",
+        "instructionsHash"
       ]
     }
   }

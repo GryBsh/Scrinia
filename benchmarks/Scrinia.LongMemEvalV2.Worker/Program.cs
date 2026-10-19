@@ -28,6 +28,11 @@ public sealed class LearningOperation : IWorkerOperation
             return new() { Version=1,OperationId=request.OperationId,Status="ok",EventLogPath=request.Paths.EventLogPath,
                 Receipt=receipt,Evidence=null,ErrorCode=null };
         }
+        if(request is RetrieveRequest retrieve) {
+            var evidence=await new Retrieval.EvidenceRetriever().RetrieveEvidenceAsync(retrieve,cancellationToken);
+            return new() {Version=1,OperationId=request.OperationId,Status="ok",EventLogPath=request.Paths.EventLogPath,
+                Receipt=null,Evidence=evidence.Items,ErrorCode=null};
+        }
         if (request is ValidateSnapshotRequest validate) {
             await new Evidence.SnapshotValidator().ValidateAsync(validate.SnapshotPath,validate.ExpectedFingerprint,cancellationToken);
             return new() { Version=1,OperationId=request.OperationId,Status="ok",EventLogPath=request.Paths.EventLogPath,

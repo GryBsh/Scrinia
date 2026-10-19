@@ -22,10 +22,11 @@ def request(root):
                 "topP": 0.95, "topK": 20, "thinking": True, "maxOutputTokens": 16384,
                 "networkTimeoutSeconds": 180, "episodeSeconds": 300,
                 "maxModelRequests": 40, "maxAttempts": 5},
-            "paths": {"root": str(root), "workspace": str(root / "workspace"),
-                "home": str(root / "home"), "eventLogPath": str(root / "events.jsonl")},
+            "paths": {"root": str(root), "workspace": str(root / "snapshot" / "workspace"),
+                "home": str(root / "snapshot" / "home"), "eventLogPath": str(root / "events.jsonl")},
             "snapshotPath": str(root / "snapshot"), "question": "Synthetic question?",
-            "questionImage": None}
+            "questionImage": None,"expectedFingerprint":"b"*64,
+            "retrieval":{"executable":str(root/"scri.exe"),"prefixArguments":[],"catalogHash":"c"*64,"instructionsHash":"d"*64}}
 
 class BridgeTests(unittest.TestCase):
     def setUp(self):
@@ -60,11 +61,19 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse((self.root / "operations").exists())
     def test_cancellation_waits_for_owned_worker_and_child_exit(self):
         event = threading.Event()
-        timer = threading.Timer(0.3, event.set)
-        timer.start()
-        self.addCleanup(timer.cancel)
+        def cancel_when_child_started():
+            for _ in range(500):
+                if (self.root / "child.pid").exists():
+                    event.set()
+                    return
+                time.sleep(0.02)
+            event.set()
+        thread=threading.Thread(target=cancel_when_child_started)
+        thread.start()
+        self.addCleanup(thread.join)
+        bridge=WorkerBridge([sys.executable,str(FIXTURE),"cancel"],self.root/"operations",cleanup_seconds=2)
         with self.assertRaisesRegex(BridgeError, "CANCELLED"):
-            self.bridge("cancel").run("retrieve", request(self.root), event)
+            bridge.run("retrieve", request(self.root), event)
         self.assertTrue((self.root / "child-exited").exists())
         self.assertTrue((self.root / "worker-exited").exists())
     def test_closed_control_pipe_preserves_cancellation_cleanup_grace(self):

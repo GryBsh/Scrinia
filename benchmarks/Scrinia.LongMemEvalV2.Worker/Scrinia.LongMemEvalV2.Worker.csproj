@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Learning/learning-instructions.txt" />
+    <EmbeddedResource Include="Retrieval/retrieval-instructions.txt" />
     <ProjectReference Include="../Scrinia.Agent.Runtime/Scrinia.Agent.Runtime.csproj" />
     <ProjectReference Include="../../src/Scrinia.Core/Scrinia.Core.csproj" />
   </ItemGroup>

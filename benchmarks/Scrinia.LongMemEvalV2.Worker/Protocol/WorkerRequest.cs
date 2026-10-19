@@ -24,6 +24,8 @@ public sealed record LearnRequest : WorkerRequest
 public sealed record RetrieveRequest : WorkerRequest
 {
     public required string SnapshotPath { get; init; }
+    public required string ExpectedFingerprint { get; init; }
+    public required RetrievalConfiguration Retrieval { get; init; }
     public required string Question { get; init; }
     public required ImageReference? QuestionImage { get; init; }
 }
@@ -100,7 +102,7 @@ public static class WorkerProtocol
         return request;
     }
 
-    private static void RejectDuplicateKeys(JsonElement element)
+    internal static void RejectDuplicateKeys(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
@@ -180,6 +182,15 @@ public static class WorkerProtocol
             case RetrieveRequest retrieve:
                 Require(request.Operation == "retrieve" && !string.IsNullOrEmpty(retrieve.Question));
                 CheckPath(paths.Root, retrieve.SnapshotPath);
+                Require(IsHex(retrieve.ExpectedFingerprint,64) && retrieve.Retrieval is not null
+                    && configuration.NetworkTimeoutSeconds==180 && configuration.MaxOutputTokens<=16384 && configuration.Thinking);
+                var retrieval=retrieve.Retrieval!;
+                Require(Path.IsPathFullyQualified(retrieval.Executable) && retrieval.PrefixArguments is not null
+                    && retrieval.PrefixArguments.All(a=>a is not null) && IsHex(retrieval.CatalogHash,64) && IsHex(retrieval.InstructionsHash,64));
+                PathSafety.RequireNoLinks(retrieval.Executable);
+                Require(Path.GetFullPath(paths.Workspace)==Path.GetFullPath(Path.Combine(retrieve.SnapshotPath,"workspace"))
+                    && Path.GetFullPath(paths.Home)==Path.GetFullPath(Path.Combine(retrieve.SnapshotPath,"home"))
+                    && !PathSafety.Contains(retrieve.SnapshotPath,paths.EventLogPath));
                 if (retrieve.QuestionImage is not null) CheckImage(paths.Root, retrieve.QuestionImage);
                 break;
             case ValidateSnapshotRequest validate:
@@ -209,4 +220,11 @@ public static class WorkerProtocol
     {
         if (!valid) throw new InvalidDataException("INVALID_REQUEST");
     }
+}
+
+public sealed record RetrievalConfiguration {
+    public required string Executable {get;init;}
+    public required string[] PrefixArguments {get;init;}
+    public required string CatalogHash {get;init;}
+    public required string InstructionsHash {get;init;}
 }
