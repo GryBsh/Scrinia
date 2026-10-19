@@ -1,7 +1,7 @@
 # Scrinia integration with LongMemEval V2
 
 Date: 2026-10-19
-Status: Proposed design for review. No implementation or V2 inference authorized by this document.
+Status: Design with confirmed controller choice; implementation plan requested. Product implementation and V2 inference have not begun.
 Working checkout: C:/Users/nickd/.codex/worktrees/longmemeval-agent-runner/Scrinia
 
 ## Purpose and scope
@@ -18,7 +18,7 @@ Pin upstream commit 2cc8c540bdb87fe6761629b585e727e1c4704520, observed on 2026-1
 
 The [leaderboard contract](https://github.com/xiaowu0162/LongMemEval-V2/blob/main/leaderboard/README.md) requires paired complete web and enterprise results, a Qwen3.5-9B reader, a GPT-5.2 judge, system/code artifacts, and accuracy plus memory-query latency. Packaging validation is a necessary check, not a guarantee of organizer acceptance.
 
-Use the upstream [run configuration](https://github.com/xiaowu0162/LongMemEval-V2/blob/main/evaluation/run_eval.py) as the reader/judge preset: reader temperature 0.6, top_p 0.95, top_k 20, thinking enabled, 20,000 completion tokens and 200,000 memory-context tokens; judge gpt-5.2, medium reasoning, 4,096 completion tokens. Do not carry over V1's 16K limit or verdict parser. Record effective flags, model identity, precision/quantization, serving configuration, hardware, and provider. Verify the endpoint actually supports images and the configured context; reject a silent server clamp or model substitution. Start reader concurrency at one and disclose it.
+Use the upstream [run configuration](https://github.com/xiaowu0162/LongMemEval-V2/blob/main/evaluation/run_eval.py) as the reader/judge preset: reader temperature 0.6, top_p 0.95, top_k 20, thinking enabled, 20,000 completion tokens and 200,000 memory-context tokens; judge gpt-5.2, medium reasoning, 4,096 completion tokens. Do not carry over V1's 16K limit or verdict parser. Record effective flags, model identity, precision/quantization, serving configuration, hardware, and provider. Verify the endpoint actually supports images and the configured context; reject a silent server clamp or model substitution. Start reader concurrency at one and disclose it. At the pinned revision, enabled reader thinking relies on the serving default; the harness only sends an explicit thinking override on its disabled branch. Verify the server default rather than changing the official request builder.
 
 Keep evaluation/harness.py, qa_eval_metrics.py, reader prompts, scoring, timing, and leaderboard utilities unchanged. The official [harness](https://github.com/xiaowu0162/LongMemEval-V2/blob/main/evaluation/harness.py) supports shared and distinct histories, save/load for shared histories, cancellation, and a timed query boundary. Use one prompt-building worker initially. Do not add Scrinia to upstream parallelism allowlists as part of the first integration.
 
@@ -62,7 +62,7 @@ The retrieval controller receives the question image when present. Learning rece
 
 Do not make the controller's final answer the reader's context. Return retrieved notes and verifiable source evidence, with dated disagreements intact. Evidence ordering and any method-level selection limit are frozen; the official harness still applies its own context budget. An empty search is valid empty evidence, while missing files and invalid references are integration errors.
 
-Controller model is the outstanding user preference. The initial question proposed retaining Ornith for reuse. Because V2 contains image-bearing questions and histories, the full method also requires image understanding: verify capability rather than assume it. If Ornith cannot consume images, the recommended complete-method default is Qwen3.5-9B for the internal controller as well. Do not silently omit images or add an undisclosed captioning model. A deliberately text-only Ornith method would be a separately named, disclosed experiment and requires choosing that scope.
+The user selected Qwen3.5-9B with image support for the internal learning/retrieval controller, served as unsloth/Qwen3.5-9B-MTP-GGUF:BF16 at https://ai-srv-md.saga-augmented.ts.net/v1. Trim the supplied trailing whitespace from the model ID. Use temperature 0.6, top_p 0.95, top_k 20, and thinking enabled as the initial controller preset. The same deployment is the proposed reader endpoint, with the separate official reader settings above; judge remains GPT-5.2. Record the MTP/BF16 deployment explicitly. Model availability was supplied by the user; actual image handling, reported identity, and context capacity still require live preflight. Do not silently omit images or add a captioning model.
 
 ## Measurement and recovery
 
@@ -105,10 +105,10 @@ The builder may choose internal type names and file splits, Python test tooling,
 
 ## Decisions needed before live execution
 
-Confirm the controller/image choice above. Supply a real Qwen3.5-9B endpoint with image/context support and a GPT-5.2 endpoint/credential reference; the existing Ornith endpoint and BENCH_JUDGE_API_KEY are not assumed to serve those models. Choose compatible deployment precision and confirm available capacity, estimated cost, and run authorization.
+Verify the selected Qwen3.5-9B deployment supports images and the required context. Supply a GPT-5.2 endpoint/credential reference; BENCH_JUDGE_API_KEY is not assumed to authenticate OpenAI. Confirm available capacity, estimated cost, and run authorization before live evaluation.
 
 No dataset download, dependency installation, product code changes, live model calls, or benchmark submission occurred while preparing this design.
 
 ## Builder review
 
-A fresh builder review confirmed the external registry approach and found no additional architecture blocker. Its retry-budget question was resolved against ObservedChatClient.cs and ModelClientFactory.cs: shared attempt count, per-attempt network timeout, and unchanged episode deadline are now explicit above. The controller/image preference remains for the user to settle before the detailed implementation plan. No implementation has begun.
+A fresh builder review confirmed the external registry approach and found no additional architecture blocker. Its retry-budget question was resolved against ObservedChatClient.cs and ModelClientFactory.cs: shared attempt count, per-attempt network timeout, and unchanged episode deadline are now explicit above. The user subsequently selected Qwen3.5-9B with image support and asked to continue planning. No implementation has begun.
