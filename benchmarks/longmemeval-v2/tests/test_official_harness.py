@@ -301,6 +301,20 @@ class OfficialHarnessTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_experiment(config)
 
+    def test_reader_sampling_rejects_deviations_from_required_operating_point(self):
+        with FakeOpenAIServer() as server:
+            config = self.experiment(server)
+            for mode in ("synthetic", "submission"):
+                accepted = copy.deepcopy(config)
+                accepted["mode"] = mode
+                self.assertEqual(validate_experiment(accepted)["reader"], accepted["reader"])
+                for setting, changed in (("temperature", 0.7), ("top_p", 0.9), ("top_k", 40)):
+                    with self.subTest(mode=mode, setting=setting):
+                        rejected = copy.deepcopy(accepted)
+                        rejected["reader"][setting] = changed
+                        with self.assertRaisesRegex(ValueError, "official reader operating point"):
+                            validate_experiment(rejected)
+
     def test_verified_save_load_relocates_runtime_and_assets(self):
         memory = self.committed_memory()
         (io_path(Path(memory.paths["root"]) / "queries")).mkdir()

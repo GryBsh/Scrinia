@@ -53,7 +53,10 @@ def validate_experiment(value):
             raise ValueError("Only credential environment-variable names may be configured.")
         if value["mode"] == "synthetic" and urlsplit(settings[endpoint]).hostname not in ("localhost", "127.0.0.1", "::1"):
             raise ValueError("Synthetic runs may use only localhost model endpoints.")
-    if value["reader"]["enable_thinking"] is not True or value["reader"]["max_completion_tokens"] != 20000 or value["reader"]["memory_context_max_tokens"] != 200000:
+    if (value["reader"]["enable_thinking"] is not True
+            or value["reader"]["max_completion_tokens"] != 20000
+            or value["reader"]["memory_context_max_tokens"] != 200000
+            or (value["reader"]["temperature"], value["reader"]["top_p"], value["reader"]["top_k"]) != (0.6, 0.95, 20)):
         raise ValueError("The official reader operating point must be explicit and unchanged.")
     if value["judge"]["reasoning_effort"] != "medium" or value["judge"]["max_completion_tokens"] != 4096:
         raise ValueError("The official judge operating point must be explicit and unchanged.")
