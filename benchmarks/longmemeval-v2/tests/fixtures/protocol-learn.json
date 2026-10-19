@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "operation": "learn",
+  "operationId": "11111111111111111111111111111111",
+  "configuration": {
+    "endpoint": "https://example.invalid/v1",
+    "model": "fixture",
+    "apiKeyEnvironmentVariable": "SCRINIA_TEST_KEY",
+    "temperature": 0.6,
+    "topP": 0.95,
+    "topK": 20,
+    "thinking": true,
+    "maxOutputTokens": 16384,
+    "networkTimeoutSeconds": 180,
+    "episodeSeconds": 300,
+    "maxModelRequests": 40,
+    "maxAttempts": 5
+  },
+  "paths": {
+    "root": "C:/lme-fixture",
+    "workspace": "C:/lme-fixture/generations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/workspace",
+    "home": "C:/lme-fixture/generations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/home",
+    "eventLogPath": "C:/lme-fixture/events/learn.jsonl"
+  },
+  "trajectory": {
+    "id": "synthetic",
+    "goal": "Synthetic goal",
+    "outcome": null,
+    "startUrl": "https://synthetic.invalid",
+    "actions": [
+      "click"
+    ],
+    "states": [
+      {
+        "stateIndex": 0,
+        "step": 7,
+        "url": "https://synthetic.invalid",
+        "action": "click",
+        "thoughts": "source thought",
+        "text": "2026-03-04 caf\u00e9 \ud83d\ude00",
+        "screenshot": {
+          "path": "C:/lme-fixture/generations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/sources/synthetic.png",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mediaType": "image/png",
+          "byteLength": 1
+        }
+      }
+    ],
+    "originalJson": "{\"date\":\"2026-03-04\",\"screenshot\":\"synthetic.png\"}",
+    "sourceHash": "f878b8bc2e2255b66ca387b3721243a1f352d474d045549ffa409eebb98241ee"
+  },
+  "priorSnapshotPath": null,
+  "stagingPath": "C:/lme-fixture/generations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "previousFingerprint": null,
+  "fragments": [
+    {
+      "sourceId": "1613bf38011e55c0704753a23f5fb48729b11ee69a25f5effa6f5a439ed5b410",
+      "stateIndex": 0,
+      "fragmentIndex": 0,
+      "startByte": 0,
+      "endByte": 21,
+      "text": "2026-03-04 caf\u00e9 \ud83d\ude00",
+      "textHash": "01dc34d5e7337bf5c3d8f83e0ea8f5b8c6e22a07303ea5a8681f7cef4d5587b4"
+    }
+  ],
+  "batches": [
+    {
+      "sourceIds": [
+        "1613bf38011e55c0704753a23f5fb48729b11ee69a25f5effa6f5a439ed5b410"
+      ],
+      "images": [
+        {
+          "path": "C:/lme-fixture/generations/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/sources/synthetic.png",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mediaType": "image/png",
+          "byteLength": 1
+        }
+      ],
+      "inputTokens": 500,
+      "messageText": "{\"fragments\":[{\"action\":\"click\",\"endByte\":21,\"fragmentIndex\":0,\"screenshotSha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sourceId\":\"1613bf38011e55c0704753a23f5fb48729b11ee69a25f5effa6f5a439ed5b410\",\"startByte\":0,\"stateIndex\":0,\"step\":7,\"text\":\"2026-03-04 caf\\u00e9 \\ud83d\\ude00\",\"textHash\":\"01dc34d5e7337bf5c3d8f83e0ea8f5b8c6e22a07303ea5a8681f7cef4d5587b4\",\"thoughts\":\"source thought\",\"url\":\"https://synthetic.invalid\"}],\"goal\":\"Synthetic goal\",\"outcome\":null,\"startUrl\":\"https://synthetic.invalid\",\"trajectoryId\":\"synthetic\",\"trajectorySourceHash\":\"f878b8bc2e2255b66ca387b3721243a1f352d474d045549ffa409eebb98241ee\"}"
+    }
+  ],
+  "learning": {
+    "executable": "C:/lme-fixture/scri.exe",
+    "prefixArguments": [],
+    "toolCatalogJson": "[]",
+    "catalogHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "instructionsHash": "467c314fb547f8b133a4cc69aa26ab39483a001fa8571eb2484e40ec96599ae6",
+    "processorRevision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+    "inputTokenLimit": 24576,
+    "fragmentTokenLimit": 4096,
+    "imageLimit": 4,
+    "servedContextTokens": 65536
+  }
+}

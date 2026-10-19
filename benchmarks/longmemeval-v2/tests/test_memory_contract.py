@@ -75,7 +75,7 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(len(ref["sha256"]), 64)
     def test_unimplemented_learning_and_snapshot_hooks_fail_explicitly(self):
         memory = self.memory()
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises(ValueError):
             memory.insert({"id": "synthetic"})
         with self.assertRaises(NotImplementedError):
             memory._save_backend(self.root / "save")

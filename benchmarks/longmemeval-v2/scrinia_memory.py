@@ -22,7 +22,7 @@ class ScriniaMemory(Memory):
     memory_type = "scrinia"
 
     def __init__(self, memory_params: dict[str, object]) -> None:
-        allowed = {"run_root", "worker_command", "controller", "trajectories_root_dir"}
+        allowed = {"run_root", "worker_command", "controller", "trajectories_root_dir", "learning"}
         if not isinstance(memory_params, dict) or set(memory_params) - allowed:
             raise ValueError("Unsupported Scrinia memory parameter.")
         root_value = memory_params.get("run_root")
@@ -37,6 +37,7 @@ class ScriniaMemory(Memory):
         if not isinstance(controller, dict) or set(controller) - set(_DEFAULT_CONTROLLER):
             raise ValueError("Unsupported controller setting.")
         self.configuration = {**_DEFAULT_CONTROLLER, **controller}
+        self.learning_params = memory_params.get("learning")
         instance_root = run_root / ("memory-" + uuid.uuid4().hex)
         self.paths = {"root": str(instance_root), "workspace": str(instance_root / "workspace"),
                       "home": str(instance_root / "home"),
@@ -50,6 +51,8 @@ class ScriniaMemory(Memory):
             Path(self.paths[name]).mkdir(parents=True, exist_ok=False)
         self.bridge = WorkerBridge(command, instance_root / "operations")
         self.cancel_event = threading.Event()
+        from snapshots import SnapshotStore
+        self.snapshots = SnapshotStore(instance_root / "snapshots", self._learning_request)
 
     def configure_runtime(self, **kwargs: object) -> None:
         # The official harness passes reader sampling/trace hints to every backend.
@@ -70,8 +73,46 @@ class ScriniaMemory(Memory):
                     str(Path(self.paths["root"]) / "events" / (operation_id + ".jsonl"))},
                 **fields}
 
+    def _learning_request(self, operation, **fields):
+        if operation == "learn":
+            fields["learning"] = dict(self._learning_configuration)
+        return self._request(operation, **fields)
+
     def insert(self, trajectory: dict[str, object]) -> None:
-        raise NotImplementedError("V2 trajectory learning is not implemented yet.")
+        import json
+        from batching import BatchPlanner, ProcessorCounter, catalog_hash, instruction_text
+        from trajectory_input import normalize_trajectory, canonical, digest, PROCESSOR_REVISION
+        settings = self.learning_params
+        required = {"mcp_executable", "mcp_prefix_arguments", "processor_assets", "tool_catalog_path", "served_context_tokens"}
+        if not isinstance(settings, dict) or set(settings) != required:
+            raise ValueError("Learning requires explicit MCP launch, pinned processor assets, tool catalog and served context.")
+        executable = _absolute(settings["mcp_executable"])
+        assets = _absolute(settings["processor_assets"])
+        descriptor = _absolute(settings["tool_catalog_path"])
+        if not executable.is_file() or not descriptor.is_file() or not assets.is_dir():
+            raise ValueError("Learning runtime assets are missing.")
+        tools = json.loads(descriptor.read_text(encoding="utf-8"))
+        if not isinstance(tools, list) or {t.get("name") for t in tools}.issuperset({"remember","recall","search","list"}) is False:
+            raise ValueError("Learning catalog must contain the required tools.")
+        if (not isinstance(settings["mcp_prefix_arguments"], list)
+            or not all(isinstance(a,str) for a in settings["mcp_prefix_arguments"])):
+            raise ValueError("MCP prefix arguments must be an argument list.")
+        self._learning_configuration = {"executable":str(executable),"prefixArguments":settings["mcp_prefix_arguments"],
+            "toolCatalogJson":canonical(tools),"catalogHash":catalog_hash(tools),
+            "instructionsHash":digest(instruction_text().encode("utf-8")),"processorRevision":PROCESSOR_REVISION,
+            "inputTokenLimit":24576,"fragmentTokenLimit":4096,"imageLimit":4,"servedContextTokens":settings["served_context_tokens"]}
+        root_value = self.memory_params.get("trajectories_root_dir")
+        if not isinstance(root_value,str):
+            raise ValueError("An explicit trajectories_root_dir is required for learning.")
+        normalized = normalize_trajectory(trajectory,_absolute(root_value))
+        counter = ProcessorCounter(assets)
+        planned = BatchPlanner(counter,tools,output_tokens=self.configuration["maxOutputTokens"],
+            served_context=settings["served_context_tokens"]).prepare(normalized)
+        configuration_hash = digest(canonical({"controller":self.configuration,
+            "learning":self._learning_configuration,
+            "executableHash":digest(executable.read_bytes())}).encode("utf-8"))
+        self.snapshots.insert(planned,configuration_hash,self.bridge,self.cancel_event)
+        self.snapshot_path = str(self.snapshots.generation_path)
 
     def _own_image(self, value):
         if not isinstance(value, str) or not value or urlparse(value).scheme.lower() in (

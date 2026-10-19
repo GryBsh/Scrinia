@@ -16,6 +16,10 @@ public sealed record LearnRequest : WorkerRequest
     public required TrajectoryManifest Trajectory { get; init; }
     public required string? PriorSnapshotPath { get; init; }
     public required string StagingPath { get; init; }
+    public required string? PreviousFingerprint { get; init; }
+    public required LearningConfiguration Learning { get; init; }
+    public required SourceFragment[] Fragments { get; init; }
+    public required PreparedBatch[] Batches { get; init; }
 }
 public sealed record RetrieveRequest : WorkerRequest
 {
@@ -66,6 +70,7 @@ public sealed record TrajectoryManifest
     public required string[] Actions { get; init; }
     public required TrajectoryState[] States { get; init; }
     public required string SourceHash { get; init; }
+    public required string OriginalJson { get; init; }
 }
 public sealed record TrajectoryState
 {
@@ -138,10 +143,31 @@ public static class WorkerProtocol
             case LearnRequest learn:
                 Require(request.Operation == "learn" && learn.Trajectory is not null);
                 CheckPath(paths.Root, learn.StagingPath);
+                Require(Path.GetFullPath(paths.Workspace) == Path.GetFullPath(Path.Combine(learn.StagingPath, "workspace"))
+                    && Path.GetFullPath(paths.Home) == Path.GetFullPath(Path.Combine(learn.StagingPath, "home")));
+                Require(learn.PreviousFingerprint is null || IsHex(learn.PreviousFingerprint, 64));
+                Require(learn.Learning is not null && learn.Fragments is { Length: > 0 } && learn.Batches is { Length: > 0 });
+                var learning = learn.Learning!;
+                Require(Path.IsPathFullyQualified(learning.Executable) && learning.PrefixArguments is not null
+                    && learning.PrefixArguments.All(a => a is not null) && IsHex(learning.CatalogHash,64)
+                    && IsHex(learning.InstructionsHash,64) && learning.ToolCatalogJson is not null
+                    && learning.ProcessorRevision == "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+                    && learning.InputTokenLimit is > 0 and <= 24576 && learning.FragmentTokenLimit is > 0 and <= 4096
+                    && learning.ImageLimit is > 0 and <= 4 && configuration.MaxOutputTokens <= 16384
+                    && configuration.NetworkTimeoutSeconds == 180 && configuration.Thinking
+                    && learning.ServedContextTokens >= learning.InputTokenLimit + configuration.MaxOutputTokens);
+                PathSafety.RequireNoLinks(learning.Executable);
+                foreach (var batch in learn.Batches!) {
+                    Require(batch is not null && batch.InputTokens > 0 && batch.InputTokens <= learning.InputTokenLimit
+                        && batch.SourceIds is { Length: > 0 } && batch.MessageText is not null
+                        && batch.Images is not null && batch.Images.Length <= learning.ImageLimit);
+                    foreach (var image in batch!.Images!) CheckImage(paths.Root, image);
+                }
                 if (learn.PriorSnapshotPath is not null) CheckPath(paths.Root, learn.PriorSnapshotPath);
                 var trajectory = learn.Trajectory!;
                 Require(!string.IsNullOrEmpty(trajectory.Id) && trajectory.Goal is not null
                     && !string.IsNullOrEmpty(trajectory.StartUrl) && IsHex(trajectory.SourceHash, 64)
+                    && trajectory.OriginalJson is not null
                     && trajectory.Actions is not null && trajectory.Actions.All(a => a is not null)
                     && trajectory.States is { Length: > 0 });
                 foreach (var state in trajectory.States!)

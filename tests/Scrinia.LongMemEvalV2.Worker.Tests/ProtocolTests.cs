@@ -19,6 +19,16 @@ public sealed class ProtocolTests
         Assert.True(JsonElement.DeepEquals(JsonDocument.Parse(Fixture).RootElement, JsonDocument.Parse(serialized).RootElement));
     }
 
+    [Fact]
+    public void Python_generated_learning_fixture_preserves_canonical_hash_and_utf8_offsets()
+    {
+        var json=File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"protocol-learn.json"))
+            .Replace("C:/lme-fixture",Path.GetTempPath().Replace("\\","/").TrimEnd('/')+"/lme-fixture",StringComparison.Ordinal);
+        var request=Assert.IsType<LearnRequest>(WorkerProtocol.Parse(json));
+        Assert.Equal(request.Trajectory.SourceHash,Evidence.SourceCatalog.LogicalHash(request.Trajectory));
+        Evidence.SourceCatalog.ValidateFragments(request.Trajectory,request.Fragments);
+    }
+
     [Theory]
     [InlineData("\"version\": 1", "\"version\": 2")]
     [InlineData("\"operation\": \"retrieve\"", "\"operation\": \"grade\"")]

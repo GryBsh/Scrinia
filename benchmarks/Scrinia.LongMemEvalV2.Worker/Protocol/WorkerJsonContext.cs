@@ -10,7 +10,14 @@ namespace Scrinia.LongMemEvalV2.Worker.Protocol;
 [JsonSerializable(typeof(ValidateSnapshotRequest))]
 [JsonSerializable(typeof(LearningReceipt))]
 [JsonSerializable(typeof(WorkerResult))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(Dictionary<string,string[]>))]
 [JsonSerializable(typeof(ControlLine))]
+[JsonSerializable(typeof(Scrinia.LongMemEvalV2.Worker.Evidence.SourceCatalog))]
+[JsonSerializable(typeof(Scrinia.LongMemEvalV2.Worker.Evidence.SourceMemory))]
+[JsonSerializable(typeof(ModelContextProtocol.Protocol.Tool[]))]
+[JsonSerializable(typeof(TrajectoryManifest))]
 public sealed partial class WorkerJsonContext : JsonSerializerContext;
 
 public sealed record ControlLine

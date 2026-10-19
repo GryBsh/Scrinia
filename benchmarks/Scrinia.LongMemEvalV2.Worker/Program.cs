@@ -19,6 +19,25 @@ public sealed class UnsupportedOperation : IWorkerOperation
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
+public sealed class LearningOperation : IWorkerOperation
+{
+    public async Task<WorkerResult> ExecuteAsync(WorkerRequest request, CancellationToken cancellationToken)
+    {
+        if (request is LearnRequest learn) {
+            var receipt = await new Learning.TrajectoryLearner().LearnAsync(learn,cancellationToken);
+            return new() { Version=1,OperationId=request.OperationId,Status="ok",EventLogPath=request.Paths.EventLogPath,
+                Receipt=receipt,Evidence=null,ErrorCode=null };
+        }
+        if (request is ValidateSnapshotRequest validate) {
+            await new Evidence.SnapshotValidator().ValidateAsync(validate.SnapshotPath,validate.ExpectedFingerprint,cancellationToken);
+            return new() { Version=1,OperationId=request.OperationId,Status="ok",EventLogPath=request.Paths.EventLogPath,
+                Receipt=null,Evidence=null,ErrorCode=null };
+        }
+        return WorkerResult.Failure(request,"UNSUPPORTED_OPERATION");
+    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
 public static class WorkerHost
 {
     public static async Task<WorkerResult> ExecuteOwnedAsync(WorkerRequest request, IWorkerOperation operation, CancellationToken cancellationToken)
@@ -95,9 +114,9 @@ internal static class Program
             // The adapter retains ownership of the stdin pipe throughout operation lifetime.
             using var input = new StreamReader(Console.OpenStandardInput());
             var result = await WorkerHost.RunWithControlAsync(request, input,
-                new UnsupportedOperation(), CancellationToken.None).ConfigureAwait(false);
+                new LearningOperation(), CancellationToken.None).ConfigureAwait(false);
             Directory.CreateDirectory(Path.GetDirectoryName(request.Paths.EventLogPath)!);
-            await File.WriteAllTextAsync(request.Paths.EventLogPath,
+            await File.AppendAllTextAsync(request.Paths.EventLogPath,
                 JsonSerializer.Serialize(result, WorkerJsonContext.Default.WorkerResult) + "\n").ConfigureAwait(false);
             var temporary = args[3] + "." + request.OperationId + ".tmp";
             await File.WriteAllTextAsync(temporary,
