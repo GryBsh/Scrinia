@@ -8,6 +8,15 @@ from urllib.parse import urlsplit
 UPSTREAM_REVISION = "2cc8c540bdb87fe6761629b585e727e1c4704520"
 PROCESSOR_REVISION = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
 
+_DEFAULT_CONTROLLER = {
+    "endpoint": "https://ai-srv-md.saga-augmented.ts.net/v1",
+    "model": "unsloth/Qwen3.5-9B-MTP-GGUF:BF16",
+    "apiKeyEnvironmentVariable": "SCRINIA_CONTROLLER_API_KEY",
+    "temperature": 0.6, "topP": 0.95, "topK": 20, "thinking": True,
+    "maxOutputTokens": 16384, "networkTimeoutSeconds": 180, "episodeSeconds": 300,
+    "maxModelRequests": 40, "maxAttempts": 5,
+}
+
 def _keys(value, required, optional=()):
     if not isinstance(value, dict) or set(value) - set(required) - set(optional) or set(required) - set(value):
         raise ValueError("Experiment object has missing or unsupported fields.")

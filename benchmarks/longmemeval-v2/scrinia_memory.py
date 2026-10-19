@@ -11,14 +11,7 @@ from urllib.parse import urlparse
 from memory_modules.memory import Memory, register_memory
 from bridge import BridgeError, WorkerBridge, _absolute, validate_request
 
-_DEFAULT_CONTROLLER = {
-    "endpoint": "https://ai-srv-md.saga-augmented.ts.net/v1",
-    "model": "unsloth/Qwen3.5-9B-MTP-GGUF:BF16",
-    "apiKeyEnvironmentVariable": "SCRINIA_CONTROLLER_API_KEY",
-    "temperature": 0.6, "topP": 0.95, "topK": 20, "thinking": True,
-    "maxOutputTokens": 16384, "networkTimeoutSeconds": 180, "episodeSeconds": 300,
-    "maxModelRequests": 40, "maxAttempts": 5,
-}
+from experiment_config import _DEFAULT_CONTROLLER
 
 @register_memory
 class ScriniaMemory(Memory):

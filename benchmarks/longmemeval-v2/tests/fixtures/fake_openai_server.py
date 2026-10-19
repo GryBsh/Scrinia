@@ -7,7 +7,8 @@ import threading
 import time
 
 class FakeOpenAIServer:
-    def __init__(self, *, retry_once=False, controller_delay=0.05):
+    def __init__(self, *, retry_once=False, controller_delay=0.05, image_only=False):
+        self.image_only = image_only
         self.calls = []
         self.errors = []
         self.retry_once = retry_once
@@ -23,7 +24,7 @@ class FakeOpenAIServer:
                 tools = body.get("tools", [])
                 message = {"role": "assistant", "content": None}
                 finish = "stop"
-                if model == "synthetic-controller":
+                if model == "synthetic-controller" or (model == "unsloth/Qwen3.5-9B-MTP-GGUF:BF16" and tools):
                     time.sleep(owner.controller_delay)
                     if {t["function"]["name"] for t in tools} == {"search", "list", "recall"}:
                         if owner.retry_once:
@@ -50,10 +51,22 @@ class FakeOpenAIServer:
                                     {"kind": "source", "sourceId": source, "stateIndex": 0}]})
                     else:
                         message["content"] = "Learning complete."
-                elif model == "synthetic-Qwen3.5-9B-reader":
+                elif model in ("synthetic-Qwen3.5-9B-reader", "unsloth/Qwen3.5-9B-MTP-GGUF:BF16"):
                     text = json.dumps(body["messages"])
-                    message["content"] = "\\boxed{" + ("amber" if "amber" in text else "cobalt") + "}"
-                elif model == "synthetic-gpt-5.2-judge":
+                    answer = "amber" if "amber" in text else "cobalt"
+                    if owner.image_only:
+                        import base64
+                        from io import BytesIO
+                        from PIL import Image
+                        urls = [p["image_url"]["url"] for m in body["messages"]
+                            for p in (m["content"] if isinstance(m.get("content"), list) else [])
+                            if p.get("type") == "image_url"]
+                        if len(urls) != 1:
+                            raise ValueError("The image-only fixture requires one retrieved source image.")
+                        with Image.open(BytesIO(base64.b64decode(urls[0].split(",", 1)[1]))) as image:
+                            answer = "cobalt" if image.convert("RGB").getpixel((0, 0)) == (0, 71, 171) else "amber"
+                    message["content"] = "\\boxed{" + answer + "}"
+                elif model in ("synthetic-gpt-5.2-judge", "gpt-5.2"):
                     message["content"] = json.dumps({"label": 1, "reason": "Invented insight matches."})
                 else:
                     self.send_error(400, "Unexpected synthetic model")

@@ -36,7 +36,7 @@ def _command(arguments):
     return result
 
 def method_identity(params):
-    from scrinia_memory import _DEFAULT_CONTROLLER
+    from experiment_config import _DEFAULT_CONTROLLER
     from batching import catalog_hash
     from trajectory_input import PROCESSOR_REVISION
     settings = params.get("learning")

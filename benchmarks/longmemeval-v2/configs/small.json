@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "source_root": "C:/REPLACE/checkout",
+  "upstream_root": "C:/REPLACE/checkout/artifacts/longmemeval-v2/upstream",
+  "guide_path": "C:/REPLACE/catalog-capture/guide.txt",
+  "experiments": {
+    "web": {
+      "version": 1,
+      "mode": "submission",
+      "domain": "web",
+      "tier": "small",
+      "data": {
+        "root": "C:/REPLACE/immutable-v2-data",
+        "revision": null
+      },
+      "processor": {
+        "assets": "C:/REPLACE/checkout/artifacts/longmemeval-v2/processor",
+        "model": "Qwen/Qwen3.5-9B",
+        "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+      },
+      "run_root": "C:/REPLACE/fresh-runs/web",
+      "memory": {
+        "worker_command": [
+          "C:/REPLACE/published-worker/scrinia-lme-v2-worker.exe"
+        ],
+        "learning": {
+          "mcp_executable": "C:/REPLACE/published-scri/scri.exe",
+          "mcp_prefix_arguments": [],
+          "tool_catalog_path": "C:/REPLACE/catalog-capture/tools.json",
+          "served_context_tokens": 220000
+        }
+      },
+      "controller": {
+        "endpoint": "https://ai-srv-md.saga-augmented.ts.net/v1",
+        "model": "unsloth/Qwen3.5-9B-MTP-GGUF:BF16",
+        "apiKeyEnvironmentVariable": "BENCH_AGENT_API_KEY",
+        "temperature": 0.6,
+        "topP": 0.95,
+        "topK": 20,
+        "thinking": true,
+        "maxOutputTokens": 16384,
+        "networkTimeoutSeconds": 180,
+        "episodeSeconds": 300,
+        "maxModelRequests": 40,
+        "maxAttempts": 5
+      },
+      "reader": {
+        "model": "unsloth/Qwen3.5-9B-MTP-GGUF:BF16",
+        "base_url": "https://ai-srv-md.saga-augmented.ts.net/v1",
+        "api_key_env": "BENCH_AGENT_API_KEY",
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "enable_thinking": true,
+        "max_completion_tokens": 20000,
+        "memory_context_max_tokens": 200000,
+        "timeout_seconds": 180
+      },
+      "judge": {
+        "model": "gpt-5.2",
+        "base_url": "https://REPLACE_WITH_GPT52_ENDPOINT/v1",
+        "api_key_env": "GPT52_API_KEY",
+        "reasoning_effort": "medium",
+        "max_completion_tokens": 4096,
+        "timeout_seconds": 180
+      },
+      "limits": {
+        "limit": null,
+        "question_ids": null,
+        "prompt_build_max_workers": 1,
+        "reader_max_concurrent_requests": 1
+      },
+      "method_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "enterprise": {
+      "version": 1,
+      "mode": "submission",
+      "domain": "enterprise",
+      "tier": "small",
+      "data": {
+        "root": "C:/REPLACE/immutable-v2-data",
+        "revision": null
+      },
+      "processor": {
+        "assets": "C:/REPLACE/checkout/artifacts/longmemeval-v2/processor",
+        "model": "Qwen/Qwen3.5-9B",
+        "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+      },
+      "run_root": "C:/REPLACE/fresh-runs/enterprise",
+      "memory": {
+        "worker_command": [
+          "C:/REPLACE/published-worker/scrinia-lme-v2-worker.exe"
+        ],
+        "learning": {
+          "mcp_executable": "C:/REPLACE/published-scri/scri.exe",
+          "mcp_prefix_arguments": [],
+          "tool_catalog_path": "C:/REPLACE/catalog-capture/tools.json",
+          "served_context_tokens": 220000
+        }
+      },
+      "controller": {
+        "endpoint": "https://ai-srv-md.saga-augmented.ts.net/v1",
+        "model": "unsloth/Qwen3.5-9B-MTP-GGUF:BF16",
+        "apiKeyEnvironmentVariable": "BENCH_AGENT_API_KEY",
+        "temperature": 0.6,
+        "topP": 0.95,
+        "topK": 20,
+        "thinking": true,
+        "maxOutputTokens": 16384,
+        "networkTimeoutSeconds": 180,
+        "episodeSeconds": 300,
+        "maxModelRequests": 40,
+        "maxAttempts": 5
+      },
+      "reader": {
+        "model": "unsloth/Qwen3.5-9B-MTP-GGUF:BF16",
+        "base_url": "https://ai-srv-md.saga-augmented.ts.net/v1",
+        "api_key_env": "BENCH_AGENT_API_KEY",
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "enable_thinking": true,
+        "max_completion_tokens": 20000,
+        "memory_context_max_tokens": 200000,
+        "timeout_seconds": 180
+      },
+      "judge": {
+        "model": "gpt-5.2",
+        "base_url": "https://REPLACE_WITH_GPT52_ENDPOINT/v1",
+        "api_key_env": "GPT52_API_KEY",
+        "reasoning_effort": "medium",
+        "max_completion_tokens": 4096,
+        "timeout_seconds": 180
+      },
+      "limits": {
+        "limit": null,
+        "question_ids": null,
+        "prompt_build_max_workers": 1,
+        "reader_max_concurrent_requests": 1
+      },
+      "method_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "policies": {
+    "image": "original-bytes-no-resize",
+    "query_learning": false
+  },
+  "deployment": {
+    "precision": "BF16",
+    "mtp": true,
+    "hardware": "unverified",
+    "reader_thinking_default": "unverified",
+    "model_revision": "unverified"
+  },
+  "exposure_log": [],
+  "measurements": []
+}

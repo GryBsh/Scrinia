@@ -104,6 +104,23 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--capture-catalog")
+        {
+            try
+            {
+                if (!Path.IsPathFullyQualified(args[1]) || new FileInfo(args[1]).Length > 65536) return 2;
+                PathSafety.RequireNoLinks(args[1]);
+                var request = JsonSerializer.Deserialize(await File.ReadAllTextAsync(args[1]),
+                    WorkerJsonContext.Default.CatalogCaptureRequest) ?? throw new InvalidDataException();
+                await CatalogCapture.RunAsync(request, CancellationToken.None);
+                return 0;
+            }
+            catch (Exception)
+            {
+                Console.Error.WriteLine("CAPTURE_FAILED");
+                return 2;
+            }
+        }
         if (args.Length != 4 || args[0] != "--request" || args[2] != "--result"
             || !Path.IsPathFullyQualified(args[1]) || !Path.IsPathFullyQualified(args[3]))
             return 2;
