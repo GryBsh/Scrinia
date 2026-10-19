@@ -1,5 +1,6 @@
 """Synthetic subprocess fixture. Never imported by production code."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,11 +11,16 @@ args = sys.argv[2:]
 body = json.loads(Path(args[args.index("--request") + 1]).read_text())
 target = Path(args[args.index("--result") + 1])
 root = Path(body["paths"]["root"])
-if mode in ("cancel", "ignore-cancel"):
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+if mode in ("cancel", "ignore-cancel", "closed-stdin"):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             stdin=subprocess.DEVNULL)
     (root / "child.pid").write_text(str(child.pid))
     try:
-        if mode == "ignore-cancel":
+        if mode == "closed-stdin":
+            os.close(sys.stdin.fileno())
+            (root / "stdin-closed").touch()
+            time.sleep(0.8)
+        elif mode == "ignore-cancel":
             time.sleep(60)
         else:
             line = sys.stdin.readline()

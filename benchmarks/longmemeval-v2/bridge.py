@@ -187,6 +187,14 @@ class _OwnedTree:
             except ProcessLookupError:
                 pass
 
+def _close_control_pipe(process):
+    if process.stdin is not None and not process.stdin.closed:
+        try:
+            process.stdin.close()
+        except OSError:
+            # Closing buffered stdin can flush again after an earlier broken-pipe error.
+            pass
+
 class WorkerBridge:
     def __init__(self, command, operation_root, *, cleanup_seconds=30):
         if not command or cleanup_seconds <= 0 or cleanup_seconds > 30:
@@ -235,7 +243,7 @@ class WorkerBridge:
                         process.stdin.flush()
                     except (BrokenPipeError, OSError):
                         pass
-                    process.stdin.close()
+                    _close_control_pipe(process)
                 if deadline is not None and time.monotonic() >= deadline:
                     owned.close()
                     process.kill()
@@ -261,10 +269,15 @@ class WorkerBridge:
             raise
         finally:
             if process is not None:
-                if process.stdin is not None and not process.stdin.closed:
-                    process.stdin.close()
-                if owned is not None:
-                    owned.close()
-                if process.poll() is None:
-                    process.kill()
-                process.wait()
+                try:
+                    _close_control_pipe(process)
+                finally:
+                    try:
+                        if owned is not None:
+                            owned.close()
+                    finally:
+                        try:
+                            if process.poll() is None:
+                                process.kill()
+                        finally:
+                            process.wait()
