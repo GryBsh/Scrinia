@@ -214,6 +214,8 @@ public sealed class PublishManifestTests
             "distributed to users.",
         ["Scrinia.Agent.Benchmarks"] =
             "Developer LongMemEval agent harness under benchmarks/; run from source, not a shipped release unit.",
+        ["Scrinia.LongMemEvalV2.Worker"] =
+            "Developer worker for official LongMemEval V2 experiment artifacts; not a Scrinia release unit.",
         ["Scrinia.Agent.Benchmarks.Tests"] =
             "Test assembly with a readable child-process fixture entry point; never distributed to users.",
         ["Scrinia.Benchmarks"] =
