@@ -10,12 +10,17 @@ public sealed class TrajectoryLearner(Func<ModelSettings,IChatClient>? createCli
 {
     public async Task<LearningReceipt> LearnAsync(LearnRequest request,CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         WorkerProtocol.Validate(request);
         SourceCatalog.ValidateFragments(request.Trajectory,request.Fragments);
         ValidateBatches(request);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(request.Configuration.EpisodeSeconds));
-        ct = deadline.Token;
+        // Each batch gets its own episode. Two additional episode allowances bound
+        // non-model operation work (startup/seeding and final persistence/validation).
+        // Validation above rejects an empty batch manifest before deriving this limit.
+        long operationSeconds = checked((long)request.Configuration.EpisodeSeconds * (request.Batches.LongLength + 2L));
+        using var operationDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        operationDeadline.CancelAfter(TimeSpan.FromSeconds(operationSeconds));
+        ct = operationDeadline.Token;
         var catalog = SourceCatalog.Create(request.Trajectory,request.Fragments,request.StagingPath);
         await using var events = new LearningEvents(request.Paths.EventLogPath);
         var settings = new ScriniaSettings(Path.GetDirectoryName(request.Learning.Executable)!,
@@ -35,15 +40,16 @@ public sealed class TrajectoryLearner(Func<ModelSettings,IChatClient>? createCli
                 || actualTools.EnumerateArray().Where((tool,i)=>!JsonElement.DeepEquals(tool,expectedTools[i])).Any())
                 throw new InvalidDataException("LEARNING_CATALOG_DESCRIPTOR_MISMATCH");
             await new SourceSeeder().SeedAsync(catalog,session,ct);
-            int remaining = request.Configuration.MaxModelRequests;
             foreach (var batch in request.Batches)
             {
-                ct.ThrowIfCancellationRequested();
-                if (remaining <= 0) throw new InvalidDataException("LEARNING_REQUEST_BUDGET_EXHAUSTED");
+                using var batchDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                batchDeadline.CancelAfter(TimeSpan.FromSeconds(request.Configuration.EpisodeSeconds));
+                var batchCt = batchDeadline.Token;
+                batchCt.ThrowIfCancellationRequested();
                 List<AIContent> content = [new TextContent(batch.MessageText)];
                 foreach (var image in batch.Images)
                 {
-                    var data = await File.ReadAllBytesAsync(image.Path,ct);
+                    var data = await File.ReadAllBytesAsync(image.Path,batchCt);
                     if (SourceCatalog.Hash(data)!=image.Sha256) throw new InvalidDataException("SOURCE_IMAGE_CHANGED");
                     content.Add(new DataContent(data,image.MediaType));
                 }
@@ -57,8 +63,8 @@ public sealed class TrajectoryLearner(Func<ModelSettings,IChatClient>? createCli
                     [new ChatMessage(ChatRole.User,content)],LearningInstructions.AllowedTools,
                     EnableResponseRecovery:true,EnableThinking:configuration.Thinking,
                     ValidateToolCall:LearningInstructions.Guard(request.Trajectory.SourceHash,batch.SourceIds)),
-                    session,model,new RunLimits(remaining,configuration.EpisodeSeconds,configuration.EpisodeSeconds,configuration.MaxAttempts),events,ct);
-                remaining -= result.ModelRequests;
+                    session,model,new RunLimits(configuration.MaxModelRequests,configuration.EpisodeSeconds,configuration.EpisodeSeconds,configuration.MaxAttempts),events,batchCt);
+                batchCt.ThrowIfCancellationRequested();
                 if (result.ToolErrors != 0) throw new InvalidDataException("LEARNING_TOOL_ERROR");
             }
             ct.ThrowIfCancellationRequested();

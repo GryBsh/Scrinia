@@ -83,19 +83,44 @@ public sealed class LearningIntegrationTests
     }
 
     [Fact]
-    public async Task Total_request_limit_and_dynamic_context_growth_fail_closed()
+    public async Task Each_batch_receives_its_full_request_allowance()
     {
         using var fixture=new LearningFixture();
         var request=await fixture.RequestAsync(twoBatches:true);
         int calls=0;
         var learner=new TrajectoryLearner(_=>new FakeClient(_=>{calls++;return FakeClient.Text("Done.");}));
         await Assert.ThrowsAsync<InvalidDataException>(()=>learner.LearnAsync(
-            request with {Configuration=request.Configuration with {MaxModelRequests=1}},CancellationToken.None));
-        Assert.Equal(1,calls);
-        Assert.False(Directory.Exists(Path.Combine(request.StagingPath,"catalogs")));
+            request with {Batches=[]},CancellationToken.None));
+        Assert.Equal(0,calls);
+        var receipt=await learner.LearnAsync(
+            request with {Configuration=request.Configuration with {MaxModelRequests=1}},CancellationToken.None);
+        Assert.Equal(2,calls);
+        await new SnapshotValidator().ValidateAsync(request.StagingPath,receipt.NewSnapshotHash,CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Each_batch_receives_its_full_deadline_when_trajectory_exceeds_one_episode()
+    {
+        using var fixture=new LearningFixture();
+        var request=await fixture.RequestAsync(twoBatches:true);
+        int calls=0;
+        var learner=new TrajectoryLearner(_=>new FakeClient(_=>{
+            calls++;
+            Thread.Sleep(TimeSpan.FromMilliseconds(1200));
+            return FakeClient.Text("Done.");
+        }));
+        var receipt=await learner.LearnAsync(
+            request with {Configuration=request.Configuration with {EpisodeSeconds=2}},CancellationToken.None);
+        Assert.Equal(2,calls);
+        await new SnapshotValidator().ValidateAsync(request.StagingPath,receipt.NewSnapshotHash,CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Dynamic_context_growth_fails_closed_before_another_provider_request()
+    {
         using var next=new LearningFixture();
         var growth=await next.RequestAsync();
-        calls=0;
+        int calls=0;
         var bounded=new TrajectoryLearner(_=>new FakeClient(_=>{
             calls++;return FakeClient.Call("/derived/"+growth.Trajectory.SourceHash+"/date",growth.Fragments[0].SourceId);
         }));
