@@ -21,8 +21,8 @@ public sealed class FileEntityLinkTests : IDisposable
     [InlineData("/agent/profile", "~scratch")]
     public async Task Link_PersistsBothReferencesWithoutChangingBodies(string from, string to)
     {
-        (await _tools.MemoryRemember(from, ["source body"])).Should().NotContain("status: error");
-        (await _tools.MemoryRemember(to, ["destination body"])).Should().NotContain("status: error");
+        (await _tools.MemoryRemember(from, ["source body"], description: "source body")).Should().NotContain("status: error");
+        (await _tools.MemoryRemember(to, ["destination body"], description: "destination body")).Should().NotContain("status: error");
 
         byte[]? beforeFrom = IsFileEntity(from) ? File.ReadAllBytes(BodyPath(from)) : null;
         byte[]? beforeTo = IsFileEntity(to) ? File.ReadAllBytes(BodyPath(to)) : null;
@@ -42,9 +42,9 @@ public sealed class FileEntityLinkTests : IDisposable
     [InlineData("/skill/custom")]
     public async Task Link_UnionIsIdempotentAndSurvivesContentWrites(string path)
     {
-        await _tools.MemoryRemember(path, ["original body"]);
-        await _tools.MemoryRemember("/notes/one", ["first note"]);
-        await _tools.MemoryRemember("/notes/two", ["second note"]);
+        await _tools.MemoryRemember(path, ["original body"], description: "original body");
+        await _tools.MemoryRemember("/notes/one", ["first note"], description: "first note");
+        await _tools.MemoryRemember("/notes/two", ["second note"], description: "second note");
         string metaPath = Path.ChangeExtension(BodyPath(path), ".meta.json");
         var meta = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(metaPath))!;
         meta["extension"] = "preserve me";
@@ -56,7 +56,7 @@ public sealed class FileEntityLinkTests : IDisposable
         References(path).Should().BeEquivalentTo("/notes/one", "/notes/two");
 
         await _tools.MemoryAppend(path, "appended");
-        await _tools.MemoryRemember(path, ["replacement body"], replace: true);
+        await _tools.MemoryRemember(path, ["replacement body"], description: "replacement body", replace: true);
         References(path).Should().BeEquivalentTo("/notes/one", "/notes/two");
         using var saved = JsonDocument.Parse(File.ReadAllText(metaPath));
         saved.RootElement.GetProperty("extension").GetString().Should().Be("preserve me");
@@ -69,7 +69,7 @@ public sealed class FileEntityLinkTests : IDisposable
     [InlineData("/skill/custom", "/agent/missing")]
     public async Task Link_MissingEndpointLeavesExistingMetadataUntouched(string from, string to)
     {
-        await _tools.MemoryRemember(from, ["existing body"]);
+        await _tools.MemoryRemember(from, ["existing body"], description: "existing body");
         string before = Metadata(from);
 
         (await _tools.MemoryLink(from, to)).Should().Contain("NOT_FOUND");
@@ -83,8 +83,8 @@ public sealed class FileEntityLinkTests : IDisposable
     [InlineData("""{"ref":["/notes/old"],"REF":["/notes/other"]}""")]
     public async Task Link_UnwritableFileMetadataRefusesBeforeWritingOtherEndpoint(string malformed)
     {
-        await _tools.MemoryRemember("/notes/source", ["source body"]);
-        await _tools.MemoryRemember("/agent/profile", ["agent body"]);
+        await _tools.MemoryRemember("/notes/source", ["source body"], description: "source body");
+        await _tools.MemoryRemember("/agent/profile", ["agent body"], description: "agent body");
         string metaPath = Path.ChangeExtension(BodyPath("/agent/profile"), ".meta.json");
         File.WriteAllText(metaPath, malformed);
         string before = Metadata("/notes/source");
@@ -100,9 +100,9 @@ public sealed class FileEntityLinkTests : IDisposable
     [Fact]
     public async Task Link_ConcurrentUpdatesPreserveBothReferences()
     {
-        await _tools.MemoryRemember("/agent/profile", ["profile"]);
-        await _tools.MemoryRemember("/notes/one", ["one"]);
-        await _tools.MemoryRemember("/notes/two", ["two"]);
+        await _tools.MemoryRemember("/agent/profile", ["profile"], description: "profile");
+        await _tools.MemoryRemember("/notes/one", ["one"], description: "one");
+        await _tools.MemoryRemember("/notes/two", ["two"], description: "two");
 
         string[] results = await Task.WhenAll(
             Task.Run(() => _tools.MemoryLink("/agent/profile", "/notes/one")),
@@ -120,7 +120,7 @@ public sealed class FileEntityLinkTests : IDisposable
         var store = MemoryStoreContext.Current!;
         await store.StoreAsync(new MemoryWrite(MemoryAddress.Parse("/agent/legacy"),
             ["legacy body"u8.ToArray()], new Dictionary<string, IReadOnlyList<string>>(), []));
-        await _tools.MemoryRemember("/notes/source", ["source"]);
+        await _tools.MemoryRemember("/notes/source", ["source"], description: "source");
 
         (await _tools.MemoryLink("/agent/legacy", "/notes/source")).Should().Contain("action: linked");
 
@@ -133,7 +133,7 @@ public sealed class FileEntityLinkTests : IDisposable
     [Fact]
     public async Task Link_InvalidNestedAgentPathRefusesWithoutWritingOtherSide()
     {
-        await _tools.MemoryRemember("/notes/source", ["source"]);
+        await _tools.MemoryRemember("/notes/source", ["source"], description: "source");
         string before = Metadata("/notes/source");
 
         (await _tools.MemoryLink("/notes/source", "/agent/nested/name"))
@@ -149,8 +149,8 @@ public sealed class FileEntityLinkTests : IDisposable
     [InlineData("/skill/custom", "utf-16")]
     public async Task Link_AcceptsBomEncodedSidecars(string path, string encodingName)
     {
-        await _tools.MemoryRemember(path, ["body"]);
-        await _tools.MemoryRemember("/notes/source", ["source"]);
+        await _tools.MemoryRemember(path, ["body"], description: "body");
+        await _tools.MemoryRemember("/notes/source", ["source"], description: "source");
         string metaPath = Path.ChangeExtension(BodyPath(path), ".meta.json");
         string metadata = File.ReadAllText(metaPath);
         File.WriteAllText(metaPath, metadata, System.Text.Encoding.GetEncoding(encodingName));
@@ -166,8 +166,8 @@ public sealed class FileEntityLinkTests : IDisposable
     [InlineData("/skill/custom")]
     public async Task Link_SecondEndpointRecoveryRetainsStructuredEvidence(string destination)
     {
-        await _tools.MemoryRemember("/notes/source", ["source"]);
-        await _tools.MemoryRemember(destination, ["body"]);
+        await _tools.MemoryRemember("/notes/source", ["source"], description: "source");
+        await _tools.MemoryRemember(destination, ["body"], description: "body");
         var coordinator = new FileEntityTransactionCoordinator(_scope.WorkspaceDir);
         coordinator.FailOnceAt(FileEntityFaultPoint.VerificationRead);
         coordinator.FailOnceAt(FileEntityFaultPoint.RollbackWrite);

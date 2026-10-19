@@ -7,8 +7,8 @@ namespace Scrinia.Retrieval.Benchmarks.Agent;
 
 public static class AgenticIngestPrompts
 {
-    // v4 uses append-by-default remember and explicit replacement.
-    public const string PromptVersion = "v4";
+    // v5 requires a retrieval description on remember.
+    public const string PromptVersion = "v5";
 
     private const string Addendum = """
 
@@ -71,6 +71,7 @@ public static class AgenticIngestPrompts
           "type": "object",
           "properties": {
             "path": { "type": "string", "description": "Memory path, e.g. /findings/lisbon-trip." },
+            "description": { "type": "string", "description": "Describe the whole resulting memory, including existing content when appending. Keep detailed evidence in content." },
             "replace": { "type": "boolean", "default": false, "description": "True replaces the entire memory; false appends new chunks." },
             "content": { "type": "array", "items": { "type": "string" },
                          "description": "Each element becomes one chunk. Include ref: <doc-id> lines." },
@@ -82,7 +83,7 @@ public static class AgenticIngestPrompts
             "keywords": { "type": "array", "items": { "type": "string" },
                           "description": "Distinctive terms and likely search phrasings for this memory." }
           },
-          "required": ["path", "content"]
+          "required": ["path", "content", "description"]
         }
         """;
 

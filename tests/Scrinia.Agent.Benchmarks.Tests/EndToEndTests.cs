@@ -144,7 +144,7 @@ public sealed class EndToEndTests
         return path;
     }
     private static Microsoft.Extensions.AI.ChatResponse Write(string name, string text) => ScriptedChatClient.Call("write-" + name, "remember", new()
-        { ["path"] = "/facts/" + name, ["content"] = (string[])[text] });
+        { ["path"] = "/facts/" + name, ["description"] = "Stored facts for this test.", ["content"] = (string[])[text] });
     private static Microsoft.Extensions.AI.ChatResponse Read(string name) => ScriptedChatClient.Call("read-" + name, "recall", new() { ["path"] = "/facts/" + name });
     private static string ToolReplies(ScriptedChatClient client) => string.Join("\n", client.Requests.SelectMany(r => r.Messages)
         .Where(m => m.Role == Microsoft.Extensions.AI.ChatRole.Tool).SelectMany(m => m.Contents)

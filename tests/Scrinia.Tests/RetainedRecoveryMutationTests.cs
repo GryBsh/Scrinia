@@ -213,7 +213,7 @@ public sealed class RetainedRecoveryMutationTests
             var tools = new ScriniaMcpTools();
             string yaml = operation switch
             {
-                "remember" => await tools.MemoryRemember("/notes/note", ["after"]),
+                "remember" => await tools.MemoryRemember("/notes/note", ["after"], description: "after"),
                 "append" => await tools.MemoryAppend("/notes/note", "after"),
                 "forget" => await tools.MemoryForget("/notes/note"),
                 _ => throw new InvalidOperationException(operation)

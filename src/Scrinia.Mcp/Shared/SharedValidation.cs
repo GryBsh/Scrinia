@@ -80,10 +80,10 @@ internal static class SharedValidation
     }
 
     internal static MemoryWrite Write(MemoryAddress address, string[] content,
-        Dictionary<string, string[]>? attributes, string[]? keywords, bool append) =>
+        Dictionary<string, string[]>? attributes, string[]? keywords, bool append, string? description = null) =>
         MemoryWrite.Create(address, content,
             attributes?.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value)
-                ?? new Dictionary<string, IReadOnlyList<string>>(), keywords ?? [], isAppend: append);
+                ?? new Dictionary<string, IReadOnlyList<string>>(), keywords ?? [], isAppend: append, description: description);
 
     internal static void Invalid() => throw new SharedOperationException("INVALID_PARAMETER");
 }

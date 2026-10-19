@@ -373,6 +373,13 @@ public sealed partial class ScriniaMcpTools
             "Organize findings in markdown. Use standard file operations to persist results.\n";
     }
 
+    private static string FileEntityDescriptionSuffix(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description)) return "";
+        string line = description.Replace('\r', ' ').Replace('\n', ' ');
+        return " — " + (line.Length > 200 ? line[..200] + "..." : line);
+    }
+
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
     internal static async Task<McpResponse> SkillCreate(
@@ -380,13 +387,13 @@ public sealed partial class ScriniaMcpTools
         [Description("Built-in scaffold: researcher, reviewer, domain-expert, or custom.")] string scaffold,
         [Description("Additional context or instructions to embed in the prompt.")] string? instructions = null,
         [Description("Comma-separated tool names the agent should use (for custom scaffold).")] string? tools = null,
-        CancellationToken cancellationToken = default)
+        string? description = null, CancellationToken cancellationToken = default)
     {
         if (!FileEntityName.IsValid(name))
             return ResponseBuilder.Error(
                 $"Invalid skill name '{name}'. Use letters, digits, '-', '_' or '.' only.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/my-helper', content: [...] })");
+                "remember({ path: '/skill/my-helper', description: 'Specialist instructions and when to use them.', content: [...] })");
 
         var store = CurrentStore;
 
@@ -434,7 +441,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Invalid skill name '{name}'.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/my-helper', content: [...] })");
+                "remember({ path: '/skill/my-helper', description: 'Specialist instructions and when to use them.', content: [...] })");
         using WorkspaceLease lease = EnterFileEntityAdmission(store, mutation: true, cancellationToken);
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
         Directory.CreateDirectory(skillsDir);
@@ -464,6 +471,7 @@ public sealed partial class ScriniaMcpTools
             // artifact sidecar; same fix.
             SchemaVersion: existingMeta?.SchemaVersion)
         {
+            Description = description ?? existingMeta?.Description,
             // COPIED, never aliased -- same rule as ArtifactEntry.Unknown.
             Unknown = existingMeta?.Unknown is { } u
                 ? new Dictionary<string, System.Text.Json.JsonElement>(u)
@@ -488,7 +496,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     internal static async Task<McpResponse> AppendSkillAsync(
-        string name, string[] content, CancellationToken cancellationToken, bool createIfMissing = false)
+        string name, string[] content, CancellationToken cancellationToken, bool createIfMissing = false, string? description = null)
     {
         var store = CurrentStore;
         if (!PathRouter.TryToFileEntityPath("skill", name, store.WorkspaceRoot, out string filePath))
@@ -513,12 +521,13 @@ public sealed partial class ScriniaMcpTools
                         ? prior with
                         {
                             UpdatedAt = now,
+                            Description = description ?? prior.Description,
                             Unknown = prior.Unknown is { } unknown ? new Dictionary<string, JsonElement>(unknown) : null
                         }
                         : new SkillFileMeta(
                             BuiltInSkills.TryGetValue(name, out string? builtIn)
                                 ? Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(builtIn))) : null,
-                            raw is null ? "custom" : null, null, raw is null ? "custom" : null, now, now);
+                            raw is null ? "custom" : null, null, raw is null ? "custom" : null, now, now) { Description = description };
                     string updated = raw is null
                         ? BuildCustomSkillPrompt(string.Join("\n\n", content), null)
                         : raw.Body + "\n\n" + string.Join("\n\n", content);
@@ -583,7 +592,7 @@ public sealed partial class ScriniaMcpTools
                     + "workspace, so it cannot be forgotten.",
                     ErrorCodes.InvalidParameter,
                     $"recall({{ path: '/skill/{name}' }}) still loads it.",
-                    $"remember({{ path: '/skill/{name}', content: [...] }}) writes a project "
+                    $"remember({{ path: '/skill/{name}', description: 'Specialist instructions and when to use them.', content: [...] }}) writes a project "
                     + "override that shadows the built-in; forget that override to fall back."));
 
             return Task.FromResult(ResponseBuilder.Error(
@@ -667,7 +676,7 @@ public sealed partial class ScriniaMcpTools
                         if (!meta.BasedOn.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                             tag = "stale base";
                     }
-                    sb.AppendLine($"- /skill/{skillKey} [{tag}]");
+                    sb.AppendLine($"- /skill/{skillKey} [{tag}]" + FileEntityDescriptionSuffix(meta?.Description));
                 }
                 else
                 {
@@ -683,7 +692,7 @@ public sealed partial class ScriniaMcpTools
                 string roleTag = diskMetas.TryGetValue(diskName, out var fileMeta) && fileMeta?.Role is not null
                     ? $"role:{fileMeta.Role}"
                     : "role:unknown";
-                sb.AppendLine($"- /skill/{diskName} [file] [{roleTag}]");
+                sb.AppendLine($"- /skill/{diskName} [file] [{roleTag}]" + FileEntityDescriptionSuffix(fileMeta?.Description));
 
                 if (sb.Length > SkillResponseLimit - 200)
                 {
@@ -724,7 +733,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Success(reconContent)
                 .WithPath($"/skill/{skillName}")
                 .WithAction("loaded")
-                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.")
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...', description: 'Specialist scope and usage', content: ['complete merged instructions'], replace: true }) to save the merged version.")
                 .WithTruncationAdvice(SkillContentTruncationAdvice);
         }
 

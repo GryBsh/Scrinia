@@ -165,7 +165,7 @@ public sealed class McpAddressSurfaceTests
         string[] before = Directory.GetFiles(TestHelpers.Store.WorkspaceRoot, "*", SearchOption.AllDirectories);
 
         var response = ResponseParser.Parse(await new ScriniaMcpTools().MemoryRemember(
-            "file:///tmp/not-a-memory", ["content"]));
+            "file:///tmp/not-a-memory", ["content"], description: "content"));
 
         response.Status.Should().Be("error");
         response.ErrorCode.Should().Be(ErrorCodes.UnsupportedInputForm);
@@ -180,7 +180,7 @@ public sealed class McpAddressSurfaceTests
 
         foreach (string yaml in new[]
         {
-            await tools.MemoryRemember(null, ["content"]),
+            await tools.MemoryRemember(null, ["content"], description: "content"),
             await tools.MemoryRecall(null),
             await tools.MemoryAppend(null, "content"),
             await tools.MemoryForget(null),
@@ -200,7 +200,7 @@ public sealed class McpAddressSurfaceTests
     {
         var tools = new ScriniaMcpTools();
 
-        var remember = ResponseParser.Parse(await tools.MemoryRemember("/address", null));
+        var remember = ResponseParser.Parse(await tools.MemoryRemember("/address", null, description: "Test memory."));
         var append = ResponseParser.Parse(await tools.MemoryAppend("/address", null));
 
         remember.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);

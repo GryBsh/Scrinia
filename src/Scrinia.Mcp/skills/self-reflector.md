@@ -50,7 +50,7 @@ preferences, capture it:
 ### 5. Persist the retrospective
 
 ```
-remember({ path: "/learn/retro-{slug}", content: [
+remember({ path: "/learn/retro-{slug}", description: "Work outcomes, lessons learned, and revised assumptions.", content: [
   "## What was the work\n...",
   "## Plan vs reality\n...",
   "## Lessons\n- ...",
@@ -61,7 +61,7 @@ remember({ path: "/learn/retro-{slug}", content: [
 If the retrospective produced a durable belief worth indexing on its own:
 
 ```
-remember({ path: "/learn/{belief-slug}", content: ["..."] })
+remember({ path: "/learn/{belief-slug}", description: "Work outcomes, lessons learned, and revised assumptions.", content: ["..."] })
 ```
 
 ## Key rules

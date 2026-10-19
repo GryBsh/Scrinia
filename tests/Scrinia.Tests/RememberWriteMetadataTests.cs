@@ -57,7 +57,7 @@ public class RememberWriteMetadataTests
 
         await new ScriniaMcpTools().MemoryRemember(
             path: "/findings/note",
-            content: ["a body with portcullis in it"],
+            content: ["a body with portcullis in it"], description: "a body with portcullis in it",
             attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] },
             keywords: ["portcullis"], replace: replace);
 

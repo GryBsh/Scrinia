@@ -252,7 +252,7 @@ The following ship with scrinia and load via `recall({ path: '/skill/{name}' })`
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
 | `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
-Built-in skills are evolvable — `remember({ path: '/skill/{name}', content: [...], replace: true })` creates a project-specific override on disk.
+Built-in skills are evolvable — `remember({ path: '/skill/{name}', description: 'Specialist instructions and when to use them.', content: [...], replace: true })` creates a project-specific override on disk.
 
 ## Workspace Tracking and Shared Bases
 

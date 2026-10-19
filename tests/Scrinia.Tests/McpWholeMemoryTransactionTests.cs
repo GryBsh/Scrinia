@@ -12,11 +12,11 @@ public sealed class McpWholeMemoryTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember("/transaction/target", ["old"], replace: true);
+        await new ScriniaMcpTools().MemoryRemember("/transaction/target", ["old"], description: "old", replace: true);
         store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
 
         McpResponseAssert response = ResponseParser.Parse(
-            await new ScriniaMcpTools().MemoryRemember("/transaction/target", ["new"], replace: true));
+            await new ScriniaMcpTools().MemoryRemember("/transaction/target", ["new"], description: "new", replace: true));
 
         response.Status.Should().Be("error");
         response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
@@ -28,7 +28,7 @@ public sealed class McpWholeMemoryTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember("/transaction/recovery", ["old secret"], replace: true);
+        await new ScriniaMcpTools().MemoryRemember("/transaction/recovery", ["old secret"], description: "old secret", replace: true);
         var sink = new RecordingSink();
         IMemoryEventSink? priorSink = MemoryEventSinkContext.Current;
         MemoryEventSinkContext.Current = sink;
@@ -42,7 +42,7 @@ public sealed class McpWholeMemoryTransactionTests
         try
         {
             McpResponseAssert response = ResponseParser.Parse(
-                await new ScriniaMcpTools().MemoryRemember("/transaction/recovery", ["new secret"], replace: true));
+                await new ScriniaMcpTools().MemoryRemember("/transaction/recovery", ["new secret"], description: "new secret", replace: true));
 
             response.Status.Should().Be("error");
             response.ErrorCode.Should().Be(ErrorCodes.RecoveryRequired);
@@ -66,11 +66,11 @@ public sealed class McpWholeMemoryTransactionTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember("/transaction/warning", ["old"], replace: true);
+        await new ScriniaMcpTools().MemoryRemember("/transaction/warning", ["old"], description: "old", replace: true);
         store.FailOnceAt(WholeMemoryFaultPoint.ArchiveCleanup);
 
         McpResponseAssert response = ResponseParser.Parse(
-            await new ScriniaMcpTools().MemoryRemember("/transaction/warning", ["new"], replace: true));
+            await new ScriniaMcpTools().MemoryRemember("/transaction/warning", ["new"], description: "new", replace: true));
 
         response.Status.Should().Be("success_with_warning");
         response.OperationId.Should().NotBeNullOrWhiteSpace();
@@ -118,7 +118,7 @@ public sealed class McpWholeMemoryTransactionTests
         File.WriteAllBytes(evidence, [0]);
 
         McpResponseAssert response = ResponseParser.Parse(
-            await new ScriniaMcpTools().MemoryRemember("/skill/privacy-probe", ["replacement"], replace: true));
+            await new ScriniaMcpTools().MemoryRemember("/skill/privacy-probe", ["replacement"], description: "replacement", replace: true));
 
         response.ErrorCode.Should().Be(ErrorCodes.RecoveryRequired);
         response.JournalPath.Should().NotContain(scope.WorkspaceDir);
@@ -143,7 +143,7 @@ public sealed class McpWholeMemoryTransactionTests
         File.WriteAllBytes(evidence, [0]);
 
         McpResponseAssert response = ResponseParser.Parse(
-            await new ScriniaMcpTools().MemoryRemember("/agent/privacy-probe", ["replacement"], replace: true));
+            await new ScriniaMcpTools().MemoryRemember("/agent/privacy-probe", ["replacement"], description: "replacement", replace: true));
 
         response.ErrorCode.Should().Be(ErrorCodes.RecoveryRequired);
         response.JournalPath.Should().NotContain(scope.WorkspaceDir);
@@ -160,13 +160,13 @@ public sealed class McpWholeMemoryTransactionTests
         try
         {
             var tools = new ScriniaMcpTools();
-            await tools.MemoryRemember("/transaction/event", ["old"], replace: true);
+            await tools.MemoryRemember("/transaction/event", ["old"], description: "old", replace: true);
             await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));
             sink.Stored.Clear();
             store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
 
             McpResponseAssert response = ResponseParser.Parse(
-                await tools.MemoryRemember("/transaction/event", ["new"], replace: true));
+                await tools.MemoryRemember("/transaction/event", ["new"], description: "new", replace: true));
 
             response.ErrorCode.Should().Be(ErrorCodes.DurableWriteFailed);
             await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(5));

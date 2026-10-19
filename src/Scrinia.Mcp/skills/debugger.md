@@ -33,7 +33,7 @@ Write it down explicitly:
 - Check: is the fix consistent with the codebase's patterns?
 
 ### 6. Store — persist what you learned
-- `remember({ path: "/bugs/{area}-{slug}", content: ["Root cause: ...\nFix: ...\nPattern: ..."] })`
+- `remember({ path: "/bugs/{area}-{slug}", description: "Bug symptoms, root cause, fix, and recurrence checks.", content: ["Root cause: ...\nFix: ...\nPattern: ..."] })`
 - Future sessions shouldn't re-investigate what you already know
 - If this bug class could recur, store the detection pattern
 

@@ -26,8 +26,8 @@ public sealed class McpRecoveryBlockedRouteTests
 
         var routes = new (string Name, Func<Task<string>> Invoke)[]
         {
-            ("remember", () => tools.MemoryRemember("/notes/note", ["content"])),
-            ("replace", () => tools.MemoryRemember("/notes/note", ["content"], replace: true)),
+            ("remember", () => tools.MemoryRemember("/notes/note", ["content"], description: "content")),
+            ("replace", () => tools.MemoryRemember("/notes/note", ["content"], description: "content", replace: true)),
             ("recall", () => tools.MemoryRecall("/notes/note")),
             ("search", () => tools.MemorySearch("note", scopes: ["notes"])),
             ("list", () => tools.MemoryList(scopes: ["notes"])),
@@ -67,7 +67,7 @@ public sealed class McpRecoveryBlockedRouteTests
         byte[] originalJournal = File.ReadAllBytes(journalPath);
         var tools = new ScriniaMcpTools();
 
-        McpResponseAssert response = ResponseParser.Parse(await tools.MemoryRemember("~scratch", ["available"]));
+        McpResponseAssert response = ResponseParser.Parse(await tools.MemoryRemember("~scratch", ["available"], description: "available"));
 
         response.Status.Should().Be("success");
         File.ReadAllBytes(journalPath).Should().Equal(originalJournal);

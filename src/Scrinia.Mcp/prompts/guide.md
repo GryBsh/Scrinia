@@ -26,14 +26,18 @@ Use `remember` to add information: it creates a missing memory or appends every 
 
 Remember past events as well as ongoing preferences, decisions, fixes, and conventions. A fact can be worth recalling even when it does not describe a lasting habit.
 
-When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers attached to the facts they modify. Preserve distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true. Keep earlier facts and later corrections distinct; do not infer that separate events conflict or refer to the same occurrence. Compress wording without changing these relationships or inferring missing values. Separate what is already true from what someone plans or hopes to change. Preserve the wording that connects them (such as already, another, still, or hoping to improve); when paraphrasing could change that meaning, include the short source clause verbatim alongside the summary. Before finishing, compare the selected source facts with successful memory writes, including their qualifiers and relationships, and add any omitted details.
+For each fact or event you choose to retain:
+1. Keep the actor, action, object, explicit dates, quantities, units, reasons, outcomes, and completed/planned/ongoing status together in a self-contained chunk.
+2. Keep the source conversation date and original relative time phrase together. When storing memories, retain relative dates as stated instead of adding inferred calendar dates to content or descriptions. Preserve completed actions separately from expected later steps; an expected date does not prove that an event occurred.
+3. Preserve distinctions such as another versus the same event, existing facts versus future goals, and still true versus no longer true. An old item is not necessarily disposed of; examples of actual purchases are not hypothetical purchases. Keep earlier facts and later corrections distinct without inventing event relationships.
+4. Quote the short source clause when paraphrasing could change its meaning. Compare selected facts and qualifiers against successful writes before finishing; add omitted details.
 
 ### Chunks
 
 A memory's `content` is an **array of chunks**, each stored and retrieved independently. Split a memory along its semantically distinct parts — like the sections of a document — not by size:
 
 ```
-remember({ path: '/api/auth', content: [
+remember({ path: '/api/auth', description: 'Authentication flow and token refresh behavior', content: [
   'OAuth flow: redirect → callback → token exchange',
   'Token refresh: background job every 55 minutes'
 ]})
@@ -72,10 +76,10 @@ Attributes build a graph linking memories that share a **key and value** — not
 
 ### remember — store a memory
 
-`remember({ path, content, attributes?, keywords?, replace? })` — `content` is a string array, one chunk per element.
+`remember({ path, content, description, attributes?, keywords?, replace? })` — `content` is a string array, one chunk per element.
 
 ```
-remember({ path: '/findings/SEC-001',
+remember({ path: '/findings/SEC-001', description: 'Open redirect finding, affected login code, and proposed fix',
   content: ['Login form accepts an unescaped `next` param', 'Fix: allowlist redirect targets'],
   attributes: { topic: ['auth'], file: ['src/Login.tsx'], review: ['when auth changes'] },
   keywords: ['open redirect', 'login next param'] })
@@ -89,7 +93,7 @@ Use it for information worth recalling later, including past events, preferences
 
 ### search — find memories
 
-`search({ query, pathPrefix?, attributeFilter?, scopes?, context?, limit?, excludeTopics? })` — ranked matches, each with a preview and its attributes, so you can decide what to recall without another call.
+`search({ query, pathPrefix?, attributeFilter?, scopes?, context?, limit?, excludeTopics? })` — ranked matches, each with a memory description, available chunk excerpts, and attributes to help you choose what to recall. These are partial retrieval hints.
 
 ```
 search({ query: 'oauth flow', pathPrefix: '/findings/', attributeFilter: { topic: ['auth'] } })
@@ -212,14 +216,14 @@ Skills are specialist prompts you load when you hit a domain you were not optimi
 ```
 recall({ path: '/skill/qa' })                          — load a skill
 recall({ path: '/skill/' })                            — list skills
-remember({ path: '/skill/my-helper', content: [...], replace: true }) — create or override
+remember({ path: '/skill/my-helper', description: 'Specialist instructions and when to use them.', content: [...], replace: true }) — create or override
 ```
 
 Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `evolutionary`, `self-reflector`. Built-ins are embedded in Scrinia. Project overrides live at `.scrinia/skills/{name}.md` and take precedence. To compare an override with the current built-in before merging, use `recall({ path: '/skill/{name}', withBuiltin: true })`.
 
 ### Sessions
 
-Keep a running log: `remember({ path: '/sessions/2026-07-16', content: ['...'] })`.
+Keep a running log: `remember({ path: '/sessions/2026-07-16', description: 'Session decisions, completed work, and open follow-ups.', content: ['...'] })`.
 
 ### Recovery
 
@@ -231,3 +235,15 @@ Scrinia writes to `.scrinia/`. Commit those changes — that is how memory trave
 share memories across a team, commit `.scrinia/` like any other source file; to share the same
 memories between several repositories, register a shared base with `scri shared base add <name>
 <absolute-root>` — shared bases are always fixed to the `project-git` tracking policy.
+
+
+## Descriptions and evidence retrieval
+
+Every MCP `remember` call requires a nonblank `description`, including appends and reserved paths. Describe the subjects and kinds of evidence in the whole resulting memory. It replaces the previous description even on append; recall earlier content when needed to preserve its scope. Keep detailed evidence in `content`. Existing stores and CLI writes retain their excerpt fallback; no migration is required.
+
+Do not repeat inferred calendar dates from memory summaries. Use the original relative phrase and source conversation date. Calculate a date only if the question needs it and it can be verified from that anchor; otherwise keep the range or uncertainty. An expected date does not prove occurrence. Count the requested action: an order placed to buy an item counts as buying unless contradicted or cancelled. Delivery and possession are separate; require evidence of either only when asked about that state. Plans are not placed orders. Do not add unstated completion conditions.
+
+1. Use search descriptions and excerpts to choose what to recall. Read the full relevant content before answering; retrieve individual chunks if recall is truncated, including dates, qualifications, and corrections.
+2. For counts, totals, and lists, gather all relevant candidates. Track source, date, status, and inclusion/exclusion reasons before calculating. Repeated mentions alone do not prove the same or different events.
+3. For counts, totals, and lists, short or untruncated search results do not prove complete coverage. Vary category/action terms and browse `list({ mode: 'full', limit: 50 })` for missing paths. Check further inventory pages within the request budget and recall relevant evidence. If hits are truncated or off-topic, refine by subject, path, or attributes. Disclose unchecked areas; a missing preview does not prove a fact is absent.
+4. Stop when relevant candidates and contradictions are checked or the request budget is reached. State any remaining uncertainty.

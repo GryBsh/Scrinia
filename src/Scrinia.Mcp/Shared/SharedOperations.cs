@@ -38,9 +38,9 @@ public sealed partial class SharedServer
             return SharedMemoryOperations.Search(snapshot, request).Select(result => result switch
             {
                 EntryResult entry => new SearchHit(snapshot.Identity.BaseName, entry.Item.Entry.Address.Value,
-                    SharedHitKind.Entry, null, entry.Score, entry.ContextPreview ?? entry.Item.Entry.ContentPreview ?? "", entry.Item.Entry.Attributes ?? []),
+                    SharedHitKind.Entry, null, entry.Score, RetrievalPreview(entry.Item.Entry.ContentPreview, entry.ContextPreview), entry.Item.Entry.Attributes ?? []),
                 ChunkEntryResult chunk => new SearchHit(snapshot.Identity.BaseName, chunk.ParentItem.Entry.Address.Value,
-                    SharedHitKind.Chunk, chunk.Chunk.ChunkIndex, chunk.Score, chunk.ContextPreview ?? chunk.Chunk.ContentPreview ?? "", chunk.ParentItem.Entry.Attributes ?? []),
+                    SharedHitKind.Chunk, chunk.Chunk.ChunkIndex, chunk.Score, RetrievalPreview(chunk.ParentItem.Entry.ContentPreview, chunk.ContextPreview ?? chunk.Chunk.ContentPreview), chunk.ParentItem.Entry.Attributes ?? []),
                 _ => null
             }).Where(hit => hit is not null).Cast<object>().ToArray();
         }, results =>
@@ -122,8 +122,13 @@ public sealed partial class SharedServer
             return SharedEnvelope.Success(baseName, result) with { Warnings = Warnings(runtime.Snapshot) };
         });
 
+    private static string RetrievalPreview(string? description, string? excerpt) =>
+        "Description (may be a content excerpt in older memories): " + (description is { Length: > 1500 } ? description[..1500] + " (truncated)" : description ?? "") +
+        (excerpt is null ? "" : "\nExcerpt: " + excerpt) +
+        "\nRecall relevant content with shared_recall for full evidence; this preview is not exhaustive.";
+
     internal SharedEnvelope Mutate(string baseName, string path, string operation, string[]? content,
-        Dictionary<string, string[]>? attributes, string[]? keywords, string? destination, string? reason, int keepRecent, CancellationToken ct) =>
+        Dictionary<string, string[]>? attributes, string[]? keywords, string? destination, string? reason, int keepRecent, CancellationToken ct, string? description = null) =>
         Invoke(baseName, () =>
         {
             SharedValidation.Text(baseName);
@@ -144,7 +149,7 @@ public sealed partial class SharedServer
             MemoryAddress address = ParsePersistentAddress(path);
             MemoryAddress? target = destination is null ? null : ParsePersistentAddress(destination);
             MemoryWrite? write = operation is "remember" or "append"
-                ? SharedValidation.Write(address, content!, attributes, keywords, operation == "append") : null;
+                ? SharedValidation.Write(address, content!, attributes, keywords, operation == "append", description) : null;
             EnsureAvailable(runtime.Snapshot);
             SharedMutationCommit commit = SharedMemoryOperations.Mutate(runtime, operation, address, write, target, keepRecent, ct);
             if (commit.ErrorCode is not null) throw new SharedOperationException(commit.ErrorCode, commit.Mutation);
@@ -262,7 +267,7 @@ public sealed partial class SharedServer
                 : files.Any(file => file.ActualSha256 != file.ExpectedSha256) ? SharedDrift.Changed : SharedDrift.Unchanged;
         }
         return new(identity.BaseName, item.Path, SharedListKind.Persistent, item.Created, item.Updated,
-            item.Entry?.ContentPreview, item.Attributes, item.Keywords, drift, files);
+            item.Entry?.ContentPreview ?? item.Skill?.Description ?? item.Agent?.Description, item.Attributes, item.Keywords, drift, files);
     }
 
     private static string CanonicalFactPath(string value) => value.StartsWith('/') ? value : "/" + value;

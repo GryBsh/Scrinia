@@ -311,6 +311,7 @@ public sealed partial class ScriniaMcpTools
                 // BuildDerivedEntry closes for the artifact sidecar; same fix.
                 SchemaVersion: existingMeta?.SchemaVersion)
             {
+                Description = string.IsNullOrWhiteSpace(description) ? existingMeta?.Description : description,
                 // COPIED, never aliased -- same rule as ArtifactEntry.Unknown.
                 Unknown = existingMeta?.Unknown is { } u
                     ? new Dictionary<string, System.Text.Json.JsonElement>(u)
@@ -598,7 +599,7 @@ public sealed partial class ScriniaMcpTools
                 $"Memory '{qualifiedName}' not found.",
                 ErrorCodes.NotFound,
                 "list() to see available memories",
-                "remember({ path: '...', content: [...] }) to create it"));
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it"));
 
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, attributes, description, reviewAfter, reviewWhen."));
@@ -616,7 +617,7 @@ public sealed partial class ScriniaMcpTools
                 "metadata-only change. Changing keywords is the usual cause — they are derived " +
                 "from the memory's content, so they can only change through a write that carries it.",
                 ErrorCodes.NotSupported,
-                "remember({ path: '...', content: [...] }) — a full write carries attributes, keywords and description together"));
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) — a full write carries attributes, keywords and description together"));
 
         // An ephemeral write touches no file, so it reports no file changes.
         var success = ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.");
@@ -1553,7 +1554,7 @@ public sealed partial class ScriniaMcpTools
                 $"Memory '{missing}' not found — nothing was written.",
                 ErrorCodes.NotFound,
                 "list() to see available memories",
-                $"remember({{ path: '{missing}', content: [...] }}) to create it, then link it");
+                $"remember({{ path: '{missing}', description: 'Subjects and kinds of evidence stored here.', content: [...] }}) to create it, then link it");
 
         // Each side's reference is handed over AS AN ATTRIBUTE. It used to be minted as a
         // `ref:{name}` KEYWORD and left to AttributeExtractor.RouteKeywords to turn back into one,

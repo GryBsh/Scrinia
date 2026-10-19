@@ -208,7 +208,7 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     [McpServerTool(Name = "remember"), Description(
         "Add chunks to a memory at a path, creating it if missing. Otherwise, append every supplied chunk and preserve existing content. " +
-        "Set replace: true only for an intentional complete replacement. Store facts about people, their preferences, and past events under ordinary " +
+        "Every call requires a description of the whole resulting memory; keep detailed evidence in content. Set replace: true only for an intentional complete replacement. Store facts about people, their preferences, and past events under ordinary " +
         "paths such as /people/user/travel. Reserve /agent/ for the AI assistant's own persona and behavior, " +
         "not the human user's profile. Preserve explicitly stated details of the facts you store, including dates, durations, " +
         "quantities, and units. Keep qualifiers attached to their facts, preserving distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true; do not infer missing values or event relationships. Separate existing facts from goals to change them; retain a short source quotation when a paraphrase could change the meaning. Content is an array — each element becomes one independently " +
@@ -216,7 +216,7 @@ public sealed partial class ScriniaMcpTools
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
         "a searcher would use. A keywords entry shaped 'key:value' (e.g. 'person:maria') is routed " +
         "into attributes instead of kept as a keyword — see the keywords and content parameter " +
-        "descriptions for the exact rule. Example: remember({ path: '/findings/SEC-001', " +
+        "descriptions for the exact rule. Example: remember({ path: '/findings/SEC-001', description: 'Security finding, affected code, and proposed fix.', " +
         "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
@@ -240,6 +240,7 @@ public sealed partial class ScriniaMcpTools
                      "as a 'file' attribute unless you wrap it in a properly closed fenced code block — do " +
                      "that when you want sample content excluded from drift tracking, wiki-links, and " +
                       "mentions.")] string[]? content,
+        [Description("Required retrieval description of the whole resulting memory: subjects, events, and kinds of detail it contains. This replaces the previous description on append as well as replacement. Recall existing content if needed to describe its full scope; keep factual evidence in content.")] string description,
         [Description("Optional typed attributes — a map of key to values. Combines with what content and " +
                      "keywords derive: person/place/org/thing/topic/file/ref (and the auto-derived 'mention') " +
                      "union with the derived value; every other key — including review, anchor, and tag — is " +
@@ -269,7 +270,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 "remember requires 'path'.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/findings/example', content: [...] })").ToYaml();
+                "remember({ path: '/findings/example', description: 'Subjects and kinds of evidence stored here.', content: [...] })").ToYaml();
 
         if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
             return addressError.ToYaml();
@@ -279,7 +280,11 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 "remember requires 'content' (a non-empty string array).",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '...', content: ['chunk 1', 'chunk 2'] })").ToYaml();
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: ['chunk 1', 'chunk 2'] })").ToYaml();
+        if (string.IsNullOrWhiteSpace(description))
+            return ResponseBuilder.Error(
+                "remember requires a nonblank 'description'.", ErrorCodes.InvalidParameter,
+                "Describe the whole memory's scope; keep the detailed evidence in content.").ToYaml();
         foreach (var element in content)
         {
             if (element is null)
@@ -294,7 +299,7 @@ public sealed partial class ScriniaMcpTools
 
         McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
             replace ? ReservedPathOperation.Write : ReservedPathOperation.Append, parsedPath,
-            new ReservedPathRequest(content, null, false, false, CreateIfMissing: !replace), cancellationToken);
+            new ReservedPathRequest(content, null, false, false, CreateIfMissing: !replace, Description: description), cancellationToken);
         if (reservedResponse is not null)
         {
             return reservedResponse.ToYaml();
@@ -304,9 +309,9 @@ public sealed partial class ScriniaMcpTools
         try
         {
             response = replace
-                ? await Remember(content, parsedPath, keywords: keywords, attributes: attributes,
+                ? await Remember(content, parsedPath, description: description, keywords: keywords, attributes: attributes,
                     actionLabel: "remembered", cancellationToken: cancellationToken)
-                : (await AppendChunks(content, parsedPath, keywords: keywords, attributes: attributes,
+                : (await AppendChunks(content, parsedPath, description: description, keywords: keywords, attributes: attributes,
                     cancellationToken: cancellationToken)).WithAction("remembered");
         }
         catch (Scrinia.Core.Bundles.BundleImportException ex)
@@ -563,7 +568,8 @@ public sealed partial class ScriniaMcpTools
 
     [McpServerTool(Name = "search"), Description(
         "Find memories by keyword or phrase. Returns ranked matches with a content preview and the " +
-        "entry's attributes per hit so you can decide what to recall without a follow-up call. " +
+        "entry's attributes per hit to help choose full recalls. Matches are not an exhaustive inventory; " +
+        "for counts and lists, vary search terms and browse list(mode: full) for missed candidates. " +
         "Example: search({ query: 'oauth flow', pathPrefix: '/findings/', " +
         "attributeFilter: { topic: ['auth'] } }).")]
     public async Task<string> MemorySearch(

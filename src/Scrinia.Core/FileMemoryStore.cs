@@ -1246,7 +1246,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
                         // Acquire the scope read handle for the entire asynchronous byte read.
                         string directory = GetStoreDirUnderLease(scope);
                         if (!Directory.Exists(directory)) return await read().ConfigureAwait(false);
-                        using var scopeRead = FileLock.AcquireShared(GetLockPath(scope), ImportLockTimeout, ct);
+                        // Ordinary scope reads use the same bounded wait as the synchronous barrier.
+                        using var scopeRead = FileLock.AcquireShared(GetLockPath(scope), TimeSpan.FromSeconds(5), ct);
                         if (lease.MatchesVerifiedScopeSnapshot(scope, () => CaptureScopeSnapshotFingerprint(scope)))
                             return await read().ConfigureAwait(false);
                         RecoveryDiscoveryResult discovery = _recoveryDiscovery.Discover(scope, directory, cancellationToken: ct);

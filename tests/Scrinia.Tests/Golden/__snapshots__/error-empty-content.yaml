@@ -2,4 +2,4 @@ status: error
 error: "remember requires 'content' (a non-empty string array)."
 errorCode: INVALID_PARAMETER
 actionNeeded:
-  - "remember({ path: '...', content: ['chunk 1', 'chunk 2'] })"
+  - "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: ['chunk 1', 'chunk 2'] })"

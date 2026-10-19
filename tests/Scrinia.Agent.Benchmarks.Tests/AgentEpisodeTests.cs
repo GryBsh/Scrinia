@@ -29,7 +29,7 @@ public sealed class AgentEpisodeTests
         var paths = new AttemptWorkspace().Create(Path.Combine(temp.Root, "run"), 1, 1, settings);
         await using var events = new CapturingEvents { FailOnceOnKind = "tool-result" };
         await using var session = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token);
-        var fake = new ScriptedChatClient(ScriptedChatClient.Call("write", "remember", new() { ["path"] = "/facts/retained", ["content"] = (string[])["committed before evidence failure"] }), ScriptedChatClient.Text("unexpected"));
+        var fake = new ScriptedChatClient(ScriptedChatClient.Call("write", "remember", new() { ["path"] = "/facts/retained", ["description"] = "Stored facts for this test.", ["content"] = (string[])["committed before evidence failure"] }), ScriptedChatClient.Text("unexpected"));
         await Assert.ThrowsAsync<IOException>(() => new AgentEpisode(_ => fake).RunAsync(new(EpisodePhase.Learn, "Input"), session,
             ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token));
         Assert.Single(fake.Requests);
@@ -46,7 +46,7 @@ public sealed class AgentEpisodeTests
         await using var events = new CapturingEvents();
         var learningClient = new ScriptedChatClient(
             ScriptedChatClient.Call("guide", "guide", []),
-            ScriptedChatClient.Call("remember", "remember", new() { ["path"] = "/facts/favorite", ["content"] = (string[])["Favorite color is blue."] }, "I will save that."),
+            ScriptedChatClient.Call("remember", "remember", new() { ["path"] = "/facts/favorite", ["description"] = "Stored facts for this test.", ["content"] = (string[])["Favorite color is blue."] }, "I will save that."),
             ScriptedChatClient.Text("Learned."));
         var input = AgentInstructions.Learn(new(1, "2024-06-13", [new("assistant", "LEARNING_ONLY Favorite color is blue.")]));
         await using (var session = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token))
@@ -67,7 +67,8 @@ public sealed class AgentEpisodeTests
             // Learning restrictions must be sent at instruction priority and must not
             // leak into the later answer episode or turn quoted history into instructions.
             Assert.NotEqual(learningClient.Requests[0].Options!.Instructions, answerClient.Requests[0].Options!.Instructions);
-            Assert.Equal(AgentInstructions.BaseInstructions, answerClient.Requests[0].Options!.Instructions);
+            Assert.Equal(AgentInstructions.ForPhase(EpisodePhase.Answer), answerClient.Requests[0].Options!.Instructions);
+            Assert.DoesNotContain("learning-only episode", answerClient.Requests[0].Options!.Instructions!);
             Assert.DoesNotContain("LEARNING_ONLY", learningClient.Requests[0].Options!.Instructions!);
             Assert.DoesNotContain(answerClient.Requests[0].Messages, m => m.Text.Contains("LEARNING_ONLY", StringComparison.Ordinal));
             Assert.Equal(0, result.ToolCalls);
@@ -89,7 +90,7 @@ public sealed class AgentEpisodeTests
         await using var session = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token);
         var fake = new ScriptedChatClient(
             ScriptedChatClient.Call("missing", "recall", new() { ["path"] = "/missing" }),
-            ScriptedChatClient.Call("corrected", "remember", new() { ["path"] = "/facts/corrected", ["content"] = (string[])["Retained after error."] }),
+            ScriptedChatClient.Call("corrected", "remember", new() { ["path"] = "/facts/corrected", ["description"] = "Stored facts for this test.", ["content"] = (string[])["Retained after error."] }),
             ScriptedChatClient.Text("done"));
         var result = await new AgentEpisode(_ => fake).RunAsync(new(EpisodePhase.Learn, "Test conversation"),
             session, ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token);
@@ -112,9 +113,9 @@ public sealed class AgentEpisodeTests
         await Assert.ThrowsAsync<EpisodeLimitException>(() => new AgentEpisode(_ => repeated).RunAsync(new(EpisodePhase.Learn, "Input"), session,
             ObservedChatClientTests.Settings, ObservedChatClientTests.Limits with { MaxModelTurnsPerEpisode = 1 }, events, timeout.Token));
         Assert.Single(repeated.Requests);
-        var truncated = ScriptedChatClient.Call("never", "remember", new() { ["path"] = "/facts/never", ["content"] = (string[])["MUST_NOT_BE_STORED"] });
+        var truncated = ScriptedChatClient.Call("never", "remember", new() { ["path"] = "/facts/never", ["description"] = "Stored facts for this test.", ["content"] = (string[])["MUST_NOT_BE_STORED"] });
         truncated.FinishReason = ChatFinishReason.Length;
-        await Assert.ThrowsAsync<InvalidDataException>(() => new AgentEpisode(_ => new ScriptedChatClient(truncated)).RunAsync(new(EpisodePhase.Learn, "Input"),
+        await Assert.ThrowsAsync<InvalidDataException>(() => new AgentEpisode(_ => new ScriptedChatClient(truncated, truncated)).RunAsync(new(EpisodePhase.Learn, "Input"),
             session, ObservedChatClientTests.Settings, ObservedChatClientTests.Limits, events, timeout.Token));
         Assert.DoesNotContain("MUST_NOT_BE_STORED", await ScriniaMcpSessionTests.Call(session, "recall", new() { ["path"] = "/facts/never" }, timeout.Token));
     }

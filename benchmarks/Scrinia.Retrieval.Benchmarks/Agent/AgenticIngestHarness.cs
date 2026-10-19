@@ -227,7 +227,9 @@ public sealed class AgenticIngestHarness
         TryGetAttributes(root, "attributes", out var attributes);
         TryGetStringArray(root, "keywords", out string[]? keywords);
 
-        string result = await tools.MemoryRemember(path, content, attributes, keywords, replace: root.TryGetProperty("replace", out var replace) && replace.ValueKind == JsonValueKind.True, cancellationToken: ct);
+        if (!TryGetString(root, "description", out string? description) || string.IsNullOrWhiteSpace(description))
+            return ("error: remember requires a nonblank 'description'", true);
+        string result = await tools.MemoryRemember(path, content, description, attributes, keywords, replace: root.TryGetProperty("replace", out var replace) && replace.ValueKind == JsonValueKind.True, cancellationToken: ct);
         return (result, false);
     }
 
@@ -242,7 +244,9 @@ public sealed class AgenticIngestHarness
         TryGetAttributes(root, "attributes", out var attributes);
         TryGetStringArray(root, "keywords", out string[]? keywords);
 
-        string result = await tools.MemoryRemember(path, [content], attributes, keywords, cancellationToken: ct);
+        if (!TryGetString(root, "description", out string? description) || string.IsNullOrWhiteSpace(description))
+            return ("error: append replay requires a nonblank 'description'", true);
+        string result = await tools.MemoryRemember(path, [content], description, attributes, keywords, cancellationToken: ct);
         return (result, false);
     }
 

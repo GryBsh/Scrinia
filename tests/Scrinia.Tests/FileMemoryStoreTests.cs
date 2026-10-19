@@ -101,6 +101,40 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadArtifactAsync_ScopeContentionUsesOrdinaryReadTimeout()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("unchanged");
+        await _store.WriteArtifactAsync("locked", "local:read-timeout", artifact);
+        string lockPath = Path.Combine(_store.GetStoreDirForScope("local:read-timeout"), ".lock");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using (FileLock held = FileLock.AcquireExclusive(lockPath))
+        {
+            // The deadline bounds a regression to the five-minute import timeout.
+            Func<Task> read = () => _store.ReadArtifactAsync(
+                MemoryAddress.Parse("/read-timeout/locked"), deadline.Token);
+            var failure = await read.Should().ThrowAsync<FileLockTimeoutException>();
+            failure.Which.LockPath.Should().Be(lockPath);
+        }
+
+        (await _store.ReadArtifactAsync(MemoryAddress.Parse("/read-timeout/locked")))
+            .Should().Be(artifact);
+    }
+
+    [Fact]
+    public async Task ReadArtifactAsync_ScopeContentionHonorsCancellation()
+    {
+        await _store.WriteArtifactAsync("locked", "local:read-cancel", Nmp2ChunkedEncoder.Encode("body"));
+        using FileLock held = FileLock.AcquireExclusive(
+            Path.Combine(_store.GetStoreDirForScope("local:read-cancel"), ".lock"));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        Func<Task> read = () => _store.ReadArtifactAsync(
+            MemoryAddress.Parse("/read-cancel/locked"), cancellation.Token);
+
+        var failure = await read.Should().ThrowAsync<OperationCanceledException>();
+        failure.Which.CancellationToken.Should().Be(cancellation.Token);
+    }
+
+    [Fact]
     public async Task DeleteArtifact_removes_file()
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Delete me");

@@ -60,7 +60,7 @@ For each gap, persist a finding under `/findings/`:
 
 ```
 remember({
-  path: "/findings/OPS-001",
+  path: "/findings/OPS-001", description: "Failure scenario, observed behavior, and recovery recommendations.",
   content: ["Scenario: ...\nCurrent behavior: ...\nDesired behavior: ...\nRecommended fix: ..."],
   keywords: ["operational", "resilience", "{component}"]
 })

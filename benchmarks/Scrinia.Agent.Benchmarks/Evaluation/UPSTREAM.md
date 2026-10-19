@@ -10,9 +10,11 @@ The checked-in golden fixture was generated independently by the upstream pure
 `get_anscheck_prompt` function, for all six categories with and without abstention.
 Tests compare complete prompt strings. Python is not required to run the tests or benchmark.
 
-Verdict parsing intentionally requires an exact yes/no reply after trimming and
-ignoring case. The upstream evaluator uses substring matching. Malformed replies
-remain grading failures here. Model, sampling parameters, and usage are recorded
+Verdict parsing requires the first nonblank line to be a standalone yes or no,
+ignoring case and allowing one trailing period. Explanations may follow on later
+lines; a conflicting standalone verdict or prose on the opening line is rejected.
+The upstream evaluator uses substring matching. Malformed replies remain grading
+failures here. Model, sampling parameters, and usage are recorded
 from the actual configured judge rather than being labeled as the upstream default.
 
 ## Upstream license

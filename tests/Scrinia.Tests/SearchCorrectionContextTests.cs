@@ -31,7 +31,7 @@ public sealed class SearchCorrectionContextTests
         var rendered = SearchResultRenderer.FormatRichSearchResults(store, matches, []);
         matches.Should().ContainSingle();
         rendered.Should().Contain("950 dollars").And.Contain("700 dollars");
-        rendered.Should().NotContain("plant carrots");
+        rendered.Should().NotContain("[chunk 2/3]");
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class SearchCorrectionContextTests
         var tools = new ScriniaMcpTools();
         await tools.Remember(["Conference travel reimbursement allowance is 700 dollars."],
             MemoryAddress.Parse("/travel"));
-        await tools.MemoryRemember("/travel", ["Correction: reimbursement allowance is 950 dollars."]);
+        await tools.Append("Correction: reimbursement allowance is 950 dollars.", MemoryAddress.Parse("/travel"));
         var result = await tools.Search("conference travel reimbursement allowance", limit: 1);
         result.ToYaml().Should().Contain("950 dollars").And.Contain("700 dollars");
     }
@@ -101,7 +101,7 @@ public sealed class SearchCorrectionContextTests
             "Conference travel reimbursement allowance is 700 dollars.",
             "Vegetable garden: plant carrots.",
             "Correction: reimbursement allowance is 950 dollars."
-        ]);
+        ], description: "Conference travel reimbursement allowance is 700 dollars.");
         var response = await fixture.Tools.Search("conference travel reimbursement allowance", limit: 1);
         response.Should().Contain("950 dollars").And.Contain("700 dollars")
             .And.NotContain("[chunk 2/3]");

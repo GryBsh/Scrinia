@@ -37,6 +37,29 @@ public sealed class ScriniaMcpSessionTests
     }
 
     [Fact]
+    public async Task Real_remember_rejects_missing_null_and_blank_description_without_writing()
+    {
+        using var temp = new ScratchDirectory();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var root = Path.Combine(temp.Root, "description-validation");
+        await using var journal = await RunJournal.OpenAsync(root, RunJournalTests.Manifest(), false, timeout.Token);
+        var settings = Payload();
+        var paths = new AttemptWorkspace().Create(root, 1, 1, settings);
+        await using var session = await ScriniaMcpSession.OpenAsync(settings, paths, journal.CreateEvents(paths), timeout.Token);
+        foreach (string mode in new[] { "omitted", "null", "blank" })
+        {
+            var arguments = new Dictionary<string, object?> { ["path"] = "/validation/" + mode,
+                ["content"] = new[] { "MUST_NOT_BE_STORED" } };
+            if (mode != "omitted") arguments["description"] = mode == "null" ? null : "  ";
+            var result = await session.Tools.Single(t => t.Name == "remember").CallAsync(arguments, cancellationToken: timeout.Token);
+            string text = string.Join("\n", result.Content.OfType<TextContentBlock>().Select(t => t.Text));
+            Assert.True(result.IsError == true || text.Contains("status: error"), text);
+            Assert.DoesNotContain("MUST_NOT_BE_STORED",
+                await Call(session, "recall", new() { ["path"] = "/validation/" + mode }, timeout.Token));
+        }
+    }
+
+    [Fact]
     public async Task Process_exit_after_tool_reply_cannot_be_accepted_as_a_successful_episode()
     {
         using var temp = new ScratchDirectory();
@@ -81,7 +104,7 @@ public sealed class ScriniaMcpSessionTests
             await using var journal = await RunJournal.OpenAsync(root, RunJournalTests.Manifest(), false, timeout.Token);
             var paths = new AttemptWorkspace().Create(root, 1, 1, Payload());
             await using (var session = await ScriniaMcpSession.OpenAsync(Payload(), paths, journal.CreateEvents(paths), timeout.Token))
-                Assert.Contains("status: success", await Call(session, "remember", new() { ["path"] = "/isolation/proof", ["content"] = (string[])["isolated"] }, timeout.Token));
+                Assert.Contains("status: success", await Call(session, "remember", new() { ["path"] = "/isolation/proof", ["description"] = "Stored facts for this test.", ["content"] = (string[])["isolated"] }, timeout.Token));
             Assert.Empty(Directory.EnumerateFileSystemEntries(hostile));
             Assert.DoesNotContain("SENTINEL_CREDENTIAL_NOT_FOR_CHILD", File.ReadAllText(Path.Combine(paths.Evidence, "events.ndjson")));
             Assert.Equal(hostile, Environment.GetEnvironmentVariable("SCRINIA_HOME"));
@@ -171,8 +194,8 @@ public sealed class ScriniaMcpSessionTests
         var first = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token);
         Assert.Contains(first.Tools, t => t.Name == "guide");
         Assert.Equal(64, first.CatalogHash.Length);
-        Assert.Contains("status: success", await Call(first, "remember", new() { ["path"] = "/test/persistent", ["content"] = (string[])["PERSISTED_CASE_ONE"] }, timeout.Token));
-        Assert.Contains("status: success", await Call(first, "remember", new() { ["path"] = "/temp/ephemeral", ["content"] = (string[])["EPHEMERAL_CASE_ONE"] }, timeout.Token));
+        Assert.Contains("status: success", await Call(first, "remember", new() { ["path"] = "/test/persistent", ["description"] = "Stored facts for this test.", ["content"] = (string[])["PERSISTED_CASE_ONE"] }, timeout.Token));
+        Assert.Contains("status: success", await Call(first, "remember", new() { ["path"] = "/temp/ephemeral", ["description"] = "Stored facts for this test.", ["content"] = (string[])["EPHEMERAL_CASE_ONE"] }, timeout.Token));
         await first.DisposeAsync();
         AssertProcessEnded(first.CompletedProcessId);
         await using (var second = await ScriniaMcpSession.OpenAsync(settings, paths, events, timeout.Token))

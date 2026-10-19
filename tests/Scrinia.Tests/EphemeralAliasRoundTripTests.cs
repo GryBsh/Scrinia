@@ -14,7 +14,7 @@ public class EphemeralAliasRoundTripTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/temp/probe", ["the secret note"]);
+        await tools.MemoryRemember("/temp/probe", ["the secret note"], description: "the secret note");
 
         string recalled = await tools.MemoryRecall("/temp/probe");
 
@@ -27,7 +27,7 @@ public class EphemeralAliasRoundTripTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/temp/probe", ["gone soon"]);
+        await tools.MemoryRemember("/temp/probe", ["gone soon"], description: "gone soon");
 
         string forgotten = await tools.MemoryForget("/temp/probe");
 
@@ -40,7 +40,7 @@ public class EphemeralAliasRoundTripTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/temp/probe", ["first"]);
+        await tools.MemoryRemember("/temp/probe", ["first"], description: "first");
 
         string appended = await tools.MemoryAppend("/temp/probe", "second");
 
@@ -55,7 +55,7 @@ public class EphemeralAliasRoundTripTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/temp/probe", ["one", "two"]);
+        await tools.MemoryRemember("/temp/probe", ["one", "two"], description: "one");
 
         string compacted = await tools.MemoryCompact("/temp/probe");
 
@@ -68,8 +68,8 @@ public class EphemeralAliasRoundTripTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/temp/alpha", ["a"]);
-        await tools.MemoryRemember("/temp/beta", ["b"]);
+        await tools.MemoryRemember("/temp/alpha", ["a"], description: "a");
+        await tools.MemoryRemember("/temp/beta", ["b"], description: "b");
 
         string linked = await tools.MemoryLink("/temp/alpha", "/temp/beta");
 
@@ -84,7 +84,7 @@ public class EphemeralAliasRoundTripTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
 
-        string response = await tools.MemoryRemember("/temp/probe", ["x"]);
+        string response = await tools.MemoryRemember("/temp/probe", ["x"], description: "x");
 
         Assert.Contains("~probe", response, StringComparison.Ordinal);
         Assert.DoesNotContain("/temp/probe", response, StringComparison.Ordinal);
@@ -96,7 +96,7 @@ public class EphemeralAliasRoundTripTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/temp/probe", ["written via the alias"]);
+        await tools.MemoryRemember("/temp/probe", ["written via the alias"], description: "written via the alias");
 
         Assert.Contains("written via the alias", await tools.MemoryRecall("~probe"), StringComparison.Ordinal);
     }
@@ -108,7 +108,7 @@ public class EphemeralAliasRoundTripTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
 
-        string response = await tools.MemoryRemember("/tempest/probe", ["x"]);
+        string response = await tools.MemoryRemember("/tempest/probe", ["x"], description: "x");
 
         Assert.DoesNotContain("~", response, StringComparison.Ordinal);
     }

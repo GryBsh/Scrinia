@@ -54,9 +54,9 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         // a memory citing gold doc D2:1. Each episode is a tool_calls turn followed by a
         // no-tool-calls turn so the episode terminates (mirrors AgenticIngestHarnessTests).
         var rememberLisbon = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var rememberBerlin = new ToolCallRequest("c2", "remember",
-            """{"path":"/findings/job","content":["Started a new job in Berlin.\nref: D2:1"]}""");
+            """{"path":"/findings/job","description":"Stored facts for this test.","content":["Started a new job in Berlin.\nref: D2:1"]}""");
 
         var client = new ScriptedToolClient(
             new ToolTurnResult(null, [rememberLisbon], "tool_calls"),
@@ -99,7 +99,7 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         // connect them. BM25 alone would score this memory zero against the query, so a
         // non-zero recall here can ONLY come from the semantic (hybrid) contributor.
         var rememberLisbon = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
 
         var client = new ScriptedToolClient(
             new ToolTurnResult(null, [rememberLisbon], "tool_calls"),

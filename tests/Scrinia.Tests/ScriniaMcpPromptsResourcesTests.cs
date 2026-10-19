@@ -50,7 +50,7 @@ public sealed class ScriniaMcpPromptsResourcesTests
     {
         using var scope = new TestHelpers.StoreScope();
         const string original = "OAuth token rotation and refresh policy.";
-        await new ScriniaMcpTools().MemoryRemember(path: "auth-flow", content: [original]);
+        await new ScriniaMcpTools().MemoryRemember(path: "auth-flow", content: [original], description: "Test memory.");
 
         string content = await ScriniaMcpResources.ReadMemory("auth-flow", CancellationToken.None);
 

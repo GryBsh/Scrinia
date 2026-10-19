@@ -20,10 +20,10 @@ internal static class SharedCarrierCommands
         var factory = new SharedBaseRuntimeFactory();
         var server = new SharedServer(workspace, registry, factory);
         var tools = new SharedTools(server);
-        Require((await tools.Remember("healthy", "/note", ["healthy payload"])).Contains("mutation: applied"));
+        Require((await tools.Remember("healthy", "/note", ["healthy payload"], description: "healthy payload")).Contains("mutation: applied"));
         // Seed with a separate factory so cold cases really do start without a cached bad runtime.
         var seed = new SharedTools(new SharedServer(workspace, registry, new SharedBaseRuntimeFactory()));
-        Require((await seed.Remember("bad", "/private", ["private payload"])).Contains("mutation: applied"));
+        Require((await seed.Remember("bad", "/private", ["private payload"], description: "private payload")).Contains("mutation: applied"));
         SharedBaseRuntime? cached = args[2] == "cached" ? factory.Open(entries[0]) : null;
         var before = Directory.GetFiles(root, "*", SearchOption.AllDirectories)
             .ToDictionary(path => path, File.ReadAllBytes);
@@ -48,7 +48,7 @@ internal static class SharedCarrierCommands
         new SharedServeHostAdapter(new HomeConfigStore(), workspace, registry, factory).ValidateStartup(server);
         foreach (string response in new[] { await tools.Recall("bad", "/private"), await tools.Refresh("bad"),
             await tools.List("bad"), await tools.Search("private", "bad"),
-            await tools.Remember("bad", "/new", ["forbidden"]) })
+            await tools.Remember("bad", "/new", ["forbidden"], description: "forbidden") })
         {
             Require(response.Contains("SHARED_BASE_UNSAFE_PATH") && response.Contains("mutation: none"));
             Require(!response.Contains("private payload") && !response.Contains("results:") && !response.Contains("chunks:"));

@@ -48,7 +48,7 @@ public sealed class CaseSensitiveMcpAppendTests : IDisposable
         MemoryStoreContext.Current = store;
 
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember(path: "MixedCase", content: ["the original body"]);
+        await tools.MemoryRemember(path: "MixedCase", content: ["the original body"], description: "the original body");
 
         await tools.MemoryAppend(path: "mixedcase", content: "the appended body");
 

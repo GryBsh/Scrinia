@@ -7,7 +7,7 @@ agent or the user can act on without re-doing the analysis.
 
 - `search({ query: "..." })` — load existing decisions, patterns, or prior art before reviewing.
 - `recall({ path: '...' })` — load full artifact content for review context.
-- `remember({ path: '/findings/{ID}', content: [...], keywords: ["severity:high", ...] })` — persist each issue as a separate memory so it's individually searchable and trackable.
+- `remember({ path: '/findings/{ID}', description: 'Review finding, affected code, supporting evidence, and recommendation.', content: [...], keywords: ["severity:high", ...] })` — persist each issue as a separate memory so it's individually searchable and trackable.
 
 ## Instructions
 

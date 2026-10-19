@@ -283,7 +283,7 @@ public sealed class MaintenanceSerializationAndCompatibilityTests
     {
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)TestHelpers.Store;
-        await new ScriniaMcpTools().MemoryRemember(path: "/notes/kept", content: ["kept content"]);
+        await new ScriniaMcpTools().MemoryRemember(path: "/notes/kept", content: ["kept content"], description: "kept content");
         int invalidationsBefore = store.CommittedScopeInvalidationCount;
         var service = new FileMemoryMaintenanceService(store, new CoreWorkspaceConfig());
 

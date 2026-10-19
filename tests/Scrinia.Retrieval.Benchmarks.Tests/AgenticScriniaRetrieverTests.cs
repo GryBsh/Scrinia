@@ -77,9 +77,9 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // seeds the alice node → the alice memory, and PPR diffuses alice→zeta→the bob memory,
         // lifting D1:2 (which the bob memory cites) though it never mentions alice.
         var rememberAlice = new ToolCallRequest("c1", "remember",
-            """{"path":"/f/a","content":["kickoff recap.\nref: D1:1"],"attributes":{"person":["alice"],"topic":["zeta"]}}""");
+            """{"path":"/f/a","description":"Stored facts for this test.","content":["kickoff recap.\nref: D1:1"],"attributes":{"person":["alice"],"topic":["zeta"]}}""");
         var rememberBob = new ToolCallRequest("c2", "remember",
-            """{"path":"/f/b","content":["kickoff recap.\nref: D1:2"],"attributes":{"topic":["zeta"],"person":["bob"]}}""");
+            """{"path":"/f/b","description":"Stored facts for this test.","content":["kickoff recap.\nref: D1:2"],"attributes":{"topic":["zeta"],"person":["bob"]}}""");
         var (retriever, _, _) = MakeRetrieverWithEntityGraph(
             new ToolTurnResult(null, [rememberAlice, rememberBob], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -100,9 +100,9 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // only the alice memory, so D1:2 (cited by the zeta/bob memory) is not surfaced. Pins the
         // sibling test's lift to the entity graph, not to ordinary field/BM25 scoring.
         var rememberAlice = new ToolCallRequest("c1", "remember",
-            """{"path":"/f/a","content":["kickoff recap.\nref: D1:1"],"attributes":{"person":["alice"],"topic":["zeta"]}}""");
+            """{"path":"/f/a","description":"Stored facts for this test.","content":["kickoff recap.\nref: D1:1"],"attributes":{"person":["alice"],"topic":["zeta"]}}""");
         var rememberBob = new ToolCallRequest("c2", "remember",
-            """{"path":"/f/b","content":["kickoff recap.\nref: D1:2"],"attributes":{"topic":["zeta"],"person":["bob"]}}""");
+            """{"path":"/f/b","description":"Stored facts for this test.","content":["kickoff recap.\nref: D1:2"],"attributes":{"topic":["zeta"],"person":["bob"]}}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [rememberAlice, rememberBob], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -120,7 +120,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task ProvenanceExpansion_ReturnsCitedDocs_InOrder()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -138,9 +138,9 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task DedupAcrossMemories_DocAppearsOnce()
     {
         var remember1 = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/a","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var remember2 = new ToolCallRequest("c2", "remember",
-            """{"path":"/findings/b","content":["Lisbon trip details confirmed.\nref: D1:1\nref: D1:2"]}""");
+            """{"path":"/findings/b","description":"Stored facts for this test.","content":["Lisbon trip details confirmed.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember1, remember2], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -157,7 +157,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task CacheReplay_RoundTrips_WithoutSecondLlmCall()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var client = new ScriptedToolClient(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -204,7 +204,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // empty episode. That triggers one fresh re-roll; the retry stores a memory, so the
         // session recovers and is counted as an agentic episode (not failed).
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, client, _) = MakeRetriever(
             new ToolTurnResult("I have nothing to store.", [], "stop"),          // attempt 1: no tool calls
             new ToolTurnResult(null, [remember], "tool_calls"),                   // attempt 2 (retry): stores
@@ -244,7 +244,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task NoRefMemory_IncrementsMemoriesWithoutRefs_AndMapsToNoDoc()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip with no citation."]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip with no citation."]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -282,7 +282,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // to Program.Main's top-level catch: "error: ArgumentException: Path must not contain
         // colons" and the entire benchmark exited 2).
         var badPath = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip:lisbon","content":["Booked the Lisbon trip.\nref: d1"]}""");
+            """{"path":"/findings/trip:lisbon","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: d1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [badPath], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -301,10 +301,10 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     {
         // Attempt 1: writes a memory citing D1:1, then fails (null turn).
         var rememberD1 = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/a","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         // Attempt 2 (retry): writes a memory citing D1:2, then stops cleanly.
         var rememberD2 = new ToolCallRequest("c2", "remember",
-            """{"path":"/findings/b","content":["Lisbon trip confirmed.\nref: D1:2"]}""");
+            """{"path":"/findings/b","description":"Stored facts for this test.","content":["Lisbon trip confirmed.\nref: D1:2"]}""");
 
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [rememberD1], "tool_calls"),
@@ -327,7 +327,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task RetrievedHit_Text_IsMemoryContent_NotDocText()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/f/x","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: D1:1"]}""");
+            """{"path":"/f/x","description":"Stored facts for this test.","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -345,7 +345,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task Provenance_ParsesCommaListRefs_MapsAllCitedDialogs()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Trip planning consolidated.\nref: D1:1, D1:2"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Trip planning consolidated.\nref: D1:1, D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -363,7 +363,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task Provenance_UnknownCitedId_CountsUnresolvable()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Cites a missing dialog.\nref: D9:99"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Cites a missing dialog.\nref: D9:99"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -381,7 +381,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     {
         string longContent = "Lisbon trip planning. " + new string('x', 520) + " TAILTOKEN-AFTER-500\\nref: D1:1";
         var remember = new ToolCallRequest("c1", "remember",
-            "{\"path\":\"summer-plans-summary\",\"content\":[\"" + longContent + "\"]}");
+            "{\"path\":\"summer-plans-summary\",\"description\":\"Stored facts for this test.\",\"content\":[\"" + longContent + "\"]}");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -399,7 +399,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task GetSurfacedContents_ReturnsMemoryContent_EvenWithNoResolvableRefs()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["JUDGE-VISIBLE consolidated Lisbon plan with no citation."]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["JUDGE-VISIBLE consolidated Lisbon plan with no citation."]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -417,7 +417,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task Reindex_PopulatesVectorStore_AfterEpisode()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new StubEmbeddingProvider(),
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -435,7 +435,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task NoEmbedder_LeavesVectorPipelineNull_BehaviorUnchanged()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -452,7 +452,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task Dispose_ReleasesVectorStore_NoThrow()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new StubEmbeddingProvider(),
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -475,9 +475,9 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // and the travel memory cosine-identical (both contain travel-concept words), so the
         // hybrid contributor's supplemental score is the ONLY thing that can surface D1:1.
         var rememberTravel = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
         var rememberDistractor = new ToolCallRequest("c2", "remember",
-            """{"path":"/findings/plumbing","content":["Fixed the kitchen sink plumbing.\nref: D2:1"]}""");
+            """{"path":"/findings/plumbing","description":"Stored facts for this test.","content":["Fixed the kitchen sink plumbing.\nref: D2:1"]}""");
 
         var (hybridRetriever, _, _) = MakeRetriever(
             new ConceptEmbeddingProvider(),
@@ -517,7 +517,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // byte-for-byte BM25-only. Reuses the lexically-matching-query assertion shape from
         // ProvenanceExpansion_ReturnsCitedDocs_InOrder to pin the no-embedder path unchanged.
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
+            """{"path":"/findings/trip","description":"Stored facts for this test.","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -535,7 +535,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task GetSurfacedContents_prefixes_memory_with_authoring_session_date()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/support","content":["Talked about joining a support group.\nref: D1:3"]}""");
+            """{"path":"/findings/support","description":"Stored facts for this test.","content":["Talked about joining a support group.\nref: D1:3"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -552,7 +552,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task Retrieve_hits_are_not_date_prefixed_so_recall_is_unaffected()
     {
         var remember = new ToolCallRequest("c1", "remember",
-            """{"path":"/findings/support","content":["Talked about joining a support group.\nref: D1:3"]}""");
+            """{"path":"/findings/support","description":"Stored facts for this test.","content":["Talked about joining a support group.\nref: D1:3"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));

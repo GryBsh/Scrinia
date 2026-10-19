@@ -216,7 +216,7 @@ public sealed class ObservedChatClientTests
         await using var events = new CapturingEvents();
         var response = ScriptedChatClient.Call("id", "remember", []);
         response.FinishReason = ChatFinishReason.Length;
-        using var observed = new ObservedChatClient(new ScriptedChatClient(response), Settings, Limits, events, "learn", timeProvider: new ImmediateTimeProvider());
+        using var observed = new ObservedChatClient(new ScriptedChatClient(response), Settings, Limits with { MaxModelAttempts = 1 }, events, "learn", timeProvider: new ImmediateTimeProvider());
         await Assert.ThrowsAsync<InvalidDataException>(() => observed.GetResponseAsync([new(ChatRole.User, "input")]));
     }
 }

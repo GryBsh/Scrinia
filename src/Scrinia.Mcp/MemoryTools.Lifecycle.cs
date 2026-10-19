@@ -103,7 +103,7 @@ public sealed partial class ScriniaMcpTools
                     $"Memory '{name}' not found.",
                     ErrorCodes.NotFound,
                     "list() to see available memories",
-                    "remember({ path: '...', content: [...] }) to create it");
+                    "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it");
             artifact = ephemeralEntry.Artifact;
         }
         else
@@ -118,7 +118,7 @@ public sealed partial class ScriniaMcpTools
                     $"Memory '{name}' not found.",
                     ErrorCodes.NotFound,
                     "list() to see available memories",
-                    "remember({ path: '...', content: [...] }) to create it");
+                    "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it");
             }
             catch (FileLockTimeoutException exception)
             {

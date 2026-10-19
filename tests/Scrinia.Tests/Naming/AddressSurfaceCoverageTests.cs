@@ -41,7 +41,7 @@ public class AddressSurfaceCoverageTests
     public async Task McpResource_TreatsTempPathAsTheEphemeralMemory()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().MemoryRemember("~probe", ["body"]);
+        await Tools().MemoryRemember("~probe", ["body"], description: "body");
 
         // Reached through the resource method the UriTemplate binds to, which bypasses the tool
         // methods entirely — this is one of the two surfaces a type on the internal boundary
@@ -58,7 +58,7 @@ public class AddressSurfaceCoverageTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        var response = ResponseParser.Parse(await Tools().MemoryRemember(address, ["body"]));
+        var response = ResponseParser.Parse(await Tools().MemoryRemember(address, ["body"], description: "body"));
 
         response.Status.Should().Be("success", because: address);
     }
@@ -84,7 +84,7 @@ public class AddressSurfaceCoverageTests
         }
         else
         {
-            await tools.MemoryRemember(address == "/temp/probe" ? "~probe" : address, ["body"]);
+            await tools.MemoryRemember(address == "/temp/probe" ? "~probe" : address, ["body"], description: "body");
         }
 
         if (isSkillException)
@@ -210,7 +210,7 @@ public class AddressSurfaceCoverageTests
     private static readonly McpToolMetadata[] McpToolInventory =
     [
         new("Guide", [], ["cancellationToken"]),
-        new("MemoryRemember", ["path"], ["content", "attributes", "keywords", "replace", "cancellationToken"]),
+        new("MemoryRemember", ["path"], ["content", "description", "attributes", "keywords", "replace", "cancellationToken"]),
         new("MemoryRecall", ["path"], ["chunk", "withBuiltin", "cancellationToken"]),
         new("MemorySearch", [], ["query", "context", "scopes", "limit", "excludeTopics", "pathPrefix", "attributeFilter", "cancellationToken"]),
         new("MemoryList", [], ["scopes", "mode", "offset", "limit", "excludeTopics", "cancellationToken"]),

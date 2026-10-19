@@ -24,7 +24,7 @@ public class ResponseStatusIsolationTests
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
 
-        await tools.MemoryRemember("/findings/response-format", [Poison]);
+        await tools.MemoryRemember("/findings/response-format", [Poison], description: "Test memory.");
         string yaml = await tools.MemoryRecall("/findings/response-format");
 
         yaml.Should().StartWith("status: success");
@@ -42,7 +42,7 @@ public class ResponseStatusIsolationTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/patterns/response-format", [Poison]);
+        await tools.MemoryRemember("/patterns/response-format", [Poison], description: "Test memory.");
 
         int exitCode = await new ScriniaCommands().Restore(workspaceRoot: scope.WorkspaceDir);
 
@@ -62,8 +62,8 @@ public class ResponseStatusIsolationTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = new ScriniaMcpTools();
-        await tools.MemoryRemember("/patterns/link-source", ["source"]);
-        await tools.MemoryRemember("/patterns/link-target", ["target"]);
+        await tools.MemoryRemember("/patterns/link-source", ["source"], description: "source");
+        await tools.MemoryRemember("/patterns/link-target", ["target"], description: "target");
 
         int exitCode = await new ScriniaCommands().Link("/patterns/link-source", "/patterns/link-target",
             reason: Poison, workspaceRoot: scope.WorkspaceDir);

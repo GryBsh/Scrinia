@@ -77,13 +77,13 @@ public class B0FaultSeamCoverageTests
         var store = (FileMemoryStore)TestHelpers.Store;
         var tools = new ScriniaMcpTools();
 
-        await tools.MemoryRemember("/b1/remember-op", ["old content"]);
+        await tools.MemoryRemember("/b1/remember-op", ["old content"], description: "old content");
 
         // FileMemoryStore.FailOnceAt maps the whole-memory fault point to FaultPhase.WholeLiveArtifactWrite
         // through the B0 seam; the remember commit boundary surfaces it as a durable-write failure.
         store.FailOnceAt(WholeMemoryFaultPoint.LiveArtifactWrite);
 
-        string responseYaml = await tools.MemoryRemember("/b1/remember-op", ["new content"], replace: true);
+        string responseYaml = await tools.MemoryRemember("/b1/remember-op", ["new content"], description: "new content", replace: true);
         McpResponseAssert parsed = ResponseParser.Parse(responseYaml);
 
         Assert.Equal("error", parsed.Status);

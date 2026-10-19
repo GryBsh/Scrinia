@@ -13,6 +13,9 @@ public record SkillFileMeta(
     string? UpdatedAt,
     [property: JsonPropertyName("v")] int? SchemaVersion = null)
 {
+    /// <summary>Agent-written retrieval description of the file's complete scope.</summary>
+    public string? Description { get; init; }
+
     /// <summary>Fields unknown to this build, retained across accepted rewrites.</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Unknown { get; set; }
@@ -24,6 +27,9 @@ public record AgentFileMeta(
     string? UpdatedAt,
     [property: JsonPropertyName("v")] int? SchemaVersion = null)
 {
+    /// <summary>Agent-written retrieval description of the file's complete scope.</summary>
+    public string? Description { get; init; }
+
     /// <summary>Fields unknown to this build, retained across accepted rewrites.</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Unknown { get; set; }

@@ -21,7 +21,7 @@ public sealed class SharedOperationBoundaryTests
         using var second = new SharedOperationFixture();
         // Seed equal-score durable entries from a real shared write, then exercise the real
         // snapshot/scorer through public tools. Batch fixture setup avoids quadratic write scans.
-        (await first.Tools.Remember("team", "/note000", ["zebra matching content"])).Should().Contain("mutation: applied");
+        (await first.Tools.Remember("team", "/note000", ["zebra matching content"], description: "zebra matching content")).Should().Contain("mutation: applied");
         string memories = Path.Combine(first.BaseRoot, ".scrinia", "memories");
         for (int i = 1; i < matches; i++)
         {
@@ -31,7 +31,7 @@ public sealed class SharedOperationBoundaryTests
                 File.ReadAllText(Path.Combine(memories, "note000.meta.json")).Replace("note000", $"note{i:D3}", StringComparison.Ordinal));
         }
         (await first.Tools.Refresh("team")).Should().Contain("status: success");
-        await second.Tools.Remember("team", "/other", ["unrelated content"]);
+        await second.Tools.Remember("team", "/other", ["unrelated content"], description: "unrelated content");
         var multiple = SharedOperationFixture.Select(("alpha", first.BaseRoot), ("beta", second.BaseRoot));
         string[] responses = [await first.Tools.Search("zebra", limit: limit),
             await first.Tools.Search("zebra", "team", limit: limit),
@@ -53,7 +53,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Logical_slash_addresses_work_while_physical_escape_never_invokes_publication(bool destinationEscapes)
     {
         using var fixture = new SharedOperationFixture();
-        (await fixture.Tools.Remember("team", "/valid/leading", ["contained body"])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", "/valid/leading", ["contained body"], description: "contained body")).Should().Contain("mutation: applied");
         (await fixture.Tools.Recall("team", "/valid/leading")).Should().Contain("contained body");
         var runtime = fixture.Factory.Open(new SharedBaseEntry { Name = "team", Root = fixture.BaseRoot });
         var before = AuthoritativeBytes(fixture.BaseRoot);
@@ -96,7 +96,7 @@ public sealed class SharedOperationBoundaryTests
         AuthoritativeBytes(fixture.BaseRoot).Should().BeEquivalentTo(before);
         (await fixture.Tools.Refresh("team")).Should().Contain("status: success");
         AuthoritativeBytes(fixture.BaseRoot).Should().BeEquivalentTo(before);
-        (await fixture.Tools.Remember("team", "/new", ["new body"])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", "/new", ["new body"], description: "new body")).Should().Contain("mutation: applied");
         var after = AuthoritativeBytes(fixture.BaseRoot);
         after.Remove(".scrinia/memories/new.nmp2").Should().BeTrue();
         after.Remove(".scrinia/memories/new.meta.json").Should().BeTrue();
@@ -109,7 +109,7 @@ public sealed class SharedOperationBoundaryTests
     {
         using var fixture = new SharedOperationFixture();
         string chunk = new('.', 3 * 1024 * 1024);
-        (await fixture.Tools.Remember("team", "/large", [chunk, chunk])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", "/large", [chunk, chunk], description: "Test memory.")).Should().Contain("mutation: applied");
         var runtime = fixture.Factory.Open(new SharedBaseEntry { Name = "team", Root = fixture.BaseRoot });
         string? generation = runtime.Snapshot.Generation;
         var before = AuthoritativeBytes(fixture.BaseRoot);
@@ -117,7 +117,7 @@ public sealed class SharedOperationBoundaryTests
         AuthoritativeBytes(fixture.BaseRoot).Should().BeEquivalentTo(before);
         runtime.Snapshot.Generation.Should().Be(generation);
         runtime.Snapshot.Availability.Should().Be(SharedBaseAvailability.Available);
-        (await fixture.Tools.Remember("team", "/other", ["allowed without refresh"])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", "/other", ["allowed without refresh"], description: "allowed without refresh")).Should().Contain("mutation: applied");
     }
 
     [Fact]
@@ -144,7 +144,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Cached_runtime_reports_unsafe_topology_without_payloads(bool directoryLink)
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["private payload"]);
+        await fixture.Tools.Remember("team", "/note", ["private payload"], description: "private payload");
         string target = Path.Combine(fixture.Root, "outside");
         Directory.CreateDirectory(target);
         File.WriteAllText(Path.Combine(target, "secret.txt"), "outside secret");
@@ -178,8 +178,8 @@ public sealed class SharedOperationBoundaryTests
     public async Task Markdown_bodies_remain_accessible_by_list_and_recall_without_ordinary_memory_search_indexing()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/skill/one", ["zebra searchable-looking body"]);
-        await fixture.Tools.Remember("team", "/agent/two", ["zebra other body"]);
+        await fixture.Tools.Remember("team", "/skill/one", ["zebra searchable-looking body"], description: "zebra searchable-looking body");
+        await fixture.Tools.Remember("team", "/agent/two", ["zebra other body"], description: "zebra other body");
         (await fixture.Tools.List()).Should().Contain("path: /skill/one").And.Contain("path: /agent/two");
         (await fixture.Tools.Recall("team", "/skill/one")).Should().Contain("zebra");
         (await fixture.Tools.Search("zebra")).Should().Contain("results: []");
@@ -190,7 +190,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Search_context_uses_the_existing_query_augmentation_semantics()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["zebra unique content"]);
+        await fixture.Tools.Remember("team", "/note", ["zebra unique content"], description: "zebra unique content");
         (await fixture.Tools.Search("absentterm")).Should().Contain("results: []");
         string contextual = await fixture.Tools.Search("absentterm", context: "zebra");
         contextual.Should().Contain("path: /note");
@@ -207,8 +207,8 @@ public sealed class SharedOperationBoundaryTests
     {
         using var first = new SharedOperationFixture();
         using var second = new SharedOperationFixture();
-        await first.Tools.Remember("team", "/same", ["shared searchable first"]);
-        await second.Tools.Remember("team", "/same", ["shared searchable second"]);
+        await first.Tools.Remember("team", "/same", ["shared searchable first"], description: "shared searchable first");
+        await second.Tools.Remember("team", "/same", ["shared searchable second"], description: "shared searchable second");
         var tools = SharedOperationFixture.Select(("beta", second.BaseRoot), ("missing", null), ("alpha", first.BaseRoot));
         string result = await tools.List(limit: 1);
         result.Should().Contain("status: partial").And.Contain("base: alpha").And.Contain("base: missing")
@@ -226,8 +226,8 @@ public sealed class SharedOperationBoundaryTests
     public async Task Second_link_endpoint_failure_reports_unknown_and_requires_explicit_refresh()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["memory"]);
-        await fixture.Tools.Remember("team", "/skill/one", ["body"]);
+        await fixture.Tools.Remember("team", "/note", ["memory"], description: "memory");
+        await fixture.Tools.Remember("team", "/skill/one", ["body"], description: "body");
         var runtime = fixture.Factory.Open(new SharedBaseEntry { Name = "team", Root = fixture.BaseRoot });
         string generation = runtime.Snapshot.Generation!;
         new FileEntityTransactionCoordinator(fixture.BaseRoot).FailOnceAt(FileEntityFaultPoint.MetaWrite);
@@ -249,10 +249,10 @@ public sealed class SharedOperationBoundaryTests
     public async Task Existing_uppercase_archive_directory_stays_derived_after_real_overwrite()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/topic/note", ["before"]);
+        await fixture.Tools.Remember("team", "/topic/note", ["before"], description: "before");
         string archives = Path.Combine(fixture.BaseRoot, ".scrinia", "memories", "topic", "Versions");
         Directory.CreateDirectory(archives);
-        (await fixture.Tools.Remember("team", "/topic/note", ["after"])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", "/topic/note", ["after"], description: "after")).Should().Contain("mutation: applied");
         if (OperatingSystem.IsWindows()) Directory.GetFiles(archives).Should().NotBeEmpty();
         var runtime = fixture.Factory.Open(new SharedBaseEntry { Name = "team", Root = fixture.BaseRoot });
         runtime.Snapshot.AuthoritativeFiles.Should().NotContain(path => path.Contains("Versions/", StringComparison.Ordinal));
@@ -263,11 +263,11 @@ public sealed class SharedOperationBoundaryTests
     public async Task File_entity_rewrites_preserve_valid_null_dates_versions_and_extensions()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/skill/one", ["before"]);
+        await fixture.Tools.Remember("team", "/skill/one", ["before"], description: "before");
         string sidecar = Path.Combine(fixture.BaseRoot, ".scrinia", "skills", "one.meta.json");
         File.WriteAllText(sidecar, "{\"createdAt\":null,\"v\":0,\"custom\":{\"nested\":true}}");
         await fixture.Tools.Refresh("team");
-        (await fixture.Tools.Remember("team", "/skill/one", ["after"])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", "/skill/one", ["after"], description: "after")).Should().Contain("mutation: applied");
         using var metadata = JsonDocument.Parse(File.ReadAllText(sidecar));
         metadata.RootElement.TryGetProperty("createdAt", out _).Should().BeFalse();
         metadata.RootElement.GetProperty("v").GetInt32().Should().Be(0);
@@ -287,8 +287,8 @@ public sealed class SharedOperationBoundaryTests
     public async Task Malformed_file_entity_references_fail_before_either_endpoint_changes(string metadata)
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["before"]);
-        await fixture.Tools.Remember("team", "/skill/one", ["body"]);
+        await fixture.Tools.Remember("team", "/note", ["before"], description: "before");
+        await fixture.Tools.Remember("team", "/skill/one", ["body"], description: "body");
         string sidecar = Path.Combine(fixture.BaseRoot, ".scrinia", "skills", "one.meta.json");
         File.WriteAllText(sidecar, metadata);
         await fixture.Tools.Refresh("team");
@@ -305,7 +305,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Derived_namespace_targets_never_report_applied(string path)
     {
         using var fixture = new SharedOperationFixture();
-        (await fixture.Tools.Remember("team", path, ["forbidden"])).Should().Contain("INVALID_PATH").And.Contain("mutation: none");
+        (await fixture.Tools.Remember("team", path, ["forbidden"], description: "forbidden")).Should().Contain("INVALID_PATH").And.Contain("mutation: none");
         (await fixture.Tools.List()).Should().Contain("total: 0");
     }
 
@@ -313,7 +313,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Newer_memory_is_readable_but_rewrite_is_refused_and_forget_is_permitted()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["before"]);
+        await fixture.Tools.Remember("team", "/note", ["before"], description: "before");
         string sidecar = Path.Combine(fixture.BaseRoot, ".scrinia", "memories", "note.meta.json");
         string json = File.ReadAllText(sidecar);
         using var doc = JsonDocument.Parse(json);
@@ -332,7 +332,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Parameter_validation_precedes_disabled_membership_and_never_echoes_rejected_targets()
     {
         using var fixture = new SharedOperationFixture();
-        (await fixture.Tools.Remember("private", "/secret", [])).Should().Contain("INVALID_PARAMETER").And.NotContain("private").And.NotContain("/secret");
+        (await fixture.Tools.Remember("private", "/secret", [], description: "Test memory.")).Should().Contain("INVALID_PARAMETER").And.NotContain("private").And.NotContain("/secret");
         (await fixture.Tools.Recall("private", "~temporary")).Should().Contain("SHARED_BASE_NOT_ENABLED").And.NotContain("private");
         (await fixture.Tools.Recall("team", "~temporary")).Should().Contain("SHARED_EPHEMERAL_NOT_SUPPORTED");
         (await fixture.Tools.Link("team", "/missing", "/temp/note")).Should().Contain("SHARED_EPHEMERAL_NOT_SUPPORTED");
@@ -345,7 +345,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Reads_remain_on_open_generation_until_explicit_refresh_and_stale_mutations_do_not_write()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["before"]);
+        await fixture.Tools.Remember("team", "/note", ["before"], description: "before");
         string body = Path.Combine(fixture.BaseRoot, ".scrinia", "memories", "note.nmp2");
         File.WriteAllText(body, Nmp2ChunkedEncoder.Encode("external"));
         (await fixture.Tools.Recall("team", "/note")).Should().Contain("before").And.NotContain("external");
@@ -359,7 +359,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Manifests_contain_exact_live_pairs_and_compaction_does_not_resurrect_archives()
     {
         using var fixture = new SharedOperationFixture();
-        string created = await fixture.Tools.Remember("team", "/topic/note", ["one", "two"]);
+        string created = await fixture.Tools.Remember("team", "/topic/note", ["one", "two"], description: "one");
         created.Should().Contain(".scrinia/memories/topic/note.nmp2").And.Contain(".scrinia/memories/topic/note.meta.json");
         string compacted = await fixture.Tools.Compact("team", "/topic/note");
         compacted.Should().Contain("mutation: applied").And.NotContain("versions/").And.NotContain(".lock");
@@ -372,11 +372,11 @@ public sealed class SharedOperationBoundaryTests
     public async Task Missing_memory_sidecar_is_corrupt_and_cannot_be_overwritten()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["retained"]);
+        await fixture.Tools.Remember("team", "/note", ["retained"], description: "retained");
         File.Delete(Path.Combine(fixture.BaseRoot, ".scrinia", "memories", "note.meta.json"));
         await fixture.Tools.Refresh("team");
         (await fixture.Tools.Recall("team", "/note")).Should().Contain("SHARED_ENTRY_CORRUPT");
-        (await fixture.Tools.Remember("team", "/note", ["replacement"])).Should().Contain("SHARED_ENTRY_CORRUPT");
+        (await fixture.Tools.Remember("team", "/note", ["replacement"], description: "replacement")).Should().Contain("SHARED_ENTRY_CORRUPT");
         (await fixture.Tools.List()).Should().NotContain("path: /note");
         (await fixture.Tools.Search("retained")).Should().NotContain("path: /note");
         (await fixture.Tools.Facts("team", "entities")).Should().NotContain("/note");
@@ -386,8 +386,8 @@ public sealed class SharedOperationBoundaryTests
     public async Task File_entity_link_preserves_body_bytes_and_unrelated_extensions_without_indexing_refs()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/skill/one", ["body one\r\n"]);
-        await fixture.Tools.Remember("team", "/agent/two", ["body two"]);
+        await fixture.Tools.Remember("team", "/skill/one", ["body one\r\n"], description: "body one\r\n");
+        await fixture.Tools.Remember("team", "/agent/two", ["body two"], description: "body two");
         string first = Path.Combine(fixture.BaseRoot, ".scrinia", "skills", "one.md");
         File.WriteAllText(Path.ChangeExtension(first, ".meta.json"), "{\"custom\":{\"keep\":true}}");
         await fixture.Tools.Refresh("team");
@@ -408,10 +408,10 @@ public sealed class SharedOperationBoundaryTests
     public async Task Proven_whole_memory_rollback_reports_none_and_preserves_previous_generation()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["before"]);
+        await fixture.Tools.Remember("team", "/note", ["before"], description: "before");
         var runtime = fixture.Factory.Open(new SharedBaseEntry { Name = "team", Root = fixture.BaseRoot });
         runtime.Store.FailOnceAt(WholeMemoryFaultPoint.LiveSidecarWrite);
-        string result = await fixture.Tools.Remember("team", "/note", ["after"], replace: true);
+        string result = await fixture.Tools.Remember("team", "/note", ["after"], description: "after", replace: true);
         result.Should().Contain("DURABLE_WRITE_FAILED").And.Contain("mutation: none");
         (await fixture.Tools.Recall("team", "/note")).Should().Contain("before");
     }
@@ -420,7 +420,7 @@ public sealed class SharedOperationBoundaryTests
     public async Task Retained_scope_recovery_evidence_blocks_cached_shared_reads()
     {
         using var fixture = new SharedOperationFixture();
-        await fixture.Tools.Remember("team", "/note", ["before"]);
+        await fixture.Tools.Remember("team", "/note", ["before"], description: "before");
         File.WriteAllText(Path.Combine(fixture.BaseRoot, ".scrinia", "memories", ".restore-journal.json"), "invalid retained evidence");
         string result = await fixture.Tools.Recall("team", "/note");
         result.Should().Contain("status: error").And.NotContain("chunks:");

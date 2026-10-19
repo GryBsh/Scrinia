@@ -26,7 +26,7 @@ public class MentionSpanWiringTests
         using var scope = new TestHelpers.StoreScope();
 
         await Tools().MemoryRemember(path: "/findings/trip",
-            content: ["We saw Jolene and Seraphim in France."]);
+            content: ["We saw Jolene and Seraphim in France."], description: "We saw Jolene and Seraphim in France.");
 
         var entry = MemoryStoreContext.Current!.LoadIndex("local:findings").Single(e => e.Name == "trip");
         // Dump the whole attribute set on failure. This assertion was seen to fail once with
@@ -39,7 +39,7 @@ public class MentionSpanWiringTests
 
         // Agent-supplied typed attribute wins: a value the agent typed is NOT duplicated under mention.
         await Tools().MemoryRemember(path: "/findings/typed",
-            content: ["We saw Jolene."],
+            content: ["We saw Jolene."], description: "We saw Jolene.",
             attributes: new Dictionary<string, string[]> { ["person"] = ["jolene"] });
 
         var typed = MemoryStoreContext.Current!.LoadIndex("local:findings").Single(e => e.Name == "typed");

@@ -145,7 +145,7 @@ public class ResponseGoldenTests
 
         string yaml = name switch
         {
-            "remember"        => await tools.MemoryRemember("/findings/new-note", ["first chunk", "second chunk"]),
+            "remember"        => await tools.MemoryRemember("/findings/new-note", ["first chunk", "second chunk"], description: "first chunk"),
             "recall"          => await tools.MemoryRecall("/findings/auth-flow"),
             "search"          => await tools.MemorySearch("session rotation"),
             "search-filtered" => await tools.MemorySearch("session rotation", pathPrefix: "/findings/"),
@@ -157,7 +157,7 @@ public class ResponseGoldenTests
             "link"            => await tools.MemoryLink("/findings/auth-flow", "/patterns/retry"),
             "facts-entities"  => await tools.Facts("entities"),
             "error-missing-path" => await tools.MemoryRecall(""),
-            "error-empty-content" => await tools.MemoryRemember("/findings/x", []),
+            "error-empty-content" => await tools.MemoryRemember("/findings/x", [], description: "Test memory."),
             // No changes specified: UpdateMeta's changes.Count == 0 branch (MemoryTools.Core.cs)
             // is the cleanest of the three warning producers to drive — it needs no new seed
             // state (auth-flow already exists via Seed()) and no filesystem/formatter setup,

@@ -18,7 +18,7 @@ internal static class SearchResultRenderer
     /// <summary>
     /// Renders one block per match with the persisted entry attributes surfaced. The agent
     /// gets enough decision-making context per hit — description, tags, retrieval
-    /// anchors — to either answer directly or pick which hits warrant a recall,
+    /// anchors — to pick which hits warrant a recall,
     /// without a second round trip per candidate.
     /// </summary>
     /// <remarks>
@@ -41,6 +41,8 @@ internal static class SearchResultRenderer
         var sb = new System.Text.StringBuilder();
         AppendEntityFactsBlock(sb, entityFacts);
         sb.Append("results: ").Append(matches.Count).Append('\n');
+        sb.Append("Retrieval hints only. Descriptions may be content excerpts in older or CLI-created memories. ");
+        sb.Append("Recall relevant memories for full evidence; descriptions and excerpts are not exhaustive.\n");
 
         for (int i = 0; i < matches.Count; i++)
         {
@@ -101,8 +103,9 @@ internal static class SearchResultRenderer
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendDatesLine(sb, er.Item.Entry.CreatedAt, er.Item.Entry.UpdatedAt);
                     AppendAttributesLine(sb, er.Item.Entry.Attributes);
-                    AppendDescription(sb, er.ContextPreview ?? AttributeReaders.PreviewText(er.Item.Entry.ContentPreview),
-                        er.ContextPreview is null ? MaxDescriptionChars : MaxContextDescriptionChars);
+                    AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview));
+                    if (er.ContextPreview is not null)
+                        AppendDescription(sb, er.ContextPreview, MaxContextDescriptionChars, "excerpt");
                     AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes));
                     break;
                 }
@@ -120,9 +123,9 @@ internal static class SearchResultRenderer
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendDatesLine(sb, cr.ParentItem.Entry.CreatedAt, cr.ParentItem.Entry.UpdatedAt);
                     AppendAttributesLine(sb, cr.ParentItem.Entry.Attributes);
-                    AppendDescription(sb, cr.ContextPreview ?? cr.Chunk.ContentPreview
-                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
-                        cr.ContextPreview is null ? MaxDescriptionChars : MaxContextDescriptionChars);
+                    AppendDescription(sb, AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview));
+                    AppendDescription(sb, cr.ContextPreview ?? cr.Chunk.ContentPreview,
+                        cr.ContextPreview is null ? MaxDescriptionChars : MaxContextDescriptionChars, "excerpt");
                     AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Attributes));
                     break;
                 }
@@ -171,7 +174,7 @@ internal static class SearchResultRenderer
         }
     }
 
-    private static void AppendDescription(System.Text.StringBuilder sb, string? description, int maxChars = MaxDescriptionChars)
+    private static void AppendDescription(System.Text.StringBuilder sb, string? description, int maxChars = MaxDescriptionChars, string label = "description")
     {
         if (string.IsNullOrWhiteSpace(description)) return;
 
@@ -189,13 +192,13 @@ internal static class SearchResultRenderer
         // re-indentation.
         if (!text.Contains('\n') && !text.Contains('\r'))
         {
-            sb.Append("    description: ").Append(text);
+            sb.Append("    ").Append(label).Append(": ").Append(text);
             if (truncated) sb.Append(" (truncated)");
             sb.Append('\n');
             return;
         }
 
-        sb.Append("    description: |\n");
+        sb.Append("    ").Append(label).Append(": |\n");
         foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
         {
             sb.Append("      ").Append(line).Append('\n');

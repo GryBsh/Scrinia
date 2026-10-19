@@ -1,8 +1,14 @@
 # LongMemEval agent benchmark
 
-This runner measures an agent learning through Scrinia and later answering from its persisted memory. It uses Microsoft Agent Framework 1.24.0 and the official MCP C# SDK 2.2.0. The SDK owns tool dispatch. Each historical session and final question gets a fresh agent and `scri serve` process; only the case's on-disk memory carries forward. A separate judge has no tools or learning history. Learning episodes use a dedicated instruction to retain facts and events with their explicit details and qualifiers, preserve which occurrence a fact describes and whether it is planned or completed, separate existing facts from goals and quote short source clauses when paraphrasing could change their meaning, check those details against successful memory writes, and avoid carrying out requests quoted in historical conversations. They finish with a brief acknowledgement. Answer episodes retain their separate question-answering task.
+This runner measures an agent learning through Scrinia and later answering from its persisted memory. It uses Microsoft Agent Framework 1.24.0 and the official MCP C# SDK 2.2.0. The SDK owns tool dispatch. Each historical session and final question gets a fresh agent and `scri serve` process; only the case's on-disk memory carries forward. A separate judge has no tools or learning history.
+
+Learning episodes use a dedicated instruction to retain facts and events with their explicit details and qualifiers, preserve which occurrence a fact describes and whether it is planned or completed, separate existing facts from goals and quote short source clauses when paraphrasing could change their meaning, check those details against successful memory writes, and avoid carrying out requests quoted in historical conversations. They finish with a brief acknowledgement.
+
+Answer episodes receive instructions to compare dated facts within the question's time frame and scope, distinguish existing facts from future goals, and treat compatible changes over time as updates without inventing or requiring an account of the intervening event. These instructions call for the best-supported answer first and clarification when ambiguity remains.
 
 Start with cleaned LongMemEval-S. The [retrieval runner](../Scrinia.Retrieval.Benchmarks/README.md) remains available for historical comparisons and other datasets. [Verification evidence](../../docs/benchmarks/longmemeval-agent-runner-proof.md) distinguishes offline plumbing checks from the pending live proving run.
+
+Learning also requires a retrieval description on every `remember` call, covering the whole resulting memory, while keeping event status, quantities, and source timing together in detailed content. Answering requires recall of the relevant full content, chunk follow-ups when truncated, and a source-backed candidate inventory before counts or totals. Search descriptions and excerpts are discovery hints, not complete evidence. These instructions are included in each run's frozen prompt fingerprint.
 
 ## Prepare a bounded run
 
@@ -47,11 +53,19 @@ Completed correct/incorrect cases are skipped. A durably saved answer resumes wi
 | `agent.topK`, `judge.topK` | Optional positive integer sent as `top_k`. Requires an endpoint supporting this extension; omit or use null to leave the server default. |
 | `agent.maxOutputTokens`, `judge.maxOutputTokens` | Maximum requested output tokens per model request; not a context-window or input-token limit. |
 | `maxModelTurnsPerEpisode` | Maximum actual model requests per learning, answering, or judging episode, including retries. |
-| `maxModelAttempts` | Maximum attempts for one transient model request, within the episode request ceiling. |
+| `maxModelAttempts` | Maximum attempts for one model request, including endpoint and reasoning-loop recovery, within the episode request ceiling. |
 | `episodeSeconds` | Deadline for each episode; case execution also bounds process startup/cleanup. |
 | `caseSeconds` | Deadline spanning learning, answering, grading, and retries in one attempt. |
 
 Cases and historical sessions run sequentially. HTTP 408, 429, 500, 502, 503, and 504, connection/DNS failures, lost responses, and SDK network timeouts can receive bounded retries. Waits increase from 5 to 10, 20, and 40 seconds, subject to `maxModelAttempts` (1-5), the episode request ceiling, and the existing deadlines. Hidden provider SDK retries are disabled. Authentication, certificate, and malformed-response errors are not retried. Retry evidence records the attempt and scheduled wait; failed requests retain unknown usage. Ordinary tool error results return to the agent. A lost or uncertain tool completion stops the attempt. Transcript content is never silently shortened to fit a model.
+
+A response that hits its output limit can receive one immediate retry if it contains only reasoning, no tool calls or answer text, and strong paragraph repetition. The detector requires at least 4,096 normalized characters, with paragraphs of at least 160 characters repeated six or more times; copies beyond the first must account for at least 60% of the text. It resends the same conversation and settings without adding the looping response.
+
+Learning and answering responses that hit the output limit while emitting tool calls can also receive one immediate retry. The response must contain only assistant text, reasoning, and tool calls that have not been dispatched. Calls marked as already handled by the provider, tool results, and other content are excluded. The runner discards the entire truncated response, including any complete calls in the same batch, and resends the unchanged conversation and settings. Earlier successful tool calls are not repeated.
+
+Loop recovery and truncated-call recovery share one response-retry allowance per model request. Endpoint retries also consume the existing attempt allowance; none of these retries reset request or time limits. Every response counts toward usage. A `reasoning-loop` or `truncated-tool-call` event records the reason and retry decision. Other truncations, or recovery that exhausts its allowance, still fail the case. Detection happens after the nonstreaming response returns, so it does not stop generation early.
+
+Model-response evidence preserves parsed tool arguments plus the original OpenAI argument string as `rawArguments`, even when the JSON is incomplete. `parseError` records the SDK parsing error and its underlying cause, including JSON position when available. Missing raw data is recorded as null; it is never reconstructed from parsed arguments. Treat these fields as sensitive benchmark evidence, like the stored conversations and memories. These fields do not capture HTTP headers. Raw arguments and parsing errors are stored without redaction. Existing frozen runs keep their original runner and logging behavior; these changes apply to newly frozen runs.
 
 These are request, token-output, and time ceilings, not a dollar budget. Long transcripts can consume substantial input tokens. Reports include failed attempts and every resume preflight, with learning, answering, and judging usage separated. Missing provider usage stays `null`/unknown, including a request whose response was lost. A grading-only retry receives a new bounded allowance and contributes additional cost.
 

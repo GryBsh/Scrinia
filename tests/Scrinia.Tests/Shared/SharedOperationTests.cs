@@ -12,14 +12,14 @@ public sealed class SharedOperationTests
         using var fixture = new SharedOperationFixture();
         SharedTools tools = fixture.Tools;
         (await tools.Bases()).Should().Contain("availability: available");
-        (await tools.Remember("team", "/patterns/alpha", ["First durable chunk", "Second chunk"],
+        (await tools.Remember("team", "/patterns/alpha", ["First durable chunk", "Second chunk"], description: "First durable chunk",
             new() { ["person"] = ["alice"] }, ["durable"])).Should().Contain("mutation: applied");
-        (await tools.Remember("team", "/patterns/alpha", ["Third chunk"])).Should().Contain("mutation: applied");
+        (await tools.Remember("team", "/patterns/alpha", ["Third chunk"], description: "Third chunk")).Should().Contain("mutation: applied");
         (await tools.Recall("team", "/patterns/alpha", 3)).Should().Contain("Third chunk");
         (await tools.Search("durable")).Should().Contain("path: /patterns/alpha");
         (await tools.List()).Should().Contain("total: 1");
         (await tools.Facts("team", "entities")).Should().Contain("person:alice");
-        (await tools.Remember("team", "/patterns/beta", ["Other memory"])).Should().Contain("mutation: applied");
+        (await tools.Remember("team", "/patterns/beta", ["Other memory"], description: "Other memory")).Should().Contain("mutation: applied");
         (await tools.Link("team", "/patterns/alpha", "/patterns/beta")).Should().Contain("destination: /patterns/beta");
         (await tools.Recall("team", "/patterns/beta")).Should().Contain("/patterns/alpha");
         (await tools.Compact("team", "/patterns/alpha")).Should().Contain("mutation: applied");
@@ -36,7 +36,7 @@ public sealed class SharedOperationTests
     public async Task File_entities_are_base_local_persistent_and_do_not_fall_back_to_builtins(string path)
     {
         using var fixture = new SharedOperationFixture();
-        (await fixture.Tools.Remember("team", path, ["First body"])).Should().Contain("mutation: applied");
+        (await fixture.Tools.Remember("team", path, ["First body"], description: "First body")).Should().Contain("mutation: applied");
         (await fixture.Tools.Append("team", path, "Second body")).Should().Contain("mutation: applied");
         (await fixture.Restart().Recall("team", path)).Should().Contain("First body").And.Contain("Second body");
         (await fixture.Tools.Forget("team", path)).Should().Contain("mutation: applied");

@@ -180,7 +180,7 @@ internal static class SharedMemoryOperations
             {
                 string body = string.Concat(operationWrite!.RawContent);
                 if (operation == "append" && existing is not null) body = string.Concat(existing.Chunks) + "\n" + body;
-                PublishEntity(runtime, lease.Admission, address, existing, body, false, ct);
+                PublishEntity(runtime, lease.Admission, address, existing, body, false, ct, description: operationWrite.Description);
             }
             else if (operation == "append") runtime.Store.AppendShared(lease.Admission, operationWrite!, ct);
             else runtime.Store.StoreShared(lease.Admission, operationWrite!, ct);
@@ -239,7 +239,7 @@ internal static class SharedMemoryOperations
 
     private static void PublishEntity(SharedBaseRuntime runtime, WorkspaceLease lease, MemoryAddress address,
         SharedMemorySnapshot? existing, string? body, bool delete, CancellationToken ct,
-        Dictionary<string, JsonElement>? extensions = null)
+        Dictionary<string, JsonElement>? extensions = null, string? description = null)
     {
         var pair = Paths(runtime, address, existing);
         string kind = address.Value.StartsWith("/skill/", StringComparison.OrdinalIgnoreCase) ? "skill" : "agent";
@@ -248,9 +248,9 @@ internal static class SharedMemoryOperations
         byte[] meta = kind == "skill"
             ? JsonSerializer.SerializeToUtf8Bytes(new SkillFileMeta(existing?.Skill?.BasedOn, existing?.Skill?.Role,
                 existing?.Skill?.Capabilities, existing?.Skill?.Scaffold, existing?.Skill is { } skill ? skill.CreatedAt : now,
-                now, existing?.Skill?.SchemaVersion) { Unknown = extensions ?? existing?.Skill?.Unknown }, FileEntityJsonContext.Default.SkillFileMeta)
+                now, existing?.Skill?.SchemaVersion) { Description = description ?? existing?.Skill?.Description, Unknown = extensions ?? existing?.Skill?.Unknown }, FileEntityJsonContext.Default.SkillFileMeta)
             : JsonSerializer.SerializeToUtf8Bytes(new AgentFileMeta(existing?.Agent is { } agent ? agent.CreatedAt : now,
-                now, existing?.Agent?.SchemaVersion) { Unknown = extensions ?? existing?.Agent?.Unknown }, FileEntityJsonContext.Default.AgentFileMeta);
+                now, existing?.Agent?.SchemaVersion) { Description = description ?? existing?.Agent?.Description, Unknown = extensions ?? existing?.Agent?.Unknown }, FileEntityJsonContext.Default.AgentFileMeta);
         var target = new FileEntityTarget(kind, name, pair.Body, pair.Meta, Path.Combine(Path.GetDirectoryName(pair.Body)!, "versions"));
         var coordinator = new FileEntityTransactionCoordinator(runtime.RegisteredRoot);
         FileEntityMutationResult result;
