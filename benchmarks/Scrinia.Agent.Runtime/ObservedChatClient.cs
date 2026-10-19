@@ -1,13 +1,19 @@
 using Microsoft.Extensions.AI;
 using System.ClientModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Scrinia.Agent.Benchmarks;
 
 public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings, RunLimits limits,
-    IRunEvents events, string phase, string? expectedModelId = null, TimeProvider? timeProvider = null) : DelegatingChatClient(inner)
+    IRunEvents events, string phase, string? expectedModelId = null, TimeProvider? timeProvider = null,
+    bool? enableResponseRecovery = null, bool? enableThinking = null) : DelegatingChatClient(inner)
 {
+    // Null retains the legacy V1 observer policy, including its judge behavior.
+    // Runtime episodes always supply a policy explicitly, independent of phase names.
+    private readonly bool _recoverReasoning = enableResponseRecovery ?? true;
+    private readonly bool _recoverTruncatedCalls = enableResponseRecovery ?? (phase is "learn" or "answer");
     private bool _observedIdentity;
     private readonly EpisodeBudget _budget = new(limits.MaxModelTurnsPerEpisode);
     private long? _inputTokens = 0;
@@ -27,9 +33,10 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
         actual.ConversationId = null;
         actual.TopP = settings.TopP;
         actual.TopK = settings.TopK;
-        actual.RawRepresentationFactory = settings.TopK is { } topK
-            ? _ => ModelClientFactory.CreateSamplingOptions(topK) : null;
+        actual.RawRepresentationFactory = settings.TopK is not null || enableThinking is not null
+            ? _ => ModelClientFactory.CreateSamplingOptions(settings.TopK, enableThinking) : null;
         bool recovering = false;
+        bool responseRetried = false;
         try
         {
             for (int attempt = 1; ; attempt++)
@@ -45,6 +52,7 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
                     if (settings.TopP is { } topP) w.WriteNumber("topP", topP);
                     if (settings.TopK is { } topK) w.WriteNumber("topK", topK);
                     w.WriteNumber("maxOutputTokens", settings.MaxOutputTokens);
+                    if (enableThinking is { } thinking) w.WriteBoolean("enableThinking", thinking);
                     w.WriteString("instructions", actual.Instructions);
                     w.WritePropertyName("messages");
                     ChatEvidence.WriteMessages(w, history);
@@ -101,7 +109,7 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
                     w.WriteString("finishReason", response.FinishReason?.Value);
                     w.WriteNumber("durationMs", Stopwatch.GetElapsedTime(started).TotalMilliseconds);
                     w.WritePropertyName("usage");
-                    JsonSerializer.Serialize(w, new UsageTotals(response.Usage?.InputTokenCount, response.Usage?.OutputTokenCount), RecordJsonContext.Default.UsageTotals);
+                    JsonSerializer.Serialize(w, new UsageTotals(response.Usage?.InputTokenCount, response.Usage?.OutputTokenCount), RuntimeJsonContext.Default.UsageTotals);
                     w.WritePropertyName("messages");
                     ChatEvidence.WriteMessages(w, response.Messages);
                 }), cancellationToken);
@@ -110,6 +118,50 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
                     throw new BenchmarkFailureException(BenchmarkFailureCode.MODEL_DRIFT, "Reported model identity changed before tool dispatch.");
                 ReportedModelId = response.ModelId;
                 _observedIdentity = true;
+                if (_recoverReasoning && ReasoningLoop.Detect(response) is { } loop)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    bool retry = !responseRetried && attempt < limits.MaxModelAttempts &&
+                        ModelRequests < limits.MaxModelTurnsPerEpisode;
+                    await events.WriteAsync(phase, "reasoning-loop", ChatEvidence.Build(w =>
+                    {
+                        w.WriteNumber("request", ModelRequests);
+                        w.WriteNumber("attempt", attempt);
+                        w.WriteString("detector", "repeated-paragraphs-v1");
+                        w.WriteNumber("reasoningCharacters", loop.ReasoningCharacters);
+                        w.WriteNumber("repeatedCharacters", loop.RepeatedCharacters);
+                        w.WriteNumber("repeatedFraction", loop.RepeatedFraction);
+                        w.WriteNumber("maximumRepetitions", loop.MaximumRepetitions);
+                        w.WriteBoolean("retry", retry);
+                    }), cancellationToken);
+                    if (retry)
+                    {
+                        responseRetried = true;
+                        // Discard this completion before SDK dispatch; keep prior tool results,
+                        // the same request settings, and the existing episode/case deadlines.
+                        continue;
+                    }
+                }
+                if (_recoverTruncatedCalls && IsUndispatchedTruncatedCall(response))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    bool retry = !responseRetried && attempt < limits.MaxModelAttempts &&
+                        ModelRequests < limits.MaxModelTurnsPerEpisode;
+                    await events.WriteAsync(phase, "truncated-tool-call", ChatEvidence.Build(w =>
+                    {
+                        w.WriteNumber("request", ModelRequests);
+                        w.WriteNumber("attempt", attempt);
+                        w.WriteNumber("toolCalls", response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Count());
+                        w.WriteBoolean("retry", retry);
+                    }), cancellationToken);
+                    if (retry)
+                    {
+                        responseRetried = true;
+                        // The response has not reached the SDK tool dispatcher. Discard the entire
+                        // batch, including any complete calls, while retaining earlier tool results.
+                        continue;
+                    }
+                }
                 if (response.FinishReason != ChatFinishReason.Stop && response.FinishReason != ChatFinishReason.ToolCalls)
                     throw new InvalidDataException("Model response did not finish normally; no tool calls were dispatched.");
                 if (response.Messages.Count == 0 || response.Messages.SelectMany(m => m.Contents).Any(c => c is FunctionCallContent f &&
@@ -130,6 +182,17 @@ public sealed class ObservedChatClient(IChatClient inner, ModelSettings settings
     public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,
         ChatOptions? options = null, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Benchmark evidence requires complete, nonstreaming responses.");
+
+    private static bool IsUndispatchedTruncatedCall(ChatResponse response)
+    {
+        if (response.FinishReason != ChatFinishReason.Length ||
+            response.Messages.Any(m => m.Role != ChatRole.Assistant))
+            return false;
+        var contents = response.Messages.SelectMany(m => m.Contents).ToArray();
+        return contents.Any(c => c is FunctionCallContent) &&
+            contents.All(c => c is TextContent or TextReasoningContent ||
+                c is FunctionCallContent { InformationalOnly: false });
+    }
 
     private static long? AddUsage(long? total, long? value) => total is not null && value is >= 0 ? checked(total + value) : null;
 }
@@ -172,9 +235,20 @@ internal static class ChatEvidence
         {
             case TextContent text:
                 writer.WriteString("kind", "text"); writer.WriteString("text", text.Text); break;
+            case DataContent image when image.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase):
+                writer.WriteString("kind", "image"); writer.WriteString("mediaType", image.MediaType);
+                writer.WriteString("sha256", Convert.ToHexStringLower(SHA256.HashData(image.Data.Span)));
+                writer.WriteNumber("byteCount", image.Data.Length); break;
             case FunctionCallContent call:
                 writer.WriteString("kind", "function-call"); writer.WriteString("id", call.CallId); writer.WriteString("name", call.Name);
-                writer.WritePropertyName("arguments"); WriteValue(writer, call.Arguments); break;
+                writer.WritePropertyName("arguments"); WriteValue(writer, call.Arguments);
+                // The OpenAI adapter can retain a tool call while failing to parse its arguments.
+                // Preserve the original argument string, not a reserialization of the parsed map.
+                writer.WriteString("rawArguments", call.RawRepresentation is OpenAI.Chat.ChatToolCall raw
+                    ? raw.FunctionArguments?.ToString() : null);
+                writer.WritePropertyName("parseError");
+                WriteParseError(writer, call.Exception);
+                break;
             case FunctionResultContent result:
                 writer.WriteString("kind", "function-result"); writer.WriteString("id", result.CallId);
                 writer.WritePropertyName("result"); WriteValue(writer, result.Result); break;
@@ -182,6 +256,30 @@ internal static class ChatEvidence
                 writer.WriteString("kind", "reasoning"); writer.WriteString("text", reasoning.Text); break;
             default:
                 writer.WriteString("kind", content.GetType().Name); break;
+        }
+        writer.WriteEndObject();
+    }
+
+    private static void WriteParseError(Utf8JsonWriter writer, Exception? error, int depth = 0)
+    {
+        if (error is null) { writer.WriteNullValue(); return; }
+        writer.WriteStartObject();
+        writer.WriteString("type", error.GetType().FullName);
+        writer.WriteString("message", error.Message);
+        if (error is JsonException jsonError)
+        {
+            writer.WriteString("path", jsonError.Path);
+            if (jsonError.LineNumber is { } line) writer.WriteNumber("lineNumber", line);
+            if (jsonError.BytePositionInLine is { } position) writer.WriteNumber("bytePositionInLine", position);
+        }
+        if (error.InnerException is not null)
+        {
+            if (depth < 8)
+            {
+                writer.WritePropertyName("innerError");
+                WriteParseError(writer, error.InnerException, depth + 1);
+            }
+            else writer.WriteBoolean("innerErrorOmitted", true);
         }
         writer.WriteEndObject();
     }

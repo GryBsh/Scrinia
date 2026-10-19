@@ -54,12 +54,12 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
             await events.WriteAsync("mcp", "connected", JsonSerializer.SerializeToElement(new Dictionary<string, string>
             {
                 ["name"] = client.ServerInfo.Name, ["version"] = client.ServerInfo.Version, ["catalogHash"] = ToolCatalog.ComputeHash(tools.ToArray())
-            }, RecordJsonContext.Default.DictionaryStringString), ct);
+            }, RuntimeJsonContext.Default.DictionaryStringString), ct);
             await events.WriteAsync("mcp", "catalog", ChatEvidence.Build(w =>
             {
                 w.WriteStartArray("tools");
                 foreach (var tool in tools.OrderBy(t => t.Name, StringComparer.Ordinal))
-                    JsonSerializer.Serialize(w, tool.ProtocolTool, RecordJsonContext.Default.Tool);
+                    JsonSerializer.Serialize(w, tool.ProtocolTool, RuntimeJsonContext.Default.Tool);
                 w.WriteEndArray();
             }), ct);
             return new ScriniaMcpSession(client, process, tools.ToArray(), diagnostics, events);
@@ -122,7 +122,7 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
             finally { _process.Dispose(); _failure.Dispose(); }
         }
         await _events.WriteAsync("mcp", "disconnected", JsonSerializer.SerializeToElement(
-            CompletedProcessId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable", ConfigurationJsonContext.Default.String), CancellationToken.None);
+            CompletedProcessId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable", RuntimeJsonContext.Default.String), CancellationToken.None);
         if (_prematureExit)
             throw new BenchmarkFailureException(BenchmarkFailureCode.MCP_DISCONNECTED, "Scrinia exited before the episode completed.");
     }
@@ -155,10 +155,10 @@ public sealed class ScriniaMcpSession : IAsyncDisposable
             try
             {
                 await foreach (var line in _lines.Reader.ReadAllAsync())
-                    await events.WriteAsync("mcp", "stderr", JsonSerializer.SerializeToElement(line, ConfigurationJsonContext.Default.String), CancellationToken.None);
+                    await events.WriteAsync("mcp", "stderr", JsonSerializer.SerializeToElement(line, RuntimeJsonContext.Default.String), CancellationToken.None);
                 if (_dropped > 0)
                     await events.WriteAsync("mcp", "stderr-truncated", JsonSerializer.SerializeToElement(
-                        _dropped.ToString(System.Globalization.CultureInfo.InvariantCulture), ConfigurationJsonContext.Default.String), CancellationToken.None);
+                        _dropped.ToString(System.Globalization.CultureInfo.InvariantCulture), RuntimeJsonContext.Default.String), CancellationToken.None);
             }
             catch { await _failure.CancelAsync(); throw; }
         }

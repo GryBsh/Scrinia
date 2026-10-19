@@ -40,7 +40,7 @@ internal sealed class OwnedMcpProcess : IDisposable
         foreach (var argument in settings.PrefixArguments.Concat(["serve", "--no-auto-setup", "--workspace-root", paths.Workspace]))
             start.ArgumentList.Add(argument);
         start.Environment.Clear();
-        foreach (var (key, value) in new AttemptWorkspace().CreateEnvironment(paths))
+        foreach (var (key, value) in RuntimeEnvironment.Create(paths))
             start.Environment[key] = value;
         var process = new Process { StartInfo = start };
         try

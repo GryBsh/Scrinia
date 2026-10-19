@@ -20,7 +20,7 @@ public sealed class ScriniaMcpSessionTests
         using var temp = new ScratchDirectory();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         string marker = Path.Combine(temp.Root, "shutdown-fixture.txt");
-        string host = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+        string host = Path.GetFullPath(Path.Combine(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
         var settings = Payload() with { Executable = host, PrefixArguments = [typeof(ProcessFixture).Assembly.Location, "--mcp-fixture", mode, marker] };
         var paths = new AttemptWorkspace().Create(Path.Combine(temp.Root, "run"), 1, 1, settings);
         await using var events = new CapturingEvents();
@@ -42,7 +42,7 @@ public sealed class ScriniaMcpSessionTests
         using var temp = new ScratchDirectory();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         string marker = Path.Combine(temp.Root, "exit-fixture.txt");
-        string host = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+        string host = Path.GetFullPath(Path.Combine(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
         var settings = Payload() with { Executable = host, PrefixArguments = [typeof(ProcessFixture).Assembly.Location, "--mcp-fixture", "exit-after-guide", marker] };
         var paths = new AttemptWorkspace().Create(Path.Combine(temp.Root, "run"), 1, 1, settings);
         await using var events = new CapturingEvents();
@@ -98,7 +98,7 @@ public sealed class ScriniaMcpSessionTests
         var root = Path.Combine(temp.Root, "run");
         await using var journal = await RunJournal.OpenAsync(root, RunJournalTests.Manifest(), false, CancellationToken.None);
         var marker = Path.Combine(temp.Root, "owned-process.txt");
-        var host = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+        var host = Path.GetFullPath(Path.Combine(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory(), "../../..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
         var settings = Payload() with { Executable = host, PrefixArguments = [typeof(ProcessFixture).Assembly.Location, "--mcp-fixture", mode, marker] };
         var paths = new AttemptWorkspace().Create(root, 1, 1, settings);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

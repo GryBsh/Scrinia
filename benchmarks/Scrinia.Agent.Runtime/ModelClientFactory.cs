@@ -9,11 +9,12 @@ public static class ModelClientFactory
 {
     // Some OpenAI-compatible servers support top_k, which is not a modeled OpenAI field.
     // Use the SDK extension point so its normal serialization and tool loop remain intact.
-    internal static OpenAI.Chat.ChatCompletionOptions CreateSamplingOptions(int topK)
+    internal static OpenAI.Chat.ChatCompletionOptions CreateSamplingOptions(int? topK, bool? enableThinking = null)
     {
         var options = new OpenAI.Chat.ChatCompletionOptions();
 #pragma warning disable SCME0001 // JsonPatch is the pinned SDK's additional-property API.
-        options.Patch.Set("$.top_k"u8, topK);
+        if (topK is { } value) options.Patch.Set("$.top_k"u8, value);
+        if (enableThinking is { } thinking) options.Patch.Set("$.chat_template_kwargs.enable_thinking"u8, thinking);
 #pragma warning restore SCME0001
         return options;
     }

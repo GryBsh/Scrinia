@@ -2,38 +2,6 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
-      "Microsoft.Agents.AI.OpenAI": {
-        "type": "Direct",
-        "requested": "[1.24.0, )",
-        "resolved": "1.24.0",
-        "contentHash": "hfjZisvYL0H3hkQ0VE2jcxnZQ+QBOnTdx5jjcyu6AcRFfgY1/2WhbeNQr6RFY7jpWbsE4NMl2NNYPQGQvX3m4w==",
-        "dependencies": {
-          "Microsoft.Agents.AI": "1.24.0",
-          "Microsoft.Extensions.AI": "10.10.0",
-          "Microsoft.Extensions.AI.Abstractions": "10.10.1",
-          "Microsoft.Extensions.AI.Evaluation": "10.10.0",
-          "Microsoft.Extensions.AI.OpenAI": "10.10.1",
-          "Microsoft.Extensions.Compliance.Abstractions": "10.10.0",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.12",
-          "Microsoft.Extensions.FileSystemGlobbing": "10.0.12",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.12",
-          "Microsoft.Extensions.VectorData.Abstractions": "10.10.0",
-          "Microsoft.ML.Tokenizers": "2.0.0",
-          "OpenAI": "2.14.0",
-          "System.ClientModel": "1.15.0"
-        }
-      },
-      "ModelContextProtocol": {
-        "type": "Direct",
-        "requested": "[2.2.0, )",
-        "resolved": "2.2.0",
-        "contentHash": "4Pb9u02Nwsp0poueDsqNdyGRojFxOYpljB7zDBsq+aHL+Afou3OgxlBc3GWFVnsRMRJrUtWqDh3s6k2JgPzmrQ==",
-        "dependencies": {
-          "Microsoft.Extensions.Caching.Abstractions": "10.0.10",
-          "Microsoft.Extensions.Hosting.Abstractions": "10.0.10",
-          "ModelContextProtocol.Core": "[2.2.0]"
-        }
-      },
       "Google.Protobuf": {
         "type": "Transitive",
         "resolved": "3.30.2",
@@ -62,6 +30,26 @@
         "contentHash": "B/ft82yQ303nL46sjlMRh9TgA48dbqCSHAfiW9UjCzWUXNr+BdtjhN172qFyE7x2W4wnVp0bdoXbfHpQ1xFAYQ==",
         "dependencies": {
           "Microsoft.Extensions.AI.Abstractions": "10.10.1"
+        }
+      },
+      "Microsoft.Agents.AI.OpenAI": {
+        "type": "Transitive",
+        "resolved": "1.24.0",
+        "contentHash": "hfjZisvYL0H3hkQ0VE2jcxnZQ+QBOnTdx5jjcyu6AcRFfgY1/2WhbeNQr6RFY7jpWbsE4NMl2NNYPQGQvX3m4w==",
+        "dependencies": {
+          "Microsoft.Agents.AI": "1.24.0",
+          "Microsoft.Extensions.AI": "10.10.0",
+          "Microsoft.Extensions.AI.Abstractions": "10.10.1",
+          "Microsoft.Extensions.AI.Evaluation": "10.10.0",
+          "Microsoft.Extensions.AI.OpenAI": "10.10.1",
+          "Microsoft.Extensions.Compliance.Abstractions": "10.10.0",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.12",
+          "Microsoft.Extensions.FileSystemGlobbing": "10.0.12",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.12",
+          "Microsoft.Extensions.VectorData.Abstractions": "10.10.0",
+          "Microsoft.ML.Tokenizers": "2.0.0",
+          "OpenAI": "2.14.0",
+          "System.ClientModel": "1.15.0"
         }
       },
       "Microsoft.Extensions.AI": {
@@ -205,6 +193,16 @@
           "Google.Protobuf": "3.30.2"
         }
       },
+      "ModelContextProtocol": {
+        "type": "Transitive",
+        "resolved": "2.2.0",
+        "contentHash": "4Pb9u02Nwsp0poueDsqNdyGRojFxOYpljB7zDBsq+aHL+Afou3OgxlBc3GWFVnsRMRJrUtWqDh3s6k2JgPzmrQ==",
+        "dependencies": {
+          "Microsoft.Extensions.Caching.Abstractions": "10.0.10",
+          "Microsoft.Extensions.Hosting.Abstractions": "10.0.10",
+          "ModelContextProtocol.Core": "[2.2.0]"
+        }
+      },
       "ModelContextProtocol.Core": {
         "type": "Transitive",
         "resolved": "2.2.0",
@@ -242,6 +240,13 @@
         "type": "Transitive",
         "resolved": "10.0.12",
         "contentHash": "17brFrnQHV/XMMazXNqFq4GkvzWy8yzDPo5Gb8TT8zJtMFbUqDycOCyPCp9F+eMc4L75kcCKRZqaeBHMwLCL9Q=="
+      },
+      "scrinia.agent.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Agents.AI.OpenAI": "[1.24.0, )",
+          "ModelContextProtocol": "[2.2.0, )"
+        }
       }
     }
   }

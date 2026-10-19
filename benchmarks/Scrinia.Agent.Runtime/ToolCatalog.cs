@@ -17,7 +17,7 @@ public static class ToolCatalog
         {
             writer.WriteStartArray();
             foreach (var tool in tools.OrderBy(t => t.Name, StringComparer.Ordinal))
-                WriteCanonical(writer, JsonSerializer.SerializeToElement(tool, RecordJsonContext.Default.Tool));
+                WriteCanonical(writer, JsonSerializer.SerializeToElement(tool, RuntimeJsonContext.Default.Tool));
             writer.WriteEndArray();
         }
         return Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray()));
