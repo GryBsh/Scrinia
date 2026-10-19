@@ -1,0 +1,551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/learn"
+    },
+    {
+      "$ref": "#/$defs/retrieve"
+    },
+    {
+      "$ref": "#/$defs/validateSnapshot"
+    }
+  ],
+  "$defs": {
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https?://[^/@?#]+(?::[0-9]+)?(/[^?#]*)?$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apiKeyEnvironmentVariable": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "topP": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "topK": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "thinking": {
+          "type": "boolean"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "networkTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "episodeSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxModelRequests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "endpoint",
+        "model",
+        "apiKeyEnvironmentVariable",
+        "temperature",
+        "topP",
+        "topK",
+        "thinking",
+        "maxOutputTokens",
+        "networkTimeoutSeconds",
+        "episodeSeconds",
+        "maxModelRequests",
+        "maxAttempts"
+      ]
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "mediaType": {
+          "enum": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ]
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "mediaType",
+        "byteLength"
+      ]
+    },
+    "trajectory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "stateIndex": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "step": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "url": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "thoughts": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "screenshot": {
+                "$ref": "#/$defs/image"
+              }
+            },
+            "required": [
+              "stateIndex",
+              "step",
+              "url",
+              "action",
+              "thoughts",
+              "text",
+              "screenshot"
+            ]
+          }
+        },
+        "sourceHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "goal",
+        "outcome",
+        "startUrl",
+        "actions",
+        "states",
+        "sourceHash"
+      ]
+    },
+    "learn": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "configuration": {
+          "$ref": "#/$defs/configuration"
+        },
+        "paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace": {
+              "type": "string",
+              "minLength": 1
+            },
+            "home": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eventLogPath": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "root",
+            "workspace",
+            "home",
+            "eventLogPath"
+          ]
+        },
+        "operation": {
+          "const": "learn"
+        },
+        "trajectory": {
+          "$ref": "#/$defs/trajectory"
+        },
+        "priorSnapshotPath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stagingPath": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "version",
+        "operationId",
+        "configuration",
+        "paths",
+        "operation",
+        "trajectory",
+        "priorSnapshotPath",
+        "stagingPath"
+      ]
+    },
+    "retrieve": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "configuration": {
+          "$ref": "#/$defs/configuration"
+        },
+        "paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace": {
+              "type": "string",
+              "minLength": 1
+            },
+            "home": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eventLogPath": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "root",
+            "workspace",
+            "home",
+            "eventLogPath"
+          ]
+        },
+        "operation": {
+          "const": "retrieve"
+        },
+        "snapshotPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questionImage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/image"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "operationId",
+        "configuration",
+        "paths",
+        "operation",
+        "snapshotPath",
+        "question",
+        "questionImage"
+      ]
+    },
+    "validateSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "configuration": {
+          "$ref": "#/$defs/configuration"
+        },
+        "paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace": {
+              "type": "string",
+              "minLength": 1
+            },
+            "home": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eventLogPath": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "root",
+            "workspace",
+            "home",
+            "eventLogPath"
+          ]
+        },
+        "operation": {
+          "const": "validate-snapshot"
+        },
+        "snapshotPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "version",
+        "operationId",
+        "configuration",
+        "paths",
+        "operation",
+        "snapshotPath",
+        "expectedFingerprint"
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourceHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "previousSnapshotHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "newSnapshotHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "committedOperationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        }
+      },
+      "required": [
+        "sourceHash",
+        "previousSnapshotHash",
+        "newSnapshotHash",
+        "committedOperationId"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error",
+            "cancelled"
+          ]
+        },
+        "eventLogPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "text",
+                      "image"
+                    ]
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ]
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "operationId",
+        "status",
+        "eventLogPath",
+        "receipt",
+        "evidence",
+        "errorCode"
+      ]
+    }
+  }
+}

@@ -1,0 +1,7 @@
+# Offline contract tests; install in an isolated environment under artifacts/.
+jsonschema==4.26.0
+numpy==2.4.2
+openai==2.24.0
+openai-agents==0.10.1
+pillow==12.1.1
+transformers==5.2.0

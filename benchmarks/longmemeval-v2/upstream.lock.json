@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/xiaowu0162/LongMemEval-V2.git",
+  "commit": "2cc8c540bdb87fe6761629b585e727e1c4704520",
+  "checkout": "artifacts/longmemeval-v2/upstream",
+  "python": "3.11",
+  "datasetRevision": null,
+  "modelProcessorRevision": null
+}

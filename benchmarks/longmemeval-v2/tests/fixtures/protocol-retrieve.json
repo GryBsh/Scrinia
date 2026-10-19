@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "operation": "retrieve",
+  "operationId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "configuration": {
+    "endpoint": "https://example.invalid/v1",
+    "model": "fixture",
+    "apiKeyEnvironmentVariable": "SCRINIA_TEST_KEY",
+    "temperature": 0.6,
+    "topP": 0.95,
+    "topK": 20,
+    "thinking": true,
+    "maxOutputTokens": 16384,
+    "networkTimeoutSeconds": 180,
+    "episodeSeconds": 300,
+    "maxModelRequests": 40,
+    "maxAttempts": 5
+  },
+  "paths": {
+    "root": "C:/lme-fixture",
+    "workspace": "C:/lme-fixture/workspace",
+    "home": "C:/lme-fixture/home",
+    "eventLogPath": "C:/lme-fixture/events.jsonl"
+  },
+  "snapshotPath": "C:/lme-fixture/snapshot",
+  "question": "Synthetic question?",
+  "questionImage": null
+}
