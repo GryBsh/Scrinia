@@ -18,6 +18,7 @@ from run_scrinia import upstream_hashes
 
 MODEL = "unsloth/Qwen3.5-9B-MTP-GGUF:BF16"
 HERE = Path(__file__).resolve().parent
+EXECUTING_SOURCE_ROOT = HERE.parents[1]
 EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".scrinia", "artifacts", "node_modules"}
 SOURCE_RULES = json.loads((HERE / "source-archive-manifest.json").read_text(encoding="utf-8"))
 
@@ -66,7 +67,7 @@ def tree(root, source=False):
                     continue
                 if not any(relative.casefold() == p.casefold() or relative.casefold().startswith(p.casefold() + "/") for p in SOURCE_RULES["include"]):
                     continue
-                if path.suffix.lower() not in SOURCE_RULES["extensions"]:
+                if path.suffix.lower() not in SOURCE_RULES["extensions"] and relative not in SOURCE_RULES["include"]:
                     continue
                 if re.search(r"(^|[./_-])(secret|credentials|token|password|env)([./_-]|$)", relative, re.I):
                     continue
@@ -90,6 +91,13 @@ def dependency_inventory():
         "packages": sorted({d.metadata["Name"] + "==" + d.version for d in importlib.metadata.distributions()}),
         "files": files, "dotnet_runtimes": dotnet}
 
+def require_executing_source_root(value):
+    configured = canonical_path(io_path(Path(value)).resolve())
+    executing = canonical_path(io_path(EXECUTING_SOURCE_ROOT).resolve())
+    if os.path.normcase(str(configured)) != os.path.normcase(str(executing)):
+        raise ValueError("source_root must match the executing adapter checkout.")
+    return str(configured)
+
 def resolve_pair(value):
     required = {"version", "source_root", "upstream_root", "guide_path", "experiments",
                 "policies", "deployment", "exposure_log", "measurements"}
@@ -101,6 +109,7 @@ def resolve_pair(value):
     for key in ("source_root", "upstream_root", "guide_path"):
         if not isinstance(result[key], str) or not Path(result[key]).is_absolute():
             raise ValueError("Freeze input paths must be absolute.")
+    result["source_root"] = require_executing_source_root(result["source_root"])
     if result["policies"] != {"image": "original-bytes-no-resize", "query_learning": False}:
         raise ValueError("The source image and query isolation policies must be explicit.")
     deployment = result["deployment"]
@@ -244,6 +253,7 @@ def verify_frozen(folder):
         if digest(folder / name) != expected:
             raise ValueError("Frozen output changed: " + name)
     pair = read(folder / "resolved_pair.json")
+    require_executing_source_root(pair["source_root"])
     if _bindings(pair) != manifest["bindings"]:
         raise ValueError("Frozen source, payload, catalog, data or processor changed.")
     if resolve_pair(pair) != pair:

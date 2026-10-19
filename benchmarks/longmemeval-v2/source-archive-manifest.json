@@ -14,9 +14,9 @@
                     "Directory.Packages.props",
                     "global.json",
                     "NuGet.config",
-                    "Scrinia.sln",
                     "LICENSE",
-                    "AGENTS.md"
+                    "AGENTS.md",
+                    "release/embeddings-payloads.json"
                 ],
     "extensions":  [
                        ".cs",
@@ -40,6 +40,7 @@
                        ".sh",
                        ".ps1",
                        ".cmd",
-                       ".bat"
+                       ".bat",
+                       ".ts"
                    ]
 }

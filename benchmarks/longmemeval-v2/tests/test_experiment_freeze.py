@@ -1,5 +1,6 @@
 """Offline freeze boundary tests; all data and payloads are invented."""
 import copy
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -70,6 +71,9 @@ class FreezeTests(unittest.TestCase):
                 "limits": {"limit": None, "question_ids": None, "prompt_build_max_workers": 1,
                     "reader_max_concurrent_requests": 1}, "method_fingerprint": "0" * 64}
             self.pair["experiments"][domain] = config
+        self.source_location = patch("freeze_experiment.EXECUTING_SOURCE_ROOT", source, create=True)
+        self.source_location.start()
+        self.addCleanup(self.source_location.stop)
         self.dependencies = patch("freeze_experiment.dependency_inventory",
             return_value={"python": sys.version, "packages": [], "files": []})
         self.dependencies.start()
@@ -254,6 +258,77 @@ class FreezeTests(unittest.TestCase):
         with patch("live_probe.validate_attestation"), patch("run_scrinia.run_experiment", return_value="accepted") as runner:
             self.assertEqual(run_frozen_experiment(folder, "web", self.root / "new-run"), "accepted")
             self.assertEqual(runner.call_args.kwargs["frozen_manifest_hash"], digest(folder / "manifest.json"))
+
+    def test_foreign_adapter_checkout_is_rejected_before_materialization(self):
+        import subprocess
+        folder = self.freeze()
+        other = self.root / "other-checkout"
+        adapter = other / "benchmarks/longmemeval-v2"
+        adapter.mkdir(parents=True)
+        for pattern in ("*.py", "*.json"):
+            for path in ADAPTER.glob(pattern):
+                shutil.copyfile(path, adapter / path.name)
+        for role in ("Learning", "Retrieval"):
+            source = ROOT / "benchmarks/Scrinia.LongMemEvalV2.Worker" / role
+            target = other / "benchmarks/Scrinia.LongMemEvalV2.Worker" / role
+            target.mkdir(parents=True)
+            for path in source.glob("*.txt"):
+                shutil.copyfile(path, target / path.name)
+        code = ("import sys;sys.path.insert(0,sys.argv[1]);"
+            "import freeze_experiment,run_scrinia;"
+            "freeze_experiment.dependency_inventory=lambda:{'python':sys.version,'packages':[],'files':[]};"
+            "run_scrinia.run_experiment=lambda *a,**k:(_ for _ in ()).throw(RuntimeError('MATERIALIZATION_REACHED'));"
+            "run_scrinia.run_frozen_experiment(sys.argv[2],'web',sys.argv[3])")
+        result = subprocess.run([sys.executable, "-X", "utf8", "-c", code,
+            str(adapter), str(folder), str(self.root / "must-not-run")],
+            capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("executing adapter checkout", result.stderr)
+        self.assertNotIn("MATERIALIZATION_REACHED", result.stderr)
+        self.assertFalse((self.root / "must-not-run").exists())
+        self.source_location.stop()
+        with self.assertRaisesRegex(ValueError, "executing adapter checkout"):
+            freeze_experiment(self.pair, self.root / "must-not-freeze")
+        self.source_location.start()
+
+    def test_failed_live_rerun_invalidates_prior_success_before_any_prerequisites(self):
+        from preflight import live_preflight
+        from run_scrinia import run_frozen_experiment
+        from freeze_experiment import digest
+        self.pair["deployment"].update(model_revision="b" * 40, hardware="invented", reader_thinking_default=True)
+        for config in self.pair["experiments"].values():
+            config["mode"] = "submission"
+            config["data"]["revision"] = "a" * 40
+        folder = self.freeze()
+        ready = folder.parent / (folder.name + "-live-preflight.json")
+        result = {"status": "ready", "live": "empirical-probes-passed",
+            "frozen_manifest_hash": digest(folder / "manifest.json"),
+            "deployment": {"details": {"invented": True}}}
+        for failure in ("missing-attestation", "offline", "credentials", "probe", "publish"):
+            with self.subTest(failure=failure):
+                with patch("preflight.offline_preflight", return_value={"credentials_present": {"KEY": True}}), patch(
+                        "live_probe.probe_pair", return_value=result):
+                    live_preflight(folder, "invented-attestation.json")
+                self.assertTrue(ready.is_file())
+                if failure == "missing-attestation":
+                    offline = patch("preflight.offline_preflight", side_effect=AssertionError("prerequisites reached"))
+                elif failure == "offline":
+                    offline = patch("preflight.offline_preflight", side_effect=ValueError("offline failure"))
+                else:
+                    offline = patch("preflight.offline_preflight", return_value={
+                        "credentials_present": {"KEY": failure != "credentials"}})
+                probe = patch("live_probe.probe_pair", side_effect=ValueError("probe failure")) if failure == "probe" else patch(
+                    "live_probe.probe_pair", return_value=result)
+                publication = patch("snapshots.os.replace", side_effect=OSError("publication failure")) if failure == "publish" else nullcontext()
+                with offline, probe, publication:
+                    with self.assertRaises((ValueError, OSError)):
+                        live_preflight(folder, None if failure == "missing-attestation" else "invented-attestation.json")
+                self.assertFalse(ready.exists())
+                self.assertFalse(list(folder.parent.glob(ready.name + ".*.tmp")))
+                with patch("run_scrinia.run_experiment") as runner:
+                    with self.assertRaisesRegex(ValueError, "live preflight"):
+                        run_frozen_experiment(folder, "web", self.root / "never-started")
+                    runner.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
