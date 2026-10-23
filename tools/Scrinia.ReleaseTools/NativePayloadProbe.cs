@@ -20,13 +20,13 @@ internal static class NativePayloadProbe
         var handles = new List<nint>();
         try
         {
-            // Load dependencies first; Linux ggml needs both backends by their ELF SONAME.
+            // Load dependencies first; Linux and macOS ggml link their backends by SONAME/install name.
             // Every approved library is independently required, then released in reverse order.
             string[] order = rid == "win-x64"
                 ? ["ggml-base.dll", "ggml.dll", "ggml-cpu.dll", "ggml-vulkan.dll", "llama.dll", "mtmd.dll"]
                 : rid == "linux-x64"
                     ? ["libggml-base.so", "libggml-cpu.so", "libggml-vulkan.so", "libggml.so", "libllama.so", "libmtmd.so"]
-                    : ["libggml-base.dylib", "libggml.dylib", "libggml-cpu.dylib", "libggml-blas.dylib", "libggml-metal.dylib", "libllama.dylib", "libmtmd.dylib"];
+                    : ["libggml-base.dylib", "libggml-cpu.dylib", "libggml-blas.dylib", "libggml-metal.dylib", "libggml.dylib", "libllama.dylib", "libmtmd.dylib"];
             foreach (string name in order)
             {
                 handles.Add(NativeLibrary.Load(Path.Combine(payload, name), typeof(NativePayloadProbe).Assembly,
