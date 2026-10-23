@@ -134,6 +134,11 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP"
           printf 'TMPDIR=%s/\n' "$(pwd -P)" >> "$GITHUB_ENV"
+      - name: Native recovery handle identity regressions
+        shell: pwsh
+        run: |
+          dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj -c Release --filter 'FullyQualifiedName~RecoveryHandleIdentityTests|FullyQualifiedName~RecoveryVerificationContractTests' --logger trx --results-directory "$env:RUNNER_TEMP/recovery-identity" *> "$env:RUNNER_TEMP/recovery-identity.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/recovery-identity.log"; throw 'Native recovery identity regression failed' }
       - name: Publish, extract, verify and exercise exact candidate
         shell: pwsh
         run: |
@@ -145,6 +150,8 @@ jobs:
           path: |
             ${{ runner.temp }}/release-lane
             ${{ runner.temp }}/loader-prerequisites.log
+            ${{ runner.temp }}/recovery-identity
+            ${{ runner.temp }}/recovery-identity.log
           if-no-files-found: error
   aggregate:
     name: aggregate
@@ -194,6 +201,8 @@ jobs:
               $records += $record
             }
             Copy-Item -LiteralPath "$lane/evidence" -Destination "$output/evidence/$($manifest.rid)" -Recurse
+            Copy-Item -LiteralPath "$($laneDir.FullName)/recovery-identity" -Destination "$output/evidence/$($manifest.rid)/recovery-identity" -Recurse
+            Copy-Item -LiteralPath "$($laneDir.FullName)/recovery-identity.log" -Destination "$output/evidence/$($manifest.rid)/recovery-identity.log"
             $prerequisites = Join-Path $laneDir.FullName 'loader-prerequisites.log'
             if (Test-Path -LiteralPath $prerequisites) { Copy-Item -LiteralPath $prerequisites -Destination "$output/evidence/$($manifest.rid)/loader-prerequisites.log" }
           }
