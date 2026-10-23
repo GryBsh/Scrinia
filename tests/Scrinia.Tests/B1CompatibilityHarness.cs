@@ -40,7 +40,7 @@ public class B1CompatibilityHarness
         McpResponse rendered = BundleEnvelopeFixture.RenderSuccess();
         string intendedPath = Path.Combine(Path.GetTempPath(), "<WORKSPACE>", ".scrinia", "exports",
             "bundle-success.scrinia-bundle");
-        Assert.Equal($"Exported 1 topic(s) (1 entries, <SIZE>) to {intendedPath}", rendered.Content);
+        Assert.Equal(GoldenNormalizer.Normalize($"Exported 1 topic(s) (1 entries, <SIZE>) to {intendedPath}"), rendered.Content);
 
         // Pin the complete envelope while removing only host-specific fixture path spelling.
         Assert.Equal(NormalizeHost(golden), NormalizeHost(rendered.ToYaml()));
