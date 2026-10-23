@@ -218,13 +218,13 @@ internal sealed class ReleaseLifecycle
         (string Tool, string Arguments, bool Error)[] calls =
         [
             ("shared_bases", "{}", false),
-            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/one\",\"content\":[\"shared first chunk\",\"second chunk\"],\"attributes\":{\"project\":[\"validation\"]}}", false),
-            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/one\",\"content\":[\"third chunk\"]}", false),
+            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/one\",\"description\":\"Shared validation chunks and project attributes.\",\"content\":[\"shared first chunk\",\"second chunk\"],\"attributes\":{\"project\":[\"validation\"]}}", false),
+            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/one\",\"description\":\"Shared validation chunks and project attributes.\",\"content\":[\"third chunk\"]}", false),
             ("shared_recall", "{\"base\":\"team\",\"path\":\"/validation/one\",\"chunk\":2}", false),
             ("shared_search", "{\"query\":\"shared\",\"base\":\"team\",\"attributeFilter\":{\"project\":[\"validation\"]}}", false),
             ("shared_list", "{\"base\":\"team\",\"mode\":\"full\"}", false),
             ("shared_facts", "{\"base\":\"team\",\"op\":\"entities\"}", false),
-            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/other\",\"content\":[\"other body\"]}", false),
+            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/other\",\"description\":\"Related validation memory.\",\"content\":[\"other body\"]}", false),
             ("shared_link", "{\"base\":\"team\",\"path\":\"/validation/one\",\"destination\":\"/validation/other\"}", false),
             ("shared_compact", "{\"base\":\"team\",\"path\":\"/validation/one\"}", false),
             ("shared_refresh", "{\"base\":\"team\"}", false),
@@ -232,7 +232,7 @@ internal sealed class ReleaseLifecycle
             ("shared_list", "{\"base\":\"team\",\"unexpected\":\"rejected\"}", true),
             ("shared_recall", "{\"base\":\"team\",\"path\":\"~temporary\"}", true),
             ("shared_list", "{\"limit\":\"wrong type\"}", true),
-            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/bad\",\"content\":null}", true),
+            ("shared_remember", "{\"base\":\"team\",\"path\":\"/validation/bad\",\"description\":\"Invalid content validation.\",\"content\":null}", true),
             ("shared_recall", "{\"base\":\"private\",\"path\":\"/secret\"}", true),
         ];
         int id = 2;

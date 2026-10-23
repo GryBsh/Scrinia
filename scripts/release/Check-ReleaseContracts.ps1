@@ -175,8 +175,8 @@ function Assert-ServerVersion([string]$Assembly, [string[]]$Arguments, [string]$
             }
             $expectedTools = if ($Shared) {
                 @('shared_bases','shared_search','shared_list','shared_recall','shared_facts','shared_remember',
-                    'shared_append','shared_forget','shared_compact','shared_link','shared_refresh')
-            } else { @('guide','remember','recall','search','list','append','forget','compact','link','restore','facts') }
+                    'shared_forget','shared_compact','shared_link','shared_refresh')
+            } else { @('guide','remember','recall','search','list','forget','compact','link','restore','facts') }
             if ($null -eq $toolResponse -or -not ($toolResponse.PSObject.Properties.Name -contains 'result')) {
                 throw 'Invalid host tools/list response'
             }
