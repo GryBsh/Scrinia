@@ -93,9 +93,10 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/findings/versions/review_20260801-010101.nmp2").Should().BeTrue();
     }
 
-    [Fact]
+    [SkippableFact]
     public void Migrate_SourceLockedDuringMove_SurfacesActionableError_ThenResumes()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing violations prevent rename/delete; Unix permits them.");
         // Reviewer finding (Task 7 fix round): the core move loop's File.Move had no error
         // handling at all — a real content file transiently locked by another process (Synology
         // Drive's sync daemon, an antivirus scan, a second scrinia process) would throw a bare
@@ -126,9 +127,10 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("topics/findings/review.nmp2").Should().BeFalse();
     }
 
-    [Fact]
+    [SkippableFact]
     public void MoveWithRetry_LockedTargetOverwrite_SurfacesActionableError_ThenResumes()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing violations prevent rename/delete; Unix permits them.");
         // Re-review finding: File.Move(source, target, overwrite: true) — the conflict-quarantine
         // call site's shape — can throw UnauthorizedAccessException (not IOException) when TARGET
         // already exists and is locked (empirically confirmed in review). FileRetry.Run's catch
@@ -364,9 +366,10 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/api/a.meta.json").Should().BeTrue("index.json's entry must be expanded into a real sidecar");
     }
 
-    [Fact]
+    [SkippableFact]
     public void MigrateIfNeeded_SecondAttempt_WithStuckLegacyLock_DoesNotWriteSecondBackup()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows sharing violations prevent rename/delete; Unix permits them.");
         // Reproduces the unbounded-backup bug: a held ".lock" (simulating a concurrent
         // FileMemoryStore operation) survives the transient-artifact delete, so
         // PruneEmptyLegacyRoots can't clear "topics/", and NeedsMigration keeps reporting
@@ -475,19 +478,19 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         // new backup was written, rather than the caller silently getting BackupPath: null with no
         // way to distinguish "skipped" from "never asked for one".
         Write("topics/findings/review.nmp2", "b");
-        string lockPath = Write("topics/findings/.lock", "");
+        var first = StoreLayoutMigration.MigrateIfNeeded(_root);
+        first.BackupPath.Should().NotBeNull();
+        first.BackupSkipped.Should().BeFalse();
 
-        using (new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-        {
-            var first = StoreLayoutMigration.MigrateIfNeeded(_root);
-            first.BackupPath.Should().NotBeNull();
-            first.BackupSkipped.Should().BeFalse();
+        // Recreate pending legacy input without relying on Windows-only delete sharing.
+        Write("topics/findings/later.nmp2", "later legacy input");
+        var second = StoreLayoutMigration.MigrateIfNeeded(_root);
 
-            var second = StoreLayoutMigration.MigrateIfNeeded(_root);
-
-            second.BackupPath.Should().BeNull();
-            second.BackupSkipped.Should().BeTrue("a prior backup from this engine already exists; the caller must be told none was written this time");
-        }
+        second.Ran.Should().BeTrue();
+        second.BackupPath.Should().BeNull();
+        second.BackupSkipped.Should().BeTrue("a prior backup from this engine already exists; the caller must be told none was written this time");
+        Exists("memories/findings/later.nmp2").Should().BeTrue();
+        Directory.EnumerateDirectories(_root, ".scrinia-backup-*").Should().HaveCount(1);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

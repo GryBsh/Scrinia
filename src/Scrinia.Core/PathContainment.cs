@@ -61,6 +61,12 @@ public static class PathContainment
     /// </remarks>
     private static string ResolveReal(string path)
     {
+        int remainingLinks = 40;
+        return ResolveReal(path, ref remainingLinks);
+    }
+
+    private static string ResolveReal(string path, ref int remainingLinks)
+    {
         string full = Path.GetFullPath(path);
         string root = Path.GetPathRoot(full) ?? "";
         if (root.Length == 0)
@@ -82,10 +88,14 @@ public static class PathContainment
                 continue; // not-yet-existing segment: keep lexical form
 
             string? target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
-            // FileSystemInfo.ResolveLinkTarget(returnFinalTarget: true).FullName is always absolute,
-            // so no relative-combine branch is reachable here.
             if (target is not null)
-                resolved = target;
+            {
+                if (--remainingLinks < 0)
+                    throw new IOException("Too many symbolic links while resolving the path.");
+                // The final link target is absolute, but its ancestors may still be links.
+                // Resolve those too, sharing a budget so ancestor cycles fail closed.
+                resolved = ResolveReal(target, ref remainingLinks);
+            }
         }
         return Path.GetFullPath(resolved);
     }

@@ -25,7 +25,7 @@ public sealed class CommandLineQuotingTests
 
     // ---- Windows: the documented CommandLineToArgvW inverse escaping round-trips ----
 
-    [Fact]
+    [SkippableFact]
     public void Windows_RoundTripsThroughCommandLineToArgvW()
     {
         Skip.IfNot(
@@ -84,7 +84,7 @@ public sealed class CommandLineQuotingTests
         PlatformQuoting.Windows(input).Should().Be(expected);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Windows_PlaceholderIsAValidSingleArgvElement()
     {
         Skip.IfNot(

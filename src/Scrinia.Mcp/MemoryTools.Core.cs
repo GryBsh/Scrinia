@@ -824,7 +824,13 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult(ResponseBuilder.Warning("No memories stored.").WithAction("listed")
                 .WithTruncationAdvice(ListTruncationAdvice));
 
-        entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
+        entries.Sort((a, b) =>
+        {
+            int byCreated = b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt);
+            return byCreated != 0 ? byCreated : StringComparer.Ordinal.Compare(
+                store.FormatQualifiedName(a.Scope, a.Entry.Name),
+                store.FormatQualifiedName(b.Scope, b.Entry.Name));
+        });
 
         if (!string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
             return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed")

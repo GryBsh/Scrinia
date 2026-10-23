@@ -104,13 +104,15 @@ public sealed class LearningIntegrationTests
         using var fixture=new LearningFixture();
         var request=await fixture.RequestAsync(twoBatches:true);
         int calls=0;
+        // Two delayed batches exceed a single episode, but each has ample headroom for
+        // real MCP/process and durable-I/O work on a busy CI host. Do not block a pool
+        // thread: starvation must not consume the deadline this test is measuring.
         var learner=new TrajectoryLearner(_=>new FakeClient(_=>{
             calls++;
-            Thread.Sleep(TimeSpan.FromMilliseconds(1200));
             return FakeClient.Text("Done.");
-        }));
+        },TimeSpan.FromSeconds(16)));
         var receipt=await learner.LearnAsync(
-            request with {Configuration=request.Configuration with {EpisodeSeconds=2}},CancellationToken.None);
+            request with {Configuration=request.Configuration with {EpisodeSeconds=30}},CancellationToken.None);
         Assert.Equal(2,calls);
         await new SnapshotValidator().ValidateAsync(request.StagingPath,receipt.NewSnapshotHash,CancellationToken.None);
     }
@@ -137,10 +139,13 @@ public sealed class LearningIntegrationTests
             JsonSerializer.Serialize(value,WorkerJsonContext.Default.String));
     }
 
-    private sealed class FakeClient(Func<IEnumerable<ChatMessage>,ChatResponse> response) : IChatClient
+    private sealed class FakeClient(Func<IEnumerable<ChatMessage>,ChatResponse> response,TimeSpan delay=default) : IChatClient
     {
-        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,ChatOptions? options=null,CancellationToken cancellationToken=default)
-            => Task.FromResult(response(messages));
+        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,ChatOptions? options=null,CancellationToken cancellationToken=default)
+        {
+            if (delay > TimeSpan.Zero) await Task.Delay(delay,cancellationToken);
+            return response(messages);
+        }
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages,ChatOptions? options=null,CancellationToken cancellationToken=default)
             => throw new NotSupportedException();
         public object? GetService(Type type,object? key=null) => null;

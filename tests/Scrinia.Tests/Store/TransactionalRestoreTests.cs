@@ -338,9 +338,9 @@ public sealed class TransactionalRestoreTests
     /// already-renamed body sits under its OLD sidecar — which is the exact content/metadata
     /// mismatch this branch exists to eliminate, reintroduced one level up.</para>
     ///
-    /// <para>The fault: hold <c>beta.nmp2</c> open with <see cref="FileShare.None"/> so the
-    /// second entry's <c>File.Move</c> cannot land. <c>alpha</c> is committed first and must
-    /// survive intact.</para>
+    /// <para>The existing restore fault seam fails immediately before publishing <c>beta.nmp2</c>.
+    /// This boundary is portable: Unix permits renaming open files. <c>alpha</c> has already
+    /// committed and its body/sidecar pair must agree before recovery runs.</para>
     ///
     /// <para><b>Verified to discriminate, not merely to pass.</b> Rewriting the commit loop as
     /// "rename every body, then write every sidecar" makes this test fail with
@@ -372,24 +372,38 @@ public sealed class TransactionalRestoreTests
         };
 
         Exception? thrown;
-        using (new FileStream(Path.Combine(storeDir, "beta.nmp2"),
-                   FileMode.Open, FileAccess.Read, FileShare.None))
+        bool betaFailureInjected = false;
+        FileMemoryStore.RestoreJournalFailureInjector.Value = (transition, destination) =>
+        {
+            if (transition != RestoreJournalTransition.BeforeReplayBody ||
+                destination != Path.Combine(storeDir, "beta.nmp2"))
+                return null;
+            betaFailureInjected = true;
+            return new IOException("Injected beta commit failure.");
+        };
+        try
         {
             thrown = Record.Exception(
                 () => store.ImportTopicEntries(Scope, bundled, ToArtifactBytes(contents), overwrite: true));
         }
+        finally { FileMemoryStore.RestoreJournalFailureInjector.Value = null; }
 
-        thrown.Should().NotBeNull("holding beta.nmp2 exclusively must make its commit fail");
+        thrown.Should().NotBeNull("the second body publication must fail after alpha commits");
 
-        // Read from a COLD store: asserting through LoadIndex after a write that installed the
-        // cache proves nothing about disk. The import threw before PublishIndexUnsafe, so there
-        // is no cache to be fooled by here — but the habit is what the branch's other vacuous
-        // test failed on, so it is kept deliberately.
-        using var cold = new FileMemoryStore(scope.WorkspaceDir);
+        betaFailureInjected.Should().BeTrue("the failure must occur at beta's body publication");
+
+        // Inspect the committed pair directly before constructing a cold store or invoking
+        // any read: journal recovery must not repair a mismatch before this assertion.
         byte[] alphaBodyBytes = File.ReadAllBytes(Path.Combine(storeDir, "alpha.nmp2"));
         byte[] alphaSidecarBytes = File.ReadAllBytes(Path.Combine(storeDir, "alpha.meta.json"));
-        alphaBodyBytes.Should().NotBeEmpty("alpha's committed body must be present on cold disk");
-        alphaSidecarBytes.Should().NotBeEmpty("alpha's committed sidecar must be present on cold disk");
+        string committedBody = System.Text.Encoding.UTF8.GetString(alphaBodyBytes);
+        committedBody.Should().Be("alpha v2 body");
+        using var committedSidecar = System.Text.Json.JsonDocument.Parse(alphaSidecarBytes);
+        committedSidecar.RootElement.GetProperty("originalBytes").GetInt64()
+            .Should().Be(alphaBodyBytes.LongLength,
+                "alpha's sidecar must describe its committed body before journal recovery");
+
+        using var cold = new FileMemoryStore(scope.WorkspaceDir);
         var alpha = cold.LoadIndex(Scope).Single(e => e.Name == "alpha");
         string alphaBody = await cold.ReadArtifactAsync(MemoryAddress.Parse("/notes/alpha"));
 

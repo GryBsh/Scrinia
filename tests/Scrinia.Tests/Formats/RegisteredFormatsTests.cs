@@ -180,7 +180,10 @@ public class RegisteredFormatsTests
     [Fact]
     public void WriteSidecarMeta_StillWritesASkillMetaAtCurrent()
     {
-        string tempFile = Path.Combine(Path.GetTempPath(), $"scrinia_skillmeta_{Guid.NewGuid():N}.md");
+        using var scope = new TestHelpers.StoreScope();
+        string skills = PathRouter.ToFileEntityDir("skill", scope.WorkspaceDir);
+        Directory.CreateDirectory(skills);
+        string tempFile = Path.Combine(skills, "current.md");
         string metaPath = Path.ChangeExtension(tempFile, ".meta.json");
         try
         {

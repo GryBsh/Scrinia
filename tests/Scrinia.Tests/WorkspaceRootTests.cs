@@ -204,26 +204,28 @@ public class WorkspaceRootTests : IDisposable
     [Fact]
     public void OrphanWarning_ExportCommandTargetsTheOrphansParentNotTheStoreItself()
     {
+        string parent = Path.GetFullPath("containers");
         string text = Scrinia.Commands.OrphanStoreReporter.FormatOrphanWarning(
-            orphan: @"C:\containers\.scrinia",
-            root: @"C:\containers\proj",
+            orphan: Path.Combine(parent, ".scrinia"),
+            root: Path.Combine(parent, "proj"),
             topics: ["agent", "patterns"]);
 
-        Assert.Contains(@"scri bundle export agent,patterns --workspace-root ""C:\containers""", text);
+        Assert.Contains($"scri bundle export agent,patterns --workspace-root \"{parent}\"", text);
     }
 
     [Fact]
     public void OrphanWarning_WithNoTopics_PointsAtListInsteadOfGuessingAnExportCommand()
     {
+        string parent = Path.GetFullPath("containers");
         string text = Scrinia.Commands.OrphanStoreReporter.FormatOrphanWarning(
-            orphan: @"C:\containers\.scrinia",
-            root: @"C:\containers\proj",
+            orphan: Path.Combine(parent, ".scrinia"),
+            root: Path.Combine(parent, "proj"),
             topics: []);
 
         // The user is sent to `scri list` first, and the export line carries a placeholder
         // rather than a fabricated topic list — the same convention as <file> on the line below.
-        Assert.Contains(@"scri list --workspace-root ""C:\containers""", text);
-        Assert.Contains(@"scri bundle export <topics> --workspace-root ""C:\containers""", text);
+        Assert.Contains($"scri list --workspace-root \"{parent}\"", text);
+        Assert.Contains($"scri bundle export <topics> --workspace-root \"{parent}\"", text);
     }
 
     [Fact]

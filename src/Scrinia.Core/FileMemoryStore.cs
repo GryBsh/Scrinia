@@ -439,9 +439,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         return ValueTask.FromResult(WithRecoveryReadBarrier(scope, () =>
         {
-            if (!File.Exists(ArtifactPath(subject, scope)))
-                return (ArtifactEntry?)null;
-            return MemoryNaming.ResolveExistingName(LoadIndexUnderRecoveryBarrier(scope), address);
+            ArtifactEntry? entry = MemoryNaming.ResolveExistingName(LoadIndexUnderRecoveryBarrier(scope), address);
+            // Resolve the stored spelling before probing the body on a case-sensitive filesystem.
+            return entry is not null && File.Exists(ArtifactPath(entry.Name, scope)) ? entry : null;
         }, ct));
     }
 

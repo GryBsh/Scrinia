@@ -70,9 +70,17 @@ public sealed class EndToEndTests
             cases[0]![key]!.AsArray().RemoveAt(0);
         File.WriteAllText(config.Dataset, cases.ToJsonString());
         string file = SaveConfig(temp.Root, config);
-        FileStream? blockedEvidence = null;
+        bool blockedEvidence = false;
         string priorEvidence = Path.Combine(config.OutputDirectory, "cases/000001/attempts/000001/evidence");
-        void Block() => blockedEvidence = new FileStream(Path.Combine(priorEvidence, "events.ndjson"), FileMode.Open, FileAccess.Read, FileShare.Read);
+        string eventPath = Path.Combine(priorEvidence, "events.ndjson");
+        string savedEvents = eventPath + ".blocked";
+        void Block()
+        {
+            // A directory rejects append on every OS; Unix file sharing does not deny this write.
+            File.Move(eventPath, savedEvents);
+            Directory.CreateDirectory(eventPath);
+            blockedEvidence = true;
+        }
         var learning = new ScriptedChatClient(Write("partial", "old attempt"), ScriptedChatClient.Text("learned"));
         var judge = BenchmarkApplicationTests.Text("yes");
         if (afterAnswer) judge.OnRequest = Block;
@@ -84,7 +92,14 @@ public sealed class EndToEndTests
         {
             Assert.Equal(1, await new BenchmarkApplication(_ => clients.Dequeue(), afterAnswer ? new FailingReportWriter() : new StringWriter(), errors).RunAsync(["run", "--config", file], CancellationToken.None));
         }
-        finally { blockedEvidence?.Dispose(); }
+        finally
+        {
+            if (blockedEvidence)
+            {
+                Directory.Delete(eventPath);
+                File.Move(savedEvents, eventPath);
+            }
+        }
         Assert.Contains("JOURNAL_FAILED", errors.ToString());
         Assert.False(File.Exists(Path.Combine(priorEvidence, "outcome.json")));
         Assert.Equal(afterAnswer, File.Exists(Path.Combine(priorEvidence, "answer.saved.json")));
