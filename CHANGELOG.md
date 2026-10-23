@@ -10,6 +10,20 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — MCP memory writes
+
+- MCP `remember` and `shared_remember` now append chunks by default, creating the memory
+  when it does not exist. Callers that intend to replace all content must pass `replace: true`.
+- Every call requires a nonblank `description` covering the whole resulting memory,
+  including appends and writes to reserved paths. The supplied description replaces the
+  previous description; keep detailed evidence in `content`. Existing stored memories
+  remain readable without migration.
+- The separate MCP `append` and `shared_append` tools have been removed. Update those calls
+  to `remember` or `shared_remember`. Wrap the former `content` string in an array
+  (`content: ['...']`), retain the path and shared base where applicable, and supply a
+  description of the whole resulting memory. The CLI `scri append` command remains available.
+
+
 ### Changed — release installation and recovery contracts
 
 - Embeddings release bundles install only through explicit `setup`, either beside the extracted
