@@ -208,16 +208,16 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     [McpServerTool(Name = "remember"), Description(
         "Add chunks to a memory at a path, creating it if missing. Otherwise, append every supplied chunk and preserve existing content. " +
-        "Every call requires a description of the whole resulting memory; keep detailed evidence in content. Set replace: true only for an intentional complete replacement. Store facts about people, their preferences, and past events under ordinary " +
+        "Every call requires a description of the whole resulting memory, replacing its previous description even on append; keep detailed evidence in content. Send only new chunks. Set replace: true only for an intentional complete replacement after recalling what must survive. Store facts about people, their preferences, and past events under ordinary " +
         "paths such as /people/user/travel. Reserve /agent/ for the AI assistant's own persona and behavior, " +
         "not the human user's profile. Preserve explicitly stated details of the facts you store, including dates, durations, " +
-        "quantities, and units. Keep qualifiers attached to their facts, preserving distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true; do not infer missing values or event relationships. Separate existing facts from goals to change them; retain a short source quotation when a paraphrase could change the meaning. Content is an array — each element becomes one independently " +
+        "quantities, and units. Keep source context and qualifiers attached to facts; distinguish plans, completed actions, and uncertainty without inventing relationships. Corrections should identify the earlier claim and what supersedes it, with date and reason where known. Preserve useful history and quote a short source clause when paraphrasing could change its meaning. Content is an array — each element becomes one self-contained, independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
         "a searcher would use. A keywords entry shaped 'key:value' (e.g. 'person:maria') is routed " +
         "into attributes instead of kept as a keyword — see the keywords and content parameter " +
         "descriptions for the exact rule. Example: remember({ path: '/findings/SEC-001', description: 'Security finding, affected code, and proposed fix.', " +
-        "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
+        "content: ['Login accepts an unchecked redirect target; proposed fix: allowlist redirect destinations.'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
         [Description("Ordinary memory path (e.g. '/people/user/travel', '/preferences/food', '/findings/SEC-001'). " +
@@ -567,9 +567,10 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "search"), Description(
-        "Find memories by keyword or phrase. Returns ranked matches with a content preview and the " +
-        "entry's attributes per hit to help choose full recalls. Matches are not an exhaustive inventory; " +
-        "for counts and lists, vary search terms and browse list(mode: full) for missed candidates. " +
+        "Find memories by keyword or phrase. Returns ranked descriptions, excerpts, and attributes to help choose recalls. " +
+        "Read relevant content before relying on a hit. Match retrieval effort to the task: targeted lookup for a fact, " +
+        "updates for changing state, broader searches and relevant inventory browsing when exhaustive coverage remains uncertain. " +
+        "Matches alone do not prove completeness; disclose material coverage limits. " +
         "Example: search({ query: 'oauth flow', pathPrefix: '/findings/', " +
         "attributeFilter: { topic: ['auth'] } }).")]
     public async Task<string> MemorySearch(

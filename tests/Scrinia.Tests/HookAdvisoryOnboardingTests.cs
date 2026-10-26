@@ -7,18 +7,12 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Phase 4, Task 5 — the generated agent primer points at the hook-only
-/// <c>scri hint --client &lt;host&gt;</c> advisory, the shared MCP instructions stay
-/// byte-identical to their Phase 3 baseline, and the retired multi-user merge workflow is
+/// <c>scri hint --client &lt;host&gt;</c> advisory, MCP instructions introduce the memory workflow,
+/// and the retired multi-user merge workflow is
 /// replaced with shared-base collaboration across the owned living docs.
 /// </summary>
 public sealed class HookAdvisoryOnboardingTests
 {
-    private const string BaselineMcpInstructions =
-        "This server provides Scrinia, persistent project-scoped memory. Call guide() at session " +
-        "start for the full primer. Use search before non-trivial work to recall prior " +
-        "decisions and conventions; use remember as soon as you learn something non-obvious. " +
-        "Reserved paths: /skill/ /agent/ /patterns/ /findings/ /learn/ /sessions/ /checkpoint/ /temp/.";
-
     private const string HintHookWording = "scri hint --client <host>";
 
     [Fact]
@@ -33,9 +27,15 @@ public sealed class HookAdvisoryOnboardingTests
     }
 
     [Fact]
-    public void Primer_McpInstructions_UntouchedFromBaseline() =>
-        ScriniaPrimer.McpInstructions.Should().Be(BaselineMcpInstructions,
-            "Phase 4 must not alter the shared MCP instructions field — byte-for-byte baseline");
+    public void Primer_McpInstructions_DirectsAgentsToTheMemoryWorkflow()
+    {
+        string instructions = ScriniaPrimer.McpInstructions;
+        instructions.Should().Contain("guide()", "the full guide is the operational entry point");
+        instructions.Should().Contain("workspace-scoped", "persistence does not require a shared repository");
+        instructions.Should().Contain("retention and sharing", "storage is subject to user intent");
+        foreach (string path in new[] { "/skill/", "/agent/", "/patterns/", "/findings/", "/learn/", "/sessions/", "/checkpoint/", "/temp/" })
+            instructions.Should().Contain(path);
+    }
 
     [Fact]
     public void MultiUserSetup_IsSharedBaseCollaborationNotMergeWorkflow()

@@ -37,10 +37,11 @@ public sealed class ScriniaMcpPromptsResourcesTests
     {
         string prompt = ScriniaMcpPrompts.Guide();
         prompt.Should().NotBeNullOrWhiteSpace();
-        // Same content the guide() tool serves — sanity-check a couple of stable sections.
+        prompt.Should().Be(EmbeddedPrompts.LoadGuide());
+        // Check documented capabilities without tying them to editorial headings.
         prompt.Should().Contain("remember");
         prompt.Should().NotContain("memory_remember");
-        prompt.Should().Contain("Reserved paths");
+        prompt.Should().Contain("/agent/");
         prompt.Should().Contain("facts",
             because: "the facts tool must be documented in the agent guide");
     }

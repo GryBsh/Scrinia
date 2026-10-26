@@ -5,7 +5,7 @@ namespace Scrinia.Mcp;
 /// shared by everything that needs to state the baseline: the CLI's AGENTS.md/CLAUDE.md writers and
 /// the MCP server <c>instructions</c> field. Lives in <c>Scrinia.Mcp</c> because both the CLI and
 /// the CLI reference this assembly. Deliberately terse — it points at <c>guide()</c>
-/// for the full primer rather than duplicating the ~164-line agent guide (<c>prompts/guide.md</c>).
+/// for the full workflow rather than duplicating the agent guide (<c>prompts/guide.md</c>).
 /// </summary>
 public static class ScriniaPrimer
 {
@@ -16,16 +16,17 @@ public static class ScriniaPrimer
         """
         ## Scrinia memory
 
-        This workspace uses **Scrinia** for persistent, project-scoped memory via MCP tools. The
+        This workspace uses **Scrinia** for persistent, workspace-scoped memory via MCP tools. The
         full agent guide is one call away — call `guide()` at the start of a session.
 
-        - `search(...)` before non-trivial work (joining the project, recalling prior
-          decisions or conventions); skip it for self-contained requests.
-        - `remember(...)` as soon as you learn something non-obvious — a decision, a fix, a
-          convention the next agent shouldn't have to rediscover.
+        - `search(...)` when prior context could change the work, including earlier decisions,
+          preferences, or events; skip it for self-contained requests.
+        - `remember(...)` for useful information that should survive the session — a decision,
+          preference, event, correction, finding, or open task. Read relevant evidence before relying on it.
         - Reserved paths: `/skill/`, `/agent/`, `/patterns/`, `/findings/`, `/learn/`,
           `/sessions/`, `/checkpoint/`, `/temp/`.
-        - `.scrinia/` changes are part of your commits.
+        - Follow the configured tracking policy and the user's sharing intent for `.scrinia/`.
+          Writing a memory does not authorize committing or publishing it.
         - Supported agent hooks run `scri hint --client <host>` before commit or push (the
           `UserPromptSubmit` hook) to surface relevant memories; the shared MCP server takes no
           prompt or correlation field — advisories come from the hook only.
@@ -39,8 +40,8 @@ public static class ScriniaPrimer
     /// though they ignore MCP prompts/resources). Kept self-contained.
     /// </summary>
     public const string McpInstructions =
-        "This server provides Scrinia, persistent project-scoped memory. Call guide() at session " +
-        "start for the full primer. Use search before non-trivial work to recall prior " +
-        "decisions and conventions; use remember as soon as you learn something non-obvious. " +
+        "This server provides Scrinia, persistent workspace-scoped memory. Call guide() at session " +
+        "start for the full workflow. Search when prior context could affect the task; recall relevant evidence before relying on it. " +
+        "Remember useful preferences, events, decisions, corrections, and open work. Follow the user's retention and sharing intent. " +
         "Reserved paths: /skill/ /agent/ /patterns/ /findings/ /learn/ /sessions/ /checkpoint/ /temp/.";
 }

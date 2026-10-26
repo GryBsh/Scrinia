@@ -9,16 +9,17 @@ Scrinia gives LLMs persistent, portable memory. It compresses text into compact 
 3. Later, the LLM searches for relevant context: `scri search "authentication flow"`
 4. Scrinia returns ranked results from across all stored memories.
 
-Memories persist in a `.scrinia/` directory alongside your project (like `.git/`), travel with the code, and work across sessions.
+Memories persist in a workspace's `.scrinia/` directory and work across sessions. Sharing depends on the configured tracking policy and the user's workflow.
 
 ## How it runs
 
 One way: `scri` is both a command-line tool and an MCP server over stdio. Your AI coding tool
 launches it; it reads and writes `.scrinia/` on disk.
 
-Sharing memories across a team uses ordinary source-control workflows: commit `.scrinia/` like any
-other directory, and share the same memories between repositories with a shared base registered via
-`scri shared base add`. See [Sharing Memory Across a Team](multi-user-setup.md).
+Memory may remain local or be shared through an intentional source-control workflow. Follow the
+configured tracking policy and the user's sharing intent before committing or publishing it. To
+share memory between repositories, register a shared base with `scri shared base add`. See
+[Sharing Memory Across a Team](multi-user-setup.md).
 
 ## Installation
 
@@ -206,7 +207,17 @@ Workspace tools are grouped by purpose:
 
 `remember` creates a missing memory or appends every supplied chunk to an existing one. Send only new information. To replace a memory, first recall it, prepare the complete replacement, then pass `replace: true`. This also applies to `shared_remember`. The separate MCP `append` and `shared_append` tools have been removed; integrations should use `remember` or `shared_remember` with a content array. The CLI retains `scri store` for replacement and `scri append` for addition.
 
-Remember past events as well as ongoing preferences and project decisions. When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers attached to the facts they modify. Preserve distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true. Keep earlier facts and later corrections distinct; do not infer that separate events conflict or refer to the same occurrence. Compress wording without changing these relationships or inferring missing values. Separate what is already true from what someone plans or hopes to change. Preserve the wording that connects them (such as already, another, still, or hoping to improve); when paraphrasing could change that meaning, include the short source clause verbatim alongside the summary. Before finishing, compare the selected source facts with successful memory writes, including their qualifiers and relationships, and add any omitted details.
+### Writing and using memory
+
+Every MCP `remember` and `shared_remember` call requires a nonblank `description` of the whole resulting memory. The description is replaced even on append; detailed evidence belongs in `content`. Recall existing content when needed to preserve the description's scope.
+
+Retain useful past events, preferences, research, decisions, and open work. Write self-contained chunks that keep the subject, action, explicit dates, durations, quantities, units, reasons, outcomes, and status together. Preserve source dates, relative time wording, and qualifications. Distinguish plans from completed actions and facts from inference; quote a short source clause when paraphrasing could change its meaning. Verify selected facts against successful writes.
+
+When correcting a memory, identify the earlier claim and what supersedes it, with date and reason where known. Preserve useful history, and do not assume a newer note about a separate event replaces an earlier fact. Use a complete replacement for deliberate consolidation; `compact` joins chunks mechanically without resolving contradictions, and `keepRecent` removes older chunks from active content.
+
+Use descriptions and search excerpts to locate evidence, then recall relevant content before relying on it. Retrieve numbered chunks when recall is truncated. Match retrieval effort to the task: targeted lookup for a specific fact, original evidence plus updates for a decision, and broader searches with relevant inventory browsing when an exhaustive count or history needs coverage checks. Search results alone do not establish completeness. Track sources, dates, status, and inclusion/exclusion reasons for totals, and disclose material uncertainty.
+
+Answer the action or state asked about without adding unstated completion conditions. Expected events are not proof of completion. Calculate dates only from a reliable source anchor when needed, distinguishing the calculation from explicit evidence. See the [agent guide](../src/Scrinia.Mcp/prompts/guide.md) for the full workflow and examples.
 
 `guide` is standalone — call it once per session. Skill paths (`/skill/...`) are routed through `remember` (create/override) and `recall` (load/list), not a separate tool.
 

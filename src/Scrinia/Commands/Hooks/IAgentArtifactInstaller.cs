@@ -7,8 +7,8 @@ namespace Scrinia.Commands.Hooks;
 /// alongside <see cref="IAgentHookInstaller"/> (shell hooks): artifacts cover clients that have no
 /// shell-hook channel (OpenCode) and the always-on baseline that a per-turn hook can't carry.
 ///
-/// <para>Unlike hooks, artifacts are <b>workspace-rooted</b> — they live in the repo and travel
-/// with it, matching scrinia's "<c>.scrinia/</c> changes are part of your commits" stance — so the
+/// <para>Unlike hooks, artifacts are <b>workspace-rooted</b> — they live in the selected workspace,
+/// where sharing follows the user's workflow — so the
 /// install surface takes a workspace root rather than a user/project <see cref="HookScope"/>.</para>
 ///
 /// <para>Reuses <see cref="HookStatus"/> for reporting. Writers that own a region of a shared file

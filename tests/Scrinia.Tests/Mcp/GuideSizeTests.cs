@@ -20,13 +20,10 @@ public class GuideSizeTests
     private static ScriniaMcpTools Tools() => new();
 
     /// <summary>
-    /// Twice <see cref="ResponseBuilder.MaxResponseChars"/> — deliberately generous headroom over
-    /// today's 8046 chars (guide.md grows slowly and by hand, not by accretion of query results),
-    /// but still finite, so a runaway edit (e.g. an accidental duplicate paste of the whole
-    /// document) trips this rather than shipping silently. If guide.md ever needs to exceed this,
-    /// that is a decision to make explicitly by raising the ceiling, not a silent truncation.
+    /// An explicit editorial ceiling in characters, independent of ordinary tool-response limits.
+    /// Raise deliberately when the guide needs more room; never truncate essential guidance.
     /// </summary>
-    private const int GuideCeiling = 2 * ResponseBuilder.MaxResponseChars;
+    private const int GuideCeiling = 32_768;
 
     [Fact]
     public void GuideDocument_StaysUnderTheCeiling()
@@ -46,21 +43,17 @@ public class GuideSizeTests
 
         var guide = ResponseParser.Parse(await Tools().Guide());
 
-        // The tail sentence guide.md actually loses today, character for character: at the
-        // 7992-char cap the "... (truncated)" cut lands inside this exact final paragraph
-        // (see /findings/guide-md-exceeds-response-cap). Asserting the true final words survive
-        // pins the regression this fix closes without depending on byte-for-byte line-ending
-        // fidelity through the YAML round trip — a separate, pre-existing quirk (CRLF content
-        // combined with ToYaml's own Environment.NewLine-based AppendLine folds every blank line
-        // into an extra line break once YamlDotNet re-normalizes it) that predates this branch and
-        // affects every multi-line CRLF response, not just guide()'s. Recorded for later triage,
-        // not fixed here — T10-A is about whether content is cut short, not how newlines round-trip.
-        guide.Content.Should().Contain(
-            "Scrinia writes to `.scrinia/`. Commit those changes — that is how memory travels with the code.",
-            because: "this is the exact tail the 7992-char cap used to cut off mid-sentence");
+        // Compare the entire document in order, allowing only the existing YAML blank-line
+        // and platform line-ending differences. No particular editorial sentence is required.
+        guide.Content.Should().NotBeNull();
+        NonEmptyLines(guide.Content!).Should().Equal(NonEmptyLines(EmbeddedPrompts.LoadGuide()!),
+            because: "every line of the embedded guide must survive the tool response");
         guide.Content.Should().NotContain("(truncated)",
             because: "guide() must return its document whole, not clipped to the response cap");
         guide.FollowUp.Should().NotContain(f => f.Contains("truncated", StringComparison.OrdinalIgnoreCase),
             because: "an untruncated response must not carry truncation advice");
     }
+
+    private static string[] NonEmptyLines(string text) =>
+        text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
 }

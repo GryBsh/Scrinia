@@ -156,8 +156,7 @@ public sealed record McpResponse
 public static class ResponseBuilder
 {
     /// <summary>The per-response content cap every tool but <c>guide()</c> is subject to (see
-    /// <see cref="SuccessUntruncated"/>). Internal so <c>GuideSizeTests</c> can size its ceiling
-    /// off this value instead of duplicating the number.</summary>
+    /// <see cref="SuccessUntruncated"/>). The guide has a separate editorial size ceiling.</summary>
     // Transport boundary: envelope size cap. Distinct from AgentLoop's model-facing
     // ContentTruncated — one protects the transport, the other protects the model window.
     internal const int MaxResponseChars = 8 * 1024;

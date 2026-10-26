@@ -177,7 +177,8 @@ Add to your MCP client config (Claude Code, Cursor, Copilot, etc.):
 its working directory; passing `--workspace-root` explicitly makes the server independent
 of whatever directory the client launches it from.
 
-To share memories across a team, commit `.scrinia/` like any other source file and, when the same
+Memory can remain local. For an intentional team-sharing workflow, follow the configured tracking
+policy and review memory before committing or publishing it. When the same
 memories should be shared between repositories, register a shared base with `scri shared base add`
 — shared bases always use the `project-git` tracking policy. See
 [Sharing Memory Across a Team](docs/multi-user-setup.md).

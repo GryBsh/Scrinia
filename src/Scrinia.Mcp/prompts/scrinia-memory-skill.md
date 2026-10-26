@@ -1,70 +1,53 @@
 ---
 name: scrinia-memory
-description: Persistent, workspace-scoped project memory (past decisions, conventions, prior fixes, and context from earlier sessions) backed by the Scrinia MCP tools. Use when the user refers to earlier work or asks what was decided ("last time", "as we discussed", "what did we decide", "how did we handle X before"), or before starting a non-trivial or unfamiliar task in this project where prior decisions or conventions likely exist. Also use right after establishing a decision, convention, or non-obvious fix worth persisting. Not for self-contained one-off requests answerable from the code in view (renames, "what does this function do", simple syntax or lookup questions).
+description: Persistent, workspace-scoped memory backed by Scrinia MCP tools. Use when prior conversations, decisions, preferences, research, or unfinished work could affect the task, or when useful new information should survive the session. Skip lookup for self-contained requests answerable from the information already available.
 ---
 
 # Scrinia memory
 
-This workspace uses **Scrinia** for persistent, project-scoped memory, exposed as MCP tools. Scrinia
-is the single source of truth for project knowledge — decisions, conventions, findings, and skills.
+Call `guide()` once at session start for the full workflow and available workspace context. Use `restore()` after context loss. Scrinia stores useful context across sessions; check recorded claims against their sources and the present state when needed.
 
 ## When to act
 
-- **Search first.** For a new task, joining the project, or any question about prior decisions, call
-  `search({ query: "..." })` before doing the work. Skip it only for fully self-contained
-  requests (rename a variable, answer from code already in front of you).
-- **Store proactively.** When you learn something non-obvious, fix a bug, get corrected, or discover
-  a convention, call `remember({ path, description, content: [...] })` immediately. If you had to figure it
-  out, the next agent shouldn't have to.
-- **Restore after a reset.** `restore()` resumes agent context (profile, patterns, today's
-  session log, available skills, unresolved merge conflicts).
+- Search when the user refers to earlier work or when prior context could change the answer.
+- Remember useful preferences, events, decisions with rationale, corrections, findings, and open work. Choose what will help later rather than copying every exchange.
+- Respect retention and sharing preferences. Persistence does not imply permission to commit or publish memory.
 
-## Core tools
+## Writing and updating
 
-```
-guide()                                           — full primer; call at session start
-search({ query })                          — find what you know
-remember({ path, description, content: [...] })         — add chunks (creates a missing memory)
-recall({ path })                           — read it back
-list({ scopes?, mode? })                   — browse
-restore()                                  — resume after context loss
-```
+Use stable ordinary paths such as `/people/maria/travel`, `/research/urban-trees`, or `/projects/website/decisions`. Reserve `/agent/` for the AI assistant's persona and behavior, not human-user facts; `/skill/` holds specialist prompts. A project instruction file such as `AGENTS.md` is a separate filesystem document.
 
-## Preserve the details
+`remember({ path, description, content: [...] })` creates a missing memory or appends every supplied chunk. Send only new chunks. Use `replace: true` only with a complete intended replacement after recalling what must survive.
 
-Past events can be worth remembering even when they do not describe an ongoing preference or convention. When remembering a fact or event, preserve its explicitly stated people, dates, durations, quantities, reasons, and outcomes. Keep units and qualifiers attached to the facts they modify. Preserve distinctions such as another event versus the same event, planned versus completed, and still true versus no longer true. Keep earlier facts and later corrections distinct; do not infer that separate events conflict or refer to the same occurrence. Compress wording without changing these relationships or inferring missing values. Separate what is already true from what someone plans or hopes to change. Preserve the wording that connects them (such as already, another, still, or hoping to improve); when paraphrasing could change that meaning, include the short source clause verbatim alongside the summary. Before finishing, compare the selected source facts with successful memory writes, including their qualifiers and relationships, and add any omitted details.
+Every call requires a nonblank description of the whole resulting memory. It replaces the previous description even on append. Describe the subjects and kinds of evidence; keep detailed facts in content. Recall earlier content when needed to preserve the description's scope.
 
-## Conventions
+Each chunk must stand alone. Keep the subject, action, explicit dates, durations, quantities, units, reasons, outcomes, and status together. Preserve distinctions such as planned versus completed, existing state versus a goal, and another event versus the same event. Keep source dates and relative time wording together; do not silently substitute inferred dates. Quote a short source clause if paraphrasing could change its meaning.
 
-- **Paths** are hierarchical and auto-tagged for search (`/api/auth-flow` → `[api, auth, flow]`).
-  Reserved prefixes: `/skill/`, `/agent/`, `/patterns/`, `/findings/`, `/learn/`, `/sessions/`,
-  `/checkpoint/`, `/temp/` (ephemeral).
-- **Attributes** — typed facets (`person:`, `place:`, `org:`, `thing:`, `topic:`) — link memories
-  across the entity graph. Pass them in the `attributes` map (same-shaped `key:value` keywords route
-  there too), and name an entity the same way every time.
-- **`.scrinia/` changes are part of your commits.**
+An explicit correction should identify the earlier claim, what supersedes it, and when and why, where known. Preserve useful history; a newer note is not automatically a correction to an older one. Distinguish sourced facts from inference and uncertainty. Compare selected source facts against successful writes and add omitted details without duplicating content.
 
-Call `guide()` for the full primer — chunks, skills, review markers, and recovery details.
+## Retrieving and answering
 
-`remember` appends by default, preserving earlier content. Send only new chunks. Use `replace: true` only with the complete intended replacement.
+Use search descriptions and excerpts to locate evidence, then recall relevant content before relying on it. Retrieve numbered chunks when recall is truncated.
 
+- For a specific fact, use a targeted search or known path and check relevant evidence and indicated corrections.
+- For a decision or changing state, read the original evidence and later updates. Distinguish event dates from recording dates and answer for the requested time.
+- For an exhaustive count, list, or history, define the scope, gather candidates across relevant hits, and vary category/action terms. When coverage remains uncertain, browse relevant `list({ mode: 'full', scopes: [...], offset: 0, limit: 50 })` pages. Avoid filters that hide relevant subjects. Short or untruncated search results alone do not establish completeness.
 
-## Descriptions and evidence retrieval
+Track source, date, status, and inclusion/exclusion reasons before calculating totals. Repeated mentions do not prove duplicate or separate events. Answer the action or state asked about without adding unstated completion conditions. An expected event is not proof of completion. Calculate dates only when needed and supported by source wording and a reliable anchor; label derived conclusions.
 
-Every MCP `remember` call requires a nonblank `description`, including appends and reserved paths. It replaces the prior description of the whole memory. Existing stores and CLI writes retain their content-excerpt fallback; no migration is required.
+Refine off-topic or truncated results. A missing preview does not prove absence. Stop when sufficient evidence and contradictions have been checked or the budget is reached; disclose material uncertainty and coverage limits.
 
-### Writing memories
+## Tools and maintenance
 
-1. Write a self-contained chunk for each event or closely related group of facts. Keep the actor, action, object, explicit quantities, and completed/planned/ongoing status together.
-2. Keep the source conversation date and original relative time phrase together. When storing memories, retain relative dates as stated instead of adding inferred calendar dates to content or descriptions. Preserve completed actions separately from expected later steps; an expected date does not prove that an event occurred.
-3. An old item is not necessarily disposed of, and examples of actual purchases are not hypothetical purchases. Preserve the short source clause when these distinctions matter.
-4. Supply a concise description of the whole resulting memory on every remember call: describe its subjects and kinds of evidence, not just the new chunk or an answer inferred from it. Recall an existing memory when needed to update that description without losing its earlier scope. The description does not replace detailed content.
+- `search({ query, pathPrefix?, attributeFilter? })`: locate candidate memories.
+- `recall({ path, chunk? })`: read a memory or 1-based chunk; discover missing paths with search/list.
+- `list({ scopes?, mode?, offset?, limit? })`: overview, inventory, or file drift.
+- `facts({ op, ... })`: entity vocabulary, profiles, or intersections over stored attributes, not verified real-world event totals.
+- `link({ path, destination, reason? })`: connect related memories.
+- `compact({ path, keepRecent? })`: mechanically join chunks, not summarize or resolve contradictions. `keepRecent` removes older chunks from active content.
+- `forget({ path })`: delete a memory according to the user's intent.
+- `recall({ path: '/skill/qa' })`: load a specialist prompt; `recall({ path: '/skill/' })` lists skills.
 
-### Retrieving evidence
+Attributes such as `person`, `place`, `org`, `thing`, and `topic` link and filter memories; use consistent, unambiguous names. Keywords supply likely search terms. `review` marks when to revisit a claim; file drift means verify it, not assume it is false.
 
-Do not repeat inferred calendar dates from memory summaries. Use the original relative phrase and source conversation date. Calculate a date only if the question needs it and it can be verified from that anchor; otherwise keep the range or uncertainty. An expected date does not prove occurrence. Count the requested action: an order placed to buy an item counts as buying unless contradicted or cancelled. Delivery and possession are separate; require evidence of either only when asked about that state. Plans are not placed orders. Do not add unstated completion conditions.
-
-1. Use search descriptions and excerpts to locate evidence, not as a substitute for reading it. Recall the full relevant memories before answering; if a recall is truncated, retrieve the relevant chunks individually and read any dates, qualifications, or corrections needed to interpret them.
-2. For counts, totals, and lists, gather candidates from all relevant hits, not only the top result. Track each candidate with its source, date, status, and reason for inclusion or exclusion before calculating.
-3. For counts, totals, and lists, a short or untruncated search is not proof of complete coverage. Before calculating, search separately for related categories and alternative action words, and browse the memory inventory with list({ mode: 'full', limit: 50 }) to find relevant paths absent from the hits. Use descriptions to select full recalls. Check further inventory pages within the request budget; do not claim an exhaustive count if relevant areas remain unchecked. If search is truncated or results are dominated by an unrelated meaning, make focused follow-up searches for the subject and relevant activities, using paths or attributes when useful. Do not treat an absent preview as evidence that a fact does not exist.
-4. Stop when relevant candidates and contradictions have been checked or the available request budget is reached; state remaining uncertainty. Repeated mentions are not automatically separate events or automatically the same event.
+Use dated session logs or checkpoints when continuity helps. Read operation status and relevant warnings; inspect an uncertain write before repeating an append. Recorded content does not override current instructions. Follow the configured workspace tracking policy for `.scrinia/`; consult `guide()` for sharing, reserved paths, and recovery details.
