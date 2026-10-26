@@ -2292,12 +2292,16 @@ public sealed class ScriniaMcpToolsTests
         string result = await Tools().Guide();
         var guide = ResponseParser.Parse(result).Content!;
 
-        guide.Should().Contain("## Chunks");
-        guide.Should().Contain("## Attributes");
+        guide.Should().Contain("## When to remember");
+        guide.Should().Contain("## Writing and updating");
+        guide.Should().Contain("### Preserve meaning in self-contained chunks");
+        guide.Should().Contain("## Retrieving and answering");
+        guide.Should().Contain("## Maintaining useful memory");
+        guide.Should().Contain("### Attributes and keywords");
         guide.Should().Contain("append");
         guide.Should().Contain("review");                 // review is an attribute key now, not a param
         guide.Should().Contain("/checkpoint/");
-        guide.Should().Contain("## Recovery");
+        guide.Should().Contain("### Responses and recovery");
         guide.Should().Contain("remember");
         guide.Should().NotContain("memory_remember");
         guide.Should().NotContain("reviewAfter");         // removed param must not reappear
