@@ -70,10 +70,10 @@
     Emit the results as JSON instead of a table.
 
 .EXAMPLE
-    ./measure-startup.ps1 -Exe ./dist/scri.exe -Label baseline
+    ./scripts/measure-startup.ps1 -Exe ./dist/scri.exe -Label baseline
 
 .EXAMPLE
-    ./measure-startup.ps1 -Exe ./out-base/scri.exe -Against ./out-r2r/scri.exe `
+    ./scripts/measure-startup.ps1 -Exe ./out-base/scri.exe -Against ./out-r2r/scri.exe `
         -Label base -AgainstLabel r2r -CopyWorkspaceTo $env:TEMP/scri-ws
 #>
 [CmdletBinding()]
@@ -83,7 +83,7 @@ param(
 
     [string]$Against,
 
-    [string]$WorkspaceRoot = $PSScriptRoot,
+    [string]$WorkspaceRoot = (Split-Path -Parent $PSScriptRoot),
 
     [string]$CopyWorkspaceTo,
 

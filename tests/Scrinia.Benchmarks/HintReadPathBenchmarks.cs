@@ -10,7 +10,7 @@ namespace Scrinia.Benchmarks;
 /// startup already paid.
 ///
 /// <para><b>Why this exists.</b> The whole-process cost of <c>hint</c> is measured by
-/// <c>./measure-startup.ps1</c>, which drives the published binary. What that number cannot say is
+/// <c>./scripts/measure-startup.ps1</c>, which drives the published binary. What that number cannot say is
 /// how much of it is Scrinia and how much is .NET starting up, because the script has no way to
 /// subtract one from the other — and it is an unreliable number in its own right, swinging between
 /// roughly 120ms and 400ms on this machine for reasons that were measured but not explained. This

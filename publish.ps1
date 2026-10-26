@@ -156,7 +156,7 @@ foreach ($rid in $Rids) {
                 # or rewrite the reflection-heavy call to a trim-safe shape.
                 #
                 # PublishReadyToRun precompiles the managed code, so a short-lived verb stops
-                # paying JIT for a startup path it will never run twice. ./measure-startup.ps1,
+                # paying JIT for a startup path it will never run twice. ./scripts/measure-startup.ps1,
                 # median of 20 runs, the two builds INTERLEAVED, against a local-disk copy of this
                 # repository's workspace with the Model2Vec model present:
                 #

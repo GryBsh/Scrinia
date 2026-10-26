@@ -23,13 +23,13 @@ public sealed class NoObsoleteAddressSurfaceTests
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["CHANGELOG.md"] = "released history",
-            ["task-11-report.md"] = "historical acceptance report",
+            ["docs/reviews/task-11-report.md"] = "historical acceptance report",
             ["docs/superpowers/plans/2026-08-29-unified-memory-addressing.md"] = "historical plan",
             ["docs/superpowers/plans/2026-09-06-wave-1-critical.md"] = "historical plan",
             ["docs/superpowers/plans/2026-09-06-wave-2-major.md"] = "historical plan",
              ["docs/superpowers/plans/2026-09-06-wave-3-minor.md"] = "historical plan",
              ["docs/superpowers/plans/2026-09-06-wave-1-task-6-report.md"] = "historical task report",
-             ["task-6-report.md"] = "historical task report",
+             ["docs/reviews/task-6-report.md"] = "historical task report",
             ["docs/superpowers/specs/2026-09-06-review-remediation-design.md"] = "historical specification",
             ["docs/superpowers/specs/2026-08-29-unified-memory-addressing-design.md"] = "historical specification",
             ["docs/cli-reference.md"] = "explicit unsupported-input guidance",
