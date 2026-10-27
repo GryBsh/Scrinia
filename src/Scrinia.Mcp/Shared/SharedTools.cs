@@ -36,8 +36,10 @@ public sealed class SharedTools
     internal Task<string> Append(string @base, string path, string content, Dictionary<string, string[]>? attributes = null, string[]? keywords = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "append", [content], attributes, keywords, null, null, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_forget"), Description("Forget one persistent entry from a shared base.")]
     public Task<string> Forget(string @base, string path, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "forget", null, null, null, null, null, 0, cancellationToken).ToYaml());
-    [McpServerTool(Name = "shared_compact"), Description("Compact one persistent entry in a shared base.")]
-    public Task<string> Compact(string @base, string path, int keepRecent = 0, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "compact", null, null, null, null, null, keepRecent, cancellationToken).ToYaml());
+    [McpServerTool(Name = "shared_compact"), Description("Join all chunks by default. With keepRecent > 0, retain only that many newest chunks and remove older content from the active shared memory. This does not summarize or shrink text.")]
+    public Task<string> Compact(string @base, string path,
+        [Description("0 joins all chunks without dropping content; a positive value keeps only the newest N chunks and discards older active content.")] int keepRecent = 0,
+        CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "compact", null, null, null, null, null, keepRecent, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_link"), Description("Link two persistent entries in one shared base.")]
     public Task<string> Link(string @base, string path, string destination, string? reason = null, CancellationToken cancellationToken = default) => Task.FromResult(Server.Mutate(@base, path, "link", null, null, null, destination, reason, 0, cancellationToken).ToYaml());
     [McpServerTool(Name = "shared_refresh"), Description("Refresh one enabled shared base.")]

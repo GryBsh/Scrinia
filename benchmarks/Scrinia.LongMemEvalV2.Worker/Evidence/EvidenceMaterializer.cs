@@ -6,6 +6,8 @@ using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.LongMemEvalV2.Worker.Protocol;
+using YamlDotNet.Core;
+using YamlDotNet.RepresentationModel;
 namespace Scrinia.LongMemEvalV2.Worker.Evidence;
 
 public sealed class EvidenceMaterializer(string snapshot)
@@ -74,15 +76,26 @@ public sealed class EvidenceMaterializer(string snapshot)
     }
     private static async Task RequireRecallAsync(ScriniaMcpSession session,string path,int chunk,int count,string expected,CancellationToken ct) {
         var result=await session.Tools.Single(t=>t.Name=="recall").InvokeAsync(new AIFunctionArguments {["path"]=path,["chunk"]=chunk},ct);
-        string yaml=Extract(result).Replace("\r\n","\n",StringComparison.Ordinal);
-        if(!yaml.StartsWith("status: success\n",StringComparison.Ordinal))throw new InvalidDataException("EVIDENCE_RECALL_FAILED");
-        int marker=yaml.IndexOf("\ncontent: |\n",StringComparison.Ordinal);
-        if(marker<0)throw new InvalidDataException("EVIDENCE_RECALL_FAILED");
-        string content=string.Join("\n",yaml[(marker+12)..].Split('\n').Select(line=>line.StartsWith("  ",StringComparison.Ordinal)?line[2..]:throw new InvalidDataException("EVIDENCE_RECALL_INVALID")));
-        // Scrinia's YAML boundary trims only trailing whitespace. Comparing that exact
-        // projection detects truncation while retaining original whitespace for the reader.
-        string projection=$"Chunk {chunk}/{count}\n\n{expected}";
-        if(content.TrimEnd()!=projection.Replace("\r\n","\n",StringComparison.Ordinal).TrimEnd())throw new InvalidDataException("EVIDENCE_RECALL_CHANGED_OR_TRUNCATED");
+        RequireRecallContent(Extract(result),chunk,count,expected);
+    }
+    internal static void RequireRecallContent(string yaml,int chunk,int count,string expected) {
+        // Parse the YAML scalar so quoting and block chomping preserve the exact
+        // recalled characters. The representation model also rejects duplicate keys.
+        var stream=new YamlStream();
+        try {
+            using var reader=new StringReader(yaml);
+            stream.Load(reader);
+        } catch(YamlException error) {
+            throw new InvalidDataException("EVIDENCE_RECALL_INVALID",error);
+        }
+        if(stream.Documents.Count!=1 || stream.Documents[0].RootNode is not YamlMappingNode root)
+            throw new InvalidDataException("EVIDENCE_RECALL_INVALID");
+        if(!root.Children.TryGetValue(new YamlScalarNode("status"),out var status) || status is not YamlScalarNode {Value:"success"})
+            throw new InvalidDataException("EVIDENCE_RECALL_FAILED");
+        if(!root.Children.TryGetValue(new YamlScalarNode("content"),out var content) || content is not YamlScalarNode scalar)
+            throw new InvalidDataException("EVIDENCE_RECALL_FAILED");
+        if(!string.Equals(scalar.Value,$"Chunk {chunk}/{count}\n\n{expected}",StringComparison.Ordinal))
+            throw new InvalidDataException("EVIDENCE_RECALL_CHANGED_OR_TRUNCATED");
     }
     private static string Extract(object? result)=>result switch {
         string text=>text,

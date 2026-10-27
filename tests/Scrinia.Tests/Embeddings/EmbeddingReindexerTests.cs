@@ -180,14 +180,14 @@ public class EmbeddingReindexerTests : IDisposable
     }
 
     [Fact]
-    public async Task ReindexViaSink_FiresOnStoredPerMemory_WithDecodedContent()
+    public async Task ReindexViaCommand_FiresOnStoredPerMemory_WithDecodedContent()
     {
         AddMemory("alpha", "alpha content body");
         AddMemory("beta", "beta content body");
 
-        var sink = new CaptureSink();
+        var sink = new CaptureCommand();
 
-        var result = await EmbeddingReindexer.ReindexViaSinkAsync(
+        var result = await EmbeddingReindexer.ReindexViaCommandAsync(
             _store, sink, NullLogger.Instance, progress: null, CancellationToken.None);
 
         result.Total.Should().Be(2);
@@ -201,14 +201,14 @@ public class EmbeddingReindexerTests : IDisposable
     }
 
     [Fact]
-    public async Task ReindexViaSink_SinkFailure_CountedAsFailedNotFatal()
+    public async Task ReindexViaCommand_SinkFailure_CountedAsFailedNotFatal()
     {
         AddMemory("good", "this one succeeds");
         AddMemory("bad", "this one throws");
 
-        var sink = new CaptureSink(failOnAddress: MemoryAddress.Parse("/bad"));
+        var sink = new CaptureCommand(failOnAddress: MemoryAddress.Parse("/bad"));
 
-        var result = await EmbeddingReindexer.ReindexViaSinkAsync(
+        var result = await EmbeddingReindexer.ReindexViaCommandAsync(
             _store, sink, NullLogger.Instance, progress: null, CancellationToken.None);
 
         result.Total.Should().Be(2);
@@ -216,28 +216,23 @@ public class EmbeddingReindexerTests : IDisposable
         result.Failed.Should().Be(1);
     }
 
-    private sealed class CaptureSink : IMemoryEventSink
+    private sealed class CaptureCommand : IEmbeddingIndexCommand
     {
         private readonly MemoryAddress? _failOnAddress;
         public List<(MemoryAddress address, string[] content)> Stored { get; } = [];
 
-        public CaptureSink(MemoryAddress? failOnAddress = null)
+        public CaptureCommand(MemoryAddress? failOnAddress = null)
         {
             _failOnAddress = failOnAddress;
         }
 
-        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
+        public Task<EmbeddingIndexOutcome> IndexAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
             if (address == _failOnAddress)
                 throw new InvalidOperationException("simulated sink failure");
             Stored.Add((address, content));
-            return Task.CompletedTask;
+            return Task.FromResult(EmbeddingIndexOutcome.Indexed);
         }
-
-        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct)
-            => Task.CompletedTask;
-        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct)
-            => Task.CompletedTask;
     }
 
     /// <summary>

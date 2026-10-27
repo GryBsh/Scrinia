@@ -500,7 +500,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     internal void RememberEphemeral(string key, EphemeralEntry entry)
     {
         _ephemeralStore[key] = entry;
+        OnEphemeralPublished();
+    }
 
+    private void OnEphemeralPublished()
+    {
         if (_ephemeralStore.Count > MaxEphemeralEntries)
         {
             // Evict oldest by CreatedAt
@@ -2582,6 +2586,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         if (existingEntry is not null)
             subject = existingEntry.Name;
 
+        return await StorePersistentUnderLockAsync(lease, write, pre, scope, subject, existingEntry,
+            transactionResult, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ArtifactEntry> StorePersistentUnderLockAsync(
+        WorkspaceLease lease, MemoryWrite write, PrecomputedStore pre, string scope, string subject,
+        ArtifactEntry? existingEntry, Action<WholeMemoryResult>? transactionResult,
+        CancellationToken cancellationToken)
+    {
+        lease.AssertValid(_workspaceRoot);
         if (existingEntry is not null && ArtifactSidecarPolicy.IsReadOnly(existingEntry))
             throw new ScopeReadOnlyException(scope, existingEntry.Name, existingEntry.SchemaVersion ?? 1,
                 DurableFormats.ArtifactSidecar.Current);
@@ -2764,15 +2778,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
             bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
             if (ephemeral)
-            {
-                if (GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name)) is null)
-                {
-                    ArtifactEntry created = await PersistEphemeralAsync(write, ct);
-                    return new AppendStoreResult(AppendStoreOutcome.Created, created, operationId);
-                }
-
-                return await AppendAsyncCore(null, write, operationId, startedAt, ct);
-            }
+                return AppendEphemeral(write, operationId, ct);
 
             using WorkspaceLease? ownedLease = admittedLease is null ? EnterWorkspaceMutation(ct: ct) : null;
             WorkspaceLease lease = admittedLease ?? ownedLease!;
@@ -2849,82 +2855,91 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         }
     }
 
-    private async Task<AppendStoreResult> AppendAsyncCore(
-        WorkspaceLease? lease, MemoryWrite write, string operationId, DateTimeOffset startedAt, CancellationToken ct)
+    private AppendStoreResult AppendEphemeral(MemoryWrite write, string operationId, CancellationToken ct)
     {
+        string key = write.Address.Value;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var current = GetEphemeral(key);
+            if (current is null)
+            {
+                var initial = PrecomputeForStore(write, isEphemeral: true);
+                var created = BuildEphemeralEntry(key, initial.Artifact, initial.OriginalBytes, initial.ChunkCount,
+                    initial.Derived, DateTimeOffset.UtcNow, null);
+                ct.ThrowIfCancellationRequested();
+                if (!_ephemeralStore.TryAdd(key, created))
+                    continue; // Another creator won; append against its complete current snapshot.
+                OnEphemeralPublished();
+                return new AppendStoreResult(AppendStoreOutcome.Created, ProjectEphemeralEntry(created), operationId);
+            }
+            var existing = new ExistingMetadata(current.Attributes, current.Keywords, current.ContentPreview,
+                current.ChunkEntries, current.FileHashes, current.AgentKeywords);
+            PrecomputedStore pre = PrecomputeForAppend(write, current.Artifact, existing);
+            var updated = BuildEphemeralEntry(key, pre.Artifact, pre.OriginalBytes, pre.ChunkCount,
+                pre.Derived, current.CreatedAt, DateTimeOffset.UtcNow);
+            ct.ThrowIfCancellationRequested();
+            if (!_ephemeralStore.TryUpdate(key, updated, current))
+                continue;
+            InvalidateEntityFacts();
+            return new AppendStoreResult(AppendStoreOutcome.Appended, ProjectEphemeralEntry(updated), operationId);
+        }
+    }
 
-        bool ephemeral = write.Address.Kind == MemoryAddressKind.Ephemeral;
+    private PrecomputedStore PrecomputeForAppend(MemoryWrite write, string artifact, ExistingMetadata existing)
+    {
+        string appended = Nmp2ChunkedEncoder.AppendChunks(artifact, write.RawContent,
+            out string[] verifiedChunks, out long verifiedBytes);
+        string[] fullContent = [.. verifiedChunks, .. write.RawContent];
+        long originalBytes = verifiedBytes + write.RawContent.Sum(chunk => (long)System.Text.Encoding.UTF8.GetByteCount(chunk));
+        var derived = MemoryDerivation.ForAppend(
+            fullContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()),
+            write.Keywords.ToArray(), existing, fileHasher: HashWorkspaceFile,
+            appendedChunkCount: write.RawContent.Length);
+        return new(derived, appended, Nmp2ChunkedEncoder.GetChunkCount(appended), originalBytes);
+    }
+
+    private async Task<AppendStoreResult> AppendAsyncCore(
+        WorkspaceLease lease, MemoryWrite write, string operationId, DateTimeOffset startedAt, CancellationToken ct)
+    {
         var (scope, subject) = ResolveAddress(write.Address);
-        if (!ephemeral)
-        {
-            ArgumentNullException.ThrowIfNull(lease);
-            lease.AssertValid(_workspaceRoot);
-        }
-        if (!ephemeral)
-            await _recoveryConductor.RecoverAppendUnsafeAsync(scope, GetStoreDirUnderLease(scope), operationId, ct);
-        ArtifactEntry? existingEntry = null;
-        EphemeralEntry? existingEph = null;
-        RawMemberSnapshot? oldArtifact = null;
-        RawMemberSnapshot? oldSidecar = null;
-        string? existingArtifact = null;
+        lease.AssertValid(_workspaceRoot);
+        await _recoveryConductor.RecoverAppendUnsafeAsync(scope, GetStoreDirUnderLease(scope), operationId, ct);
+        ArtifactEntry? existingEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
+            e => MemoryNaming.NameEquals(e.Name, subject));
+        if (existingEntry is not null)
+            subject = existingEntry.Name;
 
-        if (ephemeral)
-        {
-            existingEph = GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name));
-            existingArtifact = existingEph?.Artifact;
-        }
-        else
-        {
-            existingEntry = LoadIndexUnderExclusiveAppendLock(scope).FirstOrDefault(
-                e => MemoryNaming.NameEquals(e.Name, subject));
-            if (existingEntry is not null)
-                subject = existingEntry.Name;
-
-            oldArtifact = await CaptureRawMemberAsync(
-                ArtifactPath(subject, scope), AppendFaultPoint.RawArtifactRead, operationId, ct);
-            oldSidecar = await CaptureRawMemberAsync(
-                MetaPath(subject, scope), AppendFaultPoint.RawSidecarRead, operationId, ct);
-            LastCapturedOldArtifactBytesForTest = oldArtifact.Bytes;
-            LastCapturedOldSidecarBytesForTest = oldSidecar.Bytes;
-            existingArtifact = oldArtifact.Existed
-                ? System.Text.Encoding.UTF8.GetString(oldArtifact.Bytes)
-                : null;
-        }
+        RawMemberSnapshot oldArtifact = await CaptureRawMemberAsync(
+            ArtifactPath(subject, scope), AppendFaultPoint.RawArtifactRead, operationId, ct);
+        RawMemberSnapshot oldSidecar = await CaptureRawMemberAsync(
+            MetaPath(subject, scope), AppendFaultPoint.RawSidecarRead, operationId, ct);
+        LastCapturedOldArtifactBytesForTest = oldArtifact.Bytes;
+        LastCapturedOldSidecarBytesForTest = oldSidecar.Bytes;
+        string? existingArtifact = oldArtifact.Existed
+            ? System.Text.Encoding.UTF8.GetString(oldArtifact.Bytes)
+            : null;
 
         if (existingArtifact is null)
             throw new AppendStoreException(AppendStoreErrorCode.Internal, operationId,
                 "Append admission found a missing live artifact after the transaction lock was acquired.");
 
-        string newArtifact = Nmp2ChunkedEncoder.AppendChunks(existingArtifact, write.RawContent,
-            out string[] verifiedChunks, out long verifiedBytes);
-        string[] fullContent = [.. verifiedChunks, .. write.RawContent];
-
-        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
-        long originalBytes = verifiedBytes + write.RawContent.Sum(chunk => (long)System.Text.Encoding.UTF8.GetByteCount(chunk));
-
-        // Everything the memory already carries that an append must not destroy. A server-side REST
-        // append used to lose the curated keywords (D-12) and the drift baseline (D-21) outright.
-        // EphemeralEntry now carries FileHashes too, so the fallback below matches every other field.
+        // Preserve the current metadata while deriving the appended content.
         var existing = new ExistingMetadata(
-            Attributes: existingEntry?.Attributes ?? existingEph?.Attributes,
-            Keywords: existingEntry?.Keywords ?? existingEph?.Keywords,
-            ContentPreview: existingEntry?.ContentPreview ?? existingEph?.ContentPreview,
-            ChunkEntries: existingEntry?.ChunkEntries ?? existingEph?.ChunkEntries,
-            FileHashes: existingEntry?.FileHashes ?? existingEph?.FileHashes,
+            Attributes: existingEntry?.Attributes,
+            Keywords: existingEntry?.Keywords,
+            ContentPreview: existingEntry?.ContentPreview,
+            ChunkEntries: existingEntry?.ChunkEntries,
+            FileHashes: existingEntry?.FileHashes,
             // Null here is UNKNOWN, and ForAppend reads it that way: a memory last written before
             // the field existed keeps the old blanket carry-forward until this append rewrites it.
-            AgentKeywords: existingEntry?.AgentKeywords ?? existingEph?.AgentKeywords);
+            AgentKeywords: existingEntry?.AgentKeywords);
 
-        var derived = MemoryDerivation.ForAppend(
-            fullContent, write.Description, write.Attributes.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()), write.Keywords.ToArray(), existing,
-            fileHasher: HashWorkspaceFile, appendedChunkCount: write.RawContent.Length);
-
-        if (ephemeral)
-        {
-            var appendedEphemeral = PersistEphemeral(write.Name, newArtifact, originalBytes, chunkCount, derived,
-                createdAt: existingEph!.CreatedAt, updatedAt: DateTimeOffset.UtcNow);
-            return new AppendStoreResult(AppendStoreOutcome.Appended, appendedEphemeral, operationId);
-        }
+        var pre = PrecomputeForAppend(write, existingArtifact, existing);
+        var derived = pre.Derived;
+        string newArtifact = pre.Artifact;
+        int chunkCount = pre.ChunkCount;
+        long originalBytes = pre.OriginalBytes;
 
         // Same user-facing gate as StoreAsync's, and for the same reason: refuse before any side
         // effect rather than depend on the rollback path below. `existingEntry` can genuinely be
@@ -2951,11 +2966,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             entry.Address,
             scope,
             IsCreate: existingEntry is null,
-            oldArtifact ?? RawMemberSnapshot.Capture(ArtifactPath(subject, scope), false, []),
-            oldSidecar ?? RawMemberSnapshot.Capture(MetaPath(subject, scope), false, []),
+            oldArtifact,
+            oldSidecar,
             RawMemberSnapshot.Capture(ArtifactPath(subject, scope), true, newArtifactBytes),
             RawMemberSnapshot.Capture(MetaPath(subject, scope), true, newSidecarBytes),
-            BuildArchivePlan(subject, scope, existingEntry is not null, oldSidecar?.Existed == true, startedAt),
+            BuildArchivePlan(subject, scope, existingEntry is not null, oldSidecar.Existed, startedAt),
             startedAt);
         LastPreparedAppendTransactionForTest = transaction;
 
@@ -3040,7 +3055,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
 
         try
         {
-            await PublishLiveAppendAsync(lease ?? throw new InvalidOperationException("Missing workspace lease."), transaction, entry, newArtifact, ct);
+            await PublishLiveAppendAsync(lease, transaction, entry, newArtifact, ct);
         }
         catch (Exception exception)
         {
@@ -3338,9 +3353,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
         DerivedMetadata derived, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
     {
         string key = MemoryNaming.StripEphemeralPrefix(name);
+        var stored = BuildEphemeralEntry(key, artifact, originalBytes, chunkCount, derived, createdAt, updatedAt);
+        RememberEphemeral(key, stored);
+        return ProjectEphemeralEntry(stored);
+    }
 
-        var stored = new EphemeralEntry(
-            Name: key,
+    private static EphemeralEntry BuildEphemeralEntry(
+        string name, string artifact, long originalBytes, int chunkCount,
+        DerivedMetadata derived, DateTimeOffset createdAt, DateTimeOffset? updatedAt) => new(
+            Name: name,
             Artifact: artifact,
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
@@ -3353,10 +3374,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
             FileHashes: derived.FileHashes,
             Attributes: derived.Attributes,
             AgentKeywords: derived.AgentKeywords);
-
-        RememberEphemeral(key, stored);
-        return ProjectEphemeralEntry(stored);
-    }
 
     private static ArtifactEntry ProjectEphemeralEntry(EphemeralEntry entry)
     {
@@ -4321,6 +4338,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable, IAddres
     {
         EnsureEphemeralAddress(address);
         return GetEphemeral(address.Value);
+    }
+
+    /// <inheritdoc/>
+    public bool TryUpdateEphemeral(MemoryAddress address, Func<EphemeralEntry, EphemeralEntry?> mutate)
+    {
+        EnsureEphemeralAddress(address);
+        return TryUpdateEphemeral(address.Value, mutate);
     }
 
     public Task WriteArtifactAsync(MemoryAddress address, string artifactText,

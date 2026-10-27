@@ -29,10 +29,16 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
     /// Observed dimensions from the first successful embedding response.
     /// Returns 0 when no embedding has been generated yet.
     /// </summary>
-    protected int ObservedDimensions => _dimensions;
+    protected int ObservedDimensions => Volatile.Read(ref _dimensions);
 
     /// <inheritdoc />
     public abstract int Dimensions { get; }
+
+    /// <summary>
+    /// Required response dimensions, or zero when the model's shape must be discovered.
+    /// Providers with an estimated display default override this independently of <see cref="Dimensions"/>.
+    /// </summary>
+    protected virtual int ExpectedDimensions => Dimensions;
 
     /// <inheritdoc />
     public abstract string Signature { get; }
@@ -61,7 +67,7 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
     {
         try
         {
-            _circuitBreaker.EnsureClosed();
+            using var trial = _circuitBreaker.EnterRequest();
 
             using var response = await RetryPolicy.ExecuteAsync(
                 async () => await SendEmbedRequestAsync(text, ct),
@@ -88,24 +94,9 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
             var vec = await ParseEmbeddingResponseAsync(response, ct);
             if (vec != null)
             {
-                if (Dimensions > 0 && vec.Length != Dimensions)
-                {
-                    Logger.LogWarning(
-                        "{Provider} returned a vector with {ActualDimensions} dimensions; expected {ExpectedDimensions}",
-                        ProviderName, vec.Length, Dimensions);
+                if (!ValidateVector(vec, ExpectedDimensions) || !TryObserveDimensions(vec.Length))
                     return null;
-                }
 
-                int observed = Volatile.Read(ref _dimensions);
-                if (observed > 0 && vec.Length != observed)
-                {
-                    Logger.LogWarning(
-                        "{Provider} returned inconsistent vector dimensions: got {ActualDimensions}, previously observed {ObservedDimensions}",
-                        ProviderName, vec.Length, observed);
-                    return null;
-                }
-
-                Interlocked.CompareExchange(ref _dimensions, vec.Length, 0);
                 VectorMath.L2Normalize(vec);
                 _circuitBreaker.RecordSuccess();
             }
@@ -163,7 +154,7 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
 
         try
         {
-            _circuitBreaker.EnsureClosed();
+            using var trial = _circuitBreaker.EnterRequest();
             using var response = await RetryPolicy.ExecuteAsync(
                 async () => await SendEmbedBatchRequestAsync(texts, ct),
                 resp => TransientDetector.IsTransient(resp),
@@ -184,24 +175,11 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
                 return null;
 
             int batchDimensions = 0;
+            int expectedDimensions = ExpectedDimensions;
             foreach (var vector in vectors)
             {
-                if (Dimensions > 0 && vector.Length != Dimensions)
-                {
-                    Logger.LogWarning(
-                        "{Provider} returned a batch vector with {ActualDimensions} dimensions; expected {ExpectedDimensions}",
-                        ProviderName, vector.Length, Dimensions);
+                if (!ValidateVector(vector, expectedDimensions))
                     return null;
-                }
-
-                int observed = Volatile.Read(ref _dimensions);
-                if (observed > 0 && vector.Length != observed)
-                {
-                    Logger.LogWarning(
-                        "{Provider} returned inconsistent batch vector dimensions: got {ActualDimensions}, previously observed {ObservedDimensions}",
-                        ProviderName, vector.Length, observed);
-                    return null;
-                }
 
                 if (batchDimensions > 0 && vector.Length != batchDimensions)
                 {
@@ -211,11 +189,16 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
                     return null;
                 }
 
-                VectorMath.L2Normalize(vector);
                 batchDimensions = vector.Length;
             }
 
-            Interlocked.CompareExchange(ref _dimensions, vectors[0].Length, 0);
+            // A malformed batch must not establish a shape. The CAS winner also decides
+            // between simultaneous first responses with different, individually valid shapes.
+            if (!TryObserveDimensions(batchDimensions))
+                return null;
+
+            foreach (var vector in vectors)
+                VectorMath.L2Normalize(vector);
 
             _circuitBreaker.RecordSuccess();
             return vectors;
@@ -236,6 +219,37 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
             Logger.LogWarning(ex, "{Provider} batch embedding failed", ProviderName);
             return null;
         }
+    }
+
+    private bool ValidateVector(float[]? vector, int expectedDimensions)
+    {
+        if (vector is not { Length: > 0 } || vector.Any(value => !float.IsFinite(value)))
+        {
+            Logger.LogWarning("{Provider} returned an empty or non-finite embedding vector", ProviderName);
+            return false;
+        }
+
+        if (expectedDimensions > 0 && vector.Length != expectedDimensions)
+        {
+            Logger.LogWarning(
+                "{Provider} returned a vector with {ActualDimensions} dimensions; expected {ExpectedDimensions}",
+                ProviderName, vector.Length, expectedDimensions);
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryObserveDimensions(int dimensions)
+    {
+        int observed = Interlocked.CompareExchange(ref _dimensions, dimensions, 0);
+        if (observed == 0 || observed == dimensions)
+            return true;
+
+        Logger.LogWarning(
+            "{Provider} returned inconsistent vector dimensions: got {ActualDimensions}, previously observed {ObservedDimensions}",
+            ProviderName, dimensions, observed);
+        return false;
     }
 
     private async Task<float[][]?> EmbedBatchSequentiallyAsync(IReadOnlyList<string> texts, CancellationToken ct)

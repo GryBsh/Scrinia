@@ -50,6 +50,20 @@ public sealed class CircuitBreaker
     public bool AllowRequest() => State != CircuitState.Open;
 
     /// <summary>
+    /// Admits a closed-circuit request or claims the exclusive half-open probe.
+    /// The caller must dispose the returned token on every outcome, including cancellation.
+    /// </summary>
+    internal HalfOpenTrial? EnterRequest()
+    {
+        var state = State;
+        if (state == CircuitState.Closed)
+            return null;
+        if (state == CircuitState.HalfOpen && TryEnterHalfOpen() is { } trial)
+            return trial;
+        throw new CircuitBreakerOpenException(_cooldown);
+    }
+
+    /// <summary>
     /// Attempts to claim the single half-open trial slot. Returns a non-null <see cref="HalfOpenTrial"/>
     /// token for exactly one caller after cooldown expiry; others get null until the trial is resolved.
     /// <para>

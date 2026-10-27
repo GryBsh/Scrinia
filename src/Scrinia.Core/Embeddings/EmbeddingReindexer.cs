@@ -132,32 +132,15 @@ public static class EmbeddingReindexer
     }
 
     /// <summary>
-    /// Sink-driven reindex for the plugin-owned embeddings case. When a plugin (e.g. Vulkan)
-    /// owns the embedding pipeline out-of-process, the host has no in-process
-    /// <see cref="IEmbeddingProvider"/> to batch-embed against — but it does have an
-    /// <see cref="IMemoryEventSink"/> that the plugin subscribed to via MCP. Replaying every
-    /// persistent memory through <see cref="IMemoryEventSink.OnStoredAsync"/> drives the
-    /// plugin's <c>index</c> tool when the plugin offers it (or its legacy <c>upsert</c> tool
-    /// otherwise — see <c>McpPluginHost.OnStoredAsync</c>'s negotiation) the same way a fresh
-    /// write would, producing a clean rebuild without needing to expose the plugin's internal
-    /// embed/store internals.
-    ///
-    /// <para>Each memory's content array is reconstructed from its artifact and handed to the
-    /// sink whole — the same content array a regular write carries, not a single decoded
-    /// blob.</para>
-    ///
-    /// <para><b>Pass a plugin-backed sink, not whatever happens to be installed.</b> This method
-    /// is for the case where the host has no in-process provider. On a CLI that <i>does</i> have
-    /// one, the ambient sink is <c>CoreEmbeddingEventHandler</c>, whose <c>OnStoredAsync</c> runs
-    /// <see cref="MemoryVectorIndexer.IndexAsync"/> at its default <c>retryOnUnavailable: true</c>
-    /// — up to 42s of <see cref="VectorWriteRetry"/> backoff per memory, in a loop over the whole
-    /// corpus. For an in-process provider use <see cref="ReindexAsync"/> or
-    /// <see cref="ForceReindexAsync"/>, which pass <c>retryOnUnavailable: false</c> and report
-    /// failures instead of stalling on them.</para>
+    /// Reindexes through an acknowledged command when a plugin owns embeddings out-of-process.
+    /// Each memory's complete content array is reconstructed from its artifact. Only an explicit
+    /// Indexed outcome increments Embedded; unavailable and failed commands increment Failed.
+    /// Best-effort write observers cannot acknowledge this administrative operation.
+    /// For an in-process provider use <see cref="ReindexAsync"/> or <see cref="ForceReindexAsync"/>.
     /// </summary>
-    public static async Task<Result> ReindexViaSinkAsync(
+    public static async Task<Result> ReindexViaCommandAsync(
         IMemoryStore store,
-        IMemoryEventSink sink,
+        IEmbeddingIndexCommand command,
         ILogger logger,
         Action<int, int>? progress,
         CancellationToken ct)
@@ -183,19 +166,25 @@ public static class EmbeddingReindexer
                     continue;
                 }
 
-                await sink.OnStoredAsync(item.Entry.Address, elements, store, ct);
-                embedded++;
+                var outcome = await command.IndexAsync(item.Entry.Address, elements, store, ct);
+                if (outcome == EmbeddingIndexOutcome.Indexed)
+                    embedded++;
+                else
+                {
+                    failed++;
+                    logger.LogWarning("Reindex (command): indexing {Name} returned {Outcome}", item.Entry.Name, outcome);
+                }
             }
             catch (OperationCanceledException) { throw; }
             catch (FileNotFoundException)
             {
                 skipped++;
-                logger.LogDebug("Reindex (sink): artifact missing for {Name}", item.Entry.Name);
+                logger.LogDebug("Reindex (command): artifact missing for {Name}", item.Entry.Name);
             }
             catch (Exception ex)
             {
                 failed++;
-                logger.LogWarning(ex, "Reindex (sink): failed for {Name}", item.Entry.Name);
+                logger.LogWarning(ex, "Reindex (command): failed for {Name}", item.Entry.Name);
             }
 
             progress?.Invoke(i + 1, total);
@@ -284,7 +273,7 @@ public static class EmbeddingReindexer
     /// The single shared enumeration of persistent memories for a reindex pass: every stored
     /// item, minus the session-bound <c>ephemeral</c> scope, de-duplicated per
     /// <c>(scope, subject)</c> case-insensitively. Used by both the provider-driven
-    /// (<see cref="ReindexAsync"/>) and sink-driven (<see cref="ReindexViaSinkAsync"/>) passes so
+    /// (<see cref="ReindexAsync"/>) and command-driven (<see cref="ReindexViaCommandAsync"/>) passes so
     /// the filter and the <c>\u001f</c>-separated, case-insensitive <c>DistinctBy</c> key stay in
     /// one place.
     /// </summary>

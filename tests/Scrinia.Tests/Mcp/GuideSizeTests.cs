@@ -43,10 +43,9 @@ public class GuideSizeTests
 
         var guide = ResponseParser.Parse(await Tools().Guide());
 
-        // Compare the entire document in order, allowing only the existing YAML blank-line
-        // and platform line-ending differences. No particular editorial sentence is required.
+        // Compare the entire document, including blank lines and line endings.
         guide.Content.Should().NotBeNull();
-        NonEmptyLines(guide.Content!).Should().Equal(NonEmptyLines(EmbeddedPrompts.LoadGuide()!),
+        guide.Content.Should().Be(EmbeddedPrompts.LoadGuide(),
             because: "every line of the embedded guide must survive the tool response");
         guide.Content.Should().NotContain("(truncated)",
             because: "guide() must return its document whole, not clipped to the response cap");
@@ -54,6 +53,4 @@ public class GuideSizeTests
             because: "an untruncated response must not carry truncation advice");
     }
 
-    private static string[] NonEmptyLines(string text) =>
-        text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
 }

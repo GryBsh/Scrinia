@@ -32,7 +32,9 @@ public sealed class ClaudeMdWriter : IAgentArtifactInstaller
         try
         {
             string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
-            File.WriteAllText(path, ManagedMarkdownBlock.Upsert(existing, ImportBody));
+            if (!ManagedMarkdownBlock.TryUpsert(existing, ImportBody, out string updated))
+                return false;
+            File.WriteAllText(path, updated);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -47,7 +49,8 @@ public sealed class ClaudeMdWriter : IAgentArtifactInstaller
         if (!File.Exists(path)) return true;
         try
         {
-            string? remaining = ManagedMarkdownBlock.Remove(File.ReadAllText(path));
+            if (!ManagedMarkdownBlock.TryRemove(File.ReadAllText(path), out string? remaining))
+                return false;
             if (remaining is null) File.Delete(path);
             else File.WriteAllText(path, remaining);
             return true;
@@ -63,8 +66,9 @@ public sealed class ClaudeMdWriter : IAgentArtifactInstaller
         string path = Path.Combine(workspaceRoot, FileName);
         if (!File.Exists(path)) return HookStatus.NotInstalled;
 
-        string? body = ManagedMarkdownBlock.ExtractBody(File.ReadAllText(path));
-        if (body is null) return HookStatus.NotInstalled;
+        string content = File.ReadAllText(path);
+        string? body = ManagedMarkdownBlock.ExtractBody(content);
+        if (body is null) return ManagedMarkdownBlock.Contains(content) ? HookStatus.Drift : HookStatus.NotInstalled;
         return body == ImportBody ? HookStatus.Installed : HookStatus.Drift;
     }
 }

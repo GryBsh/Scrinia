@@ -117,11 +117,8 @@ internal sealed class ArchiveService
             {
                 ct.ThrowIfCancellationRequested();
                 string fullCandidate = Path.GetFullPath(candidate);
-                if (!PathContainment.IsWithin(versionsRoot, fullCandidate) ||
-                    string.Equals(fullCandidate, liveArtifact, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fullCandidate, liveSidecar, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fullCandidate, currentArtifact, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fullCandidate, currentSidecar, StringComparison.OrdinalIgnoreCase))
+                if (!IsSafePruneCandidate(versionsRoot, fullCandidate,
+                    liveArtifact, liveSidecar, currentArtifact, currentSidecar))
                 {
                     failures.Add($"refused unsafe archive candidate: {candidate}");
                     break;
@@ -146,6 +143,15 @@ internal sealed class ArchiveService
 
         return new ArchiveCleanupResult(failures.Count > 0, failures.ToArray());
     }
+
+    // Callers resolve every path before applying the same retention boundary during commit or recovery.
+    internal static bool IsSafePruneCandidate(string versionsRoot, string candidate,
+        string liveArtifact, string liveSidecar, string? currentArtifact, string? currentSidecar) =>
+        PathContainment.IsWithin(versionsRoot, candidate) &&
+        !string.Equals(candidate, liveArtifact, StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(candidate, liveSidecar, StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(candidate, currentArtifact, StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(candidate, currentSidecar, StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed record ArchiveCleanupResult(bool Failed, string[] Failures)

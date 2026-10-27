@@ -37,7 +37,8 @@ public sealed class AgentsMdWriter : IAgentArtifactInstaller
         try
         {
             string? existing = File.Exists(path) ? File.ReadAllText(path) : null;
-            string updated = ManagedMarkdownBlock.Upsert(existing, ScriniaPrimer.MarkdownBody);
+            if (!ManagedMarkdownBlock.TryUpsert(existing, ScriniaPrimer.MarkdownBody, out string updated))
+                return false;
             File.WriteAllText(path, updated);
             return true;
         }
@@ -53,7 +54,8 @@ public sealed class AgentsMdWriter : IAgentArtifactInstaller
         if (!File.Exists(path)) return true;
         try
         {
-            string? remaining = ManagedMarkdownBlock.Remove(File.ReadAllText(path));
+            if (!ManagedMarkdownBlock.TryRemove(File.ReadAllText(path), out string? remaining))
+                return false;
             if (remaining is null) File.Delete(path);
             else File.WriteAllText(path, remaining);
             return true;
@@ -71,7 +73,7 @@ public sealed class AgentsMdWriter : IAgentArtifactInstaller
 
         string content = File.ReadAllText(path);
         string? body = ManagedMarkdownBlock.ExtractBody(content);
-        if (body is null) return HookStatus.NotInstalled;
+        if (body is null) return ManagedMarkdownBlock.Contains(content) ? HookStatus.Drift : HookStatus.NotInstalled;
         return body == ScriniaPrimer.MarkdownBody.Trim() ? HookStatus.Installed : HookStatus.Drift;
     }
 }

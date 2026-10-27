@@ -136,7 +136,7 @@ internal static class SharedMemoryOperations
         if (operation == "compact")
         {
             string[] compacted = keepRecent == 0 ? [string.Concat(existing!.Chunks)]
-                : [string.Concat(existing!.Chunks[..^keepRecent]), .. existing.Chunks[^keepRecent..]];
+                : existing!.Chunks[^keepRecent..];
             operationWrite = Rewrite(existing!, compacted, existing!.Attributes);
         }
         if (operation == "link")

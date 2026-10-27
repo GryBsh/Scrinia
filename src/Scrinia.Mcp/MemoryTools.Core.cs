@@ -136,6 +136,8 @@ public sealed partial class ScriniaMcpTools
         string? inlineArtifact = null,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
         string actionLabel = "shown",
+        int? offset = null,
+        int? limit = null,
         CancellationToken cancellationToken = default)
     {
         string input = inlineArtifact?.Trim() ?? address.ToString();
@@ -217,6 +219,8 @@ public sealed partial class ScriniaMcpTools
                     $"recall again with a valid chunk index (1..{chunkCount}) or without a chunk to read all chunks.");
             }
 
+            if (offset is not null || limit is not null)
+                return RecallPage(chunkContent, input, chunk, offset ?? 0, limit ?? 4096, actionLabel);
             SessionBudget.RecordAccess(input, chunkContent.Length);
             return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel)
                 .WithTruncationAdvice(RecallTruncationAdvice);
@@ -224,6 +228,8 @@ public sealed partial class ScriniaMcpTools
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         string decoded = System.Text.Encoding.UTF8.GetString(bytes);
+        if (offset is not null || limit is not null)
+            return RecallPage(decoded, input, chunk, offset ?? 0, limit ?? 4096, actionLabel);
         SessionBudget.RecordAccess(input, decoded.Length);
 
         if (chunkCount > 1)
@@ -232,6 +238,25 @@ public sealed partial class ScriniaMcpTools
 
         return ResponseBuilder.Success(decoded).WithAction(actionLabel)
             .WithTruncationAdvice(RecallTruncationAdvice);
+    }
+
+    private static McpResponse RecallPage(string content, string input, int? chunk,
+        int offset, int limit, string actionLabel)
+    {
+        if (offset < 0 || offset > content.Length || limit is < 2 or > 4096 ||
+            (offset < content.Length && offset > 0 && char.IsLowSurrogate(content[offset]) && char.IsHighSurrogate(content[offset - 1])))
+            return ResponseBuilder.Error("Use a valid character boundary and offset within the content, with limit between 2 and 4096.", ErrorCodes.InvalidParameter);
+
+        int end = offset + Math.Min(limit, content.Length - offset);
+        if (end < content.Length && end > offset && char.IsHighSurrogate(content[end - 1]) && char.IsLowSurrogate(content[end]))
+            end--;
+        string page = content[offset..end];
+        SessionBudget.RecordAccess(input, page.Length);
+        var response = ResponseBuilder.Success(page).WithAction(actionLabel)
+            .WithInfo($"Character offset: {offset}; returned: {page.Length}; total: {content.Length}; next offset: {end}.");
+        return end < content.Length
+            ? response.WithFollowUp($"Recall the same path{(chunk is null ? "" : $" and chunk {chunk}")} with offset: {end}, limit: {limit}. Read pages from an unchanged memory; restart if its content changes.")
+            : response;
     }
 
     // ── Persistent memory tools ───────────────────────────────────────────────

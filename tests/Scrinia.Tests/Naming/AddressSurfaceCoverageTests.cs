@@ -211,7 +211,7 @@ public class AddressSurfaceCoverageTests
     [
         new("Guide", [], ["cancellationToken"]),
         new("MemoryRemember", ["path"], ["content", "description", "attributes", "keywords", "replace", "cancellationToken"]),
-        new("MemoryRecall", ["path"], ["chunk", "withBuiltin", "cancellationToken"]),
+        new("MemoryRecall", ["path"], ["chunk", "withBuiltin", "cancellationToken", "offset", "limit"]),
         new("MemorySearch", [], ["query", "context", "scopes", "limit", "excludeTopics", "pathPrefix", "attributeFilter", "cancellationToken"]),
         new("MemoryList", [], ["scopes", "mode", "offset", "limit", "excludeTopics", "cancellationToken"]),
         new("MemoryForget", ["path"], ["cancellationToken"]),

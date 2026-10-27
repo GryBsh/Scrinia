@@ -81,14 +81,14 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
     }
 
     [Fact]
-    public async Task ReindexViaSinkAsync_NamespacedTopicScope_SinkReceivesCorrectScope()
+    public async Task ReindexViaCommandAsync_NamespacedTopicScope_SinkReceivesCorrectScope()
     {
         const string scope = "local:memory/api";
         SeedEntry(scope, "notes", "auth flow notes");
 
-        var capturingSink = new CapturingSink();
+        var capturingSink = new CapturingCommand();
 
-        var result = await EmbeddingReindexer.ReindexViaSinkAsync(
+        var result = await EmbeddingReindexer.ReindexViaCommandAsync(
             _store, capturingSink, NullLogger.Instance, progress: null, CancellationToken.None);
 
         result.Skipped.Should().Be(0, because: "the artifact should resolve via the entry's real scope");
@@ -159,20 +159,15 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
         public void Dispose() { }
     }
 
-    private sealed class CapturingSink : IMemoryEventSink
+    private sealed class CapturingCommand : IEmbeddingIndexCommand
     {
         public List<string> ReceivedQualifiedNames { get; } = [];
 
-        public Task OnStoredAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
+        public Task<EmbeddingIndexOutcome> IndexAsync(MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
         {
             ReceivedQualifiedNames.Add(address.ToString());
-            return Task.CompletedTask;
+            return Task.FromResult(EmbeddingIndexOutcome.Indexed);
         }
 
-        public Task OnAppendedAsync(MemoryAddress address, string content, IPluginStore store, CancellationToken ct) =>
-            Task.CompletedTask;
-
-        public Task OnForgottenAsync(MemoryAddress address, bool wasDeleted, IPluginStore store, CancellationToken ct) =>
-            Task.CompletedTask;
     }
 }

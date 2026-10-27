@@ -370,9 +370,22 @@ public static class McpResponseExtensions
 
         if (r.Content is not null)
         {
-            sb.AppendLine("content: |");
-            foreach (var line in r.Content.Split('\n'))
-                sb.AppendLine(ci, $"  {line}");
+            // YAML normalizes physical CR/CRLF inside block scalars. Escape those (and
+            // other controls) so reading memory content does not change its characters.
+            if (r.Content.Length == 0 || r.Content.Any(c => char.IsControl(c) && c != '\n' && c != '\t'))
+            {
+                sb.Append("content: ").Append(r.Content.Length == 0 ? "\"\"" : YamlEscape(r.Content));
+            }
+            else
+            {
+                bool trailingNewline = r.Content.EndsWith('\n');
+                sb.AppendLine(trailingNewline ? "content: |2+" : "content: |2-");
+                string body = trailingNewline ? r.Content[..^1] : r.Content;
+                foreach (var line in body.Split('\n'))
+                    sb.AppendLine(ci, $"  {line}");
+            }
+            // Do not trim content whitespace or the block scalar's terminal line breaks.
+            return sb.ToString();
         }
 
         return sb.ToString().TrimEnd();

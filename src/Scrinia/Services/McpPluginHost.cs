@@ -18,7 +18,7 @@ namespace Scrinia.Services;
 /// If the plugin process crashes, it reconnects automatically up to <see cref="MaxRestarts"/>
 /// times. After that, it degrades permanently to BM25-only search for the session.
 /// </summary>
-internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink, IAsyncDisposable
+internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink, IEmbeddingIndexCommand, IAsyncDisposable
 {
     /// <summary>
     /// The one operation this host performs against the plugin process. Extracted so tests can
@@ -36,6 +36,8 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             string tool, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct)
         {
             var result = await client.CallToolAsync(tool, arguments, cancellationToken: ct);
+            if (result.IsError == true)
+                throw new InvalidOperationException($"Plugin tool '{tool}' reported an MCP error.");
             return GetTextContent(result);
         }
     }
@@ -72,6 +74,21 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
     public bool HasSearchCapability => _hasSearch && _isAvailable && !_degraded;
     public bool HasEventSinkCapability => (_hasIndex || _hasRemove) && _isAvailable && !_degraded;
+
+    /// <summary>Indexes with acknowledgement; ordinary write observers remain best effort.</summary>
+    public async Task<EmbeddingIndexOutcome> IndexAsync(
+        MemoryAddress address, string[] content, IPluginStore store, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_degraded || !_isAvailable || !_hasIndex || _toolCaller is null)
+            return EmbeddingIndexOutcome.Unavailable;
+
+        var (scope, name) = store.ResolveAddress(address);
+        var request = new EmbeddingsIndexRequest(scope, name, content);
+        string? acknowledgement = await CallToolWithRetryAsync("index", ToArguments(request), ct);
+        ct.ThrowIfCancellationRequested();
+        return acknowledgement is null ? EmbeddingIndexOutcome.Failed : EmbeddingIndexOutcome.Indexed;
+    }
 
     /// <summary>
     /// Starts the plugin process via MCP stdio transport. Verifies it's alive with a status call.
@@ -247,22 +264,8 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public async Task OnStoredAsync(MemoryAddress address, string[] content,
         IPluginStore store, CancellationToken ct)
     {
-        try { await OnStoredCoreAsync(address, content, store, ct); }
+        try { await IndexAsync(address, content, store, ct); }
         catch (Exception ex) { LogObserverFailure("store", ex); }
-    }
-
-    private async Task OnStoredCoreAsync(MemoryAddress address, string[] content,
-        IPluginStore store, CancellationToken ct)
-    {
-        // Restored the early return in front of ParseQualifiedName: a plugin advertising only
-        // `remove` has neither flag set, and must not pay for a parse (which throws on a
-        // malformed name) on every store/append when it was never going to call out anyway.
-        if (_degraded || !_hasIndex) return;
-
-        var (scope, name) = store.ResolveAddress(address);
-
-        var request = new EmbeddingsIndexRequest(scope, name, content);
-        await CallToolWithRetryAsync("index", ToArguments(request), ct);
     }
 
     public async Task OnAppendedAsync(MemoryAddress address, string content,
@@ -377,6 +380,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
             if (ProtocolFailureCode is not null) return false;
             return true;
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             Console.Error.WriteLine(FormatPluginWarning("Plugin reconnect failed", ex));
@@ -388,10 +392,20 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
     private static void ThrowIfPluginReportedFailure(string? text, string toolName)
     {
-        if (string.IsNullOrWhiteSpace(text)) return;
+        bool requiresAcknowledgement = toolName == "index";
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            if (requiresAcknowledgement)
+                throw new InvalidOperationException("Plugin index acknowledgement is missing.");
+            return;
+        }
 
         using var document = JsonDocument.Parse(text);
         var root = document.RootElement;
+        if (requiresAcknowledgement && (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("ok", out var acknowledgement)
+            || acknowledgement.ValueKind != JsonValueKind.True))
+            throw new InvalidOperationException("Plugin index did not acknowledge successful indexing.");
         if (root.ValueKind != JsonValueKind.Object) return;
 
         if (root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)

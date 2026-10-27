@@ -100,9 +100,11 @@ Creates or appends by default; `replace: true` replaces all content. `content` i
 
 ### recall
 
-`recall({ path, chunk? })`
+`recall({ path, chunk?, offset?, limit? })`
 
 Reads a memory or one **1-based** chunk, for example `recall({ path: '/projects/website/launch', chunk: 2 })`. Use paths returned by search or list when discovering existing memories; if a path is not found, discover the actual path rather than guessing variants.
+
+For an oversized ordinary memory or chunk, use `offset: 0, limit: 4096` and follow the returned next offset until all needed content is read. Offsets count UTF-16 characters within the selected content; page boundaries preserve Unicode surrogate pairs. Paging leaves stored content unchanged. Read pages from an unchanged memory and restart if it changes. Skill and agent files do not support paging. `compact` joins chunks; it does not summarize or shrink their text.
 
 ### search
 

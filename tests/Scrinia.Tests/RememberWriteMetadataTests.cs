@@ -156,7 +156,7 @@ public class RememberWriteMetadataTests
     /// <summary>A store that already holds one curated entry, and records the writes it receives.
     /// Its <c>ReadArtifactAsync</c> returns a real two-chunk NMP/2 artifact so <c>compact()</c> gets
     /// past its "already a single chunk" early return.</summary>
-    private class SeededRecordingStore : RecordingStore
+    private sealed class SeededRecordingStore : RecordingStore
     {
         public static readonly ArtifactEntry Seeded = new(
             Name: "note",
@@ -190,94 +190,50 @@ public class RememberWriteMetadataTests
 
     }
 
-    /// <summary>
-    /// compact() is the third write site. It rewrites content, never metadata — so the existing
-    /// entry's attributes and curated description must travel INTO the write, because a re-store
-    /// derives its whole metadata half from what it is handed and would otherwise reset them. It
-    /// also has to READ that entry before the write, for the same reason it always did.
-    /// <para>Its keywords travel only in part, and which part is the point (D-29). The entry's
-    /// <c>Keywords</c> are the merge of the agent's list with the auto-extracted terms, so handing
-    /// the whole thing back would promote every auto term to agent weight; handing nothing back
-    /// would drop the agent's. What crosses is the subset that is provably the agent's —
-    /// <c>MemoryDerivation.CuratedKeywords</c>, subtracting what the pre-compact text itself
-    /// yields. The rest is re-derived from the compacted text (D-27).</para>
-    /// </summary>
-    [Fact]
-    public async Task Compact_HandsTheExistingEntrysMetadataToTheStore()
+    [Theory]
+    [InlineData("note")]
+    [InlineData("Note")]
+    public async Task Compact_PreservesTheCurrentMetadataAndCanonicalCasing(string requestedName)
     {
         using var scope = new TestHelpers.StoreScope();
-        var recording = new SeededRecordingStore();
-        MemoryStoreContext.Current = recording;
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await store.StoreAsync(MemoryWrite.Create(MemoryAddress.Parse("/note"), "local",
+            ["first chunk", "second chunk"], description: "a curated description",
+            attributes: SeededRecordingStore.Seeded.Attributes, keywords: ["portcullis"]));
+        var before = store.LoadIndex().Single();
 
-        await new ScriniaMcpTools().MemoryCompact(path: "note");
+        var result = await new ScriniaMcpTools().MemoryCompact(requestedName);
 
-        recording.LastStore.Should().NotBeNull(because: "precondition: the compaction write ran");
-        recording.LastStore!.Attributes.Should().ContainKey("tag");
-        recording.LastStore.Attributes!["person"].Should().Contain("maria");
-        recording.LastStore.Description.Should().Be("a curated description");
-        recording.LastStore.Keywords.Should().Equal(["portcullis"],
-            because: "the provably-curated half crosses so the compaction cannot drop it, and the " +
-                     "half the text itself yields does not, because handing a derived term back " +
-                     "in as input is what promotes it to agent weight (D-01/D-29)");
+        result.Should().Contain("Compacted");
+        var after = store.LoadIndex().Single();
+        after.Name.Should().Be("note");
+        after.Address.Should().Be(before.Address);
+        after.CreatedAt.Should().Be(before.CreatedAt);
+        after.Attributes!.Should().ContainKey("tag");
+        after.Attributes!["person"].Should().Contain("maria");
+        after.ContentPreview.Should().Be("a curated description");
+        after.AgentKeywords.Should().Equal("portcullis");
     }
 
-    /// <summary>
-    /// The same seam, reached under a casing the entry was not stored with. <c>compact()</c>'s
-    /// existing-entry lookup compared <c>e.Name</c> against <c>ParseQualifiedName</c>'s subject with
-    /// an ordinal <c>==</c>, so "Note" found nothing for a memory stored as "note" — and the write
-    /// it guards went out with no metadata at all, which is exactly the reset the read exists to
-    /// prevent. The compaction still landed on the same artifact file (NTFS is case-insensitive),
-    /// so this is silent loss, not a failed call.
-    /// </summary>
-    [Fact]
-    public async Task Compact_UnderADifferentCasing_StillHandsTheExistingEntrysMetadataToTheStore()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        var recording = new SeededRecordingStore();
-        MemoryStoreContext.Current = recording;
-
-        // The seeded entry is named "note"; this asks for it as "Note".
-        await new ScriniaMcpTools().MemoryCompact(path: "Note");
-
-        recording.LastStore.Should().NotBeNull(because: "precondition: the compaction write ran");
-        recording.LastStore!.Name.Should().Be("note",
-            because: "the entry's own casing has to carry through to the write, or the compaction " +
-                     "lands beside the memory on a case-sensitive filesystem");
-        recording.LastStore.Attributes.Should().ContainKey("tag");
-        recording.LastStore.Attributes!["person"].Should().Contain("maria");
-        recording.LastStore.Description.Should().Be("a curated description");
-    }
-
-    /// <summary>A store holding the artifact but no index entry for it. Reachable in practice
-    /// through a sidecar that failed to parse, or a memory whose index row was swept.</summary>
-    private sealed class UnindexedRecordingStore : SeededRecordingStore
-    {
-        public override IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
-    }
-
-    /// <summary>
-    /// The compaction message may only claim an archive that happened. <c>StoreAsync</c> archives
-    /// the previous version when the memory is already in the index and treats it as a first write
-    /// when it is not, so an artifact with no index entry is compacted without one — and
-    /// "Original archived." would be a report a user might act on before deleting something.
-    /// </summary>
     [Fact]
     public async Task Compact_WithNoIndexedEntry_DoesNotClaimAnArchive()
     {
         using var scope = new TestHelpers.StoreScope();
-        MemoryStoreContext.Current = new UnindexedRecordingStore();
+        var store = (FileMemoryStore)TestHelpers.Store;
+        await File.WriteAllTextAsync(store.ArtifactPath("note"),
+            Scrinia.Core.Encoding.Nmp2ChunkedEncoder.EncodeChunks(["first", "second"]));
 
         var unindexed = await new ScriniaMcpTools().Compact(MemoryAddress.Parse("/note"));
-        unindexed.Content.Should().NotContain("Original archived.");
-        unindexed.Content.Should().Contain("Compacted",
-            because: "precondition: the compaction itself still ran — this is about what it says, " +
-                     "not about refusing the work");
 
-        // The other side of the branch, so the assertion above cannot pass by the message losing
-        // that sentence altogether.
-        MemoryStoreContext.Current = new SeededRecordingStore();
+        unindexed.Content.Should().Contain("Compacted").And.NotContain("Original archived.");
+        string versions = Path.Combine(store.GetStoreDirForScope("local"), "versions");
+        Directory.Exists(versions).Should().BeFalse();
+
+        await store.AppendAsync(MemoryWrite.Create(MemoryAddress.Parse("/note"), "local", ["third"]));
+        int priorArchives = Directory.GetFiles(versions, "*.nmp2").Length;
         var indexed = await new ScriniaMcpTools().Compact(MemoryAddress.Parse("/note"));
         indexed.Content.Should().Contain("Original archived.");
+        Directory.GetFiles(versions, "*.nmp2").Should().HaveCount(priorArchives + 1);
     }
 
     // DELETED WITH THE SEAM IT WATCHED: Append_UnderADifferentCasing_ReadsTheArtifactUnderThe

@@ -11,6 +11,30 @@ namespace Scrinia.Tests;
 public sealed class SearchCandidateSelectionTests
 {
     [Theory]
+    [InlineData(1)]
+    [InlineData(7)]
+    [InlineData(200)]
+    public void BoundedSelectionMatchesStableFullRanking(int limit)
+    {
+        var random = new Random(91823);
+        var entries = Enumerable.Range(0, 1200).Select(i =>
+            Candidate(i % 2 == 0 ? "local:notes" : "local:other",
+                $"{(random.Next(3) == 0 ? "alpha" : "note")}-{i % 40:D2}",
+                i % 3 == 0 ? "keep" : "drop")).ToArray();
+        var query = new SearchQuery("alpha beta")
+        {
+            AttributeFilter = new Dictionary<string, string[]> { ["kind"] = ["keep"] }
+        };
+        var expected = SearchCandidateOptions.RankLexically(entries.Where(c => c.Entry.Attributes!["kind"][0] == "keep"), query.Query)
+            .Take(limit).ToArray();
+        var actual = SearchCandidateSelection.Select(entries, query, limit, (scope, name) => $"/{scope}/{name}");
+
+        actual.Should().HaveCount(expected.Length);
+        for (int i = 0; i < expected.Length; i++)
+            actual[i].Should().BeSameAs(expected[i], "equal-ranked candidates retain source order");
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void DefaultOverloadFiltersBeforeLimit(bool supplied)

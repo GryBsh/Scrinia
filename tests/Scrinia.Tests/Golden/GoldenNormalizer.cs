@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using YamlDotNet.Serialization;
 
 namespace Scrinia.Tests.Golden;
 
@@ -27,6 +28,22 @@ internal static class GoldenNormalizer
 
     public static string Normalize(string yaml)
     {
+        // Envelope goldens compare logical lines across platforms. Exact content characters,
+        // including YAML chomping and CR escaping, are covered by YamlContentFidelityTests.
+        // Decode quoted content before normalizing so Windows CRLF and Unix LF snapshots
+        // compare the same evidence rather than two different scalar spellings.
+        const string quotedContent = "content: \"";
+        int contentStart = yaml.IndexOf(quotedContent, StringComparison.Ordinal);
+        if (contentStart >= 0 && (contentStart == 0 || yaml[contentStart - 1] == '\n'))
+        {
+            string scalar = yaml[(contentStart + "content: ".Length)..];
+            string content = new DeserializerBuilder().Build().Deserialize<string>(scalar);
+            yaml = yaml[..contentStart] + "content: |\n" +
+                string.Join("\n", content.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n')
+                    .TrimEnd('\n').Split('\n').Select(line => "  " + line));
+        }
+        yaml = yaml.Replace("content: |2-", "content: |", StringComparison.Ordinal)
+            .Replace("content: |2+", "content: |", StringComparison.Ordinal);
         // Strip every CR outright rather than Replace("\r\n", "\n"): some formatted bodies
         // (e.g. list's Markdown summary) double up the carriage return to "\r\r\n" on Windows,
         // and a single left-to-right Replace("\r\n", "\n") pass leaves one \r behind — stable

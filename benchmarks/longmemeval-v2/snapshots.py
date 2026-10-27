@@ -1,5 +1,5 @@
 """Immutable generations. Only a validated receipt can replace current.json."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import copy
 import hashlib
 import json
@@ -37,6 +37,48 @@ def atomic_json(path, value):
     finally:
         if io_path(temp).exists(): io_path(temp).unlink()
 
+
+def _sync_file(path):
+    # Windows FlushFileBuffers (used by fsync) requires a writable handle.
+    with io_path(_absolute(str(path))).open("r+b") as stream:
+        os.fsync(stream.fileno())
+
+
+def _sync_directory(path):
+    """Use Core DurableFile's directory handles; unsupported flushes fail closed."""
+    path = _absolute(str(path))
+    if os.name != "nt":
+        descriptor = os.open(io_path(path), os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel.FlushFileBuffers.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # GENERIC_WRITE, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS. Match Core's
+    # full share set, falling back when FILE_SHARE_EXECUTE is unsupported.
+    for share in (0x17, 0x7):
+        handle = kernel.CreateFileW(str(io_path(path)), 0x40000000, share, None, 3, 0x02000000, None)
+        if handle != ctypes.c_void_p(-1).value:
+            try:
+                if not kernel.FlushFileBuffers(handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                kernel.CloseHandle(handle)
+            return
+        error = ctypes.get_last_error()
+        if error != 87 or share == 0x7:
+            raise ctypes.WinError(error)
+
 def validate_history(history):
     if (not isinstance(history, list) or not history
         or any(not isinstance(item, dict) or set(item) != {"id", "sourceHash"}
@@ -60,33 +102,85 @@ def validate_metadata_history(meta):
         raise BridgeError("HISTORY_IDENTITY_MISMATCH")
     return history
 
+
+@contextmanager
+def _file_lock(path, *, shared=False):
+    """Lease files stay outside immutable payloads and are never unlinked."""
+    path = _absolute(str(path))
+    io_path(path.parent).mkdir(parents=True, exist_ok=True)
+    with io_path(path).open("a+b") as stream:
+        if stream.seek(0, os.SEEK_END) == 0:
+            stream.write(b"\0"); stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            # CRT LK_NBRLCK is exclusive on Windows; use the native shared lock
+            # so simultaneous queries can pin the same immutable generation.
+            import ctypes
+            from ctypes import wintypes
+            import msvcrt
+            class Overlapped(ctypes.Structure):
+                _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                            ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                            ("hEvent", wintypes.HANDLE)]
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                         wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(Overlapped)]
+            kernel.LockFileEx.restype = wintypes.BOOL
+            kernel.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                           wintypes.DWORD, ctypes.POINTER(Overlapped)]
+            kernel.UnlockFileEx.restype = wintypes.BOOL
+            handle = msvcrt.get_osfhandle(stream.fileno())
+            offset = Overlapped()
+            # LOCKFILE_FAIL_IMMEDIATELY, plus LOCKFILE_EXCLUSIVE_LOCK for writers.
+            if not kernel.LockFileEx(handle, 1 if shared else 3, 0, 1, 0, ctypes.byref(offset)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                if not kernel.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(offset)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            else: fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _generation_id(value):
+    return isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdef" for c in value)
+
 class SnapshotStore:
     def __init__(self,root,request_factory,*,fault=None):
         self.root = _absolute(str(root)); io_path(self.root).mkdir(parents=True,exist_ok=True)
         self.request_factory = request_factory
         self.fault = fault or (lambda point:None)
+    def _lock(self, *, shared=False):
+        return _file_lock(self.root / "snapshot.lock", shared=shared)
+
+    def _reader_lock(self, source, *, shared=False):
+        name = hashlib.sha256(str(source).encode("utf-8")).hexdigest() + ".lock"
+        return _file_lock(self.root / "readers" / name, shared=shared)
+
     @contextmanager
-    def _lock(self):
-        path=self.root/"snapshot.lock"
-        _absolute(str(path))
-        with io_path(path).open("a+b") as stream:
-            stream.seek(0); stream.write(b"\0"); stream.flush(); stream.seek(0)
-            if os.name=="nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-            try: yield
-            finally:
-                stream.seek(0)
-                if os.name=="nt": msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
-                else: fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
+    def read_lease(self, source):
+        """Choose and pin a source before allowing publication/retirement to resume."""
+        source = _absolute(str(source))
+        with ExitStack() as leases:
+            with self._lock(shared=True):
+                meta = self.current()
+                if meta is not None and source != self.generation_path:
+                    raise BridgeError("SNAPSHOT_POINTER_MISMATCH")
+                leases.enter_context(self._reader_lock(source, shared=True))
+            yield meta
+
     def current(self):
         pointer=self.root/"current.json"; _absolute(str(pointer))
         if not io_path(pointer).exists(): return None
-        value=read_json(pointer)
-        if set(value)!={"generation","fingerprint","metadataHash"} or not isinstance(value["generation"],str) or len(value["generation"])!=32 or any(c not in "0123456789abcdef" for c in value["generation"]):
+        return self._validate_generation(read_json(pointer))
+
+    def _validate_generation(self, value):
+        if set(value)!={"generation","fingerprint","metadataHash"} or not _generation_id(value["generation"]):
             raise BridgeError("INVALID_SNAPSHOT")
         generation=self.root/"generations"/value["generation"]
         _absolute(str(generation))
@@ -99,7 +193,75 @@ class SnapshotStore:
             or meta["receipt"]["newSnapshotHash"]!=value["fingerprint"]):
             raise BridgeError("INVALID_SNAPSHOT")
         validate_metadata_history(meta)
+        if meta.get("previousGeneration") is not None and not _generation_id(meta["previousGeneration"]):
+            raise BridgeError("INVALID_SNAPSHOT")
         return meta
+
+    def _retire_generations(self):
+        """Best-effort cleanup under _lock; retain ambiguous or failed evidence.
+
+        Keep current and its immediate predecessor. A failed/uncertain operation
+        suppresses retirement altogether. Unticketed generations are never inferred
+        to be committed. Permanent small lease files avoid split-inode lock races.
+        """
+        try:
+            if any(io_path(self.root / "uncertain").glob("*.json")):
+                return
+            pointer = read_json(self.root / "current.json")
+            meta = self._validate_generation(pointer)
+            protected = {pointer["generation"], meta.get("previousGeneration")}
+            tickets = list(canonical_paths(io_path(self.root / "retired").glob("*.json")))
+            self._flush_publication(pointer)
+        except (BridgeError, OSError, ValueError, TypeError, KeyError, AttributeError):
+            return
+        for ticket in tickets:
+            try:
+                _absolute(str(ticket))
+                value = read_json(ticket)
+                if (set(value) != {"generation", "fingerprint", "metadataHash"}
+                    or not _generation_id(value["generation"])
+                    or ticket.name != value["generation"] + ".json"
+                    or value["generation"] in protected):
+                    continue
+                source = _absolute(str(self.root / "generations" / value["generation"]))
+                with self._reader_lock(source):
+                    if io_path(source).exists():
+                        self._validate_generation(value)
+                        shutil.rmtree(io_path(source))
+                    io_path(ticket).unlink()
+            except (BridgeError, OSError, ValueError, TypeError, KeyError, AttributeError):
+                # Reader leases, corrupt candidates and partial cleanup retain evidence.
+                # A committed receipt must not become a failed insertion due to cleanup.
+                continue
+
+    def _flush_publication(self, pointer):
+        """Make the selected payload and pointer durable before deleting any backup.
+
+        Called under snapshot admission after validation. Flushing enumerates paths,
+        without rehashing payloads. Failure leaves all retirement tickets and data.
+        """
+        generation = _absolute(str(self.root / "generations" / pointer["generation"]))
+        directories = [generation]
+        for path in canonical_paths(io_path(generation).rglob("*")):
+            path = _absolute(str(path))
+            if io_path(path).is_file():
+                self.fault("retirement-flush-file")
+                _sync_file(path)
+            elif io_path(path).is_dir():
+                directories.append(path)
+            else:
+                raise BridgeError("INVALID_PATH")
+        for path in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+            self.fault("retirement-flush-directory")
+            _sync_directory(path)
+        self.fault("retirement-flush-generations")
+        _sync_directory(generation.parent)
+        self.fault("retirement-flush-pointer")
+        _sync_file(self.root / "current.json")
+        self.fault("retirement-flush-root")
+        _sync_directory(self.root)
+        self.fault("retirement-flush-ancestor")
+        _sync_directory(self.root.parent)
     @property
     def generation_path(self):
         value=read_json(self.root/"current.json")
@@ -137,6 +299,7 @@ class SnapshotStore:
     def _insert(self,trajectory_manifest,configuration_hash,bridge,cancel):
         if cancel.is_set(): raise BridgeError("CANCELLED")
         previous=self.current()
+        previous_pointer = None if previous is None else read_json(self.root / "current.json")
         unresolved = self.reconcile_committed_markers(previous)
         ident=trajectory_manifest["id"]; source_hash=trajectory_manifest["sourceHash"]
         uncertain=self.root/"uncertain"/(hashlib.sha256(ident.encode()).hexdigest()+".json")
@@ -147,6 +310,7 @@ class SnapshotStore:
         if ident in ledger:
             entry=ledger[ident]
             if entry["sourceHash"]!=source_hash: raise BridgeError("INSERTION_CONFLICT")
+            self._retire_generations()
             return entry["receipt"]
         uncertain=self.root/"uncertain"/(hashlib.sha256(ident.encode()).hexdigest()+".json")
         _absolute(str(uncertain))
@@ -196,14 +360,20 @@ class SnapshotStore:
             history.append({"id": ident, "sourceHash": source_hash})
             meta={"version":2,"configurationHash":configuration_hash,"history":history,
                   "ledger":ledger,"receipt":receipt,"fingerprint":actual}
+            meta["previousGeneration"] = None if previous_pointer is None else previous_pointer["generation"]
             self.fault("persist-result")
             atomic_json(stage/".generation.json",meta)
+            if previous_pointer is not None:
+                # Ticket binds the exact validated prior pointer; never nominate an
+                # orphan merely because its metadata looks like a committed snapshot.
+                atomic_json(self.root / "retired" / (previous_pointer["generation"] + ".json"), previous_pointer)
             self.fault("before-publication")
             if cancel.is_set(): raise BridgeError("CANCELLED")
             atomic_json(self.root/"current.json",{"generation":generation,"fingerprint":actual,
                 "metadataHash":hashlib.sha256((io_path(stage/".generation.json")).read_bytes()).hexdigest()})
             self.fault("after-publication")
             io_path(uncertain).unlink()
+            self._retire_generations()
             return receipt
         except BaseException:
             # Preserve intent and staged state for diagnosis. current.json remains authoritative.

@@ -115,6 +115,7 @@ public class VectorStoreTests : IDisposable
     public async Task Replace_WhenPersistenceFails_DoesNotPublishReplacement()
     {
         await _store.UpsertAsync("local", "memo", 0, [1f, 0f]);
+        var original = _store.GetVectors("local");
 
         string scopeDirectory = Path.Combine(_tempDir, "local");
         Directory.Delete(scopeDirectory, recursive: true);
@@ -124,8 +125,9 @@ public class VectorStoreTests : IDisposable
             "local", "memo", [(1, Vector0F1F)]);
 
         await replace.Should().ThrowAsync<Exception>();
-        _store.GetVectors("local").Should().ContainSingle()
+        original.Should().ContainSingle()
             .Which.Vector.Should().BeEquivalentTo([1f, 0f]);
+        _store.GetVectors("local").Should().BeEmpty("the deleted file cannot be served from a stale cache");
     }
 
     [Fact]
@@ -165,6 +167,7 @@ public class VectorStoreTests : IDisposable
     public async Task UnsupportedDiskFormatRefusesMutationEvenWithWarmCache(string operation)
     {
         await _store.UpsertAsync("local", "original", null, [1f, 0f]);
+        var original = _store.GetVectors("local");
         string path = Path.Combine(_tempDir, "local", "vectors.bin");
         byte[] unsupported = "SVF9future-data"u8.ToArray();
         File.WriteAllBytes(path, unsupported);
@@ -177,7 +180,8 @@ public class VectorStoreTests : IDisposable
         };
         await mutate.Should().ThrowAsync<VectorStoreUnavailableException>();
 
-        _store.GetVectors("local").Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
+        original.Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
+        _store.GetVectors("local").Should().BeEmpty("a failed freshness check must not expose stale vectors");
         File.ReadAllBytes(path).Should().Equal(unsupported);
         Directory.GetFiles(_tempDir, "*.tmp", SearchOption.AllDirectories).Should().BeEmpty();
     }
@@ -189,6 +193,7 @@ public class VectorStoreTests : IDisposable
     public async Task UnreadableDiskRefusesMutationEvenWithWarmCache(string operation)
     {
         await _store.UpsertAsync("local", "original", null, [1f, 0f]);
+        var original = _store.GetVectors("local");
         string path = Path.Combine(_tempDir, "local", "vectors.bin");
         byte[] before = File.ReadAllBytes(path);
         using (var held = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
@@ -200,9 +205,11 @@ public class VectorStoreTests : IDisposable
                 _ => () => _store.ReplaceMemoryVectorsAsync("local", "original", []),
             };
             await mutate.Should().ThrowAsync<VectorStoreUnavailableException>();
-            _store.GetVectors("local").Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
+            original.Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
+            _store.GetVectors("local").Should().BeEmpty("a failed freshness check must not expose stale vectors");
         }
         File.ReadAllBytes(path).Should().Equal(before);
+        _store.GetVectors("local").Should().ContainSingle().Which.Vector.Should().Equal(1f, 0f);
     }
 
     [Fact]

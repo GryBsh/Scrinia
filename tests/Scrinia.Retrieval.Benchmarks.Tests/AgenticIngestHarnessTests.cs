@@ -177,7 +177,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
 
             // Read the stored memory back: BOTH facts must be present (append accumulated,
             // remember did NOT clobber the first).
-            string recalled = await new ScriniaMcpTools().MemoryRecall("/findings/x", null, false, CancellationToken.None);
+            string recalled = await new ScriniaMcpTools().MemoryRecall("/findings/x", null, false, cancellationToken: CancellationToken.None);
             recalled.Should().Contain("FIRST-FACT");
             recalled.Should().Contain("SECOND-FACT");
         }

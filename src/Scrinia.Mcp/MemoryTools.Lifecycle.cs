@@ -86,199 +86,25 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 $"Use a persistent memory subject of at most {MemoryWrite.MaxPersistentSubjectLength} sanitized characters.");
 
-        // Ephemerals live in memory, not on disk. ParseQualifiedName still runs above (it does not
-        // strip the '~', so subject stays harmless for this branch) — the read itself has to be
-        // resolved from the ephemeral map instead of the disk-only ReadArtifactAsync.
-        bool ephemeral = name.Kind == MemoryAddressKind.Ephemeral;
-        string ephemeralKey = ephemeral ? name.Value : name.ToString();
-        EphemeralEntry? ephemeralEntry = ephemeral ? store.GetEphemeral(name) : null;
+        if (store is not IAtomicMemoryCompactor compactor)
+            return ResponseBuilder.Error(
+                "This memory store does not support atomic compaction.", ErrorCodes.NotSupported);
 
-        string artifact;
-        if (ephemeral)
-        {
-            // ReadArtifactAsync is disk-only, so this method used to report a memory list() will
-            // happily show as "not found" — and then suggest running list() to find it.
-            if (ephemeralEntry is null)
-                return ResponseBuilder.Error(
-                    $"Memory '{name}' not found.",
-                    ErrorCodes.NotFound,
-                    "list() to see available memories",
-                    "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it");
-            artifact = ephemeralEntry.Artifact;
-        }
-        else
-        {
-            try
-            {
-                artifact = await store.ReadArtifactAsync(name, cancellationToken);
-            }
-            catch (FileNotFoundException)
-            {
-                return ResponseBuilder.Error(
-                    $"Memory '{name}' not found.",
-                    ErrorCodes.NotFound,
-                    "list() to see available memories",
-                    "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it");
-            }
-            catch (FileLockTimeoutException exception)
-            {
-                return DurableWriteFailureResponse(exception);
-            }
-        }
-        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
-
-        if (chunkCount <= 1)
-            return ResponseBuilder.Warning("Already a single chunk, nothing to compact.")
-                .WithAction("compacted")
-                .WithInfo("mutation: none");
-
-        if (keepRecent > 0 && keepRecent >= chunkCount)
-            return ResponseBuilder.Warning($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).")
-                .WithAction("compacted")
-                .WithInfo("mutation: none");
-
-        // The compacted CHUNKS, not a re-encoded artifact: the store encodes what it is given, and
-        // handing it the chunk array is what keeps the chunk boundaries a caller asked to keep
-        // (keepRecent > 1) from being flattened into one on the way through. It also archives the
-        // previous version itself, so the explicit ArchiveVersion this method used to make first is
-        // gone — making it here as well would archive twice.
-        string[] compacted;
-        int newChunkCount;
-
-        // Every chunk as it stands BEFORE the rewrite, decoded once — one pass, CRC-checked per
-        // chunk, rather than a whole-artifact decode plus a per-chunk decode of the survivors.
-        // The pre-compact chunks are needed in their own right and not just as a source of the
-        // kept ones: the legacy keyword fallback below analyzes them.
-        (string[] priorChunks, _) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
-
-        if (keepRecent <= 0)
-        {
-            // Merge all chunks into one
-            compacted = [string.Concat(priorChunks)];
-            newChunkCount = 1;
-        }
-        else if (keepRecent == 1)
-        {
-            // Keep only the last chunk as a single-chunk memory
-            compacted = [priorChunks[^1]];
-            newChunkCount = 1;
-        }
-        else
-        {
-            // Keep the N most recent chunks
-            compacted = priorChunks[^keepRecent..];
-            newChunkCount = keepRecent;
-        }
-
-        // Read the existing entry BEFORE the write, not after. Compaction rewrites content, not
-        // metadata, so the entry's attributes and curated description must survive it — and they
-        // survive by travelling INTO the write as caller input, because a re-store derives its
-        // whole metadata half from what it is handed. Reading after the write would sample the
-        // already-rewritten entry.
-        //
-        // For an ephemeral, that existing entry comes from the map, not the index: an index lookup
-        // finds nothing for a "~name" and would send D-29's provenance read to its fallback
-        // heuristic below with the real answer sitting right there in ephemeralEntry.
-        //
-        // hadIndexedEntry is hoisted alongside the other locals (rather than leaving existingEntry
-        // in scope) because the "Original archived" message below needs it and existingEntry itself
-        // is scoped to the else branch — it means nothing for an ephemeral, which has no versions/
-        // directory to archive into.
-        string? existingPreview;
-        Dictionary<string, string[]>? existingAttributes;
-        string[]? existingAgentKeywords;
-        string[]? existingKeywords;
-        bool hadIndexedEntry;
-
-        if (ephemeral)
-        {
-            existingPreview = ephemeralEntry!.ContentPreview;
-            existingAttributes = ephemeralEntry.Attributes;
-            existingAgentKeywords = ephemeralEntry.AgentKeywords;
-            existingKeywords = ephemeralEntry.Keywords;
-            hadIndexedEntry = false;
-        }
-        else
-        {
-            // Case-insensitive match plus canonical-casing carry-forward, the same rule every
-            // other name lookup in this codebase follows. Here an ordinal match sent the write out
-            // with no metadata at all, which is precisely the reset this read exists to prevent.
-            var entries = store.LoadIndex(scope);
-            var existingEntry = entries.FirstOrDefault(
-                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-            if (existingEntry is not null)
-                subject = existingEntry.Name;
-            existingPreview = existingEntry?.ContentPreview;
-            existingAttributes = existingEntry?.Attributes;
-            existingAgentKeywords = existingEntry?.AgentKeywords;
-            existingKeywords = existingEntry?.Keywords;
-            hadIndexedEntry = existingEntry is not null;
-        }
-
-        if (!ephemeral)
-        {
-            string qualifiedAddress = scope == "local"
-                ? "/" + subject
-                : "/" + scope["local:".Length..] + "/" + subject;
-            name = MemoryAddress.Parse(qualifiedAddress);
-        }
-
-        // Compaction is a whole-memory rewrite, so it is a StoreAsync over the compacted chunks —
-        // the spec's "compact needs no third derivation entry point". The store archives the
-        // previous version, writes the artifact and upserts the entry, all of which this method
-        // used to do for itself.
-        //
-        // ONLY THE AGENT'S OWN KEYWORDS TRAVEL (D-29). The entry's Keywords are the MERGE of the
-        // agent's list with the auto-extracted terms, so handing the whole thing back in as
-        // MemoryWrite.Keywords would reclassify every auto term as agent-supplied and boost it +5
-        // instead of +2 — on every compaction, compounding. Handing back none loses the agent's
-        // keywords instead. The entry records which were the agent's (ArtifactEntry.AgentKeywords),
-        // written by every store and append, so for anything written since that field arrived this
-        // is not a guess: it is D-29's first option — "only the memory's genuinely-curated
-        // keywords" — read off the entry rather than reconstructed.
-        //
-        // For an entry that predates the field (null, meaning UNKNOWN — not "none") the fallback
-        // is a documented HEURISTIC over the pre-compact chunks. It under-recovers and can
-        // over-recover; see CuratedKeywords. The entry stops being unknown as soon as this
-        // compaction writes it.
-        //
-        // Attributes and the curated description DO travel whole: they are caller-supplied state,
-        // not derivation output. Note that they are MERGED OVER what the compacted text yields,
-        // not simply restored, so a compaction inherits the whole store path — including D-05: if
-        // the surviving text is count-shaped, the memory gains
-        // review: "when counts in this memory change" that it did not have before.
-        string[]? curatedKeywords = existingAgentKeywords
-            ?? MemoryDerivation.CuratedKeywords(existingKeywords, priorChunks);
-
-        // The ORIGINAL name, not `subject`, when ephemeral: StoreAsync's IsEphemeral check reads
-        // MemoryWrite.Name directly, and only the "~"-prefixed original carries that prefix —
-        // `subject` here is a sanitized-but-still-tilde-prefixed value from ParseQualifiedName that
-        // exists only to keep the non-ephemeral branch working.
-        MemoryWrite write;
+        CompactMemoryResult result;
         try
         {
-            write = MemoryWrite.Create(name, scope, compacted,
-                WriteAttributesAsBytes(existingAttributes ?? new Dictionary<string, string[]>()),
-                curatedKeywords ?? [], description: existingPreview);
+            result = await compactor.CompactAsync(name, keepRecent, cancellationToken);
         }
-        catch (InvalidMemoryWriteException ex)
+        catch (FileNotFoundException)
         {
-            return InvalidMemoryWriteResponse(ex);
+            return ResponseBuilder.Error(
+                $"Memory '{name}' not found.", ErrorCodes.NotFound,
+                "list() to see available memories",
+                "remember({ path: '...', description: 'Subjects and kinds of evidence stored here.', content: [...] }) to create it");
         }
-
-        ArtifactEntry stored;
-        WholeMemoryResult? transactionResult = null;
-        try
+        catch (InvalidMemoryWriteException exception)
         {
-            if (store is FileMemoryStore fileStore)
-            {
-                (stored, transactionResult) = await fileStore
-                    .StoreWithTransactionResultAsync(write, cancellationToken);
-            }
-            else
-            {
-                stored = await store.StoreAsync(write, cancellationToken);
-            }
+            return InvalidMemoryWriteResponse(exception);
         }
         catch (WholeMemoryTransactionException exception)
         {
@@ -288,6 +114,20 @@ public sealed partial class ScriniaMcpTools
         {
             return DurableWriteFailureResponse(exception);
         }
+
+        int chunkCount = result.OriginalChunkCount;
+        if (result.Entry is not { } stored)
+        {
+            string message = chunkCount <= 1
+                ? "Already a single chunk, nothing to compact."
+                : $"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).";
+            return ResponseBuilder.Warning(message).WithAction("compacted").WithInfo("mutation: none");
+        }
+        bool ephemeral = name.Kind == MemoryAddressKind.Ephemeral;
+        int newChunkCount = stored.ChunkCount;
+        bool hadIndexedEntry = result.Archived;
+        WholeMemoryResult? transactionResult = result.Transaction;
+        string[] committedContent = result.Content.ToArray();
 
         string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         int dropped = chunkCount - newChunkCount;
@@ -313,13 +153,13 @@ public sealed partial class ScriniaMcpTools
                 if (!ephemeral)
                     warningResponse = warningResponse.WithFileChanges();
                 await FireEventSinkAsync(sink => sink.OnStoredAsync(
-                    stored.Address, write.RawContent, store, cancellationToken));
+                    stored.Address, committedContent, store, cancellationToken));
                 return warningResponse;
             }
         }
 
         await FireEventSinkAsync(sink => sink.OnStoredAsync(
-            stored.Address, write.RawContent, store, cancellationToken));
+            stored.Address, committedContent, store, cancellationToken));
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no
         // index entry is a first write as far as it is concerned. Claiming an archive that did not

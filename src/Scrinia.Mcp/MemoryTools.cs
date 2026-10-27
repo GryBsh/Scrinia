@@ -180,7 +180,8 @@ public sealed partial class ScriniaMcpTools
     private const string RecallTruncationAdvice =
         "This memory's content exceeds the response limit. Retrieve it in pieces with " +
         "recall({ path, chunk: N }), starting at chunk 1. If chunk was already set, that chunk " +
-        "itself is oversized — compact() the memory to shrink its chunks.";
+        "itself is oversized — use recall({ path, chunk: N, offset: 0, limit: 4096 }) and follow the returned next offset. " +
+        "Paging reads content without changing the memory.";
 
     private const string SkillContentTruncationAdvice =
         "This skill file exceeds the response limit and skill content is not chunked. Shorten " +
@@ -524,23 +525,31 @@ public sealed partial class ScriniaMcpTools
         exception.UnsupportedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
 
     [McpServerTool(Name = "recall"), Description(
-        "Read a memory by path. Returns the full content unless a chunk index is provided. " +
+        "Read a memory by path, optionally one chunk. Responses may be truncated; use offset/limit to page oversized ordinary memories without changing them. " +
         "Example: recall({ path: '/findings/SEC-001' }), or recall({ path: '/skill/qa' }) to load a skill.")]
     public async Task<string> MemoryRecall(
         [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '/api/auth-flow'). '/skill/' alone lists available skills.")] string? path,
         [Description("Optional 1-based chunk index to retrieve a single chunk.")] int? chunk = null,
         [Description("Skills only: when path is '/skill/{name}', return both the built-in and the project override side-by-side for merging. Ignored for non-skill paths.")] bool withBuiltin = false,
+        [Description("Optional zero-based UTF-16 character offset within decoded ordinary memory content or the selected chunk. Use the returned next offset; paging is not supported for skill/agent files.")] int? offset = null,
+        [Description("Optional page size in UTF-16 characters, from 2 to 4096; defaults to 4096 when offset is supplied. Content contains only the page, with continuation in info/followUp.")] int? limit = null,
         CancellationToken cancellationToken = default)
     {
+        if (offset is < 0 || limit is < 2 or > 4096)
+            return ResponseBuilder.Error("Use offset >= 0 and limit between 2 and 4096.", ErrorCodes.InvalidParameter).ToYaml();
         if (TryClassifyArtifactInput(path, out string? inlineArtifact, out var recallError))
         {
-            return (await Recall(default, inlineArtifact!, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+            return (await Recall(default, inlineArtifact!, chunk, actionLabel: "recalled", cancellationToken: cancellationToken, offset: offset, limit: limit)).ToYaml();
         }
         if (recallError is not null)
             return recallError.ToYaml();
         if (!TryParseLogicalAddress(path, out var parsedPath, out var addressError))
             return addressError.ToYaml();
         path = CanonicalAddress(parsedPath);
+
+        if ((offset is not null || limit is not null) &&
+            (path.StartsWith("/skill/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase)))
+            return ResponseBuilder.Error("Paging applies to ordinary memories. Read skill or agent files without offset/limit.", ErrorCodes.InvalidParameter).ToYaml();
 
         McpResponse? reservedResponse = await new ReservedPathDispatcher(this).DispatchAsync(
             ReservedPathOperation.Read, parsedPath,
@@ -550,7 +559,7 @@ public sealed partial class ScriniaMcpTools
 
         try
         {
-            return (await Recall(parsedPath, chunk: chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
+            return (await Recall(parsedPath, chunk: chunk, actionLabel: "recalled", cancellationToken: cancellationToken, offset: offset, limit: limit)).ToYaml();
         }
         catch (Scrinia.Core.Bundles.BundleImportException ex)
         {

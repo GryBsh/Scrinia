@@ -12,6 +12,7 @@ public sealed class OpenAiEmbeddingProvider : ResilientEmbeddingProvider
     private readonly string _model;
 
     public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : 1536;
+    protected override int ExpectedDimensions => 0;
     public override string Signature => $"openai:{_model}";
     protected override string ProviderName => "OpenAI";
     protected override bool SupportsBatch => true;

@@ -261,7 +261,7 @@ public sealed class AgenticIngestHarness
             && chunkEl.TryGetInt32(out int parsedChunk))
             chunk = parsedChunk;
 
-        string result = await tools.MemoryRecall(path, chunk, withBuiltin: false, ct);
+        string result = await tools.MemoryRecall(path, chunk, withBuiltin: false, cancellationToken: ct);
         return (result, false);
     }
 

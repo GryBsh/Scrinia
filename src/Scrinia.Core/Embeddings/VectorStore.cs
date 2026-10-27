@@ -44,8 +44,8 @@ public sealed class VectorStore : IDisposable, IVectorStore
     private readonly string? _expectedSignature;
     // Copy-on-write: the published list for a scope is never mutated after it is stored here.
     // Mutating operations (Upsert/Remove) build a new list and swap it in under the scope
-    // lock; GetVectors can therefore hand out the cached reference directly with no lock and
-    // no copy — readers can never observe a torn/in-progress mutation.
+    // lock. Only ephemeral reads may reuse these snapshots without checking disk; persistent
+    // reads reload under the file lease so writes from another process become visible.
     private readonly ConcurrentDictionary<string, IReadOnlyList<VectorEntry>> _scopeVectors = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _scopeLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _staleQuarantines = new(StringComparer.OrdinalIgnoreCase);
@@ -86,29 +86,24 @@ public sealed class VectorStore : IDisposable, IVectorStore
 
     private static string GetVectorLockPath(string vectorPath) => vectorPath + ".lock";
 
-    /// <summary>Loads vectors for a scope (from disk if persistent, from cache if already loaded).</summary>
+    /// <summary>Loads a fresh persistent snapshot, or the current in-memory ephemeral snapshot.</summary>
     public IReadOnlyList<VectorEntry> GetVectors(string scope)
     {
-        // No lock needed: published lists are immutable snapshots (copy-on-write), so handing
-        // out the cached reference directly is safe even while a concurrent Upsert/Remove is
-        // building its replacement list under the scope lock.
-        if (_scopeVectors.TryGetValue(scope, out var cached))
-            return cached;
+        if (MemoryArtifactSource.IsEphemeral(scope))
+            return _scopeVectors.TryGetValue(scope, out var cached) ? cached : [];
 
         var lk = GetLock(scope);
         if (!lk.Wait(TimeSpan.FromSeconds(30)))
             throw new TimeoutException("VectorStore lock acquisition timed out after 30 seconds.");
         try
         {
-            // Double-check after lock
-            if (_scopeVectors.TryGetValue(scope, out cached))
-                return cached;
-
             var loaded = TryLoadFromDisk(scope);
-            // Never cache a failed load: this store is a DI singleton with no invalidation
-            // path, so a cached empty result would outlive the transient failure that caused it.
+            // Never expose the previous snapshot after a failed freshness check.
             if (!loaded.IsAuthoritative)
+            {
+                _scopeVectors.TryRemove(scope, out _);
                 return loaded.Vectors;
+            }
 
             _scopeVectors[scope] = loaded.Vectors;
             return loaded.Vectors;
@@ -128,20 +123,16 @@ public sealed class VectorStore : IDisposable, IVectorStore
             return [];
 
         var allowedNames = candidateNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (_scopeVectors.TryGetValue(canonicalScope, out var cached))
-            return cached.Where(vector => allowedNames.Contains(vector.Name)).ToArray();
+        if (MemoryArtifactSource.IsEphemeral(canonicalScope))
+            return _scopeVectors.TryGetValue(canonicalScope, out var cached)
+                ? cached.Where(vector => allowedNames.Contains(vector.Name)).ToArray()
+                : [];
 
         var lk = GetLock(canonicalScope);
         if (!lk.Wait(TimeSpan.FromSeconds(30)))
             throw new TimeoutException("VectorStore lock acquisition timed out after 30 seconds.");
         try
         {
-            if (_scopeVectors.TryGetValue(canonicalScope, out cached))
-                return cached.Where(vector => allowedNames.Contains(vector.Name)).ToArray();
-
-            if (MemoryArtifactSource.IsEphemeral(canonicalScope))
-                return [];
-
             string path = GetFilePath(canonicalScope);
             using var lease = FileLock.AcquireExclusive(GetVectorLockPath(path));
             MigrateLegacyScopeFileUnderLock(canonicalScope, path);

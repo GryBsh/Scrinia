@@ -93,10 +93,12 @@ public sealed class McpWholeMemoryTransactionTests
         response.Error.Should().Contain("Failed to acquire file lock");
     }
 
-    private sealed class LockedReadStore : Scrinia.TestDoubles.FakeMemoryStore
+    private sealed class LockedReadStore : Scrinia.TestDoubles.FakeMemoryStore, IAtomicMemoryCompactor
     {
-        public override Task<string> ReadArtifactAsync(MemoryAddress address, CancellationToken ct = default) =>
-            Task.FromException<string>(new FileLockTimeoutException("test-scope/.lock", TimeSpan.FromMilliseconds(100)));
+        public Task<CompactMemoryResult> CompactAsync(MemoryAddress address, int keepRecent = 0,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<CompactMemoryResult>(
+                new FileLockTimeoutException("test-scope/.lock", TimeSpan.FromMilliseconds(100)));
     }
 
     [Fact]

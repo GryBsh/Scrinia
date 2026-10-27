@@ -138,6 +138,11 @@ public interface IEncodingStrategy
 The store abstraction. `FileMemoryStore` is the filesystem implementation. MCP tools dispatch through
 `MemoryStoreContext.Current`, an `AsyncLocal<IMemoryStore>` populated by the CLI during local workspace setup.
 
+Compaction requires `IAtomicMemoryCompactor`. `FileMemoryStore` reads, transforms, and replaces
+persistent content under the same workspace admission and scope lock. Ephemeral compaction uses
+compare-and-swap and retries from current content after contention. Do not implement compaction
+as a separate read followed by an unconditional store.
+
 ### `MemoryNaming`
 
 Pure static utilities for topic classification:
@@ -167,6 +172,7 @@ Memory paths are free-form. A small set has first-class behavior:
 - `WithTools<T>()` registers ALL public methods on the type as MCP tools. Keep helper methods `internal` or `private`.
 - Skills load from disk overrides in `.scrinia/skills/`, then embedded built-ins only; legacy NMP/2 skill entries are not a lookup fallback. Appending to a built-in creates an override from its complete prompt, without repeating scaffold or consuming truncated display content.
 - Persistent work enters workspace admission before scope/entity locks; nested helpers receive an explicit validated lease. Cache hits do not bypass recovery/freshness checks. Bundle publication and recovery require exclusive workspace admission.
+- Persistent vector reads reload under the vector file lock; failed freshness checks must not return an earlier snapshot. Administrative plugin reindexing uses `IEmbeddingIndexCommand` and counts only an explicit `Indexed` outcome as embedded; best-effort event sinks do not acknowledge rebuilds.
 - Retain `.scrinia/.bundle-restore-journal.json` when recovery is unproven. A durable committed decision remains success if cleanup fails; uncertain decisions refuse speculative rollback. Stop older writers before upgrading. See [recovery and backup guidance](docs/troubleshooting.md#bundle-recovery-required); no dedicated recovery CLI exists.
 - Apply [fixed bundle/journal limits](docs/security.md#bundle-and-journal-limits), including prior-state capacity before mutation. Recovery DTOs require source-generated JSON contexts. Derived vectors/facts/configuration are outside the authoritative bundle manifest. New scope mutations and index rewrites refuse retained terminal evidence; verified reads and explicit recovery cleanup use narrow admission purposes. File-entity cleanup must positively prove committed absence, preserving evidence on inspection failure.
 - File I/O for skill / agent sidecars uses `ReadSidecarMeta<T>` / `WriteSidecarMeta<T>` on `ScriniaMcpTools`, not raw `JsonSerializer` calls — they use the source-gen context.
@@ -229,6 +235,12 @@ Consolidate with replacement when a complete rewrite improves clarity; `compact`
 ### Retrieving evidence
 
 Use descriptions and excerpts to locate evidence, then recall relevant content before relying on it. If recall is truncated, retrieve the relevant numbered chunks and context needed to interpret qualifications or corrections.
+
+For an oversized ordinary memory or chunk, use `recall({ path, chunk: N, offset: 0, limit: 4096 })`
+and follow the returned next offset. Omit `chunk` to page the whole decoded memory. Offsets count
+UTF-16 characters; page boundaries preserve surrogate pairs, and valid limits are 2–4096.
+Paging does not change stored content. Read pages from an unchanged memory and restart if it
+changes. Skill and agent files do not support paging; `compact` does not summarize or shrink text.
 
 - For a specific fact, use a targeted search or known path and check the relevant evidence and indicated corrections.
 - For a decision or changing state, inspect the original evidence and subsequent updates. Distinguish event dates from recording dates and answer for the requested time.

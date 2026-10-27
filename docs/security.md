@@ -122,8 +122,9 @@ or unreadable evidence is retained for investigation, never fixed by blindly del
 A workspace bundle transaction owns its ordinary-memory and file-entity manifest, not every file
 under `.scrinia`. Configuration and derived facts/vectors are outside rollback. Persistent vector
 mutations independently reread fresh scope state under an exclusive file lock and publish a
-complete replacement before their local cache. Other warm readers can retain earlier vector
-snapshots until mutation or reload.
+complete replacement before their local cache. Persistent vector reads also reload under the
+file lock, including reads from already-warm instances. If freshness cannot be established,
+they do not serve an earlier vector snapshot.
 
 A durable committed bundle remains committed if evidence cleanup fails. Unsupported legacy
 bundle evidence is retained and refused rather than converted automatically. Preserve the whole

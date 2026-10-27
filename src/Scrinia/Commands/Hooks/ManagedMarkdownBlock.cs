@@ -16,55 +16,60 @@ internal static class ManagedMarkdownBlock
 {
     public const string Begin = "<!-- scrinia:begin v1 -->";
     public const string End = "<!-- scrinia:end -->";
+    private const string BeginPrefix = "<!-- scrinia:begin";
+    private const string EndPrefix = "<!-- scrinia:end";
 
     /// <summary>
-    /// Returns the full file content with the managed block inserted (new/empty file), replaced
-    /// in place (block already present), or appended (file has user content but no block).
+    /// Produces the full file content with the managed block inserted, replaced, or appended.
+    /// Returns false for ambiguous or unsupported markers, leaving the content unchanged.
     /// </summary>
-    public static string Upsert(string? existing, string body)
+    public static bool TryUpsert(string? existing, string body, out string updated)
     {
+        updated = existing ?? "";
+        if (!TryFindBlock(updated, out int start, out int endMarker))
+            return false;
+
         string block = $"{Begin}\n{body.Trim()}\n{End}";
 
         if (string.IsNullOrWhiteSpace(existing))
-            return block + "\n";
-
-        int start = existing.IndexOf(Begin, StringComparison.Ordinal);
-        if (start >= 0)
         {
-            int endMarker = existing.IndexOf(End, start, StringComparison.Ordinal);
-            if (endMarker >= 0)
-            {
-                int endOfBlock = endMarker + End.Length;
-                return existing[..start] + block + existing[endOfBlock..];
-            }
-            // Begin without End — malformed; fall through and append a fresh block rather than
-            // risk eating the rest of the file.
+            updated = block + "\n";
         }
-
-        return existing.TrimEnd() + "\n\n" + block + "\n";
+        else if (start >= 0)
+        {
+            int endOfBlock = endMarker + End.Length;
+            updated = existing[..start] + block + existing[endOfBlock..];
+        }
+        else
+        {
+            updated = existing.TrimEnd() + "\n\n" + block + "\n";
+        }
+        return true;
     }
 
     /// <summary>
-    /// Returns the content with the managed block removed (surrounding blank lines tidied), or
+    /// Produces the content with the managed block removed (surrounding blank lines tidied), or
     /// <c>null</c> when nothing but the block (and whitespace) remained — the caller deletes the
-    /// file in that case. Content without a block is returned unchanged.
+    /// file in that case. Content without a block is returned unchanged. Returns false for
+    /// ambiguous or unsupported markers without modifying the content.
     /// </summary>
-    public static string? Remove(string existing)
+    public static bool TryRemove(string existing, out string? remaining)
     {
-        int start = existing.IndexOf(Begin, StringComparison.Ordinal);
-        if (start < 0) return existing;
-
-        int endMarker = existing.IndexOf(End, start, StringComparison.Ordinal);
-        if (endMarker < 0) return existing;
+        remaining = existing;
+        if (!TryFindBlock(existing, out int start, out int endMarker))
+            return false;
+        if (start < 0) return true;
 
         int endOfBlock = endMarker + End.Length;
         string remainder = (existing[..start] + existing[endOfBlock..]).Trim();
-        return remainder.Length == 0 ? null : remainder + "\n";
+        remaining = remainder.Length == 0 ? null : remainder + "\n";
+        return true;
     }
 
-    /// <summary>True when <paramref name="content"/> contains a scrinia-managed block.</summary>
+    /// <summary>True when content contains any managed marker, including malformed markers.</summary>
     public static bool Contains(string content) =>
-        content.Contains(Begin, StringComparison.Ordinal);
+        content.Contains(BeginPrefix, StringComparison.Ordinal)
+        || content.Contains(EndPrefix, StringComparison.Ordinal);
 
     /// <summary>
     /// Extracts the managed body (text between the markers, trimmed) for drift detection, or null
@@ -72,11 +77,24 @@ internal static class ManagedMarkdownBlock
     /// </summary>
     public static string? ExtractBody(string content)
     {
-        int start = content.IndexOf(Begin, StringComparison.Ordinal);
-        if (start < 0) return null;
+        if (!TryFindBlock(content, out int start, out int endMarker) || start < 0)
+            return null;
         int bodyStart = start + Begin.Length;
-        int endMarker = content.IndexOf(End, bodyStart, StringComparison.Ordinal);
-        if (endMarker < 0) return null;
         return content[bodyStart..endMarker].Trim();
+    }
+
+    // Validate every marker before identifying any removable region. In particular, an orphaned
+    // opening marker must never acquire a closing marker from a later installation.
+    private static bool TryFindBlock(string content, out int start, out int endMarker)
+    {
+        start = content.IndexOf(BeginPrefix, StringComparison.Ordinal);
+        endMarker = content.IndexOf(EndPrefix, StringComparison.Ordinal);
+        if (start < 0 && endMarker < 0) return true;
+        if (start < 0 || endMarker < start) return false;
+
+        return content.AsSpan(start).StartsWith(Begin, StringComparison.Ordinal)
+            && content.AsSpan(endMarker).StartsWith(End, StringComparison.Ordinal)
+            && content.IndexOf(BeginPrefix, start + BeginPrefix.Length, StringComparison.Ordinal) < 0
+            && content.IndexOf(EndPrefix, endMarker + EndPrefix.Length, StringComparison.Ordinal) < 0;
     }
 }

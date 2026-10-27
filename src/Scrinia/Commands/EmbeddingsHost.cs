@@ -155,7 +155,7 @@ internal static class EmbeddingsHost
     ///   uses <see cref="EmbeddingReindexer.ForceReindexAsync"/> which batch-embeds and writes
     ///   the host's <see cref="VectorStore"/> directly.</item>
     ///   <item><b>Plugin-owned</b> (Vulkan plugin via MCP): replays each memory through the
-    ///   active <see cref="IMemoryEventSink"/> so the plugin's <c>index</c> tool rebuilds
+    ///   active <see cref="IEmbeddingIndexCommand"/> so the plugin's <c>index</c> tool rebuilds
     ///   its vector store. The host has no <see cref="IEmbeddingProvider"/> to batch-embed
     ///   in-process in this case.</item>
     /// </list>
@@ -193,6 +193,7 @@ internal static class EmbeddingsHost
                 return await EmbeddingReindexer.ForceReindexAsync(
                     store, provider, embeddingsDir, logger, OnProgress, ct, options);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(
@@ -201,16 +202,16 @@ internal static class EmbeddingsHost
             }
         }
 
-        // Plugin path — the plugin owns embeddings out-of-process, so we drive it through
-        // the event sink it subscribed to during startup. _pluginHost is the IMemoryEventSink
-        // (and we registered it as MemoryEventSinkContext.Default's first sink).
-        if (_pluginHost is { HasEventSinkCapability: true })
+        // Keep the acknowledged administrative path even if the plugin has degraded:
+        // its unavailable outcomes must be reported as failures for the requested memories.
+        if (_pluginHost is not null)
         {
             try
             {
-                return await EmbeddingReindexer.ReindexViaSinkAsync(
+                return await EmbeddingReindexer.ReindexViaCommandAsync(
                     store, _pluginHost, logger, OnProgress, ct);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(

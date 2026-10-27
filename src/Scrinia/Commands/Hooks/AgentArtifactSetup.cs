@@ -60,7 +60,7 @@ public static class AgentArtifactSetup
             else
             {
                 AnsiConsole.MarkupLine(
-                    $"[red]  Failed to write {Markup.Escape(installer.Name)} — check file permissions.[/]");
+                    $"[red]  Failed to write {Markup.Escape(installer.Name)} — check file permissions and managed block markers.[/]");
             }
         }
         return Task.FromResult(written);

@@ -13,6 +13,7 @@ public sealed class AzureAiEmbeddingProvider : ResilientEmbeddingProvider
     private readonly bool _useV1;
 
     public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : 1536;
+    protected override int ExpectedDimensions => 0;
     public override string Signature => $"azure:{_model}";
     protected override string ProviderName => "Azure";
     protected override bool SupportsBatch => true;

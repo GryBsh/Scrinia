@@ -33,6 +33,9 @@ finite values, and consistent dimensions by `MemoryVectorIndexer`.
 HTTP providers derive from `ResilientEmbeddingProvider`, which owns retry and circuit-breaker
 behavior. Four-hundred-series input failures do not trip the circuit; cancellation from the caller
 propagates. Parse and shape failures return no vector and leave existing stored vectors untouched.
+For providers that discover dimensions, the first valid response establishes the dimension
+atomically; malformed batches cannot establish it. After circuit cooldown, only one request
+holds the half-open trial slot, which is released on every outcome, including cancellation.
 
 ## Indexing and replacement
 
@@ -53,13 +56,14 @@ and migration publication share that ownership boundary. A mutation atomically r
 complete file before publishing its local cache, so an already-warm writer cannot overwrite a
 peer's additions or resurrect its deletions from an old snapshot.
 
-Another already-warm instance may continue reading its earlier snapshot until its next mutation
-or reload. This write coherence repair does not add a read-cache invalidation protocol. Derived
-vectors remain outside the authoritative memory bundle transaction and its rollback manifest.
+Persistent reads reload the scope under the file lease, so an already-warm instance observes
+peer replacements and deletions on its next read. A failed freshness check does not serve an
+earlier snapshot. Derived vectors remain outside the authoritative memory bundle transaction
+and its rollback manifest.
 
 Persistent mutation rereads and rewrites the complete scope file, so cost grows with scope size.
 Serialization and its final byte-array copy require additional complete-payload memory. Exclusive
-cold reads serialize with writers. Existing signature quarantine, unsupported-format refusal,
+reads serialize with writers. Existing signature quarantine, unsupported-format refusal,
 and bounded retry behavior remain; synchronous read/move retries have cooperative-cancellation
 limits.
 
@@ -88,8 +92,10 @@ and temporary buffers remain explicit costs of writer coherence.
 `EmbeddingReindexer.ReindexAsync` walks persistent entries from `IMemoryStore`, reconstructs each
 artifact's content array, and indexes each memory atomically. It reports total, embedded, skipped,
 and failed counts while continuing past individual artifact failures. `scri reindex` invokes the
-same Core path for an explicit rebuild. Plugin-backed reindexing uses the plugin event sink and
-prefers the plugin's whole-memory `index` tool.
+same Core path for an explicit rebuild. Plugin-backed reindexing uses
+`IEmbeddingIndexCommand` through `ReindexViaCommandAsync`. Only an explicit `Indexed` outcome
+increments the embedded count; unavailable or failed commands increment the failed count.
+Best-effort write event sinks cannot acknowledge an administrative rebuild.
 
 ## Plugin protocol
 

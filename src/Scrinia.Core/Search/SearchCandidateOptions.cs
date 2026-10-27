@@ -56,16 +56,24 @@ public sealed record SearchCandidateOptions
 
         var queryTokens = TextAnalysis.Tokenize(query).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return candidates
-            .Select(candidate => (Candidate: candidate, Score: LexicalScore(candidate, queryTokens)))
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Candidate.Scope, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Candidate.Entry.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Candidate.Entry.Address.ToString(), StringComparer.Ordinal)
+            .Select((candidate, index) => new RankedCandidate(candidate, LexicalScore(candidate, queryTokens), index))
+            .Order(LexicalOrder)
             .Select(item => item.Candidate)
             .ToArray();
     }
 
-    private static int LexicalScore(ScopedArtifact candidate, HashSet<string> queryTokens)
+    internal readonly record struct RankedCandidate(ScopedArtifact Candidate, int Score, long Order);
+
+    internal static readonly IComparer<RankedCandidate> LexicalOrder = Comparer<RankedCandidate>.Create((left, right) =>
+    {
+        int order = right.Score.CompareTo(left.Score);
+        if (order == 0) order = StringComparer.OrdinalIgnoreCase.Compare(left.Candidate.Scope, right.Candidate.Scope);
+        if (order == 0) order = StringComparer.OrdinalIgnoreCase.Compare(left.Candidate.Entry.Name, right.Candidate.Entry.Name);
+        if (order == 0) order = StringComparer.Ordinal.Compare(left.Candidate.Entry.Address.ToString(), right.Candidate.Entry.Address.ToString());
+        return order == 0 ? left.Order.CompareTo(right.Order) : order;
+    });
+
+    internal static int LexicalScore(ScopedArtifact candidate, HashSet<string> queryTokens)
     {
         if (queryTokens.Count == 0)
             return 0;

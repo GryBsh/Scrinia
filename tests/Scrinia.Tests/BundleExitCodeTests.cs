@@ -63,7 +63,7 @@ public class BundleExitCodeTests
         using var scope = new TestHelpers.StoreScope();
         File.WriteAllText(Path.Combine(scope.WorkspaceDir, ".scrinia", ".bundle-restore-journal.json"), "invalid");
         var response = ResponseParser.Parse(await new ScriniaMcpTools().Guide());
-        response.Content.Should().Be(EmbeddedPrompts.LoadGuide()!.TrimEnd());
+        response.Content.Should().Be(EmbeddedPrompts.LoadGuide());
         response.ErrorCode.Should().Be(ErrorCodes.BundleRecoveryRequired);
     }
 

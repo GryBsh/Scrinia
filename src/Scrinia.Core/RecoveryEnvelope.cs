@@ -617,13 +617,29 @@ internal sealed class AppendRecoveryAdapter : IRecoveryAdapter
         }
 
         List<string> failures = [];
-        IEnumerable<string> cleanupPaths = new[] { journal.ArchiveArtifactPath, journal.ArchiveSidecarPath }
-            .Concat(journal.PruneCandidates)
-            .Where(path => path is not null)
-            .Select(path => ResolveAppendPath(evidencePath, path!));
-        foreach (string path in cleanupPaths)
+        string versionsRoot = Path.GetDirectoryName(evidencePath)!;
+        string liveArtifact = ResolveAppendPath(evidencePath, journal.NewArtifact.Path);
+        string liveSidecar = ResolveAppendPath(evidencePath, journal.NewSidecar.Path);
+        string? currentArtifact = journal.ArchiveArtifactPath is null
+            ? null : ResolveAppendPath(evidencePath, journal.ArchiveArtifactPath);
+        string? currentSidecar = journal.ArchiveSidecarPath is null
+            ? null : ResolveAppendPath(evidencePath, journal.ArchiveSidecarPath);
+        foreach (string candidate in journal.PruneCandidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string path = ResolveAppendPath(evidencePath, candidate);
+            if (!ArchiveService.IsSafePruneCandidate(versionsRoot, path,
+                liveArtifact, liveSidecar, currentArtifact, currentSidecar))
+            {
+                failures.Add($"refused unsafe archive candidate: {candidate}");
+                break;
+            }
             TryDelete(path, failures);
-        TryDelete(evidencePath, failures);
+            if (failures.Count > 0)
+                break;
+        }
+        if (failures.Count == 0)
+            TryDelete(evidencePath, failures);
         return failures.Count == 0
             ? new RecoveryOutcome(false, true, false, envelope.Scope, evidencePath, envelope.OperationId, null, null)
             : new RecoveryOutcome(false, true, true, envelope.Scope, evidencePath, envelope.OperationId, null,

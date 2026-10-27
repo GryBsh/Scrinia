@@ -175,6 +175,11 @@ class ScriniaMemory(Memory):
                 "instructionsHash":hashlib.sha256(io_path(instructions).read_bytes()).hexdigest()}
 
     def query(self, query: str, query_image: str | None = None) -> list[dict[str, str]]:
+        source = _absolute(self.snapshot_path)
+        with self.snapshots.read_lease(source) as committed:
+            return self._query(query, query_image, source, committed)
+
+    def _query(self, query, query_image, source, committed):
         from snapshots import fingerprint, file_entries
         started=time.monotonic()
         deadline=started+self.configuration["episodeSeconds"]
@@ -184,7 +189,6 @@ class ScriniaMemory(Memory):
         cancel=QueryCancellation()
         if cancel.is_set():raise BridgeError("CANCELLED")
         if self._loaded_history is not None:
-            committed = self.snapshots.current()
             if (committed is None or committed["history"] != self._loaded_history
                 or self.memory_params.get("expected_history") != self._loaded_history):
                 raise BridgeError("HISTORY_IDENTITY_MISMATCH")
@@ -194,15 +198,10 @@ class ScriniaMemory(Memory):
             identity=method_identity(self.memory_params)
             if identity!=self.memory_params["method_identity"]:
                 raise BridgeError("METHOD_IDENTITY_MISMATCH")
-            committed=self.snapshots.current()
             if committed is not None and committed["configurationHash"]!=identity_hash(identity):
                 raise BridgeError("METHOD_IDENTITY_MISMATCH")
         runtime=self._retrieval_configuration()
-        source=_absolute(self.snapshot_path)
         if not io_path(source).is_dir():raise BridgeError("SNAPSHOT_MISSING")
-        if (io_path(self.snapshots.root/"current.json")).exists():
-            self.snapshots.current()
-            if source!=self.snapshots.generation_path:raise BridgeError("SNAPSHOT_POINTER_MISMATCH")
         before=fingerprint(source)
         metadata=source/".generation.json"
         metadata_before=hashlib.sha256(io_path(metadata).read_bytes()).hexdigest() if io_path(metadata).exists() else None

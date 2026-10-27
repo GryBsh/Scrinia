@@ -12,17 +12,25 @@ internal static class SearchCandidateSelection
         ArgumentNullException.ThrowIfNull(query);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
 
-        var selected = new List<ScopedArtifact>(limit);
+        var queryTokens = TextAnalysis.Tokenize(query.Query).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var worstFirst = Comparer<SearchCandidateOptions.RankedCandidate>.Create(
+            (left, right) => SearchCandidateOptions.LexicalOrder.Compare(right, left));
+        var selected = new PriorityQueue<SearchCandidateOptions.RankedCandidate, SearchCandidateOptions.RankedCandidate>(limit, worstFirst);
+        long ordinal = 0;
         foreach (var candidate in source)
         {
             if (!SearchResultFilter.SelectionCandidateMatches(candidate, query, formatQualifiedLabel))
                 continue;
 
-            selected.Add(candidate);
-            if (selected.Count > limit)
-                selected = SearchCandidateOptions.RankLexically(selected, query.Query).Take(limit).ToList();
+            var ranked = new SearchCandidateOptions.RankedCandidate(candidate,
+                SearchCandidateOptions.LexicalScore(candidate, queryTokens), ordinal++);
+            if (selected.Count < limit)
+                selected.Enqueue(ranked, ranked);
+            else
+                selected.EnqueueDequeue(ranked, ranked);
         }
 
-        return SearchCandidateOptions.RankLexically(selected, query.Query);
+        return selected.UnorderedItems.Select(item => item.Element)
+            .Order(SearchCandidateOptions.LexicalOrder).Select(item => item.Candidate).ToArray();
     }
 }
